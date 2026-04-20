@@ -50,6 +50,7 @@ digest_map: dict[int, list[dict]] = {}
 last_digest_msg_id: int | None = None
 pending_map: dict[str, dict] = {}
 _pending_counter = 0
+capture_map: dict[int, dict] = {}
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 HORIZON_MAP = {
@@ -179,10 +180,16 @@ def get_all_active_tasks() -> list[dict]:
         database_id=NOTION_DB_ID,
         filter={"property": "Status", "select": {"does_not_equal": "Done 🙌"}},
     )
-    return [
-        {"page_id": p["id"], "name": _get_prop(p["properties"], "Name", "title") or "Untitled"}
-        for p in results.get("results", [])
-    ]
+    tasks = []
+    for p in results.get("results", []):
+        props = p["properties"]
+        tasks.append({
+            "page_id": p["id"],
+            "name": _get_prop(props, "Name", "title") or "Untitled",
+            "horizon": _get_prop(props, "Horizon", "select") or "",
+            "context": _get_prop(props, "Context", "select") or "",
+        })
+    return tasks
 
 
 def get_recurring_templates() -> list[dict]:
@@ -208,6 +215,28 @@ def get_recurring_templates() -> list[dict]:
             "last_generated": _get_prop(p, "Last Generated", "date"),
         })
     return templates
+
+
+
+
+def normalize_task_name(name: str) -> str:
+    s = name.lower().strip()
+    s = re.sub(r"\b(today|tonight|now|urgent|asap|by eod|this week|this month|someday|eventually)\b", "", s)
+    s = re.sub(r"[^a-z0-9\s]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if s.endswith("s") and len(s) > 3:
+        s = s[:-1]
+    return s
+
+
+def find_duplicate_task(query: str, tasks: list[dict]) -> dict | None:
+    nq = normalize_task_name(query)
+    if not nq:
+        return None
+    for t in tasks:
+        if normalize_task_name(t["name"]) == nq:
+            return t
+    return None
 
 
 def fuzzy_match(query: str, tasks: list[dict]) -> dict | None:
@@ -370,9 +399,19 @@ def new_task_keyboard(key: str) -> InlineKeyboardMarkup:
     ])
 
 
+
+
+async def send_capture_confirmation(message, page_id: str, task_name: str, horizon: str, ctx: str) -> None:
+    await message.edit_text(
+        f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon}  {ctx}\n\n_Saved to Notion_",
+        parse_mode="Markdown")
+    capture_map[message.message_id] = {"page_id": page_id, "name": task_name}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # TELEGRAM HANDLERS
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global _pending_counter, last_digest_msg_id
@@ -381,6 +420,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     text = (update.message.text or "").strip()
     if not text:
         return
+
+    lower_text = text.lower().strip()
+
+    # reply "done" to a captured task message
+    if update.message.reply_to_message and lower_text == "done":
+        reply_id = update.message.reply_to_message.message_id
+        captured = capture_map.get(reply_id)
+        if captured:
+            mark_done(captured["page_id"])
+            suffix = "\n↻ Next instance created" if handle_done_recurring(captured["page_id"]) else ""
+            await update.message.reply_text(f"✅ Done: {captured['name']}{suffix}")
+            return
 
     # done 1,3
     match_nums = re.match(r"done\s+([\d,\s]+)$", text, re.IGNORECASE)
@@ -407,14 +458,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # done: task name
     match_name = re.match(r"done:\s*(.+)$", text, re.IGNORECASE)
     if match_name:
-        matched = fuzzy_match(match_name.group(1).strip(), get_all_active_tasks())
+        query = match_name.group(1).strip()
+        matched = fuzzy_match(query, get_all_active_tasks())
         if matched:
             mark_done(matched["page_id"])
             suffix = "\n↻ Next instance created" if handle_done_recurring(matched["page_id"]) else ""
             await update.message.reply_text(f"✅ Done: {matched['name']}{suffix}")
         else:
-            await update.message.reply_text(f"Couldn't find a task matching \"{match_name.group(1).strip()}\".")
+            await update.message.reply_text(f"Couldn't find a task matching \"{query}\".")
         return
+
+    # mark task done
+    match_mark_done = re.match(r"mark\s+(.+?)\s+done$", text, re.IGNORECASE)
+    if match_mark_done:
+        query = match_mark_done.group(1).strip()
+        matched = fuzzy_match(query, get_all_active_tasks())
+        if matched:
+            mark_done(matched["page_id"])
+            suffix = "\n↻ Next instance created" if handle_done_recurring(matched["page_id"]) else ""
+            await update.message.reply_text(f"✅ Done: {matched['name']}{suffix}")
+        else:
+            await update.message.reply_text(f"Couldn't find a task matching \"{query}\".")
+        return
+
+    # force add bypasses duplicate guard
+    force_add = False
+    force_match = re.match(r"force:\s*(.+)$", text, re.IGNORECASE)
+    if force_match:
+        force_add = True
+        text = force_match.group(1).strip()
 
     # New task capture
     thinking = await update.message.reply_text("🧠 Classifying...")
@@ -429,12 +501,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await thinking.edit_text("⚠️ Couldn't classify that. Try rephrasing?")
         return
 
+    active_tasks = get_all_active_tasks()
+    duplicate = None if force_add else find_duplicate_task(task_name, active_tasks)
+    if duplicate:
+        dup_horizon = duplicate.get("horizon", "")
+        dup_context = duplicate.get("context", "")
+        await thinking.edit_text(
+            f"⚠️ Already on your list:\n\n📝 {duplicate['name']}\n🕐 {dup_horizon}  {dup_context}\n\n"
+            f'Send `force: {task_name}` if you want to add it anyway.',
+            parse_mode="Markdown",
+        )
+        return
+
     if confidence == "high":
         try:
-            create_task(task_name, horizon, ctx)
-            await thinking.edit_text(
-                f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon}  {ctx}\n\n_Saved to Notion_",
-                parse_mode="Markdown")
+            page_id = create_task(task_name, horizon, ctx)
+            await send_capture_confirmation(thinking, page_id, task_name, horizon, ctx)
         except Exception as e:
             log.error(f"Notion error: {e}")
             await thinking.edit_text("⚠️ Classified but couldn't write to Notion.")
