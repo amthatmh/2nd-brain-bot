@@ -533,19 +533,28 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await q.answer()
     parts = q.data.split(":")
 
-    if parts[0] == "nt" and len(parts) == 3:
+        if parts[0] == "nt" and len(parts) == 3:
         _, key, code = parts
         if key not in pending_map:
-            await q.edit_message_text("⚠️ This task expired — please re-send it."); return
-        task    = pending_map.pop(key)
+            await q.edit_message_text("⚠️ This task expired — please re-send it.")
+            return
+
+        task = pending_map.pop(key)
         horizon = HORIZON_MAP.get(code, "⚪ Backburner")
+
         try:
-            create_task(task["name"], horizon, task["context"])
+            page_id = create_task(task["name"], horizon, task["context"])
             await q.edit_message_text(
                 f"✅ Captured!\n\n📝 {task['name']}\n🕐 {horizon}  {task['context']}\n\n_Saved to Notion_",
-                parse_mode="Markdown")
+                parse_mode="Markdown"
+            )
+            capture_map[q.message.message_id] = {
+                "page_id": page_id,
+                "name": task["name"],
+            }
         except Exception as e:
-            log.error(f"Notion error: {e}"); await q.edit_message_text("⚠️ Couldn't save to Notion.")
+            log.error(f"Notion error: {e}")
+            await q.edit_message_text("⚠️ Couldn't save to Notion.")
         return
 
     if parts[0] == "d" and len(parts) == 2:
