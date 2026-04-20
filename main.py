@@ -136,10 +136,16 @@ def create_task(name: str, horizon: str, context: str,
     page = notion.pages.create(parent={"database_id": NOTION_DB_ID}, properties=props)
     return page["id"]
 
-
 def mark_done(page_id: str) -> None:
-    notion.pages.update(page_id=page_id, properties={"Status": {"select": {"name": "Done 🙌"}}})
-
+    notion.pages.update(
+        page_id=page_id,
+        properties={
+            # Update the Status dropdown as before
+            "Status": {"select": {"name": "Done 🙌"}},
+            # Also tick the Done checkbox in the same API call
+            "Done": {"checkbox": True},
+        },
+    )
 
 def set_horizon(page_id: str, horizon: str) -> None:
     notion.pages.update(page_id=page_id, properties={"Horizon": {"select": {"name": horizon}}})
