@@ -527,13 +527,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"📝 *{task_name}*  {ctx}\n\nWhen should this happen?",
             parse_mode="Markdown", reply_markup=new_task_keyboard(key))
 
-
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
     await q.answer()
     parts = q.data.split(":")
 
-        if parts[0] == "nt" and len(parts) == 3:
+    if parts[0] == "nt" and len(parts) == 3:
         _, key, code = parts
         if key not in pending_map:
             await q.edit_message_text("⚠️ This task expired — please re-send it.")
@@ -546,7 +545,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             page_id = create_task(task["name"], horizon, task["context"])
             await q.edit_message_text(
                 f"✅ Captured!\n\n📝 {task['name']}\n🕐 {horizon}  {task['context']}\n\n_Saved to Notion_",
-                parse_mode="Markdown"
+                parse_mode="Markdown",
             )
             capture_map[q.message.message_id] = {
                 "page_id": page_id,
@@ -564,7 +563,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             suffix = "\n↻ Next instance created" if handle_done_recurring(page_id) else ""
             await q.edit_message_text(f"✅ Marked as done!{suffix}")
         except Exception as e:
-            log.error(f"Notion done error: {e}"); await q.edit_message_text("⚠️ Couldn't update Notion.")
+            log.error(f"Notion done error: {e}")
+            await q.edit_message_text("⚠️ Couldn't update Notion.")
         return
 
     if parts[0] == "h" and len(parts) == 3:
@@ -575,9 +575,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             set_horizon(page_id, horizon)
             await q.edit_message_text(f"Updated → {horizon} ✓")
         except Exception as e:
-            log.error(f"Notion horizon error: {e}"); await q.edit_message_text("⚠️ Couldn't update Notion.")
+            log.error(f"Notion horizon error: {e}")
+            await q.edit_message_text("⚠️ Couldn't update Notion.")
         return
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SCHEDULED JOBS
