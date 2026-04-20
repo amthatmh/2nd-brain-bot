@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """
-Second Brain — Telegram Bot (v2 — with recurring tasks)
+Second Brain — Telegram Bot (v3 — fully env-configurable)
 ────────────────────────────────────────────────────────────────
-Captures tasks → Claude classifies urgency + context
-→ saves to Notion To-Do database
-Daily digests + Sunday weekly review
-Recurring task auto-generation
-Mark done via reply or text command
+All tuneable variables live in .env / Railway environment.
+No need to edit this script for config changes.
 """
 
 import os, json, re, logging, calendar
@@ -27,13 +24,22 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
 log = logging.getLogger(__name__)
 
-# ── Config ────────────────────────────────────────────────────────────────────
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-MY_CHAT_ID     = int(os.environ["TELEGRAM_CHAT_ID"])
-ANTHROPIC_KEY  = os.environ["ANTHROPIC_API_KEY"]
-NOTION_TOKEN   = os.environ["NOTION_TOKEN"]
-NOTION_DB_ID   = os.environ["NOTION_DB_ID"]
-TZ             = pytz.timezone("America/Chicago")
+# ── Config from environment ───────────────────────────────────────────────────
+TELEGRAM_TOKEN   = os.environ["TELEGRAM_TOKEN"]
+MY_CHAT_ID       = int(os.environ["TELEGRAM_CHAT_ID"])
+ANTHROPIC_KEY    = os.environ["ANTHROPIC_API_KEY"]
+NOTION_TOKEN     = os.environ["NOTION_TOKEN"]
+NOTION_DB_ID     = os.environ["NOTION_DB_ID"]
+
+# Scheduling
+TZ               = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
+_wk_h, _wk_m    = map(int, os.environ.get("DIGEST_TIME_WEEKDAY", "8:15").split(":"))
+_we_h, _we_m    = map(int, os.environ.get("DIGEST_TIME_WEEKEND", "12:00").split(":"))
+_rc_h, _rc_m    = map(int, os.environ.get("RECURRING_CHECK_TIME", "7:00").split(":"))
+
+# AI
+CLAUDE_MODEL     = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+CLAUDE_MAX_TOK   = int(os.environ.get("CLAUDE_MAX_TOKENS", "150"))
 
 # ── Clients ───────────────────────────────────────────────────────────────────
 notion = NotionClient(auth=NOTION_TOKEN)
@@ -91,8 +97,8 @@ Context rules:
 - collaborations/shared tasks → 🤝 Collab"""
 
     resp = claude.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=150,
+        model=CLAUDE_MODEL,
+        max_tokens=CLAUDE_MAX_TOK,
         messages=[{"role": "user", "content": prompt}],
     )
     raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
@@ -150,7 +156,7 @@ def query_tasks(horizons: list[str]) -> list[dict]:
         database_id=NOTION_DB_ID,
         filter={
             "and": [
-                {"property": "Status",  "select": {"does_not_equal": "Done 🙌"}},
+                {"property": "Status", "select": {"does_not_equal": "Done 🙌"}},
                 {"or": [{"property": "Horizon", "select": {"equals": h}} for h in horizons]},
             ]
         },
@@ -220,15 +226,12 @@ def should_spawn_today(template: dict, today: date) -> bool:
 
     if last_gen == today.isoformat():
         return False
-
     if recurring == "🔁 Daily":
         return True
-
     if recurring == "📅 Weekly":
         if not repeat_day or repeat_day not in REPEAT_DAY_TO_WEEKDAY:
             return False
         return today.weekday() == REPEAT_DAY_TO_WEEKDAY[repeat_day]
-
     if recurring == "🗓️ Monthly":
         if not repeat_day or repeat_day not in REPEAT_DAY_TO_MONTHDAY:
             return False
@@ -236,7 +239,6 @@ def should_spawn_today(template: dict, today: date) -> bool:
         if target == -1:
             return today.day == calendar.monthrange(today.year, today.month)[1]
         return today.day == target
-
     return False
 
 
@@ -259,7 +261,11 @@ def spawn_recurring_instance(template: dict) -> None:
 def process_recurring_tasks() -> int:
     today     = date.today()
     templates = get_recurring_templates()
-    spawned   = sum(1 for t in templates if should_spawn_today(t, today) and not spawn_recurring_instance(t))
+    spawned   = 0
+    for t in templates:
+        if should_spawn_today(t, today):
+            spawn_recurring_instance(t)
+            spawned += 1
     return spawned
 
 
@@ -291,10 +297,10 @@ def format_daily_digest(tasks: list[dict]) -> tuple[str, list[dict]]:
     if not tasks:
         return f"☀️ *{date_str}*\n\nAll clear — no tasks due today! 🎉", []
 
-    today_str = date.today().isoformat()
-    overdue   = [t for t in tasks if t["deadline"] and t["deadline"] < today_str]
-    today_now = [t for t in tasks if t not in overdue]
-    lines, ordered, n = [f"☀️ *{date_str}*\n"], [], 1
+    today_str          = date.today().isoformat()
+    overdue            = [t for t in tasks if t["deadline"] and t["deadline"] < today_str]
+    today_now          = [t for t in tasks if t not in overdue]
+    lines, ordered, n  = [f"☀️ *{date_str}*\n"], [], 1
 
     if overdue:
         lines.append("🚨 *Overdue*")
@@ -348,15 +354,19 @@ def _restore_pid(pid: str) -> str: return f"{pid[:8]}-{pid[8:12]}-{pid[12:16]}-{
 def review_keyboard(page_id: str) -> InlineKeyboardMarkup:
     p = _clean_pid(page_id)
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔴 Today", callback_data=f"h:{p}:t"), InlineKeyboardButton("🟠 This Week", callback_data=f"h:{p}:w")],
-        [InlineKeyboardButton("🟡 This Month", callback_data=f"h:{p}:m"), InlineKeyboardButton("⚪ Backburner", callback_data=f"h:{p}:b")],
-        [InlineKeyboardButton("✅ Done", callback_data=f"d:{p}")],
+        [InlineKeyboardButton("🔴 Today",      callback_data=f"h:{p}:t"),
+         InlineKeyboardButton("🟠 This Week",  callback_data=f"h:{p}:w")],
+        [InlineKeyboardButton("🟡 This Month", callback_data=f"h:{p}:m"),
+         InlineKeyboardButton("⚪ Backburner",  callback_data=f"h:{p}:b")],
+        [InlineKeyboardButton("✅ Done",        callback_data=f"d:{p}")],
     ])
 
 def new_task_keyboard(key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔴 Today", callback_data=f"nt:{key}:t"), InlineKeyboardButton("🟠 This Week", callback_data=f"nt:{key}:w")],
-        [InlineKeyboardButton("🟡 This Month", callback_data=f"nt:{key}:m"), InlineKeyboardButton("⚪ Backburner", callback_data=f"nt:{key}:b")],
+        [InlineKeyboardButton("🔴 Today",      callback_data=f"nt:{key}:t"),
+         InlineKeyboardButton("🟠 This Week",  callback_data=f"nt:{key}:w")],
+        [InlineKeyboardButton("🟡 This Month", callback_data=f"nt:{key}:m"),
+         InlineKeyboardButton("⚪ Backburner",  callback_data=f"nt:{key}:b")],
     ])
 
 
@@ -376,7 +386,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     match_nums = re.match(r"done\s+([\d,\s]+)$", text, re.IGNORECASE)
     if match_nums:
         numbers   = [int(n.strip()) for n in match_nums.group(1).split(",") if n.strip().isdigit()]
-        source_id = (update.message.reply_to_message.message_id if update.message.reply_to_message else last_digest_msg_id)
+        source_id = (update.message.reply_to_message.message_id
+                     if update.message.reply_to_message else last_digest_msg_id)
         if source_id and source_id in digest_map:
             items, done_names = digest_map[source_id], []
             for n in numbers:
@@ -386,7 +397,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     mark_done(pid)
                     suffix = " ↻ next queued" if handle_done_recurring(pid) else ""
                     done_names.append(f"{name}{suffix}")
-            await update.message.reply_text("Marked done:\n" + "\n".join(f"✅ {n}" for n in done_names) if done_names else "Couldn't find those items.")
+            msg = ("Marked done:\n" + "\n".join(f"✅ {n}" for n in done_names)
+                   if done_names else "Couldn't find those items.")
+            await update.message.reply_text(msg)
         else:
             await update.message.reply_text("No recent digest found. Try replying directly to a digest message.")
         return
@@ -419,14 +432,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if confidence == "high":
         try:
             create_task(task_name, horizon, ctx)
-            await thinking.edit_text(f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon}  {ctx}\n\n_Saved to Notion_", parse_mode="Markdown")
+            await thinking.edit_text(
+                f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon}  {ctx}\n\n_Saved to Notion_",
+                parse_mode="Markdown")
         except Exception as e:
             log.error(f"Notion error: {e}")
             await thinking.edit_text("⚠️ Classified but couldn't write to Notion.")
     else:
         key = str(_pending_counter); _pending_counter += 1
         pending_map[key] = {"name": task_name, "context": ctx}
-        await thinking.edit_text(f"📝 *{task_name}*  {ctx}\n\nWhen should this happen?", parse_mode="Markdown", reply_markup=new_task_keyboard(key))
+        await thinking.edit_text(
+            f"📝 *{task_name}*  {ctx}\n\nWhen should this happen?",
+            parse_mode="Markdown", reply_markup=new_task_keyboard(key))
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -438,11 +455,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         _, key, code = parts
         if key not in pending_map:
             await q.edit_message_text("⚠️ This task expired — please re-send it."); return
-        task = pending_map.pop(key)
+        task    = pending_map.pop(key)
         horizon = HORIZON_MAP.get(code, "⚪ Backburner")
         try:
             create_task(task["name"], horizon, task["context"])
-            await q.edit_message_text(f"✅ Captured!\n\n📝 {task['name']}\n🕐 {horizon}  {task['context']}\n\n_Saved to Notion_", parse_mode="Markdown")
+            await q.edit_message_text(
+                f"✅ Captured!\n\n📝 {task['name']}\n🕐 {horizon}  {task['context']}\n\n_Saved to Notion_",
+                parse_mode="Markdown")
         except Exception as e:
             log.error(f"Notion error: {e}"); await q.edit_message_text("⚠️ Couldn't save to Notion.")
         return
@@ -480,12 +499,12 @@ async def run_recurring_check(bot) -> None:
 
 async def send_daily_digest(bot) -> None:
     global last_digest_msg_id
-    tasks, message_ordered = query_tasks(["🔴 Today"]), None
+    tasks            = query_tasks(["🔴 Today"])
     message, ordered = format_daily_digest(tasks)
     sent = await bot.send_message(chat_id=MY_CHAT_ID, text=message, parse_mode="Markdown")
     if ordered:
         digest_map[sent.message_id] = ordered
-        last_digest_msg_id = sent.message_id
+        last_digest_msg_id          = sent.message_id
     log.info(f"Daily digest sent — {len(ordered)} tasks")
 
 
@@ -511,12 +530,27 @@ async def send_sunday_review(bot) -> None:
 
 async def post_init(app: Application) -> None:
     scheduler = AsyncIOScheduler(timezone=TZ)
-    scheduler.add_job(run_recurring_check, "cron", hour=7,  minute=0,  args=[app.bot])
-    scheduler.add_job(send_daily_digest,   "cron", day_of_week="mon-fri", hour=8,  minute=15, args=[app.bot])
-    scheduler.add_job(send_daily_digest,   "cron", day_of_week="sat",     hour=12, minute=0,  args=[app.bot])
-    scheduler.add_job(send_sunday_review,  "cron", day_of_week="sun",     hour=12, minute=0,  args=[app.bot])
+
+    # Recurring check (before digests)
+    scheduler.add_job(run_recurring_check, "cron",
+                      hour=_rc_h, minute=_rc_m, args=[app.bot])
+    # Mon–Fri digest
+    scheduler.add_job(send_daily_digest, "cron",
+                      day_of_week="mon-fri", hour=_wk_h, minute=_wk_m, args=[app.bot])
+    # Sat digest
+    scheduler.add_job(send_daily_digest, "cron",
+                      day_of_week="sat", hour=_we_h, minute=_we_m, args=[app.bot])
+    # Sun full review
+    scheduler.add_job(send_sunday_review, "cron",
+                      day_of_week="sun", hour=_we_h, minute=_we_m, args=[app.bot])
+
     scheduler.start()
-    log.info("Scheduler started ✓  (Chicago CT)")
+    log.info(
+        f"Scheduler started ✓  TZ={TZ}  "
+        f"weekday={_wk_h:02d}:{_wk_m:02d}  "
+        f"weekend={_we_h:02d}:{_we_m:02d}  "
+        f"recurring={_rc_h:02d}:{_rc_m:02d}"
+    )
 
 
 def main() -> None:
