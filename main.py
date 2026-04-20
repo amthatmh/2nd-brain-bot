@@ -542,7 +542,6 @@ async def open_done_picker(message) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    global last_digest_msg_id
 
     if update.effective_chat.id != MY_CHAT_ID:
         return
