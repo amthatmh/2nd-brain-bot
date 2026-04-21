@@ -68,10 +68,8 @@ _rc_h, _rc_m = map(int, os.environ.get("RECURRING_CHECK_TIME", "7:00").split(":"
 CLAUDE_MODEL   = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
 
-
 # Port for the /habits-data JSON endpoint (Railway sets PORT automatically)
 HTTP_PORT = int(os.environ.get("PORT", "8080"))
-WEEKS_HISTORY = int(os.environ.get("WEEKS_HISTORY", "52"))
 
 # ── Clients ──────────────────────────────────────────────────────────────────
 notion = NotionClient(auth=NOTION_TOKEN)
@@ -275,7 +273,7 @@ def deadline_days_to_label(days: int | None) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def log_habit(habit_page_id: str, habit_name: str) -> None:
-    today = datetime.now(TZ).date().isoformat()
+    today = date.today().isoformat()
     notion.pages.create(
         parent={"database_id": NOTION_LOG_DB},
         properties={
@@ -290,7 +288,7 @@ def log_habit(habit_page_id: str, habit_name: str) -> None:
 
 
 def already_logged_today(habit_page_id: str) -> bool:
-    today = datetime.now(TZ).date().isoformat()
+    today = date.today().isoformat()
     results = notion.databases.query(
         database_id=NOTION_LOG_DB,
         filter={
@@ -306,7 +304,7 @@ def already_logged_today(habit_page_id: str) -> bool:
 
 def logs_this_week(habit_page_id: str) -> int:
     """Count completions Mon–today for frequency-pacing check."""
-    today      = datetime.now(TZ).date()
+    today      = date.today()
     monday     = today - timedelta(days=today.weekday())
     results = notion.databases.query(
         database_id=NOTION_LOG_DB,
@@ -1192,17 +1190,16 @@ async def habits_data_handler(request: web.Request) -> web.Response:
     """
     GET /habits-data
     Returns JSON used by the HabitKit HTML grid.
-    Fetches recent habit logs from Notion for WEEKS_HISTORY weeks.
+    Fetches last 70 days of habit logs from Notion.
     No secrets exposed — runs server-side on Railway.
     """
     try:
         # Fetch all active habits sorted by Sort field
         habits_sorted = sorted(habit_cache.values(), key=lambda h: h["sort"])
 
-        # Date range: configurable history window
-        today = datetime.now(TZ).date()
-        num_days = WEEKS_HISTORY * 7
-        start_dt = today - timedelta(days=num_days - 1)
+        # Date range: last 70 days (10 weeks)
+        today    = date.today()
+        start_dt = today - timedelta(days=69)
 
         # Fetch all log entries in range
         results = notion.databases.query(
@@ -1216,23 +1213,24 @@ async def habits_data_handler(request: web.Request) -> web.Response:
             },
         )
 
-        # Build set of (habit_page_id, date_str) for O(1) lookup
+        # Build set of (habit_page_id_no_dashes, date_str) for O(1) lookup
+        # Notion API returns relation IDs without dashes — normalise both sides
         logged: set[tuple] = set()
         for page in results.get("results", []):
-            p = page["properties"]
-            d = p.get("Date", {}).get("date", {})
+            p    = page["properties"]
+            d    = p.get("Date", {}).get("date", {})
             date_str = d.get("start") if d else None
             rels = p.get("Habit", {}).get("relation", [])
             for rel in rels:
                 if date_str:
-                    logged.add((rel["id"], date_str))
+                    logged.add((rel["id"].replace("-", ""), date_str))
 
         # Build binary array per habit (oldest first)
         all_dates = [(start_dt + timedelta(days=i)).isoformat() for i in range(num_days)]
 
         habits_out = []
         for habit in habits_sorted:
-            pid  = habit["page_id"]
+            pid      = habit["page_id"].replace("-", "")   # normalise to match relation IDs
             days = [1 if (pid, d) in logged else 0 for d in all_dates]
             habits_out.append({
                 "id":          pid,
@@ -1249,8 +1247,6 @@ async def habits_data_handler(request: web.Request) -> web.Response:
             "generated": datetime.now(TZ).isoformat(),
             "habits":    habits_out,
             "dates":     all_dates,
-            "todayDate": today.isoformat(),
-            "weeksHistory": WEEKS_HISTORY,
         }
 
         return web.Response(
@@ -1319,6 +1315,11 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(handle_callback))
     log.info("🤖 Second Brain bot starting (v8)...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    main()
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # /done COMMAND — combined habit + task picker
@@ -1402,11 +1403,6 @@ async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
     log_habit(pid, name)
     await update.message.reply_text(
-        f"✅ Logged!\n\n{name}\n📅 {datetime.now(TZ).strftime('%B %-d')}",
+        f"✅ Logged!\n\n{name}\n📅 {date.today().strftime('%B %-d')}",
         parse_mode="Markdown",
     )
-
-
-
-if __name__ == "__main__":
-    main()
