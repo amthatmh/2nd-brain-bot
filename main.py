@@ -1201,6 +1201,7 @@ async def habits_data_handler(request: web.Request) -> web.Response:
 
         # Date range: configurable history window
         today = datetime.now(TZ).date()
+        today = date.today()
         num_days = WEEKS_HISTORY * 7
         start_dt = today - timedelta(days=num_days - 1)
 
