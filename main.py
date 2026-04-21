@@ -68,8 +68,10 @@ _rc_h, _rc_m = map(int, os.environ.get("RECURRING_CHECK_TIME", "7:00").split(":"
 CLAUDE_MODEL   = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
 
+
 # Port for the /habits-data JSON endpoint (Railway sets PORT automatically)
 HTTP_PORT = int(os.environ.get("PORT", "8080"))
+WEEKS_HISTORY = int(os.environ.get("WEEKS_HISTORY", "52"))
 
 # ── Clients ──────────────────────────────────────────────────────────────────
 notion = NotionClient(auth=NOTION_TOKEN)
@@ -1197,35 +1199,36 @@ async def habits_data_handler(request: web.Request) -> web.Response:
         # Fetch all active habits sorted by Sort field
         habits_sorted = sorted(habit_cache.values(), key=lambda h: h["sort"])
 
-        # Date range: last 70 days (10 weeks)
-        today    = date.today()
-        start_dt = today - timedelta(days=69)
-
-        # Fetch all log entries in range
-        results = notion.databases.query(
-            database_id=NOTION_LOG_DB,
-            filter={
-                "and": [
-                    {"property": "Completed", "checkbox": {"equals": True}},
-                    {"property": "Date", "date": {"on_or_after": start_dt.isoformat()}},
-                    {"property": "Date", "date": {"on_or_before": today.isoformat()}},
-                ]
-            },
-        )
-
-        # Build set of (habit_page_id, date_str) for O(1) lookup
-        logged: set[tuple] = set()
-        for page in results.get("results", []):
-            p    = page["properties"]
-            d    = p.get("Date", {}).get("date", {})
-            date_str = d.get("start") if d else None
-            rels = p.get("Habit", {}).get("relation", [])
-            for rel in rels:
-                if date_str:
-                    logged.add((rel["id"], date_str))
-
-        # Build 70-day binary array per habit (oldest first)
-        all_dates = [(start_dt + timedelta(days=i)).isoformat() for i in range(70)]
+             # Date range: configurable history window
+      today    = date.today()
+      num_days = WEEKS_HISTORY * 7
+      start_dt = today - timedelta(days=num_days - 1)
+      
+      # Fetch all log entries in range
+      results = notion.databases.query(
+          database_id=NOTION_LOG_DB,
+          filter={
+              "and": [
+                  {"property": "Completed", "checkbox": {"equals": True}},
+                  {"property": "Date", "date": {"on_or_after": start_dt.isoformat()}},
+                  {"property": "Date", "date": {"on_or_before": today.isoformat()}},
+              ]
+          },
+      )
+      
+      # Build set of (habit_page_id, date_str) for O(1) lookup
+      logged: set[tuple] = set()
+      for page in results.get("results", []):
+          p    = page["properties"]
+          d    = p.get("Date", {}).get("date", {})
+          date_str = d.get("start") if d else None
+          rels = p.get("Habit", {}).get("relation", [])
+          for rel in rels:
+              if date_str:
+                  logged.add((rel["id"], date_str))
+      
+      # Build binary array per habit (oldest first)
+      all_dates = [(start_dt + timedelta(days=i)).isoformat() for i in range(num_days)]
 
         habits_out = []
         for habit in habits_sorted:
