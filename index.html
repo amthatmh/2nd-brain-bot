@@ -103,6 +103,8 @@
 
   <div class="stats">
     <div class="stat"><div class="k">Active habits</div><div class="v" id="sHabits">—</div></div>
+    <div class="stat"><div class="k">Done today</div><div class="v" id="sToday">—</div></div>
+    <div class="stat"><div class="k" id="rateLabel">History rate</div><div class="v" id="sRate">—</div></div>
     <div class="stat"><div class="k">7-day score</div><div class="v" id="sWeek">—</div></div>
   </div>
 
@@ -196,6 +198,7 @@ function render(data) {
   document.getElementById('todayChip').textContent =
     new Date().toLocaleDateString('en-US',{weekday:'short',day:'numeric',month:'short'});
   document.getElementById('weeksChip').textContent = `${weeksHistory} weeks`;
+  document.getElementById('rateLabel').textContent = `${weeksHistory}-week rate`;
 
   // Stats
   const weekScore  = habits.reduce((a,h)=>a+h.days.slice(-7).reduce((x,y)=>x+y,0),0);
