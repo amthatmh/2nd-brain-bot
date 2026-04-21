@@ -393,6 +393,37 @@ def find_duplicate_active_task(name: str) -> dict | None:
     return fuzzy_match(name, get_all_active_tasks())
 
 
+def parse_done_numbers_command(text: str) -> list[int] | None:
+    """
+    Parse number-list completion commands.
+
+    Supported examples:
+      - "done 1,3"
+      - "Done 2 4"
+      - "done 2 and 4"
+      - "mark 1,3 done"
+      - "mark done 1,3"
+      - "complete 1,3"
+      - "check off 1,3"
+    """
+    normalized = text.strip().lower()
+    m = re.match(
+        r"^(?:done|complete|finish|check(?:\s+off)?)\s+((?:\d+\s*(?:,|\band\b)?\s*)+)$",
+        normalized,
+        re.IGNORECASE,
+    )
+    if not m:
+        m = re.match(
+            r"^mark\s+(?:done\s+)?((?:\d+\s*(?:,|\band\b)?\s*)+)\s+done$",
+            normalized,
+            re.IGNORECASE,
+        )
+    if not m:
+        return None
+    nums = [int(n) for n in re.findall(r"\d+", m.group(1))]
+    return nums or None
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # RECURRING LOGIC
 # ══════════════════════════════════════════════════════════════════════════════
@@ -586,7 +617,7 @@ def format_daily_digest(tasks: list[dict]) -> tuple[str, list[dict]]:
             ordered.append(t)
             n += 1
 
-    lines.append("\n_Reply `done 1`, `done 1,3`, or `done: task name` to mark complete_")
+    lines.append("\n_Reply `done 1`, `done 1,3`, `mark 1,3 done`, or `done: task name` to mark complete_")
     return "\n".join(lines), ordered
 
 
@@ -810,10 +841,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await open_done_picker(message)
         return
 
-    # 3. done 1,3
-    match_nums = re.match(r"done\s+([\d,\s]+)$", text, re.IGNORECASE)
-    if match_nums:
-        numbers = [int(n.strip()) for n in match_nums.group(1).split(",") if n.strip().isdigit()]
+    # 3. done/mark/complete/check + number list
+    numbers = parse_done_numbers_command(text)
+    if numbers:
         source_id = message.reply_to_message.message_id if message.reply_to_message else last_digest_msg_id
         if source_id and source_id in digest_map:
             items = digest_map[source_id]
@@ -842,7 +872,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await message.reply_text(f"Couldn't find a task matching \"{query}\".")
         return
 
-    # 5. mark ... done
+    # 5. mark ... done (task-name based)
     match_mark_done = re.match(r"mark\s+(.+?)\s+done$", text, re.IGNORECASE)
     if match_mark_done:
         query = match_mark_done.group(1).strip()
