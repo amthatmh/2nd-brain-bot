@@ -275,7 +275,7 @@ def deadline_days_to_label(days: int | None) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def log_habit(habit_page_id: str, habit_name: str) -> None:
-    today = date.today().isoformat()
+    today = datetime.now(TZ).date().isoformat()
     notion.pages.create(
         parent={"database_id": NOTION_LOG_DB},
         properties={
@@ -290,7 +290,7 @@ def log_habit(habit_page_id: str, habit_name: str) -> None:
 
 
 def already_logged_today(habit_page_id: str) -> bool:
-    today = date.today().isoformat()
+    today = datetime.now(TZ).date().isoformat()
     results = notion.databases.query(
         database_id=NOTION_LOG_DB,
         filter={
@@ -306,7 +306,7 @@ def already_logged_today(habit_page_id: str) -> bool:
 
 def logs_this_week(habit_page_id: str) -> int:
     """Count completions Mon–today for frequency-pacing check."""
-    today      = date.today()
+    today      = datetime.now(TZ).date()
     monday     = today - timedelta(days=today.weekday())
     results = notion.databases.query(
         database_id=NOTION_LOG_DB,
@@ -1192,43 +1192,43 @@ async def habits_data_handler(request: web.Request) -> web.Response:
     """
     GET /habits-data
     Returns JSON used by the HabitKit HTML grid.
-    Fetches last 70 days of habit logs from Notion.
+    Fetches recent habit logs from Notion for WEEKS_HISTORY weeks.
     No secrets exposed — runs server-side on Railway.
     """
     try:
         # Fetch all active habits sorted by Sort field
         habits_sorted = sorted(habit_cache.values(), key=lambda h: h["sort"])
 
-             # Date range: configurable history window
-      today    = date.today()
-      num_days = WEEKS_HISTORY * 7
-      start_dt = today - timedelta(days=num_days - 1)
-      
-      # Fetch all log entries in range
-      results = notion.databases.query(
-          database_id=NOTION_LOG_DB,
-          filter={
-              "and": [
-                  {"property": "Completed", "checkbox": {"equals": True}},
-                  {"property": "Date", "date": {"on_or_after": start_dt.isoformat()}},
-                  {"property": "Date", "date": {"on_or_before": today.isoformat()}},
-              ]
-          },
-      )
-      
-      # Build set of (habit_page_id, date_str) for O(1) lookup
-      logged: set[tuple] = set()
-      for page in results.get("results", []):
-          p    = page["properties"]
-          d    = p.get("Date", {}).get("date", {})
-          date_str = d.get("start") if d else None
-          rels = p.get("Habit", {}).get("relation", [])
-          for rel in rels:
-              if date_str:
-                  logged.add((rel["id"], date_str))
-      
-      # Build binary array per habit (oldest first)
-      all_dates = [(start_dt + timedelta(days=i)).isoformat() for i in range(num_days)]
+        # Date range: configurable history window
+        today = datetime.now(TZ).date()
+        num_days = WEEKS_HISTORY * 7
+        start_dt = today - timedelta(days=num_days - 1)
+
+        # Fetch all log entries in range
+        results = notion.databases.query(
+            database_id=NOTION_LOG_DB,
+            filter={
+                "and": [
+                    {"property": "Completed", "checkbox": {"equals": True}},
+                    {"property": "Date", "date": {"on_or_after": start_dt.isoformat()}},
+                    {"property": "Date", "date": {"on_or_before": today.isoformat()}},
+                ]
+            },
+        )
+
+        # Build set of (habit_page_id, date_str) for O(1) lookup
+        logged: set[tuple] = set()
+        for page in results.get("results", []):
+            p = page["properties"]
+            d = p.get("Date", {}).get("date", {})
+            date_str = d.get("start") if d else None
+            rels = p.get("Habit", {}).get("relation", [])
+            for rel in rels:
+                if date_str:
+                    logged.add((rel["id"], date_str))
+
+        # Build binary array per habit (oldest first)
+        all_dates = [(start_dt + timedelta(days=i)).isoformat() for i in range(num_days)]
 
         habits_out = []
         for habit in habits_sorted:
@@ -1249,6 +1249,8 @@ async def habits_data_handler(request: web.Request) -> web.Response:
             "generated": datetime.now(TZ).isoformat(),
             "habits":    habits_out,
             "dates":     all_dates,
+            "todayDate": today.isoformat(),
+            "weeksHistory": WEEKS_HISTORY,
         }
 
         return web.Response(
@@ -1400,7 +1402,7 @@ async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
     log_habit(pid, name)
     await update.message.reply_text(
-        f"✅ Logged!\n\n{name}\n📅 {date.today().strftime('%B %-d')}",
+        f"✅ Logged!\n\n{name}\n📅 {datetime.now(TZ).strftime('%B %-d')}",
         parse_mode="Markdown",
     )
 
