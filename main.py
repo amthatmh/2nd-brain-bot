@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Second Brain — Telegram Bot (v6)
+Second Brain — Telegram Bot (v7)
 - AI task capture into Notion
 - Duplicate guard
 - Reply-to-done support
@@ -8,21 +8,17 @@ Second Brain — Telegram Bot (v6)
 - `done 1,3`, `done: task name`, and `mark ... done` supported
 - Multi-task capture: bullet lists (-, •, 1.) or multi-line messages
   are split, classified concurrently, and reported in a single summary
+- Habit logging via relation to 🎯 Habits database
+- Morning/evening habit check-in buttons with digest
+- `focus:` / `unfocus:` Telegram commands
 
-v5 changes:
-- Removed `Horizon` field; horizon is computed by `Auto Horizon` formula.
-- `Status` is now a Notion formula. All select writes removed.
-- `mark_done()` only writes the `Done` checkbox.
-- Sunday review buttons write a Deadline date instead of a Horizon select.
-- Added `focus:` / `unfocus:` Telegram commands.
-
-v6 changes:
-- Multi-task detection via `split_tasks()`: bullet markers (-, •, *, 1.)
-  or multiple non-empty lines are each treated as a separate task.
-- All tasks in a batch are classified concurrently via asyncio + executor.
-- Results are grouped by (horizon, context) and formatted as one summary.
-- Low-confidence multi-tasks default to Backburner (no picker spam).
-- Single-task low-confidence flow unchanged (shows horizon picker).
+v7 changes (habit layer added on top of v6):
+- load_habit_cache() fetches active habits from 🎯 Habits DB at startup
+- log_habit() creates entries in 📅 Habit Log with relation field
+- already_logged_today() prevents duplicate habit logs
+- Morning habits appended to daily digest with tap buttons
+- Evening check-in scheduled separately (19:00 weekdays, 20:00 weekends)
+- classify_message() detects habit vs task before routing
 """
 
 import asyncio
@@ -57,15 +53,19 @@ TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 MY_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
 ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]
 NOTION_TOKEN = os.environ["NOTION_TOKEN"]
-NOTION_DB_ID = os.environ["NOTION_DB_ID"]
+NOTION_DB_ID = os.environ["NOTION_DB_ID"]          # 🆕 To-Do
+NOTION_HABIT_DB = os.environ["NOTION_HABIT_DB"]    # 🎯 Habits
+NOTION_LOG_DB = os.environ["NOTION_LOG_DB"]        # 📅 Habit Log
 
 TZ = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
 _wk_h, _wk_m = map(int, os.environ.get("DIGEST_TIME_WEEKDAY", "8:15").split(":"))
 _we_h, _we_m = map(int, os.environ.get("DIGEST_TIME_WEEKEND", "12:00").split(":"))
 _rc_h, _rc_m = map(int, os.environ.get("RECURRING_CHECK_TIME", "7:00").split(":"))
+_ev_wk_h, _ev_wk_m = map(int, os.environ.get("EVENING_CHECK_WEEKDAY", "19:00").split(":"))
+_ev_we_h, _ev_we_m = map(int, os.environ.get("EVENING_CHECK_WEEKEND", "20:00").split(":"))
 
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
-CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "150"))
+CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
 
 # ── Clients ──────────────────────────────────────────────────────────────────
 notion = NotionClient(auth=NOTION_TOKEN)
@@ -80,25 +80,20 @@ done_picker_map: dict[str, list[dict]] = {}
 _pending_counter = 0
 _done_picker_counter = 0
 
+# Habit cache: name → page_id (refreshed at startup + nightly)
+habit_cache: dict[str, str] = {}
+
 # ── Constants ────────────────────────────────────────────────────────────────
-HORIZON_DEADLINE_OFFSETS = {
-    "t": 0,
-    "w": 6,
-    "m": 30,
-    "b": None,
-}
+HORIZON_DEADLINE_OFFSETS = {"t": 0, "w": 6, "m": 30, "b": None}
 HORIZON_LABELS = {
-    "t": "🔴 Today",
-    "w": "🟠 This Week",
-    "m": "🟡 This Month",
-    "b": "⚪ Backburner",
+    "t": "🔴 Today", "w": "🟠 This Week",
+    "m": "🟡 This Month", "b": "⚪ Backburner",
 }
 
-NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
-REPEAT_DAY_TO_WEEKDAY = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
-REPEAT_DAY_TO_MONTHDAY = {"1st": 1, "5th": 5, "10th": 10, "15th": 15, "20th": 20, "25th": 25, "Last": -1}
+NUMBER_EMOJIS = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
+REPEAT_DAY_TO_WEEKDAY  = {"Mon":0,"Tue":1,"Wed":2,"Thu":3,"Fri":4,"Sat":5,"Sun":6}
+REPEAT_DAY_TO_MONTHDAY = {"1st":1,"5th":5,"10th":10,"15th":15,"20th":20,"25th":25,"Last":-1}
 
-# Matches bullet/number prefixes: "- ", "• ", "* ", "1. ", "2) ", "3: " etc.
 _BULLET_RE = re.compile(r"^[\s]*(?:[-•*]|\d+[.):])\s+", re.MULTILINE)
 
 
@@ -107,11 +102,6 @@ def num_emoji(n: int) -> str:
 
 
 def next_weekday(weekday: int) -> date:
-    """
-    Return the next occurrence of a weekday (0=Mon … 6=Sun) from today.
-    If today IS that weekday, returns next week's occurrence (not today),
-    so "every Friday" captured on a Friday means next Friday.
-    """
     today = date.today()
     days_ahead = (weekday - today.weekday()) % 7
     if days_ahead == 0:
@@ -120,33 +110,60 @@ def next_weekday(weekday: int) -> date:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# HABIT CACHE
+# ══════════════════════════════════════════════════════════════════════════════
+
+def load_habit_cache() -> None:
+    global habit_cache
+    try:
+        results = notion.databases.query(
+            database_id=NOTION_HABIT_DB,
+            filter={"property": "Active", "checkbox": {"equals": True}},
+        )
+        habit_cache = {}
+        for page in results.get("results", []):
+            title_parts = page["properties"].get("Habit", {}).get("title", [])
+            name = title_parts[0]["text"]["content"] if title_parts else None
+            if name:
+                habit_cache[name] = page["id"]
+        log.info(f"Habit cache loaded: {list(habit_cache.keys())}")
+    except Exception as e:
+        log.error(f"Failed to load habit cache: {e}")
+
+
+def get_habits_by_time(time_filter: str) -> list[dict]:
+    try:
+        results = notion.databases.query(
+            database_id=NOTION_HABIT_DB,
+            filter={
+                "and": [
+                    {"property": "Active", "checkbox": {"equals": True}},
+                    {"property": "Time",   "select":   {"equals": time_filter}},
+                ]
+            },
+        )
+        habits = []
+        for page in results.get("results", []):
+            title_parts = page["properties"].get("Habit", {}).get("title", [])
+            name = title_parts[0]["text"]["content"] if title_parts else "Unknown"
+            habits.append({"page_id": page["id"], "name": name})
+        return habits
+    except Exception as e:
+        log.error(f"get_habits_by_time error: {e}")
+        return []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # MULTI-TASK PARSING
 # ══════════════════════════════════════════════════════════════════════════════
 
 def split_tasks(text: str) -> list[str]:
-    """
-    Split a message into individual task strings.
-
-    Rules (in priority order):
-    1. If any line has a bullet/number prefix → strip markers, keep marked lines.
-    2. If 2+ non-empty lines exist with no bullets → treat each line as a task.
-    3. Single line → return as-is (single task, normal flow).
-
-    Examples:
-      "- Buy milk\n- Call dentist"     → ["Buy milk", "Call dentist"]
-      "1. Buy milk\n2. Call dentist"   → ["Buy milk", "Call dentist"]
-      "Buy milk\nCall dentist"         → ["Buy milk", "Call dentist"]
-      "Buy milk"                       → ["Buy milk"]
-    """
     lines = [l.strip() for l in text.splitlines() if l.strip()]
-
     if any(_BULLET_RE.match(l) for l in lines):
         tasks = [_BULLET_RE.sub("", l).strip() for l in lines if _BULLET_RE.match(l)]
         return tasks if len(tasks) > 1 else [text]
-
     if len(lines) > 1:
         return lines
-
     return [text]
 
 
@@ -154,51 +171,71 @@ def split_tasks(text: str) -> list[str]:
 # CLAUDE CLASSIFICATION
 # ══════════════════════════════════════════════════════════════════════════════
 
+def classify_message(text: str) -> dict:
+    """
+    First determines if message is a habit log or task.
+    Returns {type: 'habit'|'task', ...fields}
+    """
+    habit_names = list(habit_cache.keys())
+    prompt = f"""You are a personal assistant classifier for a second brain system.
+Today is {date.today().strftime("%A, %B %-d, %Y")}.
+
+Message: "{text}"
+
+Active habits to detect: {habit_names}
+Workout types that count as 💪 Workout: soccer, crossfit, hyrox, rowing, snowboard, skiing, gym, run, jog, trained
+
+First determine if this is:
+A) HABIT LOG — person saying they completed something NOW (e.g. "took creatine", "did workout", "went to crossfit", "had protein shake")
+B) TASK — something to be done in the future
+
+Return ONLY valid JSON, no markdown:
+
+If HABIT:
+{{"type": "habit", "habit_name": "exact name from {habit_names} or null", "confidence": "high or low"}}
+
+If TASK:
+{{
+  "type": "task",
+  "task_name": "clean concise action",
+  "deadline_days": <integer or null>,
+  "context": "one of: 💼 Work | 🏠 Personal | 🏃 Health | 🤝 Collab",
+  "confidence": "high or low",
+  "recurring": "one of: None | 🔁 Daily | 📅 Weekly | 🗓️ Monthly",
+  "repeat_day": "Mon|Tue|Wed|Thu|Fri|Sat|Sun|1st|5th|10th|15th|20th|25th|Last or null"
+}}
+
+deadline_days: 0=today, 1=tomorrow, 5=this week, 20=this month, null=no urgency/low confidence"""
+
+    resp = claude.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=CLAUDE_MAX_TOK,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
+    return json.loads(raw)
+
+
 def classify_task(text: str) -> dict:
+    """Task-only classification for multi-task batch processing."""
     prompt = f"""You are a personal task classifier for a second brain system.
 Today is {date.today().strftime("%A, %B %-d, %Y")}.
 
 Message: \"{text}\"
 
-Your job is to extract the ACTUAL TASK from the message — the thing the person needs to DO.
-Strip away scheduling language, app instructions, and meta-words.
+Extract the ACTUAL TASK — the thing the person needs to DO.
 
-Examples of task extraction:
-- "Add recurring tasks on every Friday to text my grandpa" → task_name: "Text grandpa"
-- "Make Brain absorb multiple to-do messages tomorrow" → task_name: "Process multiple to-do messages in Brain"
-- "Remind me to call dentist this week" → task_name: "Call dentist"
-- "Buy milk today" → task_name: "Buy milk"
-
-Return ONLY valid JSON, no markdown, no explanation:
+Return ONLY valid JSON, no markdown:
 {{
-  "task_name": "clean concise action — the thing to DO, not meta-instructions",
+  "task_name": "clean concise action",
   "deadline_days": <integer days from today, or null if no urgency>,
   "context": "one of exactly: 💼 Work | 🏠 Personal | 🏃 Health | 🤝 Collab",
   "confidence": "high or low",
   "recurring": "one of exactly: None | 🔁 Daily | 📅 Weekly | 🗓️ Monthly",
-  "repeat_day": "one of: Mon | Tue | Wed | Thu | Fri | Sat | Sun | 1st | 5th | 10th | 15th | 20th | 25th | Last — or null if not recurring/not specified"
+  "repeat_day": "one of: Mon|Tue|Wed|Thu|Fri|Sat|Sun|1st|5th|10th|15th|20th|25th|Last or null"
 }}
 
-deadline_days rules:
-- today/tonight/now/urgent/ASAP/by EOD → 0
-- tomorrow → 1
-- this week/in a few days → 5
-- this month/next few weeks → 20
-- someday/eventually/no urgency → null
-- For recurring tasks: deadline_days = days until the NEXT occurrence (e.g. "every Friday" → days until next Friday)
-- NO time signal at all → null and confidence "low"
-
-recurring rules:
-- "every day / daily" → 🔁 Daily, repeat_day: null
-- "every Monday / each Tuesday / weekly on Wed" → 📅 Weekly, repeat_day: the day
-- "every month / monthly / on the 1st" → 🗓️ Monthly, repeat_day: the date
-- no recurrence signal → None, repeat_day: null
-
-context rules:
-- meetings/clients/projects/reports → 💼 Work
-- gym/doctor/dentist/food/workout → 🏃 Health
-- family/friends/home/errands → 🏠 Personal
-- collaborations/shared tasks → 🤝 Collab"""
+deadline_days: 0=today, 1=tomorrow, 5=this week, 20=this month, null=no urgency"""
 
     resp = claude.messages.create(
         model=CLAUDE_MODEL,
@@ -210,19 +247,49 @@ context rules:
 
 
 def deadline_days_to_label(days: int | None) -> str:
-    if days is None:
-        return "⚪ Backburner"
-    if days <= 0:
-        return "🔴 Today"
-    if days <= 7:
-        return "🟠 This Week"
-    if days <= 31:
-        return "🟡 This Month"
+    if days is None: return "⚪ Backburner"
+    if days <= 0:    return "🔴 Today"
+    if days <= 7:    return "🟠 This Week"
+    if days <= 31:   return "🟡 This Month"
     return "⚪ Backburner"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# NOTION HELPERS
+# NOTION — HABIT LOG
+# ══════════════════════════════════════════════════════════════════════════════
+
+def log_habit(habit_page_id: str, habit_name: str) -> None:
+    today = date.today().isoformat()
+    notion.pages.create(
+        parent={"database_id": NOTION_LOG_DB},
+        properties={
+            "Entry":     {"title":    [{"text": {"content": f"{habit_name} — {today}"}}]},
+            "Habit":     {"relation": [{"id": habit_page_id}]},
+            "Completed": {"checkbox": True},
+            "Date":      {"date":     {"start": today}},
+            "Source":    {"select":   {"name": "📱 Telegram"}},
+        },
+    )
+    log.info(f"Habit logged: {habit_name} on {today}")
+
+
+def already_logged_today(habit_page_id: str) -> bool:
+    today = date.today().isoformat()
+    results = notion.databases.query(
+        database_id=NOTION_LOG_DB,
+        filter={
+            "and": [
+                {"property": "Habit",     "relation":  {"contains": habit_page_id}},
+                {"property": "Completed", "checkbox":  {"equals": True}},
+                {"property": "Date",      "date":      {"equals": today}},
+            ]
+        },
+    )
+    return len(results.get("results", [])) > 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NOTION — TO-DO
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _deadline_prop(days: int | None) -> dict:
@@ -234,10 +301,10 @@ def _deadline_prop(days: int | None) -> dict:
 def create_task(name: str, deadline_days: int | None, context: str,
                 recurring: str = "None", repeat_day: str | None = None) -> str:
     props = {
-        "Name": {"title": [{"text": {"content": name}}]},
-        "Deadline": _deadline_prop(deadline_days),
-        "Context": {"select": {"name": context}},
-        "Source": {"select": {"name": "📱 Telegram"}},
+        "Name":      {"title":  [{"text": {"content": name}}]},
+        "Deadline":  _deadline_prop(deadline_days),
+        "Context":   {"select": {"name": context}},
+        "Source":    {"select": {"name": "📱 Telegram"}},
         "Recurring": {"select": {"name": recurring}},
     }
     if repeat_day:
@@ -313,11 +380,11 @@ def query_tasks_by_auto_horizon(horizons: list[str]) -> list[dict]:
     for page in results.get("results", []):
         p = page["properties"]
         tasks.append({
-            "page_id": page["id"],
-            "name": _get_prop(p, "Name", "title") or "Untitled",
+            "page_id":      page["id"],
+            "name":         _get_prop(p, "Name",         "title")   or "Untitled",
             "auto_horizon": _get_prop(p, "Auto Horizon", "formula") or "",
-            "context": _get_prop(p, "Context", "select") or "",
-            "deadline": _get_prop(p, "Deadline", "date"),
+            "context":      _get_prop(p, "Context",      "select")  or "",
+            "deadline":     _get_prop(p, "Deadline",     "date"),
         })
     return tasks
 
@@ -329,11 +396,11 @@ def get_all_active_tasks() -> list[dict]:
     )
     return [
         {
-            "page_id": p["id"],
-            "name": _get_prop(p["properties"], "Name", "title") or "Untitled",
+            "page_id":      p["id"],
+            "name":         _get_prop(p["properties"], "Name",         "title")   or "Untitled",
             "auto_horizon": _get_prop(p["properties"], "Auto Horizon", "formula") or "",
-            "context": _get_prop(p["properties"], "Context", "select") or "",
-            "deadline": _get_prop(p["properties"], "Deadline", "date"),
+            "context":      _get_prop(p["properties"], "Context",      "select")  or "",
+            "deadline":     _get_prop(p["properties"], "Deadline",     "date"),
         }
         for p in results.get("results", [])
     ]
@@ -344,11 +411,11 @@ def get_today_and_overdue_tasks() -> list[dict]:
     today_str = date.today().isoformat()
     selected = []
     for t in tasks:
-        is_today = t["auto_horizon"] == "🔴 Today"
+        is_today   = t["auto_horizon"] == "🔴 Today"
         is_overdue = bool(t["deadline"] and t["deadline"] < today_str)
         if is_today or is_overdue:
             selected.append(t)
-    overdue = [t for t in selected if t["deadline"] and t["deadline"] < today_str]
+    overdue    = [t for t in selected if t["deadline"] and t["deadline"] < today_str]
     today_only = [t for t in selected if t not in overdue]
     return overdue + today_only
 
@@ -358,8 +425,8 @@ def get_recurring_templates() -> list[dict]:
         database_id=NOTION_DB_ID,
         filter={
             "and": [
-                {"property": "Recurring", "select": {"does_not_equal": "None"}},
-                {"property": "Done", "checkbox": {"equals": False}},
+                {"property": "Recurring", "select":   {"does_not_equal": "None"}},
+                {"property": "Done",      "checkbox": {"equals": False}},
             ]
         },
     )
@@ -367,14 +434,14 @@ def get_recurring_templates() -> list[dict]:
     for page in results.get("results", []):
         p = page["properties"]
         templates.append({
-            "page_id": page["id"],
-            "name": _get_prop(p, "Name", "title") or "Untitled",
-            "auto_horizon": _get_prop(p, "Auto Horizon", "formula") or "🔴 Today",
-            "context": _get_prop(p, "Context", "select") or "🏠 Personal",
-            "recurring": _get_prop(p, "Recurring", "select") or "None",
-            "repeat_day": _get_prop(p, "Repeat Day", "select"),
+            "page_id":        page["id"],
+            "name":           _get_prop(p, "Name",           "title")   or "Untitled",
+            "auto_horizon":   _get_prop(p, "Auto Horizon",   "formula") or "🔴 Today",
+            "context":        _get_prop(p, "Context",        "select")  or "🏠 Personal",
+            "recurring":      _get_prop(p, "Recurring",      "select")  or "None",
+            "repeat_day":     _get_prop(p, "Repeat Day",     "select"),
             "last_generated": _get_prop(p, "Last Generated", "date"),
-            "deadline": _get_prop(p, "Deadline", "date"),
+            "deadline":       _get_prop(p, "Deadline",       "date"),
         })
     return templates
 
@@ -386,7 +453,10 @@ def fuzzy_match(query: str, tasks: list[dict]) -> dict | None:
     exact = next((t for t in tasks if _normalize_task_name(t["name"]) == q), None)
     if exact:
         return exact
-    return next((t for t in tasks if q in _normalize_task_name(t["name"]) or _normalize_task_name(t["name"]) in q), None)
+    return next(
+        (t for t in tasks if q in _normalize_task_name(t["name"]) or _normalize_task_name(t["name"]) in q),
+        None,
+    )
 
 
 def find_duplicate_active_task(name: str) -> dict | None:
@@ -394,29 +464,15 @@ def find_duplicate_active_task(name: str) -> dict | None:
 
 
 def parse_done_numbers_command(text: str) -> list[int] | None:
-    """
-    Parse number-list completion commands.
-
-    Supported examples:
-      - "done 1,3"
-      - "Done 2 4"
-      - "done 2 and 4"
-      - "mark 1,3 done"
-      - "mark done 1,3"
-      - "complete 1,3"
-      - "check off 1,3"
-    """
     normalized = text.strip().lower()
     m = re.match(
         r"^(?:done|complete|finish|check(?:\s+off)?)\s+((?:\d+\s*(?:,|\band\b)?\s*)+)$",
-        normalized,
-        re.IGNORECASE,
+        normalized, re.IGNORECASE,
     )
     if not m:
         m = re.match(
             r"^mark\s+(?:done\s+)?((?:\d+\s*(?:,|\band\b)?\s*)+)\s+done$",
-            normalized,
-            re.IGNORECASE,
+            normalized, re.IGNORECASE,
         )
     if not m:
         return None
@@ -429,9 +485,9 @@ def parse_done_numbers_command(text: str) -> list[int] | None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def should_spawn_today(template: dict, today: date) -> bool:
-    recurring = template["recurring"]
+    recurring  = template["recurring"]
     repeat_day = template["repeat_day"]
-    last_gen = template["last_generated"]
+    last_gen   = template["last_generated"]
     if last_gen == today.isoformat():
         return False
     if recurring == "🔁 Daily":
@@ -455,10 +511,10 @@ def spawn_recurring_instance(template: dict) -> None:
     notion.pages.create(
         parent={"database_id": NOTION_DB_ID},
         properties={
-            "Name": {"title": [{"text": {"content": template["name"]}}]},
-            "Deadline": {"date": {"start": today.isoformat()}},
-            "Context": {"select": {"name": template["context"]}},
-            "Source": {"select": {"name": "✏️ Manual"}},
+            "Name":     {"title":  [{"text": {"content": template["name"]}}]},
+            "Deadline": {"date":   {"start": today.isoformat()}},
+            "Context":  {"select": {"name": template["context"]}},
+            "Source":   {"select": {"name": "✏️ Manual"}},
         },
     )
     set_last_generated(template["page_id"], today)
@@ -467,9 +523,8 @@ def spawn_recurring_instance(template: dict) -> None:
 
 def process_recurring_tasks() -> int:
     today = date.today()
-    templates = get_recurring_templates()
     spawned = 0
-    for t in templates:
+    for t in get_recurring_templates():
         if should_spawn_today(t, today):
             spawn_recurring_instance(t)
             spawned += 1
@@ -477,20 +532,20 @@ def process_recurring_tasks() -> int:
 
 
 def handle_done_recurring(page_id: str) -> bool:
-    result = notion.pages.retrieve(page_id=page_id)
-    p = result["properties"]
+    result    = notion.pages.retrieve(page_id=page_id)
+    p         = result["properties"]
     recurring = _get_prop(p, "Recurring", "select") or "None"
     if recurring == "None":
         return False
     spawn_recurring_instance({
-        "page_id": page_id,
-        "name": _get_prop(p, "Name", "title") or "Untitled",
-        "auto_horizon": _get_prop(p, "Auto Horizon", "formula") or "🔴 Today",
-        "context": _get_prop(p, "Context", "select") or "🏠 Personal",
-        "recurring": recurring,
-        "repeat_day": _get_prop(p, "Repeat Day", "select"),
+        "page_id":        page_id,
+        "name":           _get_prop(p, "Name",           "title")   or "Untitled",
+        "auto_horizon":   _get_prop(p, "Auto Horizon",   "formula") or "🔴 Today",
+        "context":        _get_prop(p, "Context",        "select")  or "🏠 Personal",
+        "recurring":      recurring,
+        "repeat_day":     _get_prop(p, "Repeat Day",     "select"),
         "last_generated": _get_prop(p, "Last Generated", "date"),
-        "deadline": _get_prop(p, "Deadline", "date"),
+        "deadline":       _get_prop(p, "Deadline",       "date"),
     })
     return True
 
@@ -500,29 +555,17 @@ def handle_done_recurring(page_id: str) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _run_capture(raw_text: str, force_create: bool = False) -> dict:
-    """
-    Classify and create a single task synchronously.
-    Designed to be called via run_in_executor for concurrent batches.
-
-    Returns a result dict:
-      status: "captured" | "duplicate" | "error"
-      + relevant fields per status
-    """
     try:
-        result = classify_task(raw_text)
-        task_name = result.get("task_name", raw_text)
+        result       = classify_task(raw_text)
+        task_name    = result.get("task_name", raw_text)
         deadline_days = result.get("deadline_days")
-        ctx = result.get("context", "🏠 Personal")
-        recurring = result.get("recurring", "None") or "None"
-        repeat_day = result.get("repeat_day")  # e.g. "Fri", "1st", or None
-
-        # For weekly recurring tasks, compute deadline as next occurrence
-        # if Claude didn't already give a specific deadline_days
+        ctx          = result.get("context", "🏠 Personal")
+        recurring    = result.get("recurring", "None") or "None"
+        repeat_day   = result.get("repeat_day")
         if recurring == "📅 Weekly" and repeat_day in REPEAT_DAY_TO_WEEKDAY:
             if deadline_days is None:
                 target = next_weekday(REPEAT_DAY_TO_WEEKDAY[repeat_day])
                 deadline_days = (target - date.today()).days
-
         horizon_label = deadline_days_to_label(deadline_days)
     except Exception as e:
         log.error(f"Claude error for '{raw_text}': {e}")
@@ -536,12 +579,9 @@ def _run_capture(raw_text: str, force_create: bool = False) -> dict:
     try:
         page_id = create_task(task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
         return {
-            "status": "captured",
-            "name": task_name,
-            "horizon_label": horizon_label,
-            "context": ctx,
-            "recurring": recurring,
-            "page_id": page_id,
+            "status": "captured", "name": task_name,
+            "horizon_label": horizon_label, "context": ctx,
+            "recurring": recurring, "page_id": page_id,
         }
     except Exception as e:
         log.error(f"Notion error for '{task_name}': {e}")
@@ -549,22 +589,14 @@ def _run_capture(raw_text: str, force_create: bool = False) -> dict:
 
 
 def format_batch_summary(results: list[dict]) -> str:
-    """
-    Format a multi-task capture into a single summary message.
-    Groups by (horizon_label, context). Recurring tasks get a 🔁 tag.
-    """
-    captured = [r for r in results if r["status"] == "captured"]
+    captured   = [r for r in results if r["status"] == "captured"]
     duplicates = [r for r in results if r["status"] == "duplicate"]
-    errors = [r for r in results if r["status"] == "error"]
-
+    errors     = [r for r in results if r["status"] == "error"]
     lines = []
-
     if captured:
         groups: dict[tuple, list[dict]] = {}
         for r in captured:
-            key = (r["horizon_label"], r["context"])
-            groups.setdefault(key, []).append(r)
-
+            groups.setdefault((r["horizon_label"], r["context"]), []).append(r)
         lines.append("✅ Captured!")
         for (horizon, ctx), items in groups.items():
             for r in items:
@@ -572,19 +604,16 @@ def format_batch_summary(results: list[dict]) -> str:
                 lines.append(f"📝 {r['name']}{recur_tag}")
             lines.append(f"🕐 {horizon}  {ctx}  · _Saved to Notion_")
             lines.append("")
-
     if duplicates:
         lines.append("⚠️ *Already on your list* (skipped):")
         for r in duplicates:
             dup = r["duplicate"]
-            lines.append(f"  · {r['name']}  _{dup.get('auto_horizon', '')} {dup.get('context', '')}_")
+            lines.append(f"  · {r['name']}  _{dup.get('auto_horizon','')} {dup.get('context','')}_")
         lines.append("")
-
     if errors:
         lines.append("❌ *Couldn't capture*:")
         for r in errors:
             lines.append(f"  · {r['name']}")
-
     return "\n".join(lines).strip()
 
 
@@ -596,27 +625,21 @@ def format_daily_digest(tasks: list[dict]) -> tuple[str, list[dict]]:
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
     if not tasks:
         return f"☀️ *{date_str}*\n\nAll clear — no tasks due today! 🎉", []
-
     today_str = date.today().isoformat()
-    overdue = [t for t in tasks if t["deadline"] and t["deadline"] < today_str]
+    overdue   = [t for t in tasks if t["deadline"] and t["deadline"] < today_str]
     today_now = [t for t in tasks if t not in overdue]
     lines, ordered, n = [f"☀️ *{date_str}*\n"], [], 1
-
     if overdue:
         lines.append("🚨 *Overdue*")
         for t in overdue:
             lines.append(f"{num_emoji(n)} {t['name']}  {t['context']}")
-            ordered.append(t)
-            n += 1
+            ordered.append(t); n += 1
         lines.append("")
-
     if today_now:
         lines.append("📌 *Today*")
         for t in today_now:
             lines.append(f"{num_emoji(n)} {t['name']}  {t['context']}")
-            ordered.append(t)
-            n += 1
-
+            ordered.append(t); n += 1
     lines.append("\n_Reply `done 1`, `done 1,3`, `mark 1,3 done`, or `done: task name` to mark complete_")
     return "\n".join(lines), ordered
 
@@ -625,24 +648,18 @@ def format_sunday_intro(week_tasks: list[dict], month_tasks: list[dict]) -> tupl
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
     if not week_tasks and not month_tasks:
         return f"🔁 *Weekly Review — {date_str}*\n\nNothing in This Week or This Month — clean slate! 🎉", []
-
     lines, ordered, n = [f"🔁 *Weekly Review — {date_str}*\n"], [], 1
-
     if week_tasks:
         lines.append("🟠 *This Week*")
         for t in week_tasks:
             lines.append(f"{num_emoji(n)} {t['name']}  {t['context']}")
-            ordered.append(t)
-            n += 1
+            ordered.append(t); n += 1
         lines.append("")
-
     if month_tasks:
         lines.append("🟡 *This Month*")
         for t in month_tasks:
             lines.append(f"{num_emoji(n)} {t['name']}  {t['context']}")
-            ordered.append(t)
-            n += 1
-
+            ordered.append(t); n += 1
     lines.append("\n_Tap each item below to reassign its urgency 👇_")
     return "\n".join(lines), ordered
 
@@ -651,55 +668,59 @@ def format_sunday_intro(week_tasks: list[dict], month_tasks: list[dict]) -> tupl
 # INLINE KEYBOARDS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _clean_pid(pid: str) -> str:
-    return pid.replace("-", "")
-
-
-def _restore_pid(pid: str) -> str:
-    return f"{pid[:8]}-{pid[8:12]}-{pid[12:16]}-{pid[16:20]}-{pid[20:]}"
+def _clean_pid(pid: str) -> str: return pid.replace("-", "")
+def _restore_pid(pid: str) -> str: return f"{pid[:8]}-{pid[8:12]}-{pid[12:16]}-{pid[16:20]}-{pid[20:]}"
 
 
 def review_keyboard(page_id: str) -> InlineKeyboardMarkup:
     p = _clean_pid(page_id)
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔴 Today", callback_data=f"h:{p}:t"),
-         InlineKeyboardButton("🟠 This Week", callback_data=f"h:{p}:w")],
+        [InlineKeyboardButton("🔴 Today",      callback_data=f"h:{p}:t"),
+         InlineKeyboardButton("🟠 This Week",  callback_data=f"h:{p}:w")],
         [InlineKeyboardButton("🟡 This Month", callback_data=f"h:{p}:m"),
-         InlineKeyboardButton("⚪ Backburner", callback_data=f"h:{p}:b")],
-        [InlineKeyboardButton("✅ Done", callback_data=f"d:{p}")],
+         InlineKeyboardButton("⚪ Backburner",  callback_data=f"h:{p}:b")],
+        [InlineKeyboardButton("✅ Done",        callback_data=f"d:{p}")],
     ])
 
 
 def new_task_keyboard(key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔴 Today", callback_data=f"nt:{key}:t"),
-         InlineKeyboardButton("🟠 This Week", callback_data=f"nt:{key}:w")],
+        [InlineKeyboardButton("🔴 Today",      callback_data=f"nt:{key}:t"),
+         InlineKeyboardButton("🟠 This Week",  callback_data=f"nt:{key}:w")],
         [InlineKeyboardButton("🟡 This Month", callback_data=f"nt:{key}:m"),
-         InlineKeyboardButton("⚪ Backburner", callback_data=f"nt:{key}:b")],
+         InlineKeyboardButton("⚪ Backburner",  callback_data=f"nt:{key}:b")],
     ])
 
 
-def done_picker_keyboard(key: str, page: int = 0, page_size: int = 5) -> InlineKeyboardMarkup:
-    tasks = done_picker_map.get(key, [])
-    start = page * page_size
-    end = start + page_size
-    page_tasks = tasks[start:end]
+def habit_buttons(habits: list[dict], prefix: str) -> InlineKeyboardMarkup:
+    rows, row = [], []
+    for habit in habits:
+        p = _clean_pid(habit["page_id"])
+        row.append(InlineKeyboardButton(habit["name"], callback_data=f"{prefix}:{p}"))
+        if len(row) == 2:
+            rows.append(row); row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(rows)
 
-    rows = []
-    for idx, task in enumerate(page_tasks, start=start):
+
+def done_picker_keyboard(key: str, page: int = 0, page_size: int = 5) -> InlineKeyboardMarkup:
+    tasks  = done_picker_map.get(key, [])
+    start  = page * page_size
+    end    = start + page_size
+    rows   = []
+    for idx, task in enumerate(tasks[start:end], start=start):
         label = task["name"]
         if len(label) > 28:
             label = label[:25] + "..."
         rows.append([InlineKeyboardButton(f"✅ {label}", callback_data=f"dp:{key}:{idx}")])
-
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"dpp:{key}:{page - 1}"))
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"dpp:{key}:{page-1}"))
     if end < len(tasks):
-        nav.append(InlineKeyboardButton("➡️ Next", callback_data=f"dpp:{key}:{page + 1}"))
+        nav.append(InlineKeyboardButton("➡️ Next", callback_data=f"dpp:{key}:{page+1}"))
     if nav:
         rows.append(nav)
-
     rows.append([InlineKeyboardButton("✖️ Cancel", callback_data=f"dpc:{key}")])
     return InlineKeyboardMarkup(rows)
 
@@ -715,50 +736,35 @@ async def complete_task_by_page_id(message, page_id: str, name: str) -> None:
 
 
 async def create_or_prompt_task(message, raw_text: str, force_create: bool = False) -> None:
-    """
-    Main capture dispatcher.
-
-    - Multi-task (2+ items detected): classify all concurrently, create all,
-      reply with a grouped batch summary. No pickers shown for low-confidence
-      items — they land in Backburner with a note in the summary.
-    - Single task, high confidence: create and confirm.
-    - Single task, low confidence: show horizon picker as before.
-    """
     global _pending_counter
-
     task_texts = split_tasks(raw_text)
-    is_multi = len(task_texts) > 1
-
-    thinking = await message.reply_text(
+    is_multi   = len(task_texts) > 1
+    thinking   = await message.reply_text(
         f"🧠 Classifying {len(task_texts)} tasks..." if is_multi else "🧠 Classifying..."
     )
 
     if is_multi:
-        loop = asyncio.get_event_loop()
+        loop    = asyncio.get_event_loop()
         results = await asyncio.gather(*[
             loop.run_in_executor(None, _run_capture, t, force_create)
             for t in task_texts
         ])
-        summary = format_batch_summary(list(results))
-        await thinking.edit_text(summary, parse_mode="Markdown")
+        await thinking.edit_text(format_batch_summary(list(results)), parse_mode="Markdown")
         return
 
-    # ── Single task path ─────────────────────────────────────────────────────
+    # Single task
     try:
-        result = classify_task(raw_text)
-        task_name = result.get("task_name", raw_text)
+        result        = classify_task(raw_text)
+        task_name     = result.get("task_name", raw_text)
         deadline_days = result.get("deadline_days")
-        ctx = result.get("context", "🏠 Personal")
-        confidence = result.get("confidence", "low")
-        recurring = result.get("recurring", "None") or "None"
-        repeat_day = result.get("repeat_day")
-
-        # Compute deadline from next occurrence for weekly recurring tasks
+        ctx           = result.get("context", "🏠 Personal")
+        confidence    = result.get("confidence", "low")
+        recurring     = result.get("recurring", "None") or "None"
+        repeat_day    = result.get("repeat_day")
         if recurring == "📅 Weekly" and repeat_day in REPEAT_DAY_TO_WEEKDAY:
             if deadline_days is None:
-                target = next_weekday(REPEAT_DAY_TO_WEEKDAY[repeat_day])
+                target        = next_weekday(REPEAT_DAY_TO_WEEKDAY[repeat_day])
                 deadline_days = (target - date.today()).days
-
         horizon_label = deadline_days_to_label(deadline_days)
     except Exception as e:
         log.error(f"Claude error: {e}")
@@ -769,7 +775,7 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
         dup = find_duplicate_active_task(task_name)
         if dup:
             await thinking.edit_text(
-                f"⚠️ Already on your list:\n\n📝 {dup['name']}\n🕐 {dup.get('auto_horizon', '')}  {dup.get('context', '')}\n\nSend `force: {task_name}` if you want to add it anyway.",
+                f"⚠️ Already on your list:\n\n📝 {dup['name']}\n🕐 {dup.get('auto_horizon','')}  {dup.get('context','')}\n\nSend `force: {task_name}` to add anyway.",
                 parse_mode="Markdown",
             )
             return
@@ -788,8 +794,7 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
             log.error(f"Notion error: {e}")
             await thinking.edit_text("⚠️ Classified but couldn't write to Notion.")
     else:
-        key = str(_pending_counter)
-        _pending_counter += 1
+        key = str(_pending_counter); _pending_counter += 1
         pending_map[key] = {"name": task_name, "context": ctx, "recurring": recurring, "repeat_day": repeat_day}
         await thinking.edit_text(
             f"📝 *{task_name}*  {ctx}{recur_tag}\n\nWhen should this happen?",
@@ -804,8 +809,7 @@ async def open_done_picker(message) -> None:
     if not tasks:
         await message.reply_text("✅ Nothing open in Today or overdue right now.")
         return
-    key = str(_done_picker_counter)
-    _done_picker_counter += 1
+    key = str(_done_picker_counter); _done_picker_counter += 1
     done_picker_map[key] = tasks
     await message.reply_text("Which task should be marked done?", reply_markup=done_picker_keyboard(key, page=0))
 
@@ -817,12 +821,10 @@ async def open_done_picker(message) -> None:
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat.id != MY_CHAT_ID:
         return
-
     message = update.message
-    text = (message.text or "").strip()
+    text    = (message.text or "").strip()
     if not text:
         return
-
     lower = text.lower().strip()
 
     # 1. Reply `done` to a capture message
@@ -838,19 +840,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # 2. bare `done` → picker
     if lower == "done":
-        await open_done_picker(message)
-        return
+        await open_done_picker(message); return
 
-    # 3. done/mark/complete/check + number list
+    # 3. done/mark/complete + number list
     numbers = parse_done_numbers_command(text)
     if numbers:
         source_id = message.reply_to_message.message_id if message.reply_to_message else last_digest_msg_id
         if source_id and source_id in digest_map:
-            items = digest_map[source_id]
-            done_names = []
+            items, done_names = digest_map[source_id], []
             for n in numbers:
                 if 1 <= n <= len(items):
-                    pid = items[n - 1]["page_id"]
+                    pid  = items[n - 1]["page_id"]
                     name = items[n - 1]["name"]
                     mark_done(pid)
                     suffix = " ↻ next queued" if handle_done_recurring(pid) else ""
@@ -864,81 +864,115 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # 4. done: task name
     match_name = re.match(r"done:\s*(.+)$", text, re.IGNORECASE)
     if match_name:
-        query = match_name.group(1).strip()
-        matched = fuzzy_match(query, get_all_active_tasks())
+        matched = fuzzy_match(match_name.group(1).strip(), get_all_active_tasks())
         if matched:
             await complete_task_by_page_id(message, matched["page_id"], matched["name"])
         else:
-            await message.reply_text(f"Couldn't find a task matching \"{query}\".")
+            await message.reply_text(f"Couldn't find a task matching \"{match_name.group(1).strip()}\".")
         return
 
-    # 5. mark ... done (task-name based)
+    # 5. mark ... done
     match_mark_done = re.match(r"mark\s+(.+?)\s+done$", text, re.IGNORECASE)
     if match_mark_done:
-        query = match_mark_done.group(1).strip()
-        matched = fuzzy_match(query, get_all_active_tasks())
+        matched = fuzzy_match(match_mark_done.group(1).strip(), get_all_active_tasks())
         if matched:
             await complete_task_by_page_id(message, matched["page_id"], matched["name"])
         else:
-            await message.reply_text(f"Couldn't find a task matching \"{query}\".")
+            await message.reply_text(f"Couldn't find a task matching \"{match_mark_done.group(1).strip()}\".")
         return
 
-    # 6. focus: task name
+    # 6. focus: / unfocus:
     match_focus = re.match(r"focus:\s*(.+)$", text, re.IGNORECASE)
     if match_focus:
-        query = match_focus.group(1).strip()
-        matched = fuzzy_match(query, get_all_active_tasks())
+        matched = fuzzy_match(match_focus.group(1).strip(), get_all_active_tasks())
         if matched:
             set_focus(matched["page_id"], True)
             await message.reply_text(f"🎯 Focused: {matched['name']} → *Doing*", parse_mode="Markdown")
         else:
-            await message.reply_text(f"Couldn't find a task matching \"{query}\".")
+            await message.reply_text(f"Couldn't find a task matching \"{match_focus.group(1).strip()}\".")
         return
 
-    # 7. unfocus: task name
     match_unfocus = re.match(r"unfocus:\s*(.+)$", text, re.IGNORECASE)
     if match_unfocus:
-        query = match_unfocus.group(1).strip()
-        matched = fuzzy_match(query, get_all_active_tasks())
+        matched = fuzzy_match(match_unfocus.group(1).strip(), get_all_active_tasks())
         if matched:
             set_focus(matched["page_id"], False)
             await message.reply_text(f"⬜ Unfocused: {matched['name']} → *To Do*", parse_mode="Markdown")
         else:
-            await message.reply_text(f"Couldn't find a task matching \"{query}\".")
+            await message.reply_text(f"Couldn't find a task matching \"{match_unfocus.group(1).strip()}\".")
         return
 
-    # 8. force:
+    # 7. force:
     match_force = re.match(r"force:\s*(.+)$", text, re.IGNORECASE)
     if match_force:
-        await create_or_prompt_task(message, match_force.group(1).strip(), force_create=True)
+        await create_or_prompt_task(message, match_force.group(1).strip(), force_create=True); return
+
+    # 8. Classify: habit or task
+    thinking = await message.reply_text("🧠 Got it...")
+    try:
+        result = classify_message(text)
+    except Exception as e:
+        log.error(f"Claude error: {e}")
+        await thinking.edit_text("⚠️ Couldn't process that. Try rephrasing?")
         return
 
-    # 9. normal capture — single or multi
-    await create_or_prompt_task(message, text, force_create=False)
+    if result.get("type") == "habit":
+        habit_name = result.get("habit_name")
+        confidence = result.get("confidence", "low")
+        if habit_name and habit_name in habit_cache and confidence == "high":
+            habit_page_id = habit_cache[habit_name]
+            if already_logged_today(habit_page_id):
+                await thinking.edit_text(f"Already logged {habit_name} today! ✅")
+            else:
+                log_habit(habit_page_id, habit_name)
+                await thinking.edit_text(f"✅ Logged!\n\n{habit_name}\n📅 {date.today().strftime('%B %-d')}")
+        else:
+            all_habits = [{"page_id": pid, "name": name} for name, pid in habit_cache.items()]
+            await thinking.edit_text(
+                "Which habit did you complete?",
+                reply_markup=habit_buttons(all_habits, "hl"),
+            )
+        return
+
+    # Task path — hand off to existing capture flow
+    await thinking.delete()
+    await create_or_prompt_task(message, text)
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    q = update.callback_query
+    q     = update.callback_query
     await q.answer()
     parts = q.data.split(":")
+
+    # Habit log button (from ambiguous prompt or check-in)
+    if parts[0] in ("hl", "hc") and len(parts) == 2:
+        habit_page_id = _restore_pid(parts[1])
+        habit_name    = next((n for n, pid in habit_cache.items() if pid == habit_page_id), "Unknown")
+        try:
+            if already_logged_today(habit_page_id):
+                await q.edit_message_text(f"Already logged {habit_name} today! ✅")
+            else:
+                log_habit(habit_page_id, habit_name)
+                await q.edit_message_text(f"✅ {habit_name} logged!")
+        except Exception as e:
+            log.error(f"Habit log error: {e}"); await q.edit_message_text("⚠️ Couldn't log to Notion.")
+        return
 
     if parts[0] == "nt" and len(parts) == 3:
         _, key, code = parts
         if key not in pending_map:
-            await q.edit_message_text("⚠️ This task expired — please re-send it.")
-            return
-        task = pending_map.pop(key)
+            await q.edit_message_text("⚠️ This task expired — please re-send it."); return
+        task          = pending_map.pop(key)
         horizon_label = HORIZON_LABELS.get(code, "⚪ Backburner")
-        days = HORIZON_DEADLINE_OFFSETS.get(code)
-        recurring = task.get("recurring", "None")
-        repeat_day = task.get("repeat_day")
+        days          = HORIZON_DEADLINE_OFFSETS.get(code)
+        recurring     = task.get("recurring", "None")
+        repeat_day    = task.get("repeat_day")
         dup = find_duplicate_active_task(task["name"])
         if dup:
             await q.edit_message_text(
-                f"⚠️ Already on your list:\n\n📝 {dup['name']}\n🕐 {dup.get('auto_horizon', '')}  {dup.get('context', '')}\n\nSend `force: {task['name']}` if you want to add it anyway.",
+                f"⚠️ Already on your list:\n\n📝 {dup['name']}\n🕐 {dup.get('auto_horizon','')}  {dup.get('context','')}\n\nSend `force: {task['name']}` to add anyway.",
                 parse_mode="Markdown",
-            )
-            return
+            ); return
         recur_tag = f"\n🔁 {recurring}" if recurring != "None" else ""
         try:
             page_id = create_task(task["name"], days, task["context"], recurring=recurring, repeat_day=repeat_day)
@@ -948,8 +982,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             capture_map[q.message.message_id] = {"page_id": page_id, "name": task["name"]}
         except Exception as e:
-            log.error(f"Notion error: {e}")
-            await q.edit_message_text("⚠️ Couldn't save to Notion.")
+            log.error(f"Notion error: {e}"); await q.edit_message_text("⚠️ Couldn't save to Notion.")
         return
 
     if parts[0] == "d" and len(parts) == 2:
@@ -959,49 +992,42 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             suffix = "\n↻ Next instance created" if handle_done_recurring(page_id) else ""
             await q.edit_message_text(f"✅ Marked as done!{suffix}")
         except Exception as e:
-            log.error(f"Notion done error: {e}")
-            await q.edit_message_text("⚠️ Couldn't update Notion.")
+            log.error(f"Notion done error: {e}"); await q.edit_message_text("⚠️ Couldn't update Notion.")
         return
 
     if parts[0] == "h" and len(parts) == 3:
         _, pid_clean, code = parts
-        page_id = _restore_pid(pid_clean)
+        page_id       = _restore_pid(pid_clean)
         horizon_label = HORIZON_LABELS.get(code, "⚪ Backburner")
         try:
             set_deadline_from_horizon_code(page_id, code)
             await q.edit_message_text(f"Updated → {horizon_label} ✓")
         except Exception as e:
-            log.error(f"Notion horizon error: {e}")
-            await q.edit_message_text("⚠️ Couldn't update Notion.")
+            log.error(f"Notion horizon error: {e}"); await q.edit_message_text("⚠️ Couldn't update Notion.")
         return
 
     if parts[0] == "dp" and len(parts) == 3:
         _, key, idx_str = parts
         if key not in done_picker_map:
-            await q.edit_message_text("⚠️ This picker expired. Send `done` again.", parse_mode="Markdown")
-            return
+            await q.edit_message_text("⚠️ This picker expired. Send `done` again.", parse_mode="Markdown"); return
         try:
-            idx = int(idx_str)
-            task = done_picker_map[key][idx]
+            task = done_picker_map[key][int(idx_str)]
             mark_done(task["page_id"])
             suffix = "\n↻ Next instance created" if handle_done_recurring(task["page_id"]) else ""
             await q.edit_message_text(f"✅ Done: {task['name']}{suffix}")
         except Exception as e:
-            log.error(f"Done picker error: {e}")
-            await q.edit_message_text("⚠️ Couldn't mark that task done.")
+            log.error(f"Done picker error: {e}"); await q.edit_message_text("⚠️ Couldn't mark that task done.")
         return
 
     if parts[0] == "dpp" and len(parts) == 3:
         _, key, page_str = parts
         if key not in done_picker_map:
-            await q.edit_message_text("⚠️ This picker expired. Send `done` again.", parse_mode="Markdown")
-            return
+            await q.edit_message_text("⚠️ This picker expired. Send `done` again.", parse_mode="Markdown"); return
         await q.edit_message_reply_markup(reply_markup=done_picker_keyboard(key, page=int(page_str)))
         return
 
     if parts[0] == "dpc" and len(parts) == 2:
-        _, key = parts
-        done_picker_map.pop(key, None)
+        done_picker_map.pop(parts[1], None)
         await q.edit_message_text("Done picker closed.")
         return
 
@@ -1011,24 +1037,48 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def run_recurring_check(bot) -> None:
+    load_habit_cache()  # Refresh habit cache daily
     spawned = process_recurring_tasks()
     log.info(f"Recurring check: {spawned} task(s) spawned")
 
 
-async def send_daily_digest(bot) -> None:
+async def send_daily_digest(bot, include_habits: bool = True) -> None:
     global last_digest_msg_id
-    tasks = get_today_and_overdue_tasks()
+    tasks            = get_today_and_overdue_tasks()
     message, ordered = format_daily_digest(tasks)
     sent = await bot.send_message(chat_id=MY_CHAT_ID, text=message, parse_mode="Markdown")
     if ordered:
         digest_map[sent.message_id] = ordered
-        last_digest_msg_id = sent.message_id
+        last_digest_msg_id          = sent.message_id
+
+    if include_habits:
+        morning_habits = get_habits_by_time("🌅 Morning") + get_habits_by_time("🕐 Anytime")
+        if morning_habits:
+            await bot.send_message(
+                chat_id=MY_CHAT_ID,
+                text="🌅 *Morning habits* — tap to log:",
+                parse_mode="Markdown",
+                reply_markup=habit_buttons(morning_habits, "hc"),
+            )
     log.info(f"Daily digest sent — {len(ordered)} tasks")
 
 
+async def send_evening_checkin(bot) -> None:
+    evening_habits = get_habits_by_time("🌙 Evening") + get_habits_by_time("🕐 Anytime")
+    if not evening_habits:
+        return
+    await bot.send_message(
+        chat_id=MY_CHAT_ID,
+        text="🌙 *Evening check-in* — did you do these today?",
+        parse_mode="Markdown",
+        reply_markup=habit_buttons(evening_habits, "hc"),
+    )
+    log.info(f"Evening check-in sent — {len(evening_habits)} habits")
+
+
 async def send_sunday_review(bot) -> None:
-    await send_daily_digest(bot)
-    week_tasks = query_tasks_by_auto_horizon(["🟠 This Week"])
+    await send_daily_digest(bot, include_habits=True)
+    week_tasks  = query_tasks_by_auto_horizon(["🟠 This Week"])
     month_tasks = query_tasks_by_auto_horizon(["🟡 This Month"])
     header, ordered = format_sunday_intro(week_tasks, month_tasks)
     await bot.send_message(chat_id=MY_CHAT_ID, text=header, parse_mode="Markdown")
@@ -1047,17 +1097,28 @@ async def send_sunday_review(bot) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def post_init(app: Application) -> None:
+    load_habit_cache()
+
     scheduler = AsyncIOScheduler(timezone=TZ)
-    scheduler.add_job(run_recurring_check, "cron", hour=_rc_h, minute=_rc_m, args=[app.bot])
-    scheduler.add_job(send_daily_digest, "cron", day_of_week="mon-fri", hour=_wk_h, minute=_wk_m, args=[app.bot])
-    scheduler.add_job(send_daily_digest, "cron", day_of_week="sat", hour=_we_h, minute=_we_m, args=[app.bot])
-    scheduler.add_job(send_sunday_review, "cron", day_of_week="sun", hour=_we_h, minute=_we_m, args=[app.bot])
+    scheduler.add_job(run_recurring_check, "cron",
+                      hour=_rc_h, minute=_rc_m, args=[app.bot])
+    scheduler.add_job(send_daily_digest, "cron",
+                      day_of_week="mon-fri", hour=_wk_h, minute=_wk_m,
+                      args=[app.bot], kwargs={"include_habits": True})
+    scheduler.add_job(send_daily_digest, "cron",
+                      day_of_week="sat", hour=_we_h, minute=_we_m,
+                      args=[app.bot], kwargs={"include_habits": True})
+    scheduler.add_job(send_sunday_review, "cron",
+                      day_of_week="sun", hour=_we_h, minute=_we_m, args=[app.bot])
+    scheduler.add_job(send_evening_checkin, "cron",
+                      day_of_week="mon-fri", hour=_ev_wk_h, minute=_ev_wk_m, args=[app.bot])
+    scheduler.add_job(send_evening_checkin, "cron",
+                      day_of_week="sat,sun", hour=_ev_we_h, minute=_ev_we_m, args=[app.bot])
     scheduler.start()
     log.info(
         f"Scheduler started ✓  TZ={TZ}  "
-        f"weekday={_wk_h:02d}:{_wk_m:02d}  "
-        f"weekend={_we_h:02d}:{_we_m:02d}  "
-        f"recurring={_rc_h:02d}:{_rc_m:02d}"
+        f"weekday={_wk_h:02d}:{_wk_m:02d}  weekend={_we_h:02d}:{_we_m:02d}  "
+        f"evening_wk={_ev_wk_h:02d}:{_ev_wk_m:02d}  evening_we={_ev_we_h:02d}:{_ev_we_m:02d}"
     )
 
 
@@ -1065,7 +1126,7 @@ def main() -> None:
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    log.info("🤖 Second Brain bot starting...")
+    log.info("🤖 Second Brain bot starting (v7)...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
