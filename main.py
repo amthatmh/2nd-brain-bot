@@ -106,6 +106,19 @@ def num_emoji(n: int) -> str:
     return NUMBER_EMOJIS[n - 1] if 1 <= n <= 10 else f"{n}."
 
 
+def next_weekday(weekday: int) -> date:
+    """
+    Return the next occurrence of a weekday (0=Mon … 6=Sun) from today.
+    If today IS that weekday, returns next week's occurrence (not today),
+    so "every Friday" captured on a Friday means next Friday.
+    """
+    today = date.today()
+    days_ahead = (weekday - today.weekday()) % 7
+    if days_ahead == 0:
+        days_ahead = 7
+    return today + timedelta(days=days_ahead)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MULTI-TASK PARSING
 # ══════════════════════════════════════════════════════════════════════════════
@@ -143,25 +156,45 @@ def split_tasks(text: str) -> list[str]:
 
 def classify_task(text: str) -> dict:
     prompt = f"""You are a personal task classifier for a second brain system.
+Today is {date.today().strftime("%A, %B %-d, %Y")}.
 
-Task: \"{text}\"
+Message: \"{text}\"
+
+Your job is to extract the ACTUAL TASK from the message — the thing the person needs to DO.
+Strip away scheduling language, app instructions, and meta-words.
+
+Examples of task extraction:
+- "Add recurring tasks on every Friday to text my grandpa" → task_name: "Text grandpa"
+- "Make Brain absorb multiple to-do messages tomorrow" → task_name: "Process multiple to-do messages in Brain"
+- "Remind me to call dentist this week" → task_name: "Call dentist"
+- "Buy milk today" → task_name: "Buy milk"
 
 Return ONLY valid JSON, no markdown, no explanation:
 {{
-  \"task_name\": \"clean concise task name\",
-  \"deadline_days\": <integer days from today, or null if no urgency>,
-  \"context\": \"one of exactly: 💼 Work | 🏠 Personal | 🏃 Health | 🤝 Collab\",
-  \"confidence\": \"high or low\"
+  "task_name": "clean concise action — the thing to DO, not meta-instructions",
+  "deadline_days": <integer days from today, or null if no urgency>,
+  "context": "one of exactly: 💼 Work | 🏠 Personal | 🏃 Health | 🤝 Collab",
+  "confidence": "high or low",
+  "recurring": "one of exactly: None | 🔁 Daily | 📅 Weekly | 🗓️ Monthly",
+  "repeat_day": "one of: Mon | Tue | Wed | Thu | Fri | Sat | Sun | 1st | 5th | 10th | 15th | 20th | 25th | Last — or null if not recurring/not specified"
 }}
 
 deadline_days rules:
 - today/tonight/now/urgent/ASAP/by EOD → 0
-- this week/by Friday/in a few days → 5
-- this month/next few weeks/soon-ish → 20
+- tomorrow → 1
+- this week/in a few days → 5
+- this month/next few weeks → 20
 - someday/eventually/no urgency → null
-- NO time signal at all → null and confidence \"low\"
+- For recurring tasks: deadline_days = days until the NEXT occurrence (e.g. "every Friday" → days until next Friday)
+- NO time signal at all → null and confidence "low"
 
-Context rules:
+recurring rules:
+- "every day / daily" → 🔁 Daily, repeat_day: null
+- "every Monday / each Tuesday / weekly on Wed" → 📅 Weekly, repeat_day: the day
+- "every month / monthly / on the 1st" → 🗓️ Monthly, repeat_day: the date
+- no recurrence signal → None, repeat_day: null
+
+context rules:
 - meetings/clients/projects/reports → 💼 Work
 - gym/doctor/dentist/food/workout → 🏃 Health
 - family/friends/home/errands → 🏠 Personal
@@ -169,7 +202,7 @@ Context rules:
 
     resp = claude.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=CLAUDE_MAX_TOK,
+        max_tokens=200,
         messages=[{"role": "user", "content": prompt}],
     )
     raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
@@ -449,6 +482,16 @@ def _run_capture(raw_text: str, force_create: bool = False) -> dict:
         task_name = result.get("task_name", raw_text)
         deadline_days = result.get("deadline_days")
         ctx = result.get("context", "🏠 Personal")
+        recurring = result.get("recurring", "None") or "None"
+        repeat_day = result.get("repeat_day")  # e.g. "Fri", "1st", or None
+
+        # For weekly recurring tasks, compute deadline as next occurrence
+        # if Claude didn't already give a specific deadline_days
+        if recurring == "📅 Weekly" and repeat_day in REPEAT_DAY_TO_WEEKDAY:
+            if deadline_days is None:
+                target = next_weekday(REPEAT_DAY_TO_WEEKDAY[repeat_day])
+                deadline_days = (target - date.today()).days
+
         horizon_label = deadline_days_to_label(deadline_days)
     except Exception as e:
         log.error(f"Claude error for '{raw_text}': {e}")
@@ -460,12 +503,13 @@ def _run_capture(raw_text: str, force_create: bool = False) -> dict:
             return {"status": "duplicate", "name": task_name, "duplicate": dup}
 
     try:
-        page_id = create_task(task_name, deadline_days, ctx)
+        page_id = create_task(task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
         return {
             "status": "captured",
             "name": task_name,
             "horizon_label": horizon_label,
             "context": ctx,
+            "recurring": recurring,
             "page_id": page_id,
         }
     except Exception as e:
@@ -476,23 +520,7 @@ def _run_capture(raw_text: str, force_create: bool = False) -> dict:
 def format_batch_summary(results: list[dict]) -> str:
     """
     Format a multi-task capture into a single summary message.
-
-    Tasks are grouped by (horizon_label, context) so items sharing the
-    same urgency and context are visually clustered — like a room's
-    acoustic zones mapped on one diagram rather than separate pages.
-
-    Output example:
-      ✅ Captured!
-      📝 Buy Milk
-      📝 Pick Up Dry Cleaning
-      📝 Call Dentist
-      🕐 🔴 Today  🏠 Personal  · Saved to Notion
-
-      📝 Review Q2 report
-      🕐 🟠 This Week  💼 Work  · Saved to Notion
-
-      ⚠️ Already on your list (skipped):
-        · Fold laundry  ⚪ Backburner 🏠 Personal
+    Groups by (horizon_label, context). Recurring tasks get a 🔁 tag.
     """
     captured = [r for r in results if r["status"] == "captured"]
     duplicates = [r for r in results if r["status"] == "duplicate"]
@@ -501,16 +529,16 @@ def format_batch_summary(results: list[dict]) -> str:
     lines = []
 
     if captured:
-        # Group by (horizon_label, context), preserving insertion order
-        groups: dict[tuple, list[str]] = {}
+        groups: dict[tuple, list[dict]] = {}
         for r in captured:
             key = (r["horizon_label"], r["context"])
-            groups.setdefault(key, []).append(r["name"])
+            groups.setdefault(key, []).append(r)
 
         lines.append("✅ Captured!")
-        for (horizon, ctx), names in groups.items():
-            for name in names:
-                lines.append(f"📝 {name}")
+        for (horizon, ctx), items in groups.items():
+            for r in items:
+                recur_tag = f"  _{r['recurring']}_" if r.get("recurring", "None") != "None" else ""
+                lines.append(f"📝 {r['name']}{recur_tag}")
             lines.append(f"🕐 {horizon}  {ctx}  · _Saved to Notion_")
             lines.append("")
 
@@ -691,6 +719,15 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
         deadline_days = result.get("deadline_days")
         ctx = result.get("context", "🏠 Personal")
         confidence = result.get("confidence", "low")
+        recurring = result.get("recurring", "None") or "None"
+        repeat_day = result.get("repeat_day")
+
+        # Compute deadline from next occurrence for weekly recurring tasks
+        if recurring == "📅 Weekly" and repeat_day in REPEAT_DAY_TO_WEEKDAY:
+            if deadline_days is None:
+                target = next_weekday(REPEAT_DAY_TO_WEEKDAY[repeat_day])
+                deadline_days = (target - date.today()).days
+
         horizon_label = deadline_days_to_label(deadline_days)
     except Exception as e:
         log.error(f"Claude error: {e}")
@@ -706,11 +743,13 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
             )
             return
 
+    recur_tag = f"\n🔁 {recurring}" if recurring != "None" else ""
+
     if confidence == "high":
         try:
-            page_id = create_task(task_name, deadline_days, ctx)
+            page_id = create_task(task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
             await thinking.edit_text(
-                f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}\n\n_Saved to Notion_",
+                f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}{recur_tag}\n\n_Saved to Notion_",
                 parse_mode="Markdown",
             )
             capture_map[thinking.message_id] = {"page_id": page_id, "name": task_name}
@@ -720,9 +759,9 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
     else:
         key = str(_pending_counter)
         _pending_counter += 1
-        pending_map[key] = {"name": task_name, "context": ctx}
+        pending_map[key] = {"name": task_name, "context": ctx, "recurring": recurring, "repeat_day": repeat_day}
         await thinking.edit_text(
-            f"📝 *{task_name}*  {ctx}\n\nWhen should this happen?",
+            f"📝 *{task_name}*  {ctx}{recur_tag}\n\nWhen should this happen?",
             parse_mode="Markdown",
             reply_markup=new_task_keyboard(key),
         )
@@ -861,6 +900,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         task = pending_map.pop(key)
         horizon_label = HORIZON_LABELS.get(code, "⚪ Backburner")
         days = HORIZON_DEADLINE_OFFSETS.get(code)
+        recurring = task.get("recurring", "None")
+        repeat_day = task.get("repeat_day")
         dup = find_duplicate_active_task(task["name"])
         if dup:
             await q.edit_message_text(
@@ -868,10 +909,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 parse_mode="Markdown",
             )
             return
+        recur_tag = f"\n🔁 {recurring}" if recurring != "None" else ""
         try:
-            page_id = create_task(task["name"], days, task["context"])
+            page_id = create_task(task["name"], days, task["context"], recurring=recurring, repeat_day=repeat_day)
             await q.edit_message_text(
-                f"✅ Captured!\n\n📝 {task['name']}\n🕐 {horizon_label}  {task['context']}\n\n_Saved to Notion_",
+                f"✅ Captured!\n\n📝 {task['name']}\n🕐 {horizon_label}  {task['context']}{recur_tag}\n\n_Saved to Notion_",
                 parse_mode="Markdown",
             )
             capture_map[q.message.message_id] = {"page_id": page_id, "name": task["name"]}
