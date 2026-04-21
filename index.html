@@ -36,10 +36,10 @@
     .sub{color:var(--muted);margin-top:6px;font-size:.95rem}
     .chip{border:1px solid #232332;background:rgba(255,255,255,.02);color:var(--text);padding:10px 16px;border-radius:14px;font-size:.9rem}
     .chip.active{background:rgba(138,92,255,.15);border-color:rgba(138,92,255,.42)}
-    .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:22px}
-    .stat{background:rgba(255,255,255,.025);border:1px solid #222230;border-radius:18px;padding:16px 18px;box-shadow:var(--shadow)}
+    .stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:18px;max-width:460px}
+    .stat{background:rgba(255,255,255,.025);border:1px solid #222230;border-radius:16px;padding:12px 14px;box-shadow:var(--shadow)}
     .stat .k{color:var(--muted);font-size:.88rem;margin-bottom:8px}
-    .stat .v{font-size:1.8rem;font-weight:800;letter-spacing:-.04em}
+    .stat .v{font-size:1.45rem;font-weight:800;letter-spacing:-.03em}
     .layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:18px;align-items:start}
     .panel{background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,.01));border:1px solid #20202c;border-radius:var(--radius-xl);box-shadow:var(--shadow);overflow:hidden}
     .panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:20px 20px 10px}
@@ -103,8 +103,6 @@
 
   <div class="stats">
     <div class="stat"><div class="k">Active habits</div><div class="v" id="sHabits">—</div></div>
-    <div class="stat"><div class="k">Done today</div><div class="v" id="sToday">—</div></div>
-    <div class="stat"><div class="k">10-week rate</div><div class="v" id="sRate">—</div></div>
     <div class="stat"><div class="k">7-day score</div><div class="v" id="sWeek">—</div></div>
   </div>
 
@@ -112,7 +110,7 @@
     <section class="panel">
       <div class="panel-head">
         <h2>Week-by-week grid</h2>
-        <div class="chip">10 weeks</div>
+        <div class="chip" id="weeksChip">— weeks</div>
       </div>
       <div class="panel-sub">Each column is a week · each row is a day · today is outlined</div>
       <div class="cards" id="cards">
@@ -177,24 +175,26 @@ async function loadData() {
 
 function render(data) {
   const {habits, dates, generated} = data;
+  const weeksHistory = Number.isFinite(data.weeksHistory)
+    ? data.weeksHistory
+    : Math.max(1, Math.round((dates?.length || 0) / 7));
+  const todayIndex = Array.isArray(dates) && data.todayDate
+    ? dates.indexOf(data.todayDate)
+    : -1;
 
   // Last updated
   const gen = new Date(generated);
   document.getElementById('lastUpdated').textContent =
-    gen.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+    gen.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 
   // Today chip
   document.getElementById('todayChip').textContent =
     new Date().toLocaleDateString('en-US',{weekday:'short',day:'numeric',month:'short'});
+  document.getElementById('weeksChip').textContent = `${weeksHistory} weeks`;
 
   // Stats
-  const totalCells = habits.reduce((a,h)=>a+h.days.length,0);
-  const totalDone  = habits.reduce((a,h)=>a+h.days.reduce((x,y)=>x+y,0),0);
   const weekScore  = habits.reduce((a,h)=>a+h.days.slice(-7).reduce((x,y)=>x+y,0),0);
-  const doneToday  = habits.filter(h=>h.todayDone).length;
   document.getElementById('sHabits').textContent = habits.length;
-  document.getElementById('sToday').textContent  = `${doneToday}/${habits.length}`;
-  document.getElementById('sRate').textContent   = totalCells?Math.round(totalDone/totalCells*100)+'%':'—';
   document.getElementById('sWeek').textContent   = weekScore;
 
   // ── Cards ──────────────────────────────────────────────────────────────────
@@ -204,7 +204,9 @@ function render(data) {
   habits.forEach(habit => {
     const cc      = `c-${habit.color||'pink'}`;
     const icon    = habitIcon(habit.name);
-    const isDone  = habit.todayDone;
+    const isDone  = todayIndex >= 0
+      ? habit.days[todayIndex] === 1
+      : habit.todayDone;
     const link    = tgLink(habit.name);
     const checkBg = isDone ? 'rgba(74,222,128,.15)' : 'rgba(138,92,255,.18)';
     const checkIcon = isDone ? '✓' : '📲';
@@ -226,7 +228,7 @@ function render(data) {
       </div>
       <div class="grid-wrap"><div class="grid"></div></div>
       <div class="legend">
-        <span>10 weeks ago</span>
+        <span>${weeksHistory} weeks ago</span>
         <div class="legend-right">
           <span><i class="mini" style="background:${getColor(cc,false)}"></i>missed</span>
           <span><i class="mini" style="background:${getColor(cc,true)}"></i>done</span>
@@ -234,6 +236,7 @@ function render(data) {
         </div>
       </div>`;
 
+    const gridWrap = article.querySelector('.grid-wrap');
     const grid = article.querySelector('.grid');
     habit.days.forEach((v,i) => {
       const cell    = document.createElement('div');
@@ -245,6 +248,11 @@ function render(data) {
     });
 
     cards.appendChild(article);
+
+    // Default viewport to newest entries (right side) on first render.
+    requestAnimationFrame(() => {
+      gridWrap.scrollLeft = gridWrap.scrollWidth;
+    });
   });
 
   // ── Today side panel ───────────────────────────────────────────────────────
@@ -257,7 +265,9 @@ function render(data) {
   }
 
   habits.forEach(habit => {
-    const isDone = habit.todayDone;
+    const isDone = todayIndex >= 0
+      ? habit.days[todayIndex] === 1
+      : habit.todayDone;
     const link   = tgLink(habit.name);
     const row    = document.createElement(isDone ? 'div' : 'a');
     row.className = 'row';
