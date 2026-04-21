@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Habit Grid</title>
+  <style>
+    :root{
+      --bg:#0b0b11;
+      --card:#06060b;
+      --card-border:#1d1d28;
+      --text:#f5f5f8;
+      --muted:#a2a3b3;
+      --muted-2:#6e7081;
+      --purple:#8a5cff;
+      --panel:#12121a;
+      --shadow:0 12px 34px rgba(0,0,0,.38);
+      --radius-xl:28px;
+      --square:17px;
+      --gap:5px;
+      --icon:82px;
+      --check:82px;
+    }
+
+    *{box-sizing:border-box;margin:0;padding:0}
+
+    body{
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+      color:var(--text);
+      background:
+        radial-gradient(circle at top center, rgba(138,92,255,.14), transparent 28%),
+        linear-gradient(180deg, #0b0b11 0%, #0c0c13 100%);
+      min-height:100vh;
+    }
+
+    .app{ max-width:1060px; margin:0 auto; padding:26px 16px 40px }
+
+    .topbar{
+      display:flex; align-items:center; justify-content:space-between;
+      gap:12px; margin-bottom:20px;
+    }
+    .brand{ font-size:2rem; font-weight:800; letter-spacing:-.04em }
+    .brand .accent{ color:var(--purple) }
+    .sub{ color:var(--muted); margin-top:6px; font-size:.95rem }
+    .chip{
+      border:1px solid #232332; background:rgba(255,255,255,.02);
+      color:var(--text); padding:10px 16px; border-radius:14px; font-size:.9rem;
+    }
+    .chip.active{
+      background:rgba(138,92,255,.15); border-color:rgba(138,92,255,.42);
+    }
+
+    .stats{
+      display:grid; grid-template-columns:repeat(4,1fr);
+      gap:14px; margin-bottom:22px;
+    }
+    .stat{
+      background:rgba(255,255,255,.025); border:1px solid #222230;
+      border-radius:18px; padding:16px 18px; box-shadow:var(--shadow);
+    }
+    .stat .k{ color:var(--muted); font-size:.88rem; margin-bottom:8px }
+    .stat .v{ font-size:1.8rem; font-weight:800; letter-spacing:-.04em }
+
+    .layout{
+      display:grid; grid-template-columns:minmax(0,1fr) 300px;
+      gap:18px; align-items:start;
+    }
+
+    .panel{
+      background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,.01));
+      border:1px solid #20202c; border-radius:var(--radius-xl);
+      box-shadow:var(--shadow); overflow:hidden;
+    }
+    .panel-head{
+      display:flex; align-items:center; justify-content:space-between;
+      gap:12px; padding:20px 20px 10px;
+    }
+    .panel-head h2{ margin:0; font-size:1.1rem; letter-spacing:-.02em }
+    .panel-sub{ padding:0 20px 18px; color:var(--muted); font-size:.9rem }
+
+    .cards{ display:flex; flex-direction:column; gap:16px; padding:0 14px 16px }
+
+    .habit-card{
+      background:var(--card); border:1px solid var(--card-border);
+      border-radius:26px; padding:16px;
+    }
+    .habit-top{
+      display:grid; grid-template-columns:var(--icon) 1fr var(--check);
+      gap:16px; align-items:center; margin-bottom:14px;
+    }
+    .iconbox{
+      width:var(--icon); height:var(--icon); border-radius:24px;
+      display:grid; place-items:center; font-size:2rem;
+      border:1px solid rgba(255,255,255,.06); background:#151520; user-select:none;
+    }
+    .meta h3{ margin:0 0 4px; font-size:1.18rem; letter-spacing:-.025em; font-weight:700 }
+    .meta .line{ color:var(--muted); font-size:.88rem }
+
+    .check{
+      width:var(--check); height:var(--check); border-radius:24px;
+      border:1px solid rgba(255,255,255,.08); font-size:2rem;
+      cursor:default; display:grid; place-items:center; color:#fff;
+      transition:transform .12s ease, filter .12s ease;
+    }
+
+    .grid-wrap{
+      overflow-x:auto; padding-bottom:4px; scrollbar-width:thin;
+    }
+    .grid{
+      display:grid;
+      grid-auto-flow:column;
+      grid-template-rows:repeat(7,var(--square));
+      grid-auto-columns:var(--square);
+      gap:var(--gap); width:max-content; padding:2px 0;
+    }
+    .cell{
+      width:var(--square); height:var(--square); border-radius:5px;
+      transition:transform .08s ease, filter .12s ease;
+      cursor:default; position:relative;
+    }
+    .cell:hover{ transform:scale(1.1); filter:brightness(1.15) }
+    .cell.today{
+      outline:2px solid rgba(255,255,255,.55); outline-offset:1px;
+    }
+
+    /* Colour palettes per habit */
+    .c-pink   .cell.on  { background:#f47b88 }
+    .c-pink   .cell.off { background:#2c1218 }
+    .c-grey   .cell.on  { background:#d6d2cb }
+    .c-grey   .cell.off { background:#2b2b33 }
+    .c-blue   .cell.on  { background:#5b9cf6 }
+    .c-blue   .cell.off { background:#0d1e3a }
+    .c-green  .cell.on  { background:#4ade80 }
+    .c-green  .cell.off { background:#0d2b1a }
+    .c-orange .cell.on  { background:#fb923c }
+    .c-orange .cell.off { background:#2b1408 }
+    .c-purple .cell.on  { background:#c084fc }
+    .c-purple .cell.off { background:#1e0a38 }
+
+    .legend{
+      display:flex; align-items:center; justify-content:space-between;
+      color:var(--muted-2); font-size:.78rem; margin-top:12px;
+    }
+    .legend-right{ display:flex; align-items:center; gap:8px }
+    .mini{ width:11px; height:11px; border-radius:3px; display:inline-block; margin-right:2px }
+
+    /* Side panel */
+    .side{
+      background:var(--panel); border:1px solid #20202c;
+      border-radius:var(--radius-xl); box-shadow:var(--shadow); padding-bottom:16px;
+    }
+    .todaylist{ display:flex; flex-direction:column; gap:10px; padding:0 16px 14px }
+    .row{
+      display:flex; justify-content:space-between; align-items:center;
+      gap:12px; padding:12px 14px; background:#0d0d14;
+      border:1px solid #242433; border-radius:14px;
+    }
+    .row strong{ font-size:.95rem }
+    .row small{ display:block; margin-top:3px; color:var(--muted); font-size:.82rem }
+    .dot{
+      width:22px; height:22px; border-radius:50%; flex-shrink:0;
+      display:grid; place-items:center; font-size:.8rem;
+    }
+    .dot.done{ background:rgba(74,222,128,.2); color:#4ade80 }
+    .dot.todo{ background:rgba(255,255,255,.06); color:var(--muted-2) }
+
+    /* Loading */
+    .loading{
+      display:flex; align-items:center; justify-content:center;
+      height:200px; color:var(--muted); font-size:.95rem; gap:12px;
+    }
+    .spinner{
+      width:20px; height:20px; border:2px solid rgba(138,92,255,.3);
+      border-top-color:var(--purple); border-radius:50%;
+      animation:spin .7s linear infinite;
+    }
+    @keyframes spin{ to{ transform:rotate(360deg) } }
+
+    .error-msg{
+      color:#f47b88; padding:20px; text-align:center; font-size:.9rem;
+    }
+
+    @media(max-width:980px){ .layout{ grid-template-columns:1fr } .stats{ grid-template-columns:repeat(2,1fr) } }
+    @media(max-width:680px){
+      :root{ --square:14px; --gap:4px; --icon:66px; --check:64px }
+      .app{ padding:18px 10px 30px }
+      .brand{ font-size:1.6rem }
+      .stats{ grid-template-columns:repeat(2,1fr) }
+      .iconbox{ border-radius:18px; font-size:1.5rem }
+      .check{ border-radius:18px; font-size:1.5rem }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <div class="topbar">
+    <div>
+      <div class="brand">Habit<span class="accent">Kit</span></div>
+      <div class="sub">Powered by Notion · Live from Railway</div>
+    </div>
+    <div class="chip active" id="lastUpdated">Loading...</div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="k">Active habits</div><div class="v" id="sHabits">—</div></div>
+    <div class="stat"><div class="k">Done today</div><div class="v" id="sToday">—</div></div>
+    <div class="stat"><div class="k">10-week rate</div><div class="v" id="sRate">—</div></div>
+    <div class="stat"><div class="k">7-day score</div><div class="v" id="sWeek">—</div></div>
+  </div>
+
+  <div class="layout">
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Week-by-week grid</h2>
+        <div class="chip">10 weeks</div>
+      </div>
+      <div class="panel-sub">
+        Each column is a week · each row is a day · today is outlined · tap any cell to inspect
+      </div>
+      <div class="cards" id="cards">
+        <div class="loading"><div class="spinner"></div> Fetching from Notion…</div>
+      </div>
+    </section>
+
+    <aside class="side">
+      <div class="panel-head">
+        <h2>Today</h2>
+        <div class="chip" id="todayChip">—</div>
+      </div>
+      <div class="panel-sub">Tap a habit card to log it via Telegram.</div>
+      <div class="todaylist" id="todayList">
+        <div class="loading" style="height:120px"><div class="spinner"></div></div>
+      </div>
+    </aside>
+  </div>
+
+</div>
+
+<script>
+// ── Config ────────────────────────────────────────────────────────────────────
+const API_URL = 'https://worker-production-d366.up.railway.app/habits-data';
+
+// Icon map — emoji per habit name keyword
+const ICON_MAP = {
+  'workout':  '🏋️',
+  'exercise': '🏋️',
+  'creatine': '🥛',
+  'protein':  '🥤',
+  'stretch':  '🧘',
+  'allergy':  '💊',
+  'magnesium':'🌙',
+};
+
+function habitIcon(name) {
+  const lower = name.toLowerCase();
+  for (const [key, icon] of Object.entries(ICON_MAP)) {
+    if (lower.includes(key)) return icon;
+  }
+  return '⭐';
+}
+
+// ── Fetch data ────────────────────────────────────────────────────────────────
+async function loadData() {
+  try {
+    const res  = await fetch(API_URL);
+    const data = await res.json();
+    render(data);
+  } catch (e) {
+    document.getElementById('cards').innerHTML =
+      `<div class="error-msg">⚠️ Could not reach Railway endpoint.<br><small>${e.message}</small></div>`;
+  }
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+function render(data) {
+  const habits  = data.habits;
+  const dates   = data.dates;   // 70 ISO date strings, oldest first
+  const columns = 10;           // 10 weeks
+  const rows    = 7;            // 7 days per week
+
+  // Last updated chip
+  const gen = new Date(data.generated);
+  document.getElementById('lastUpdated').textContent =
+    gen.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+
+  // Today chip
+  const today = new Date();
+  document.getElementById('todayChip').textContent =
+    today.toLocaleDateString('en-US', {weekday:'short', day:'numeric', month:'short'});
+
+  // Stats
+  const totalHabits = habits.length;
+  const doneToday   = habits.filter(h => h.todayDone).length;
+  const totalCells  = habits.reduce((a, h) => a + h.days.length, 0);
+  const totalDone   = habits.reduce((a, h) => a + h.days.reduce((x, y) => x + y, 0), 0);
+  const weekScore   = habits.reduce((a, h) => a + h.days.slice(-7).reduce((x, y) => x + y, 0), 0);
+
+  document.getElementById('sHabits').textContent = totalHabits;
+  document.getElementById('sToday').textContent  = `${doneToday}/${totalHabits}`;
+  document.getElementById('sRate').textContent   = totalCells ? Math.round(totalDone / totalCells * 100) + '%' : '—';
+  document.getElementById('sWeek').textContent   = weekScore;
+
+  // Cards
+  const cards = document.getElementById('cards');
+  cards.innerHTML = '';
+
+  habits.forEach(habit => {
+    const colorClass = `c-${habit.color || 'pink'}`;
+    const icon       = habitIcon(habit.name);
+    const checkBg    = habit.todayDone ? 'rgba(74,222,128,.15)' : 'rgba(255,255,255,.04)';
+    const checkIcon  = habit.todayDone ? '✓' : '+';
+
+    const article = document.createElement('article');
+    article.className = `habit-card ${colorClass}`;
+    article.innerHTML = `
+      <div class="habit-top">
+        <div class="iconbox">${icon}</div>
+        <div class="meta">
+          <h3>${habit.name}</h3>
+          <div class="line">${habit.frequency || ''} ${habit.description ? '· ' + habit.description : ''}</div>
+        </div>
+        <div class="check" style="background:${checkBg}">${checkIcon}</div>
+      </div>
+      <div class="grid-wrap">
+        <div class="grid"></div>
+      </div>
+      <div class="legend">
+        <span>10 weeks ago</span>
+        <div class="legend-right">
+          <span><i class="mini off-swatch"></i> missed</span>
+          <span><i class="mini on-swatch"></i> done</span>
+          <span>today</span>
+        </div>
+      </div>
+    `;
+
+    // Colour legend swatches
+    const onColor  = getComputedColor(colorClass, true);
+    const offColor = getComputedColor(colorClass, false);
+    article.querySelector('.on-swatch').style.background  = onColor;
+    article.querySelector('.off-swatch').style.background = offColor;
+
+    // Build grid cells
+    const grid = article.querySelector('.grid');
+    habit.days.forEach((value, idx) => {
+      const cell    = document.createElement('div');
+      const isToday = idx === habit.days.length - 1;
+      cell.className = `cell ${value ? 'on' : 'off'} ${isToday ? 'today' : ''}`;
+
+      // Tooltip
+      const dateStr = dates[idx] || '';
+      const label   = new Date(dateStr + 'T12:00:00').toLocaleDateString('en-US',
+        {weekday:'short', month:'short', day:'numeric'});
+      cell.title = `${label} · ${value ? '✓ done' : '○ not done'}`;
+
+      grid.appendChild(cell);
+    });
+
+    cards.appendChild(article);
+  });
+
+  // Today side panel
+  const todayList = document.getElementById('todayList');
+  todayList.innerHTML = '';
+  if (!habits.length) {
+    todayList.innerHTML = '<div style="color:var(--muted);padding:12px;font-size:.9rem">No habits found.</div>';
+    return;
+  }
+  habits.forEach(habit => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `
+      <div>
+        <strong>${habitIcon(habit.name)} ${habit.name}</strong>
+        <small>${habit.frequency || ''}</small>
+      </div>
+      <div class="dot ${habit.todayDone ? 'done' : 'todo'}">${habit.todayDone ? '✓' : '○'}</div>
+    `;
+    todayList.appendChild(row);
+  });
+}
+
+// Helper: map color class to actual CSS colour values
+function getComputedColor(colorClass, on) {
+  const map = {
+    'c-pink':   { on: '#f47b88', off: '#2c1218' },
+    'c-grey':   { on: '#d6d2cb', off: '#2b2b33' },
+    'c-blue':   { on: '#5b9cf6', off: '#0d1e3a' },
+    'c-green':  { on: '#4ade80', off: '#0d2b1a' },
+    'c-orange': { on: '#fb923c', off: '#2b1408' },
+    'c-purple': { on: '#c084fc', off: '#1e0a38' },
+  };
+  return (map[colorClass] || map['c-pink'])[on ? 'on' : 'off'];
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+loadData();
+
+// Auto-refresh every 5 minutes
+setInterval(loadData, 5 * 60 * 1000);
+</script>
+</body>
+</html>
