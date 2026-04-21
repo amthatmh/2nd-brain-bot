@@ -275,7 +275,7 @@ def deadline_days_to_label(days: int | None) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def log_habit(habit_page_id: str, habit_name: str) -> None:
-    today = date.today().isoformat()
+    today = datetime.now(TZ).date().isoformat()
     notion.pages.create(
         parent={"database_id": NOTION_LOG_DB},
         properties={
@@ -290,7 +290,7 @@ def log_habit(habit_page_id: str, habit_name: str) -> None:
 
 
 def already_logged_today(habit_page_id: str) -> bool:
-    today = date.today().isoformat()
+    today = datetime.now(TZ).date().isoformat()
     results = notion.databases.query(
         database_id=NOTION_LOG_DB,
         filter={
@@ -306,7 +306,7 @@ def already_logged_today(habit_page_id: str) -> bool:
 
 def logs_this_week(habit_page_id: str) -> int:
     """Count completions Mon–today for frequency-pacing check."""
-    today      = date.today()
+    today      = datetime.now(TZ).date()
     monday     = today - timedelta(days=today.weekday())
     results = notion.databases.query(
         database_id=NOTION_LOG_DB,
@@ -1201,7 +1201,6 @@ async def habits_data_handler(request: web.Request) -> web.Response:
 
         # Date range: configurable history window
         today = datetime.now(TZ).date()
-        today = date.today()
         num_days = WEEKS_HISTORY * 7
         start_dt = today - timedelta(days=num_days - 1)
 
@@ -1403,7 +1402,7 @@ async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
     log_habit(pid, name)
     await update.message.reply_text(
-        f"✅ Logged!\n\n{name}\n📅 {date.today().strftime('%B %-d')}",
+        f"✅ Logged!\n\n{name}\n📅 {datetime.now(TZ).strftime('%B %-d')}",
         parse_mode="Markdown",
     )
 
