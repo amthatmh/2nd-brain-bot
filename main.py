@@ -1,19 +1,37 @@
 #!/usr/bin/env python3
 """
-Second Brain — Telegram Bot (v4)
+Second Brain — Telegram Bot (v6)
 - AI task capture into Notion
 - Duplicate guard
 - Reply-to-done support
 - Bare `done` opens a completion picker for Today + overdue tasks
 - `done 1,3`, `done: task name`, and `mark ... done` supported
+- Multi-task capture: bullet lists (-, •, 1.) or multi-line messages
+  are split, classified concurrently, and reported in a single summary
+
+v5 changes:
+- Removed `Horizon` field; horizon is computed by `Auto Horizon` formula.
+- `Status` is now a Notion formula. All select writes removed.
+- `mark_done()` only writes the `Done` checkbox.
+- Sunday review buttons write a Deadline date instead of a Horizon select.
+- Added `focus:` / `unfocus:` Telegram commands.
+
+v6 changes:
+- Multi-task detection via `split_tasks()`: bullet markers (-, •, *, 1.)
+  or multiple non-empty lines are each treated as a separate task.
+- All tasks in a batch are classified concurrently via asyncio + executor.
+- Results are grouped by (horizon, context) and formatted as one summary.
+- Low-confidence multi-tasks default to Backburner (no picker spam).
+- Single-task low-confidence flow unchanged (shows horizon picker).
 """
 
+import asyncio
 import os
 import json
 import re
 import logging
 import calendar
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytz
 from dotenv import load_dotenv
@@ -34,7 +52,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
 log = logging.getLogger(__name__)
 
-# ── Config from environment ──────────────────────────────────────────────────
+# ── Config ───────────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 MY_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
 ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]
@@ -63,19 +81,60 @@ _pending_counter = 0
 _done_picker_counter = 0
 
 # ── Constants ────────────────────────────────────────────────────────────────
-HORIZON_MAP = {
+HORIZON_DEADLINE_OFFSETS = {
+    "t": 0,
+    "w": 6,
+    "m": 30,
+    "b": None,
+}
+HORIZON_LABELS = {
     "t": "🔴 Today",
     "w": "🟠 This Week",
     "m": "🟡 This Month",
     "b": "⚪ Backburner",
 }
+
 NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 REPEAT_DAY_TO_WEEKDAY = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
 REPEAT_DAY_TO_MONTHDAY = {"1st": 1, "5th": 5, "10th": 10, "15th": 15, "20th": 20, "25th": 25, "Last": -1}
 
+# Matches bullet/number prefixes: "- ", "• ", "* ", "1. ", "2) ", "3: " etc.
+_BULLET_RE = re.compile(r"^[\s]*(?:[-•*]|\d+[.):])\s+", re.MULTILINE)
+
 
 def num_emoji(n: int) -> str:
     return NUMBER_EMOJIS[n - 1] if 1 <= n <= 10 else f"{n}."
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MULTI-TASK PARSING
+# ══════════════════════════════════════════════════════════════════════════════
+
+def split_tasks(text: str) -> list[str]:
+    """
+    Split a message into individual task strings.
+
+    Rules (in priority order):
+    1. If any line has a bullet/number prefix → strip markers, keep marked lines.
+    2. If 2+ non-empty lines exist with no bullets → treat each line as a task.
+    3. Single line → return as-is (single task, normal flow).
+
+    Examples:
+      "- Buy milk\n- Call dentist"     → ["Buy milk", "Call dentist"]
+      "1. Buy milk\n2. Call dentist"   → ["Buy milk", "Call dentist"]
+      "Buy milk\nCall dentist"         → ["Buy milk", "Call dentist"]
+      "Buy milk"                       → ["Buy milk"]
+    """
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+
+    if any(_BULLET_RE.match(l) for l in lines):
+        tasks = [_BULLET_RE.sub("", l).strip() for l in lines if _BULLET_RE.match(l)]
+        return tasks if len(tasks) > 1 else [text]
+
+    if len(lines) > 1:
+        return lines
+
+    return [text]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -90,17 +149,17 @@ Task: \"{text}\"
 Return ONLY valid JSON, no markdown, no explanation:
 {{
   \"task_name\": \"clean concise task name\",
-  \"horizon\": \"one of exactly: 🔴 Today | 🟠 This Week | 🟡 This Month | ⚪ Backburner\",
+  \"deadline_days\": <integer days from today, or null if no urgency>,
   \"context\": \"one of exactly: 💼 Work | 🏠 Personal | 🏃 Health | 🤝 Collab\",
   \"confidence\": \"high or low\"
 }}
 
-Horizon rules:
-- today/tonight/now/urgent/ASAP/by EOD → 🔴 Today
-- this week/by Friday/in a few days → 🟠 This Week
-- this month/next few weeks/soon-ish → 🟡 This Month
-- someday/eventually/no urgency → ⚪ Backburner
-- NO time signal at all → confidence \"low\"
+deadline_days rules:
+- today/tonight/now/urgent/ASAP/by EOD → 0
+- this week/by Friday/in a few days → 5
+- this month/next few weeks/soon-ish → 20
+- someday/eventually/no urgency → null
+- NO time signal at all → null and confidence \"low\"
 
 Context rules:
 - meetings/clients/projects/reports → 💼 Work
@@ -117,16 +176,33 @@ Context rules:
     return json.loads(raw)
 
 
+def deadline_days_to_label(days: int | None) -> str:
+    if days is None:
+        return "⚪ Backburner"
+    if days <= 0:
+        return "🔴 Today"
+    if days <= 7:
+        return "🟠 This Week"
+    if days <= 31:
+        return "🟡 This Month"
+    return "⚪ Backburner"
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # NOTION HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def create_task(name: str, horizon: str, context: str,
+def _deadline_prop(days: int | None) -> dict:
+    if days is None:
+        return {"date": None}
+    return {"date": {"start": (date.today() + timedelta(days=days)).isoformat()}}
+
+
+def create_task(name: str, deadline_days: int | None, context: str,
                 recurring: str = "None", repeat_day: str | None = None) -> str:
     props = {
         "Name": {"title": [{"text": {"content": name}}]},
-        "Status": {"select": {"name": "To Do"}},
-        "Horizon": {"select": {"name": horizon}},
+        "Deadline": _deadline_prop(deadline_days),
         "Context": {"select": {"name": context}},
         "Source": {"select": {"name": "📱 Telegram"}},
         "Recurring": {"select": {"name": recurring}},
@@ -136,26 +212,29 @@ def create_task(name: str, horizon: str, context: str,
     page = notion.pages.create(parent={"database_id": NOTION_DB_ID}, properties=props)
     return page["id"]
 
-def mark_done(page_id: str) -> None:
-    notion.pages.update(
-        page_id=page_id,
-        properties={
-            # Update the Status dropdown as before
-            "Status": {"select": {"name": "Done 🙌"}},
-            # Also tick the Done checkbox in the same API call
-            "Done": {"checkbox": True},
-        },
-    )
 
-def set_horizon(page_id: str, horizon: str) -> None:
-    notion.pages.update(page_id=page_id, properties={"Horizon": {"select": {"name": horizon}}})
+def mark_done(page_id: str) -> None:
+    notion.pages.update(page_id=page_id, properties={"Done": {"checkbox": True}})
+
+
+def set_deadline_from_horizon_code(page_id: str, code: str) -> None:
+    days = HORIZON_DEADLINE_OFFSETS.get(code)
+    if days is None:
+        notion.pages.update(page_id=page_id, properties={"Deadline": {"date": None}})
+    else:
+        target = date.today() + timedelta(days=days)
+        notion.pages.update(page_id=page_id, properties={"Deadline": {"date": {"start": target.isoformat()}}})
+
+
+def set_focus(page_id: str, focused: bool) -> None:
+    notion.pages.update(page_id=page_id, properties={"Focus": {"checkbox": focused}})
 
 
 def set_last_generated(page_id: str, d: date) -> None:
     notion.pages.update(page_id=page_id, properties={"Last Generated": {"date": {"start": d.isoformat()}}})
 
 
-def _get_prop(props: dict, key: str, kind: str) -> str | None:
+def _get_prop(props: dict, key: str, kind: str):
     prop = props.get(key, {})
     if kind == "title":
         parts = prop.get("title", [])
@@ -163,9 +242,14 @@ def _get_prop(props: dict, key: str, kind: str) -> str | None:
     if kind == "select":
         sel = prop.get("select")
         return sel["name"] if sel else None
+    if kind == "formula":
+        f = prop.get("formula", {})
+        return f.get("string") or f.get("number") or None
     if kind == "date":
         d = prop.get("date")
         return d["start"] if d else None
+    if kind == "checkbox":
+        return prop.get("checkbox", False)
     return None
 
 
@@ -179,13 +263,16 @@ def _normalize_task_name(text: str) -> str:
     return s
 
 
-def query_tasks(horizons: list[str]) -> list[dict]:
+def query_tasks_by_auto_horizon(horizons: list[str]) -> list[dict]:
     results = notion.databases.query(
         database_id=NOTION_DB_ID,
         filter={
             "and": [
-                {"property": "Status", "select": {"does_not_equal": "Done 🙌"}},
-                {"or": [{"property": "Horizon", "select": {"equals": h}} for h in horizons]},
+                {"property": "Done", "checkbox": {"equals": False}},
+                {"or": [
+                    {"property": "Auto Horizon", "formula": {"string": {"equals": h}}}
+                    for h in horizons
+                ]},
             ]
         },
     )
@@ -195,7 +282,7 @@ def query_tasks(horizons: list[str]) -> list[dict]:
         tasks.append({
             "page_id": page["id"],
             "name": _get_prop(p, "Name", "title") or "Untitled",
-            "horizon": _get_prop(p, "Horizon", "select") or "",
+            "auto_horizon": _get_prop(p, "Auto Horizon", "formula") or "",
             "context": _get_prop(p, "Context", "select") or "",
             "deadline": _get_prop(p, "Deadline", "date"),
         })
@@ -205,13 +292,13 @@ def query_tasks(horizons: list[str]) -> list[dict]:
 def get_all_active_tasks() -> list[dict]:
     results = notion.databases.query(
         database_id=NOTION_DB_ID,
-        filter={"property": "Status", "select": {"does_not_equal": "Done 🙌"}},
+        filter={"property": "Done", "checkbox": {"equals": False}},
     )
     return [
         {
             "page_id": p["id"],
             "name": _get_prop(p["properties"], "Name", "title") or "Untitled",
-            "horizon": _get_prop(p["properties"], "Horizon", "select") or "",
+            "auto_horizon": _get_prop(p["properties"], "Auto Horizon", "formula") or "",
             "context": _get_prop(p["properties"], "Context", "select") or "",
             "deadline": _get_prop(p["properties"], "Deadline", "date"),
         }
@@ -224,7 +311,7 @@ def get_today_and_overdue_tasks() -> list[dict]:
     today_str = date.today().isoformat()
     selected = []
     for t in tasks:
-        is_today = t["horizon"] == "🔴 Today"
+        is_today = t["auto_horizon"] == "🔴 Today"
         is_overdue = bool(t["deadline"] and t["deadline"] < today_str)
         if is_today or is_overdue:
             selected.append(t)
@@ -239,7 +326,7 @@ def get_recurring_templates() -> list[dict]:
         filter={
             "and": [
                 {"property": "Recurring", "select": {"does_not_equal": "None"}},
-                {"property": "Status", "select": {"does_not_equal": "Done 🙌"}},
+                {"property": "Done", "checkbox": {"equals": False}},
             ]
         },
     )
@@ -249,11 +336,12 @@ def get_recurring_templates() -> list[dict]:
         templates.append({
             "page_id": page["id"],
             "name": _get_prop(p, "Name", "title") or "Untitled",
-            "horizon": _get_prop(p, "Horizon", "select") or "🔴 Today",
+            "auto_horizon": _get_prop(p, "Auto Horizon", "formula") or "🔴 Today",
             "context": _get_prop(p, "Context", "select") or "🏠 Personal",
             "recurring": _get_prop(p, "Recurring", "select") or "None",
             "repeat_day": _get_prop(p, "Repeat Day", "select"),
             "last_generated": _get_prop(p, "Last Generated", "date"),
+            "deadline": _get_prop(p, "Deadline", "date"),
         })
     return templates
 
@@ -262,13 +350,10 @@ def fuzzy_match(query: str, tasks: list[dict]) -> dict | None:
     q = _normalize_task_name(query)
     if not q:
         return None
-
     exact = next((t for t in tasks if _normalize_task_name(t["name"]) == q), None)
     if exact:
         return exact
-
-    contains = next((t for t in tasks if q in _normalize_task_name(t["name"]) or _normalize_task_name(t["name"]) in q), None)
-    return contains
+    return next((t for t in tasks if q in _normalize_task_name(t["name"]) or _normalize_task_name(t["name"]) in q), None)
 
 
 def find_duplicate_active_task(name: str) -> dict | None:
@@ -283,7 +368,6 @@ def should_spawn_today(template: dict, today: date) -> bool:
     recurring = template["recurring"]
     repeat_day = template["repeat_day"]
     last_gen = template["last_generated"]
-
     if last_gen == today.isoformat():
         return False
     if recurring == "🔁 Daily":
@@ -308,8 +392,7 @@ def spawn_recurring_instance(template: dict) -> None:
         parent={"database_id": NOTION_DB_ID},
         properties={
             "Name": {"title": [{"text": {"content": template["name"]}}]},
-            "Status": {"select": {"name": "To Do"}},
-            "Horizon": {"select": {"name": template["horizon"]}},
+            "Deadline": {"date": {"start": today.isoformat()}},
             "Context": {"select": {"name": template["context"]}},
             "Source": {"select": {"name": "✏️ Manual"}},
         },
@@ -338,13 +421,112 @@ def handle_done_recurring(page_id: str) -> bool:
     spawn_recurring_instance({
         "page_id": page_id,
         "name": _get_prop(p, "Name", "title") or "Untitled",
-        "horizon": _get_prop(p, "Horizon", "select") or "🔴 Today",
+        "auto_horizon": _get_prop(p, "Auto Horizon", "formula") or "🔴 Today",
         "context": _get_prop(p, "Context", "select") or "🏠 Personal",
         "recurring": recurring,
         "repeat_day": _get_prop(p, "Repeat Day", "select"),
         "last_generated": _get_prop(p, "Last Generated", "date"),
+        "deadline": _get_prop(p, "Deadline", "date"),
     })
     return True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BATCH CAPTURE
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _run_capture(raw_text: str, force_create: bool = False) -> dict:
+    """
+    Classify and create a single task synchronously.
+    Designed to be called via run_in_executor for concurrent batches.
+
+    Returns a result dict:
+      status: "captured" | "duplicate" | "error"
+      + relevant fields per status
+    """
+    try:
+        result = classify_task(raw_text)
+        task_name = result.get("task_name", raw_text)
+        deadline_days = result.get("deadline_days")
+        ctx = result.get("context", "🏠 Personal")
+        horizon_label = deadline_days_to_label(deadline_days)
+    except Exception as e:
+        log.error(f"Claude error for '{raw_text}': {e}")
+        return {"status": "error", "name": raw_text, "error": str(e)}
+
+    if not force_create:
+        dup = find_duplicate_active_task(task_name)
+        if dup:
+            return {"status": "duplicate", "name": task_name, "duplicate": dup}
+
+    try:
+        page_id = create_task(task_name, deadline_days, ctx)
+        return {
+            "status": "captured",
+            "name": task_name,
+            "horizon_label": horizon_label,
+            "context": ctx,
+            "page_id": page_id,
+        }
+    except Exception as e:
+        log.error(f"Notion error for '{task_name}': {e}")
+        return {"status": "error", "name": task_name, "error": str(e)}
+
+
+def format_batch_summary(results: list[dict]) -> str:
+    """
+    Format a multi-task capture into a single summary message.
+
+    Tasks are grouped by (horizon_label, context) so items sharing the
+    same urgency and context are visually clustered — like a room's
+    acoustic zones mapped on one diagram rather than separate pages.
+
+    Output example:
+      ✅ Captured!
+      📝 Buy Milk
+      📝 Pick Up Dry Cleaning
+      📝 Call Dentist
+      🕐 🔴 Today  🏠 Personal  · Saved to Notion
+
+      📝 Review Q2 report
+      🕐 🟠 This Week  💼 Work  · Saved to Notion
+
+      ⚠️ Already on your list (skipped):
+        · Fold laundry  ⚪ Backburner 🏠 Personal
+    """
+    captured = [r for r in results if r["status"] == "captured"]
+    duplicates = [r for r in results if r["status"] == "duplicate"]
+    errors = [r for r in results if r["status"] == "error"]
+
+    lines = []
+
+    if captured:
+        # Group by (horizon_label, context), preserving insertion order
+        groups: dict[tuple, list[str]] = {}
+        for r in captured:
+            key = (r["horizon_label"], r["context"])
+            groups.setdefault(key, []).append(r["name"])
+
+        lines.append("✅ Captured!")
+        for (horizon, ctx), names in groups.items():
+            for name in names:
+                lines.append(f"📝 {name}")
+            lines.append(f"🕐 {horizon}  {ctx}  · _Saved to Notion_")
+            lines.append("")
+
+    if duplicates:
+        lines.append("⚠️ *Already on your list* (skipped):")
+        for r in duplicates:
+            dup = r["duplicate"]
+            lines.append(f"  · {r['name']}  _{dup.get('auto_horizon', '')} {dup.get('context', '')}_")
+        lines.append("")
+
+    if errors:
+        lines.append("❌ *Couldn't capture*:")
+        for r in errors:
+            lines.append(f"  · {r['name']}")
+
+    return "\n".join(lines).strip()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -464,7 +646,7 @@ def done_picker_keyboard(key: str, page: int = 0, page_size: int = 5) -> InlineK
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CAPTURE / DONE HELPERS
+# CAPTURE ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def complete_task_by_page_id(message, page_id: str, name: str) -> None:
@@ -474,15 +656,42 @@ async def complete_task_by_page_id(message, page_id: str, name: str) -> None:
 
 
 async def create_or_prompt_task(message, raw_text: str, force_create: bool = False) -> None:
+    """
+    Main capture dispatcher.
+
+    - Multi-task (2+ items detected): classify all concurrently, create all,
+      reply with a grouped batch summary. No pickers shown for low-confidence
+      items — they land in Backburner with a note in the summary.
+    - Single task, high confidence: create and confirm.
+    - Single task, low confidence: show horizon picker as before.
+    """
     global _pending_counter
 
-    thinking = await message.reply_text("🧠 Classifying...")
+    task_texts = split_tasks(raw_text)
+    is_multi = len(task_texts) > 1
+
+    thinking = await message.reply_text(
+        f"🧠 Classifying {len(task_texts)} tasks..." if is_multi else "🧠 Classifying..."
+    )
+
+    if is_multi:
+        loop = asyncio.get_event_loop()
+        results = await asyncio.gather(*[
+            loop.run_in_executor(None, _run_capture, t, force_create)
+            for t in task_texts
+        ])
+        summary = format_batch_summary(list(results))
+        await thinking.edit_text(summary, parse_mode="Markdown")
+        return
+
+    # ── Single task path ─────────────────────────────────────────────────────
     try:
         result = classify_task(raw_text)
         task_name = result.get("task_name", raw_text)
-        horizon = result.get("horizon", "⚪ Backburner")
+        deadline_days = result.get("deadline_days")
         ctx = result.get("context", "🏠 Personal")
         confidence = result.get("confidence", "low")
+        horizon_label = deadline_days_to_label(deadline_days)
     except Exception as e:
         log.error(f"Claude error: {e}")
         await thinking.edit_text("⚠️ Couldn't classify that. Try rephrasing?")
@@ -492,16 +701,16 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
         dup = find_duplicate_active_task(task_name)
         if dup:
             await thinking.edit_text(
-                f"⚠️ Already on your list:\n\n📝 {dup['name']}\n🕐 {dup.get('horizon', '')}  {dup.get('context', '')}\n\nSend `force: {task_name}` if you want to add it anyway.",
+                f"⚠️ Already on your list:\n\n📝 {dup['name']}\n🕐 {dup.get('auto_horizon', '')}  {dup.get('context', '')}\n\nSend `force: {task_name}` if you want to add it anyway.",
                 parse_mode="Markdown",
             )
             return
 
     if confidence == "high":
         try:
-            page_id = create_task(task_name, horizon, ctx)
+            page_id = create_task(task_name, deadline_days, ctx)
             await thinking.edit_text(
-                f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon}  {ctx}\n\n_Saved to Notion_",
+                f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}\n\n_Saved to Notion_",
                 parse_mode="Markdown",
             )
             capture_map[thinking.message_id] = {"page_id": page_id, "name": task_name}
@@ -521,20 +730,14 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
 
 async def open_done_picker(message) -> None:
     global _done_picker_counter
-
     tasks = get_today_and_overdue_tasks()
     if not tasks:
         await message.reply_text("✅ Nothing open in Today or overdue right now.")
         return
-
     key = str(_done_picker_counter)
     _done_picker_counter += 1
     done_picker_map[key] = tasks
-
-    await message.reply_text(
-        "Which task should be marked done?",
-        reply_markup=done_picker_keyboard(key, page=0),
-    )
+    await message.reply_text("Which task should be marked done?", reply_markup=done_picker_keyboard(key, page=0))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -542,7 +745,6 @@ async def open_done_picker(message) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-
     if update.effective_chat.id != MY_CHAT_ID:
         return
 
@@ -560,13 +762,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             captured = capture_map[replied_id]
             await complete_task_by_page_id(message, captured["page_id"], captured["name"])
             return
-
-        # If replying to a digest, allow picker instead of capture
         if replied_id in digest_map:
             await message.reply_text("Reply with `done 1` or `done 1,3`, or use `done: task name`.", parse_mode="Markdown")
             return
 
-    # 2. bare `done` opens picker, never capture
+    # 2. bare `done` → picker
     if lower == "done":
         await open_done_picker(message)
         return
@@ -614,13 +814,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await message.reply_text(f"Couldn't find a task matching \"{query}\".")
         return
 
-    # 6. force: task creation bypassing duplicate guard
+    # 6. focus: task name
+    match_focus = re.match(r"focus:\s*(.+)$", text, re.IGNORECASE)
+    if match_focus:
+        query = match_focus.group(1).strip()
+        matched = fuzzy_match(query, get_all_active_tasks())
+        if matched:
+            set_focus(matched["page_id"], True)
+            await message.reply_text(f"🎯 Focused: {matched['name']} → *Doing*", parse_mode="Markdown")
+        else:
+            await message.reply_text(f"Couldn't find a task matching \"{query}\".")
+        return
+
+    # 7. unfocus: task name
+    match_unfocus = re.match(r"unfocus:\s*(.+)$", text, re.IGNORECASE)
+    if match_unfocus:
+        query = match_unfocus.group(1).strip()
+        matched = fuzzy_match(query, get_all_active_tasks())
+        if matched:
+            set_focus(matched["page_id"], False)
+            await message.reply_text(f"⬜ Unfocused: {matched['name']} → *To Do*", parse_mode="Markdown")
+        else:
+            await message.reply_text(f"Couldn't find a task matching \"{query}\".")
+        return
+
+    # 8. force:
     match_force = re.match(r"force:\s*(.+)$", text, re.IGNORECASE)
     if match_force:
         await create_or_prompt_task(message, match_force.group(1).strip(), force_create=True)
         return
 
-    # 7. normal capture
+    # 9. normal capture — single or multi
     await create_or_prompt_task(message, text, force_create=False)
 
 
@@ -634,22 +858,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if key not in pending_map:
             await q.edit_message_text("⚠️ This task expired — please re-send it.")
             return
-
         task = pending_map.pop(key)
-        horizon = HORIZON_MAP.get(code, "⚪ Backburner")
-
+        horizon_label = HORIZON_LABELS.get(code, "⚪ Backburner")
+        days = HORIZON_DEADLINE_OFFSETS.get(code)
         dup = find_duplicate_active_task(task["name"])
         if dup:
             await q.edit_message_text(
-                f"⚠️ Already on your list:\n\n📝 {dup['name']}\n🕐 {dup.get('horizon', '')}  {dup.get('context', '')}\n\nSend `force: {task['name']}` if you want to add it anyway.",
+                f"⚠️ Already on your list:\n\n📝 {dup['name']}\n🕐 {dup.get('auto_horizon', '')}  {dup.get('context', '')}\n\nSend `force: {task['name']}` if you want to add it anyway.",
                 parse_mode="Markdown",
             )
             return
-
         try:
-            page_id = create_task(task["name"], horizon, task["context"])
+            page_id = create_task(task["name"], days, task["context"])
             await q.edit_message_text(
-                f"✅ Captured!\n\n📝 {task['name']}\n🕐 {horizon}  {task['context']}\n\n_Saved to Notion_",
+                f"✅ Captured!\n\n📝 {task['name']}\n🕐 {horizon_label}  {task['context']}\n\n_Saved to Notion_",
                 parse_mode="Markdown",
             )
             capture_map[q.message.message_id] = {"page_id": page_id, "name": task["name"]}
@@ -672,10 +894,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if parts[0] == "h" and len(parts) == 3:
         _, pid_clean, code = parts
         page_id = _restore_pid(pid_clean)
-        horizon = HORIZON_MAP.get(code, "⚪ Backburner")
+        horizon_label = HORIZON_LABELS.get(code, "⚪ Backburner")
         try:
-            set_horizon(page_id, horizon)
-            await q.edit_message_text(f"Updated → {horizon} ✓")
+            set_deadline_from_horizon_code(page_id, code)
+            await q.edit_message_text(f"Updated → {horizon_label} ✓")
         except Exception as e:
             log.error(f"Notion horizon error: {e}")
             await q.edit_message_text("⚠️ Couldn't update Notion.")
@@ -702,8 +924,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if key not in done_picker_map:
             await q.edit_message_text("⚠️ This picker expired. Send `done` again.", parse_mode="Markdown")
             return
-        page = int(page_str)
-        await q.edit_message_reply_markup(reply_markup=done_picker_keyboard(key, page=page))
+        await q.edit_message_reply_markup(reply_markup=done_picker_keyboard(key, page=int(page_str)))
         return
 
     if parts[0] == "dpc" and len(parts) == 2:
@@ -735,14 +956,14 @@ async def send_daily_digest(bot) -> None:
 
 async def send_sunday_review(bot) -> None:
     await send_daily_digest(bot)
-    week_tasks = query_tasks(["🟠 This Week"])
-    month_tasks = query_tasks(["🟡 This Month"])
+    week_tasks = query_tasks_by_auto_horizon(["🟠 This Week"])
+    month_tasks = query_tasks_by_auto_horizon(["🟡 This Month"])
     header, ordered = format_sunday_intro(week_tasks, month_tasks)
     await bot.send_message(chat_id=MY_CHAT_ID, text=header, parse_mode="Markdown")
     for n, task in enumerate(ordered, 1):
         await bot.send_message(
             chat_id=MY_CHAT_ID,
-            text=f"{num_emoji(n)} *{task['name']}*  {task['context']}\n_Currently: {task['horizon']}_",
+            text=f"{num_emoji(n)} *{task['name']}*  {task['context']}\n_Currently: {task['auto_horizon']}_",
             parse_mode="Markdown",
             reply_markup=review_keyboard(task["page_id"]),
         )
@@ -755,12 +976,10 @@ async def send_sunday_review(bot) -> None:
 
 async def post_init(app: Application) -> None:
     scheduler = AsyncIOScheduler(timezone=TZ)
-
     scheduler.add_job(run_recurring_check, "cron", hour=_rc_h, minute=_rc_m, args=[app.bot])
     scheduler.add_job(send_daily_digest, "cron", day_of_week="mon-fri", hour=_wk_h, minute=_wk_m, args=[app.bot])
     scheduler.add_job(send_daily_digest, "cron", day_of_week="sat", hour=_we_h, minute=_we_m, args=[app.bot])
     scheduler.add_job(send_sunday_review, "cron", day_of_week="sun", hour=_we_h, minute=_we_m, args=[app.bot])
-
     scheduler.start()
     log.info(
         f"Scheduler started ✓  TZ={TZ}  "
