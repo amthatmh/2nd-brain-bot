@@ -166,13 +166,18 @@ function getColor(colorClass, on) {
 
 async function loadData() {
   try {
-    const res  = await fetch(API_URL);
+    const url = `${API_URL}?t=${Date.now()}`;
+    const res  = await fetch(url, { cache: 'no-store' });
     const data = await res.json();
     render(data);
   } catch(e) {
     document.getElementById('cards').innerHTML =
       `<div class="error-msg">⚠️ Could not reach Railway endpoint.<br><small>${e.message}</small></div>`;
   }
+}
+
+function refreshIfVisible() {
+  if (document.visibilityState === 'visible') loadData();
 }
 
 function render(data) {
@@ -287,6 +292,8 @@ function render(data) {
 
 loadData();
 setInterval(loadData, 5*60*1000);
+window.addEventListener('focus', loadData);
+document.addEventListener('visibilitychange', refreshIfVisible);
 </script>
 </body>
 </html>
