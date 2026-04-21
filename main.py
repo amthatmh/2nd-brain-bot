@@ -1306,7 +1306,10 @@ async def post_init(app: Application) -> None:
 
 
 def main() -> None:
+    from telegram.ext import CommandHandler
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+    app.add_handler(CommandHandler("start", handle_start_command))
+    app.add_handler(CommandHandler("done",  handle_done_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
     log.info("🤖 Second Brain bot starting (v8)...")
@@ -1315,3 +1318,90 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /done COMMAND — combined habit + task picker
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def handle_done_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /done — shows habit picker (pending only) + task picker (today/overdue).
+    The secretary's combined completion dashboard in one command.
+    """
+    if update.effective_chat.id != MY_CHAT_ID:
+        return
+
+    pending_habits = [
+        h for h in sorted(habit_cache.values(), key=lambda x: x["sort"])
+        if not already_logged_today(h["page_id"])
+    ]
+    tasks = get_today_and_overdue_tasks()
+
+    if not pending_habits and not tasks:
+        await update.message.reply_text("✅ Everything done for today — nothing left to log!")
+        return
+
+    if pending_habits:
+        await update.message.reply_text(
+            "🏃 *Which habit did you complete?*",
+            parse_mode="Markdown",
+            reply_markup=habit_buttons(pending_habits, "hl"),
+        )
+
+    if tasks:
+        global _done_picker_counter
+        key = str(_done_picker_counter); _done_picker_counter += 1
+        done_picker_map[key] = tasks
+        await update.message.reply_text(
+            "✅ *Which task did you finish?*",
+            parse_mode="Markdown",
+            reply_markup=done_picker_keyboard(key, page=0),
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /start COMMAND — handles deep links from HabitKit HTML grid
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /start log_<habit> — deep link from HabitKit grid taps.
+    e.g. https://t.me/MyBrainCapture_bot?start=log_creatine
+    """
+    if update.effective_chat.id != MY_CHAT_ID:
+        return
+
+    args = context.args
+    if not args or not args[0].startswith("log_"):
+        await update.message.reply_text(
+            "👋 *Second Brain Bot*\n\nSend me any task or habit to capture it.\nUse /done to mark completions.",
+            parse_mode="Markdown",
+        )
+        return
+
+    raw     = args[0][4:].replace("_", " ").strip()
+    matched = next(
+        (h for h in habit_cache.values() if raw.lower() in h["name"].lower()),
+        None,
+    )
+
+    if not matched:
+        await update.message.reply_text(
+            f"Couldn't find a habit matching *{raw}*.",
+            parse_mode="Markdown",
+        )
+        return
+
+    pid  = matched["page_id"]
+    name = matched["name"]
+
+    if already_logged_today(pid):
+        await update.message.reply_text(f"Already logged *{name}* today! ✅", parse_mode="Markdown")
+        return
+
+    log_habit(pid, name)
+    await update.message.reply_text(
+        f"✅ Logged!\n\n{name}\n📅 {date.today().strftime('%B %-d')}",
+        parse_mode="Markdown",
+    )
