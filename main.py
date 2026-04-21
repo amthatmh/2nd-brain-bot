@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
 """
-Second Brain — Telegram Bot (v7)
-- AI task capture into Notion
-- Duplicate guard
-- Reply-to-done support
-- Bare `done` opens a completion picker for Today + overdue tasks
-- `done 1,3`, `done: task name`, and `mark ... done` supported
-- Multi-task capture: bullet lists (-, •, 1.) or multi-line messages
-  are split, classified concurrently, and reported in a single summary
-- Habit logging via relation to 🎯 Habits database
-- Morning/evening habit check-in buttons with digest
-- `focus:` / `unfocus:` Telegram commands
+Second Brain — Telegram Bot (v8)
+────────────────────────────────────────────────────────────────
+All v7 features preserved plus:
 
-v7 changes (habit layer added on top of v6):
-- load_habit_cache() fetches active habits from 🎯 Habits DB at startup
-- log_habit() creates entries in 📅 Habit Log with relation field
-- already_logged_today() prevents duplicate habit logs
-- Morning habits appended to daily digest with tap buttons
-- Evening check-in scheduled separately (19:00 weekdays, 20:00 weekends)
-- classify_message() detects habit vs task before routing
+v8 changes:
+- Dynamic habit scheduling: bot reads Time field from 🎯 Habits DB
+  at startup and registers one APScheduler job per unique hour.
+  Adding a habit with a new time in Notion = automatic new reminder.
+  No env vars needed for evening/morning times anymore.
+- Per-habit individual reminders (secretary model): each habit fires
+  its own Telegram message at its scheduled time, skipping if already
+  logged today.
+- Frequency-aware pacing: compares logs this week vs Frequency Per Week
+  target. Skips reminder if habit is on pace for the week.
+- /habits-data JSON endpoint served by aiohttp alongside the bot.
+  Used by the HabitKit HTML grid hosted on GitHub Pages.
+  Railway is the only secret store — no GitHub secrets needed.
+- Removed hardcoded EVENING_CHECK_WEEKDAY/WEEKEND env vars.
+  Morning digest habits section also removed (individual reminders
+  handle this now).
 """
 
 import asyncio
@@ -28,8 +29,10 @@ import re
 import logging
 import calendar
 from datetime import date, datetime, timedelta
+from collections import defaultdict
 
 import pytz
+from aiohttp import web
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -49,23 +52,24 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(
 log = logging.getLogger(__name__)
 
 # ── Config ───────────────────────────────────────────────────────────────────
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-MY_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
-ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]
-NOTION_TOKEN = os.environ["NOTION_TOKEN"]
-NOTION_DB_ID = os.environ["NOTION_DB_ID"]          # 🆕 To-Do
-NOTION_HABIT_DB = os.environ["NOTION_HABIT_DB"]    # 🎯 Habits
-NOTION_LOG_DB = os.environ["NOTION_LOG_DB"]        # 📅 Habit Log
+TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
+MY_CHAT_ID      = int(os.environ["TELEGRAM_CHAT_ID"])
+ANTHROPIC_KEY   = os.environ["ANTHROPIC_API_KEY"]
+NOTION_TOKEN    = os.environ["NOTION_TOKEN"]
+NOTION_DB_ID    = os.environ["NOTION_DB_ID"]        # 🆕 To-Do
+NOTION_HABIT_DB = os.environ["NOTION_HABIT_DB"]     # 🎯 Habits
+NOTION_LOG_DB   = os.environ["NOTION_LOG_DB"]       # 📅 Habit Log
 
-TZ = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
+TZ           = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
 _wk_h, _wk_m = map(int, os.environ.get("DIGEST_TIME_WEEKDAY", "8:15").split(":"))
 _we_h, _we_m = map(int, os.environ.get("DIGEST_TIME_WEEKEND", "12:00").split(":"))
 _rc_h, _rc_m = map(int, os.environ.get("RECURRING_CHECK_TIME", "7:00").split(":"))
-_ev_wk_h, _ev_wk_m = map(int, os.environ.get("EVENING_CHECK_WEEKDAY", "19:00").split(":"))
-_ev_we_h, _ev_we_m = map(int, os.environ.get("EVENING_CHECK_WEEKEND", "20:00").split(":"))
 
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+CLAUDE_MODEL   = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
+
+# Port for the /habits-data JSON endpoint (Railway sets PORT automatically)
+HTTP_PORT = int(os.environ.get("PORT", "8080"))
 
 # ── Clients ──────────────────────────────────────────────────────────────────
 notion = NotionClient(auth=NOTION_TOKEN)
@@ -80,8 +84,8 @@ done_picker_map: dict[str, list[dict]] = {}
 _pending_counter = 0
 _done_picker_counter = 0
 
-# Habit cache: name → page_id (refreshed at startup + nightly)
-habit_cache: dict[str, str] = {}
+# Full habit cache: name → full habit dict (id, name, time, freq_per_week, color, etc.)
+habit_cache: dict[str, dict] = {}
 
 # ── Constants ────────────────────────────────────────────────────────────────
 HORIZON_DEADLINE_OFFSETS = {"t": 0, "w": 6, "m": 30, "b": None}
@@ -89,11 +93,9 @@ HORIZON_LABELS = {
     "t": "🔴 Today", "w": "🟠 This Week",
     "m": "🟡 This Month", "b": "⚪ Backburner",
 }
-
 NUMBER_EMOJIS = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
 REPEAT_DAY_TO_WEEKDAY  = {"Mon":0,"Tue":1,"Wed":2,"Thu":3,"Fri":4,"Sat":5,"Sun":6}
 REPEAT_DAY_TO_MONTHDAY = {"1st":1,"5th":5,"10th":10,"15th":15,"20th":20,"25th":25,"Last":-1}
-
 _BULLET_RE = re.compile(r"^[\s]*(?:[-•*]|\d+[.):])\s+", re.MULTILINE)
 
 
@@ -110,10 +112,15 @@ def next_weekday(weekday: int) -> date:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# HABIT CACHE
+# HABIT CACHE — full metadata from Notion
 # ══════════════════════════════════════════════════════════════════════════════
 
 def load_habit_cache() -> None:
+    """
+    Loads all active habits from 🎯 Habits DB into memory.
+    Stores full metadata: id, name, time, freq_per_week, color,
+    description, frequency_label, sort.
+    """
     global habit_cache
     try:
         results = notion.databases.query(
@@ -122,35 +129,47 @@ def load_habit_cache() -> None:
         )
         habit_cache = {}
         for page in results.get("results", []):
-            title_parts = page["properties"].get("Habit", {}).get("title", [])
+            p = page["properties"]
+
+            # Title
+            title_parts = p.get("Habit", {}).get("title", [])
             name = title_parts[0]["text"]["content"] if title_parts else None
-            if name:
-                habit_cache[name] = page["id"]
-        log.info(f"Habit cache loaded: {list(habit_cache.keys())}")
+            if not name:
+                continue
+
+            # Select fields
+            def sel(key):
+                s = p.get(key, {}).get("select")
+                return s["name"] if s else None
+
+            # Number fields
+            def num(key):
+                return p.get(key, {}).get("number")
+
+            # Text fields
+            def txt(key):
+                parts = p.get(key, {}).get("rich_text", [])
+                return parts[0]["text"]["content"] if parts else None
+
+            habit_cache[name] = {
+                "page_id":         page["id"],
+                "name":            name,
+                "time":            sel("Time"),            # e.g. "18:00"
+                "color":           sel("Color"),           # e.g. "pink"
+                "freq_per_week":   num("Frequency Per Week"),
+                "frequency_label": txt("Frequency Label"),
+                "description":     txt("Description"),
+                "sort":            num("Sort") or 99,
+            }
+
+        log.info(f"Habit cache loaded: {sorted(habit_cache.keys())}")
     except Exception as e:
         log.error(f"Failed to load habit cache: {e}")
 
 
-def get_habits_by_time(time_filter: str) -> list[dict]:
-    try:
-        results = notion.databases.query(
-            database_id=NOTION_HABIT_DB,
-            filter={
-                "and": [
-                    {"property": "Active", "checkbox": {"equals": True}},
-                    {"property": "Time",   "select":   {"equals": time_filter}},
-                ]
-            },
-        )
-        habits = []
-        for page in results.get("results", []):
-            title_parts = page["properties"].get("Habit", {}).get("title", [])
-            name = title_parts[0]["text"]["content"] if title_parts else "Unknown"
-            habits.append({"page_id": page["id"], "name": name})
-        return habits
-    except Exception as e:
-        log.error(f"get_habits_by_time error: {e}")
-        return []
+def habits_by_time(time_str: str) -> list[dict]:
+    """Returns habits scheduled for a specific time string e.g. '18:00'."""
+    return [h for h in habit_cache.values() if h["time"] == time_str]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -172,10 +191,6 @@ def split_tasks(text: str) -> list[str]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def classify_message(text: str) -> dict:
-    """
-    First determines if message is a habit log or task.
-    Returns {type: 'habit'|'task', ...fields}
-    """
     habit_names = list(habit_cache.keys())
     prompt = f"""You are a personal assistant classifier for a second brain system.
 Today is {date.today().strftime("%A, %B %-d, %Y")}.
@@ -186,7 +201,7 @@ Active habits to detect: {habit_names}
 Workout types that count as 💪 Workout: soccer, crossfit, hyrox, rowing, snowboard, skiing, gym, run, jog, trained
 
 First determine if this is:
-A) HABIT LOG — person saying they completed something NOW (e.g. "took creatine", "did workout", "went to crossfit", "had protein shake")
+A) HABIT LOG — person saying they completed something NOW
 B) TASK — something to be done in the future
 
 Return ONLY valid JSON, no markdown:
@@ -217,7 +232,6 @@ deadline_days: 0=today, 1=tomorrow, 5=this week, 20=this month, null=no urgency/
 
 
 def classify_task(text: str) -> dict:
-    """Task-only classification for multi-task batch processing."""
     prompt = f"""You are a personal task classifier for a second brain system.
 Today is {date.today().strftime("%A, %B %-d, %Y")}.
 
@@ -286,6 +300,36 @@ def already_logged_today(habit_page_id: str) -> bool:
         },
     )
     return len(results.get("results", [])) > 0
+
+
+def logs_this_week(habit_page_id: str) -> int:
+    """Count completions Mon–today for frequency-pacing check."""
+    today      = date.today()
+    monday     = today - timedelta(days=today.weekday())
+    results = notion.databases.query(
+        database_id=NOTION_LOG_DB,
+        filter={
+            "and": [
+                {"property": "Habit",     "relation": {"contains": habit_page_id}},
+                {"property": "Completed", "checkbox": {"equals": True}},
+                {"property": "Date",      "date":     {"on_or_after": monday.isoformat()}},
+                {"property": "Date",      "date":     {"on_or_before": today.isoformat()}},
+            ]
+        },
+    )
+    return len(results.get("results", []))
+
+
+def is_on_pace(habit: dict) -> bool:
+    """
+    Returns True if the habit has hit its weekly target already,
+    meaning no reminder needed today.
+    """
+    target = habit.get("freq_per_week")
+    if not target:
+        return False  # No target set → always remind
+    done = logs_this_week(habit["page_id"])
+    return done >= target
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -556,15 +600,15 @@ def handle_done_recurring(page_id: str) -> bool:
 
 def _run_capture(raw_text: str, force_create: bool = False) -> dict:
     try:
-        result       = classify_task(raw_text)
-        task_name    = result.get("task_name", raw_text)
+        result        = classify_task(raw_text)
+        task_name     = result.get("task_name", raw_text)
         deadline_days = result.get("deadline_days")
-        ctx          = result.get("context", "🏠 Personal")
-        recurring    = result.get("recurring", "None") or "None"
-        repeat_day   = result.get("repeat_day")
+        ctx           = result.get("context", "🏠 Personal")
+        recurring     = result.get("recurring", "None") or "None"
+        repeat_day    = result.get("repeat_day")
         if recurring == "📅 Weekly" and repeat_day in REPEAT_DAY_TO_WEEKDAY:
             if deadline_days is None:
-                target = next_weekday(REPEAT_DAY_TO_WEEKDAY[repeat_day])
+                target        = next_weekday(REPEAT_DAY_TO_WEEKDAY[repeat_day])
                 deadline_days = (target - date.today()).days
         horizon_label = deadline_days_to_label(deadline_days)
     except Exception as e:
@@ -625,10 +669,10 @@ def format_daily_digest(tasks: list[dict]) -> tuple[str, list[dict]]:
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
     if not tasks:
         return f"☀️ *{date_str}*\n\nAll clear — no tasks due today! 🎉", []
-    today_str = date.today().isoformat()
-    overdue   = [t for t in tasks if t["deadline"] and t["deadline"] < today_str]
-    today_now = [t for t in tasks if t not in overdue]
-    lines, ordered, n = [f"☀️ *{date_str}*\n"], [], 1
+    today_str          = date.today().isoformat()
+    overdue            = [t for t in tasks if t["deadline"] and t["deadline"] < today_str]
+    today_now          = [t for t in tasks if t not in overdue]
+    lines, ordered, n  = [f"☀️ *{date_str}*\n"], [], 1
     if overdue:
         lines.append("🚨 *Overdue*")
         for t in overdue:
@@ -752,7 +796,6 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
         await thinking.edit_text(format_batch_summary(list(results)), parse_mode="Markdown")
         return
 
-    # Single task
     try:
         result        = classify_task(raw_text)
         task_name     = result.get("task_name", raw_text)
@@ -920,21 +963,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         habit_name = result.get("habit_name")
         confidence = result.get("confidence", "low")
         if habit_name and habit_name in habit_cache and confidence == "high":
-            habit_page_id = habit_cache[habit_name]
-            if already_logged_today(habit_page_id):
+            habit      = habit_cache[habit_name]
+            habit_pid  = habit["page_id"]
+            if already_logged_today(habit_pid):
                 await thinking.edit_text(f"Already logged {habit_name} today! ✅")
             else:
-                log_habit(habit_page_id, habit_name)
+                log_habit(habit_pid, habit_name)
                 await thinking.edit_text(f"✅ Logged!\n\n{habit_name}\n📅 {date.today().strftime('%B %-d')}")
         else:
-            all_habits = [{"page_id": pid, "name": name} for name, pid in habit_cache.items()]
+            all_habits = sorted(habit_cache.values(), key=lambda h: h["sort"])
             await thinking.edit_text(
                 "Which habit did you complete?",
                 reply_markup=habit_buttons(all_habits, "hl"),
             )
         return
 
-    # Task path — hand off to existing capture flow
+    # Task path
     await thinking.delete()
     await create_or_prompt_task(message, text)
 
@@ -944,10 +988,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await q.answer()
     parts = q.data.split(":")
 
-    # Habit log button (from ambiguous prompt or check-in)
+    # Habit log button
     if parts[0] in ("hl", "hc") and len(parts) == 2:
         habit_page_id = _restore_pid(parts[1])
-        habit_name    = next((n for n, pid in habit_cache.items() if pid == habit_page_id), "Unknown")
+        habit_name    = next((n for n, h in habit_cache.items() if h["page_id"] == habit_page_id), "Unknown")
         try:
             if already_logged_today(habit_page_id):
                 await q.edit_message_text(f"Already logged {habit_name} today! ✅")
@@ -1037,12 +1081,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def run_recurring_check(bot) -> None:
-    load_habit_cache()  # Refresh habit cache daily
+    load_habit_cache()  # Refresh habit metadata daily
     spawned = process_recurring_tasks()
     log.info(f"Recurring check: {spawned} task(s) spawned")
 
 
-async def send_daily_digest(bot, include_habits: bool = True) -> None:
+async def send_daily_digest(bot) -> None:
     global last_digest_msg_id
     tasks            = get_today_and_overdue_tasks()
     message, ordered = format_daily_digest(tasks)
@@ -1050,34 +1094,11 @@ async def send_daily_digest(bot, include_habits: bool = True) -> None:
     if ordered:
         digest_map[sent.message_id] = ordered
         last_digest_msg_id          = sent.message_id
-
-    if include_habits:
-        morning_habits = get_habits_by_time("🌅 Morning") + get_habits_by_time("🕐 Anytime")
-        if morning_habits:
-            await bot.send_message(
-                chat_id=MY_CHAT_ID,
-                text="🌅 *Morning habits* — tap to log:",
-                parse_mode="Markdown",
-                reply_markup=habit_buttons(morning_habits, "hc"),
-            )
     log.info(f"Daily digest sent — {len(ordered)} tasks")
 
 
-async def send_evening_checkin(bot) -> None:
-    evening_habits = get_habits_by_time("🌙 Evening") + get_habits_by_time("🕐 Anytime")
-    if not evening_habits:
-        return
-    await bot.send_message(
-        chat_id=MY_CHAT_ID,
-        text="🌙 *Evening check-in* — did you do these today?",
-        parse_mode="Markdown",
-        reply_markup=habit_buttons(evening_habits, "hc"),
-    )
-    log.info(f"Evening check-in sent — {len(evening_habits)} habits")
-
-
 async def send_sunday_review(bot) -> None:
-    await send_daily_digest(bot, include_habits=True)
+    await send_daily_digest(bot)
     week_tasks  = query_tasks_by_auto_horizon(["🟠 This Week"])
     month_tasks = query_tasks_by_auto_horizon(["🟡 This Month"])
     header, ordered = format_sunday_intro(week_tasks, month_tasks)
@@ -1092,33 +1113,195 @@ async def send_sunday_review(bot) -> None:
     log.info(f"Sunday review sent — {len(ordered)} items")
 
 
+async def send_habit_reminder(bot, time_str: str) -> None:
+    """
+    Fires individual reminders for all habits scheduled at time_str.
+    Skips habits already logged today.
+    Skips habits that are on pace for their weekly frequency target.
+    Each habit gets its own Telegram message with a single tap button.
+    """
+    habits = habits_by_time(time_str)
+    if not habits:
+        return
+
+    sent = 0
+    for habit in sorted(habits, key=lambda h: h["sort"]):
+        pid = habit["page_id"]
+
+        # Skip if already logged today
+        if already_logged_today(pid):
+            continue
+
+        # Skip if on pace for the week
+        if is_on_pace(habit):
+            log.info(f"Habit on pace, skipping reminder: {habit['name']}")
+            continue
+
+        # Build message
+        freq_label = habit.get("frequency_label") or ""
+        desc       = habit.get("description") or ""
+        line2      = " · ".join(filter(None, [freq_label, desc]))
+        text       = f"⏰ *{habit['name']}*"
+        if line2:
+            text += f"\n_{line2}_"
+
+        await bot.send_message(
+            chat_id=MY_CHAT_ID,
+            text=text,
+            parse_mode="Markdown",
+            reply_markup=habit_buttons([habit], "hc"),
+        )
+        sent += 1
+
+    log.info(f"Habit reminders sent at {time_str} — {sent} habits")
+
+
+def register_habit_schedules(scheduler: AsyncIOScheduler, bot) -> None:
+    """
+    Reads all unique Time values from habit_cache and registers
+    one APScheduler cron job per unique hour.
+    Adding a habit with a new time in Notion auto-creates a new job
+    on next bot restart.
+    """
+    times_seen = set()
+    for habit in habit_cache.values():
+        time_str = habit.get("time")
+        if not time_str or time_str in times_seen:
+            continue
+        times_seen.add(time_str)
+        try:
+            h, m = map(int, time_str.split(":"))
+            scheduler.add_job(
+                send_habit_reminder, "cron",
+                hour=h, minute=m,
+                args=[bot, time_str],
+                id=f"habit_{time_str}",
+            )
+            log.info(f"Registered habit reminder job at {time_str}")
+        except Exception as e:
+            log.error(f"Failed to register habit job for {time_str}: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /habits-data JSON ENDPOINT (served from Railway)
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def habits_data_handler(request: web.Request) -> web.Response:
+    """
+    GET /habits-data
+    Returns JSON used by the HabitKit HTML grid.
+    Fetches last 70 days of habit logs from Notion.
+    No secrets exposed — runs server-side on Railway.
+    """
+    try:
+        # Fetch all active habits sorted by Sort field
+        habits_sorted = sorted(habit_cache.values(), key=lambda h: h["sort"])
+
+        # Date range: last 70 days (10 weeks)
+        today    = date.today()
+        start_dt = today - timedelta(days=69)
+
+        # Fetch all log entries in range
+        results = notion.databases.query(
+            database_id=NOTION_LOG_DB,
+            filter={
+                "and": [
+                    {"property": "Completed", "checkbox": {"equals": True}},
+                    {"property": "Date", "date": {"on_or_after": start_dt.isoformat()}},
+                    {"property": "Date", "date": {"on_or_before": today.isoformat()}},
+                ]
+            },
+        )
+
+        # Build set of (habit_page_id, date_str) for O(1) lookup
+        logged: set[tuple] = set()
+        for page in results.get("results", []):
+            p    = page["properties"]
+            d    = p.get("Date", {}).get("date", {})
+            date_str = d.get("start") if d else None
+            rels = p.get("Habit", {}).get("relation", [])
+            for rel in rels:
+                if date_str:
+                    logged.add((rel["id"], date_str))
+
+        # Build 70-day binary array per habit (oldest first)
+        all_dates = [(start_dt + timedelta(days=i)).isoformat() for i in range(70)]
+
+        habits_out = []
+        for habit in habits_sorted:
+            pid  = habit["page_id"]
+            days = [1 if (pid, d) in logged else 0 for d in all_dates]
+            habits_out.append({
+                "id":          pid,
+                "name":        habit["name"],
+                "color":       habit.get("color") or "pink",
+                "description": habit.get("description") or "",
+                "frequency":   habit.get("frequency_label") or "",
+                "sort":        habit.get("sort"),
+                "days":        days,
+                "todayDone":   days[-1] == 1,
+            })
+
+        payload = {
+            "generated": datetime.now(TZ).isoformat(),
+            "habits":    habits_out,
+            "dates":     all_dates,
+        }
+
+        return web.Response(
+            text=json.dumps(payload),
+            content_type="application/json",
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+    except Exception as e:
+        log.error(f"/habits-data error: {e}")
+        return web.Response(status=500, text=str(e))
+
+
+async def start_http_server() -> None:
+    app    = web.Application()
+    app.router.add_get("/habits-data", habits_data_handler)
+    app.router.add_get("/health", lambda r: web.Response(text="ok"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site   = web.TCPSite(runner, "0.0.0.0", HTTP_PORT)
+    await site.start()
+    log.info(f"HTTP server started on port {HTTP_PORT}")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # STARTUP
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def post_init(app: Application) -> None:
+    # Load habit metadata from Notion
     load_habit_cache()
 
+    # Start the HTTP server for /habits-data
+    await start_http_server()
+
     scheduler = AsyncIOScheduler(timezone=TZ)
+
+    # Nightly: refresh habit cache + spawn recurring tasks
     scheduler.add_job(run_recurring_check, "cron",
                       hour=_rc_h, minute=_rc_m, args=[app.bot])
+
+    # Daily task digests
     scheduler.add_job(send_daily_digest, "cron",
-                      day_of_week="mon-fri", hour=_wk_h, minute=_wk_m,
-                      args=[app.bot], kwargs={"include_habits": True})
+                      day_of_week="mon-fri", hour=_wk_h, minute=_wk_m, args=[app.bot])
     scheduler.add_job(send_daily_digest, "cron",
-                      day_of_week="sat", hour=_we_h, minute=_we_m,
-                      args=[app.bot], kwargs={"include_habits": True})
+                      day_of_week="sat", hour=_we_h, minute=_we_m, args=[app.bot])
     scheduler.add_job(send_sunday_review, "cron",
                       day_of_week="sun", hour=_we_h, minute=_we_m, args=[app.bot])
-    scheduler.add_job(send_evening_checkin, "cron",
-                      day_of_week="mon-fri", hour=_ev_wk_h, minute=_ev_wk_m, args=[app.bot])
-    scheduler.add_job(send_evening_checkin, "cron",
-                      day_of_week="sat,sun", hour=_ev_we_h, minute=_ev_we_m, args=[app.bot])
+
+    # Dynamic habit reminders — one job per unique Time value in Notion
+    register_habit_schedules(scheduler, app.bot)
+
     scheduler.start()
     log.info(
         f"Scheduler started ✓  TZ={TZ}  "
         f"weekday={_wk_h:02d}:{_wk_m:02d}  weekend={_we_h:02d}:{_we_m:02d}  "
-        f"evening_wk={_ev_wk_h:02d}:{_ev_wk_m:02d}  evening_we={_ev_we_h:02d}:{_ev_we_m:02d}"
+        f"recurring={_rc_h:02d}:{_rc_m:02d}"
     )
 
 
@@ -1126,7 +1309,7 @@ def main() -> None:
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    log.info("🤖 Second Brain bot starting (v7)...")
+    log.info("🤖 Second Brain bot starting (v8)...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
