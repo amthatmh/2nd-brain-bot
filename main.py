@@ -1315,11 +1315,6 @@ def main() -> None:
     log.info("🤖 Second Brain bot starting (v8)...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
-
-if __name__ == "__main__":
-    main()
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # /done COMMAND — combined habit + task picker
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1405,3 +1400,8 @@ async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYP
         f"✅ Logged!\n\n{name}\n📅 {date.today().strftime('%B %-d')}",
         parse_mode="Markdown",
     )
+
+
+
+if __name__ == "__main__":
+    main()
