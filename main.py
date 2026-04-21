@@ -7,19 +7,13 @@ All v7 features preserved plus:
 v8 changes:
 - Dynamic habit scheduling: bot reads Time field from 🎯 Habits DB
   at startup and registers one APScheduler job per unique hour.
-  Adding a habit with a new time in Notion = automatic new reminder.
-  No env vars needed for evening/morning times anymore.
-- Per-habit individual reminders (secretary model): each habit fires
-  its own Telegram message at its scheduled time, skipping if already
-  logged today.
-- Frequency-aware pacing: compares logs this week vs Frequency Per Week
-  target. Skips reminder if habit is on pace for the week.
+- Per-habit individual reminders (secretary model).
+- Frequency-aware pacing.
 - /habits-data JSON endpoint served by aiohttp alongside the bot.
-  Used by the HabitKit HTML grid hosted on GitHub Pages.
-  Railway is the only secret store — no GitHub secrets needed.
-- Removed hardcoded EVENING_CHECK_WEEKDAY/WEEKEND env vars.
-  Morning digest habits section also removed (individual reminders
-  handle this now).
+- /done command — combined habit + task picker.
+- /start deep link handler for HabitKit HTML grid taps.
+- ID normalisation fix: Notion relation IDs have no dashes,
+  habit_cache IDs do — both sides now stripped before comparison.
 """
 
 import asyncio
@@ -56,9 +50,9 @@ TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
 MY_CHAT_ID      = int(os.environ["TELEGRAM_CHAT_ID"])
 ANTHROPIC_KEY   = os.environ["ANTHROPIC_API_KEY"]
 NOTION_TOKEN    = os.environ["NOTION_TOKEN"]
-NOTION_DB_ID    = os.environ["NOTION_DB_ID"]        # 🆕 To-Do
-NOTION_HABIT_DB = os.environ["NOTION_HABIT_DB"]     # 🎯 Habits
-NOTION_LOG_DB   = os.environ["NOTION_LOG_DB"]       # 📅 Habit Log
+NOTION_DB_ID    = os.environ["NOTION_DB_ID"]
+NOTION_HABIT_DB = os.environ["NOTION_HABIT_DB"]
+NOTION_LOG_DB   = os.environ["NOTION_LOG_DB"]
 
 TZ           = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
 _wk_h, _wk_m = map(int, os.environ.get("DIGEST_TIME_WEEKDAY", "8:15").split(":"))
@@ -67,9 +61,8 @@ _rc_h, _rc_m = map(int, os.environ.get("RECURRING_CHECK_TIME", "7:00").split(":"
 
 CLAUDE_MODEL   = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
-
-# Port for the /habits-data JSON endpoint (Railway sets PORT automatically)
-HTTP_PORT = int(os.environ.get("PORT", "8080"))
+HTTP_PORT      = int(os.environ.get("PORT", "8080"))
+WEEKS_HISTORY  = int(os.environ.get("WEEKS_HISTORY", "52"))
 
 # ── Clients ──────────────────────────────────────────────────────────────────
 notion = NotionClient(auth=NOTION_TOKEN)
@@ -83,8 +76,6 @@ capture_map: dict[int, dict] = {}
 done_picker_map: dict[str, list[dict]] = {}
 _pending_counter = 0
 _done_picker_counter = 0
-
-# Full habit cache: name → full habit dict (id, name, time, freq_per_week, color, etc.)
 habit_cache: dict[str, dict] = {}
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -112,15 +103,10 @@ def next_weekday(weekday: int) -> date:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# HABIT CACHE — full metadata from Notion
+# HABIT CACHE
 # ══════════════════════════════════════════════════════════════════════════════
 
 def load_habit_cache() -> None:
-    """
-    Loads all active habits from 🎯 Habits DB into memory.
-    Stores full metadata: id, name, time, freq_per_week, color,
-    description, frequency_label, sort.
-    """
     global habit_cache
     try:
         results = notion.databases.query(
@@ -130,45 +116,34 @@ def load_habit_cache() -> None:
         habit_cache = {}
         for page in results.get("results", []):
             p = page["properties"]
-
-            # Title
             title_parts = p.get("Habit", {}).get("title", [])
             name = title_parts[0]["text"]["content"] if title_parts else None
             if not name:
                 continue
-
-            # Select fields
             def sel(key):
                 s = p.get(key, {}).get("select")
                 return s["name"] if s else None
-
-            # Number fields
             def num(key):
                 return p.get(key, {}).get("number")
-
-            # Text fields
             def txt(key):
                 parts = p.get(key, {}).get("rich_text", [])
                 return parts[0]["text"]["content"] if parts else None
-
             habit_cache[name] = {
                 "page_id":         page["id"],
                 "name":            name,
-                "time":            sel("Time"),            # e.g. "18:00"
-                "color":           sel("Color"),           # e.g. "pink"
+                "time":            sel("Time"),
+                "color":           sel("Color"),
                 "freq_per_week":   num("Frequency Per Week"),
                 "frequency_label": txt("Frequency Label"),
                 "description":     txt("Description"),
                 "sort":            num("Sort") or 99,
             }
-
         log.info(f"Habit cache loaded: {sorted(habit_cache.keys())}")
     except Exception as e:
         log.error(f"Failed to load habit cache: {e}")
 
 
 def habits_by_time(time_str: str) -> list[dict]:
-    """Returns habits scheduled for a specific time string e.g. '18:00'."""
     return [h for h in habit_cache.values() if h["time"] == time_str]
 
 
@@ -273,7 +248,7 @@ def deadline_days_to_label(days: int | None) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def log_habit(habit_page_id: str, habit_name: str) -> None:
-    today = date.today().isoformat()
+    today = datetime.now(TZ).date().isoformat()
     notion.pages.create(
         parent={"database_id": NOTION_LOG_DB},
         properties={
@@ -288,7 +263,7 @@ def log_habit(habit_page_id: str, habit_name: str) -> None:
 
 
 def already_logged_today(habit_page_id: str) -> bool:
-    today = date.today().isoformat()
+    today = datetime.now(TZ).date().isoformat()
     results = notion.databases.query(
         database_id=NOTION_LOG_DB,
         filter={
@@ -303,16 +278,15 @@ def already_logged_today(habit_page_id: str) -> bool:
 
 
 def logs_this_week(habit_page_id: str) -> int:
-    """Count completions Mon–today for frequency-pacing check."""
-    today      = date.today()
-    monday     = today - timedelta(days=today.weekday())
+    today  = datetime.now(TZ).date()
+    monday = today - timedelta(days=today.weekday())
     results = notion.databases.query(
         database_id=NOTION_LOG_DB,
         filter={
             "and": [
                 {"property": "Habit",     "relation": {"contains": habit_page_id}},
                 {"property": "Completed", "checkbox": {"equals": True}},
-                {"property": "Date",      "date":     {"on_or_after": monday.isoformat()}},
+                {"property": "Date",      "date":     {"on_or_after":  monday.isoformat()}},
                 {"property": "Date",      "date":     {"on_or_before": today.isoformat()}},
             ]
         },
@@ -321,15 +295,10 @@ def logs_this_week(habit_page_id: str) -> int:
 
 
 def is_on_pace(habit: dict) -> bool:
-    """
-    Returns True if the habit has hit its weekly target already,
-    meaning no reminder needed today.
-    """
     target = habit.get("freq_per_week")
     if not target:
-        return False  # No target set → always remind
-    done = logs_this_week(habit["page_id"])
-    return done >= target
+        return False
+    return logs_this_week(habit["page_id"]) >= target
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -451,9 +420,9 @@ def get_all_active_tasks() -> list[dict]:
 
 
 def get_today_and_overdue_tasks() -> list[dict]:
-    tasks = get_all_active_tasks()
+    tasks     = get_all_active_tasks()
     today_str = date.today().isoformat()
-    selected = []
+    selected  = []
     for t in tasks:
         is_today   = t["auto_horizon"] == "🔴 Today"
         is_overdue = bool(t["deadline"] and t["deadline"] < today_str)
@@ -566,7 +535,7 @@ def spawn_recurring_instance(template: dict) -> None:
 
 
 def process_recurring_tasks() -> int:
-    today = date.today()
+    today   = date.today()
     spawned = 0
     for t in get_recurring_templates():
         if should_spawn_today(t, today):
@@ -870,7 +839,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     lower = text.lower().strip()
 
-    # 1. Reply `done` to a capture message
     if lower == "done" and message.reply_to_message:
         replied_id = message.reply_to_message.message_id
         if replied_id in capture_map:
@@ -881,11 +849,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await message.reply_text("Reply with `done 1` or `done 1,3`, or use `done: task name`.", parse_mode="Markdown")
             return
 
-    # 2. bare `done` → picker
     if lower == "done":
         await open_done_picker(message); return
 
-    # 3. done/mark/complete + number list
     numbers = parse_done_numbers_command(text)
     if numbers:
         source_id = message.reply_to_message.message_id if message.reply_to_message else last_digest_msg_id
@@ -904,7 +870,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await message.reply_text("No recent digest found. Try replying directly to a digest message.")
         return
 
-    # 4. done: task name
     match_name = re.match(r"done:\s*(.+)$", text, re.IGNORECASE)
     if match_name:
         matched = fuzzy_match(match_name.group(1).strip(), get_all_active_tasks())
@@ -914,7 +879,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await message.reply_text(f"Couldn't find a task matching \"{match_name.group(1).strip()}\".")
         return
 
-    # 5. mark ... done
     match_mark_done = re.match(r"mark\s+(.+?)\s+done$", text, re.IGNORECASE)
     if match_mark_done:
         matched = fuzzy_match(match_mark_done.group(1).strip(), get_all_active_tasks())
@@ -924,7 +888,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await message.reply_text(f"Couldn't find a task matching \"{match_mark_done.group(1).strip()}\".")
         return
 
-    # 6. focus: / unfocus:
     match_focus = re.match(r"focus:\s*(.+)$", text, re.IGNORECASE)
     if match_focus:
         matched = fuzzy_match(match_focus.group(1).strip(), get_all_active_tasks())
@@ -945,12 +908,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await message.reply_text(f"Couldn't find a task matching \"{match_unfocus.group(1).strip()}\".")
         return
 
-    # 7. force:
     match_force = re.match(r"force:\s*(.+)$", text, re.IGNORECASE)
     if match_force:
         await create_or_prompt_task(message, match_force.group(1).strip(), force_create=True); return
 
-    # 8. Classify: habit or task
     thinking = await message.reply_text("🧠 Got it...")
     try:
         result = classify_message(text)
@@ -963,8 +924,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         habit_name = result.get("habit_name")
         confidence = result.get("confidence", "low")
         if habit_name and habit_name in habit_cache and confidence == "high":
-            habit      = habit_cache[habit_name]
-            habit_pid  = habit["page_id"]
+            habit     = habit_cache[habit_name]
+            habit_pid = habit["page_id"]
             if already_logged_today(habit_pid):
                 await thinking.edit_text(f"Already logged {habit_name} today! ✅")
             else:
@@ -978,7 +939,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
         return
 
-    # Task path
     await thinking.delete()
     await create_or_prompt_task(message, text)
 
@@ -988,7 +948,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await q.answer()
     parts = q.data.split(":")
 
-    # Habit log button
     if parts[0] in ("hl", "hc") and len(parts) == 2:
         habit_page_id = _restore_pid(parts[1])
         habit_name    = next((n for n, h in habit_cache.items() if h["page_id"] == habit_page_id), "Unknown")
@@ -1081,7 +1040,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def run_recurring_check(bot) -> None:
-    load_habit_cache()  # Refresh habit metadata daily
+    load_habit_cache()
     spawned = process_recurring_tasks()
     log.info(f"Recurring check: {spawned} task(s) spawned")
 
@@ -1114,37 +1073,23 @@ async def send_sunday_review(bot) -> None:
 
 
 async def send_habit_reminder(bot, time_str: str) -> None:
-    """
-    Fires individual reminders for all habits scheduled at time_str.
-    Skips habits already logged today.
-    Skips habits that are on pace for their weekly frequency target.
-    Each habit gets its own Telegram message with a single tap button.
-    """
     habits = habits_by_time(time_str)
     if not habits:
         return
-
     sent = 0
     for habit in sorted(habits, key=lambda h: h["sort"]):
         pid = habit["page_id"]
-
-        # Skip if already logged today
         if already_logged_today(pid):
             continue
-
-        # Skip if on pace for the week
         if is_on_pace(habit):
             log.info(f"Habit on pace, skipping reminder: {habit['name']}")
             continue
-
-        # Build message
         freq_label = habit.get("frequency_label") or ""
         desc       = habit.get("description") or ""
         line2      = " · ".join(filter(None, [freq_label, desc]))
         text       = f"⏰ *{habit['name']}*"
         if line2:
             text += f"\n_{line2}_"
-
         await bot.send_message(
             chat_id=MY_CHAT_ID,
             text=text,
@@ -1152,17 +1097,10 @@ async def send_habit_reminder(bot, time_str: str) -> None:
             reply_markup=habit_buttons([habit], "hc"),
         )
         sent += 1
-
     log.info(f"Habit reminders sent at {time_str} — {sent} habits")
 
 
 def register_habit_schedules(scheduler: AsyncIOScheduler, bot) -> None:
-    """
-    Reads all unique Time values from habit_cache and registers
-    one APScheduler cron job per unique hour.
-    Adding a habit with a new time in Notion auto-creates a new job
-    on next bot restart.
-    """
     times_seen = set()
     for habit in habit_cache.values():
         time_str = habit.get("time")
@@ -1183,57 +1121,47 @@ def register_habit_schedules(scheduler: AsyncIOScheduler, bot) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# /habits-data JSON ENDPOINT (served from Railway)
+# /habits-data JSON ENDPOINT
+# ── FIX: Notion relation IDs have no dashes; habit_cache IDs do.
+#         Strip dashes on both sides before comparing.
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def habits_data_handler(request: web.Request) -> web.Response:
-    """
-    GET /habits-data
-    Returns JSON used by the HabitKit HTML grid.
-    Fetches last 70 days of habit logs from Notion.
-    No secrets exposed — runs server-side on Railway.
-    """
     try:
-        # Fetch all active habits sorted by Sort field
         habits_sorted = sorted(habit_cache.values(), key=lambda h: h["sort"])
+        today    = datetime.now(TZ).date()
+        num_days = WEEKS_HISTORY * 7
+        start_dt = today - timedelta(days=num_days - 1)
 
-        # Date range: last 70 days (10 weeks)
-        today    = date.today()
-        start_dt = today - timedelta(days=69)
-
-        # Fetch all log entries in range
         results = notion.databases.query(
             database_id=NOTION_LOG_DB,
             filter={
                 "and": [
                     {"property": "Completed", "checkbox": {"equals": True}},
-                    {"property": "Date", "date": {"on_or_after": start_dt.isoformat()}},
+                    {"property": "Date", "date": {"on_or_after":  start_dt.isoformat()}},
                     {"property": "Date", "date": {"on_or_before": today.isoformat()}},
                 ]
             },
         )
 
-        # Build set of (habit_page_id_no_dashes, date_str) for O(1) lookup
-        # Notion API returns relation IDs without dashes — normalise both sides
+        # Build lookup set — strip dashes from relation IDs (Notion returns them without)
         logged: set[tuple] = set()
         for page in results.get("results", []):
-            p    = page["properties"]
-            d    = p.get("Date", {}).get("date", {})
+            p        = page["properties"]
+            d        = p.get("Date", {}).get("date", {})
             date_str = d.get("start") if d else None
-            rels = p.get("Habit", {}).get("relation", [])
+            rels     = p.get("Habit", {}).get("relation", [])
             for rel in rels:
                 if date_str:
                     logged.add((rel["id"].replace("-", ""), date_str))
 
-        # Build binary array per habit (oldest first)
-        all_dates = [(start_dt + timedelta(days=i)).isoformat() for i in range(num_days)]
-
+        all_dates  = [(start_dt + timedelta(days=i)).isoformat() for i in range(num_days)]
         habits_out = []
         for habit in habits_sorted:
-            pid      = habit["page_id"].replace("-", "")   # normalise to match relation IDs
+            pid  = habit["page_id"].replace("-", "")   # normalise to match relation IDs
             days = [1 if (pid, d) in logged else 0 for d in all_dates]
             habits_out.append({
-                "id":          pid,
+                "id":          habit["page_id"],
                 "name":        habit["name"],
                 "color":       habit.get("color") or "pink",
                 "description": habit.get("description") or "",
@@ -1244,11 +1172,12 @@ async def habits_data_handler(request: web.Request) -> web.Response:
             })
 
         payload = {
-            "generated": datetime.now(TZ).isoformat(),
-            "habits":    habits_out,
-            "dates":     all_dates,
+            "generated":    datetime.now(TZ).isoformat(),
+            "habits":       habits_out,
+            "dates":        all_dates,
+            "todayDate":    today.isoformat(),
+            "weeksHistory": WEEKS_HISTORY,
         }
-
         return web.Response(
             text=json.dumps(payload),
             content_type="application/json",
@@ -1275,29 +1204,18 @@ async def start_http_server() -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def post_init(app: Application) -> None:
-    # Load habit metadata from Notion
     load_habit_cache()
-
-    # Start the HTTP server for /habits-data
     await start_http_server()
-
     scheduler = AsyncIOScheduler(timezone=TZ)
-
-    # Nightly: refresh habit cache + spawn recurring tasks
     scheduler.add_job(run_recurring_check, "cron",
                       hour=_rc_h, minute=_rc_m, args=[app.bot])
-
-    # Daily task digests
     scheduler.add_job(send_daily_digest, "cron",
                       day_of_week="mon-fri", hour=_wk_h, minute=_wk_m, args=[app.bot])
     scheduler.add_job(send_daily_digest, "cron",
                       day_of_week="sat", hour=_we_h, minute=_we_m, args=[app.bot])
     scheduler.add_job(send_sunday_review, "cron",
                       day_of_week="sun", hour=_we_h, minute=_we_m, args=[app.bot])
-
-    # Dynamic habit reminders — one job per unique Time value in Notion
     register_habit_schedules(scheduler, app.bot)
-
     scheduler.start()
     log.info(
         f"Scheduler started ✓  TZ={TZ}  "
@@ -1305,6 +1223,71 @@ async def post_init(app: Application) -> None:
         f"recurring={_rc_h:02d}:{_rc_m:02d}"
     )
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# COMMAND HANDLERS — defined before main() so Python can resolve names
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def handle_done_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/done — combined habit + task picker."""
+    if update.effective_chat.id != MY_CHAT_ID:
+        return
+    pending_habits = [
+        h for h in sorted(habit_cache.values(), key=lambda x: x["sort"])
+        if not already_logged_today(h["page_id"])
+    ]
+    tasks = get_today_and_overdue_tasks()
+    if not pending_habits and not tasks:
+        await update.message.reply_text("✅ Everything done for today — nothing left to log!")
+        return
+    if pending_habits:
+        await update.message.reply_text(
+            "🏃 *Which habit did you complete?*",
+            parse_mode="Markdown",
+            reply_markup=habit_buttons(pending_habits, "hl"),
+        )
+    if tasks:
+        global _done_picker_counter
+        key = str(_done_picker_counter); _done_picker_counter += 1
+        done_picker_map[key] = tasks
+        await update.message.reply_text(
+            "✅ *Which task did you finish?*",
+            parse_mode="Markdown",
+            reply_markup=done_picker_keyboard(key, page=0),
+        )
+
+
+async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/start log_<habit> — deep link from HabitKit HTML grid."""
+    if update.effective_chat.id != MY_CHAT_ID:
+        return
+    args = context.args
+    if not args or not args[0].startswith("log_"):
+        await update.message.reply_text(
+            "👋 *Second Brain Bot*\n\nSend me any task or habit to capture it.\nUse /done to mark completions.",
+            parse_mode="Markdown",
+        )
+        return
+    raw     = args[0][4:].replace("_", " ").strip()
+    matched = next((h for h in habit_cache.values() if raw.lower() in h["name"].lower()), None)
+    if not matched:
+        await update.message.reply_text(f"Couldn't find a habit matching *{raw}*.", parse_mode="Markdown")
+        return
+    pid  = matched["page_id"]
+    name = matched["name"]
+    if already_logged_today(pid):
+        await update.message.reply_text(f"Already logged *{name}* today! ✅", parse_mode="Markdown")
+        return
+    log_habit(pid, name)
+    await update.message.reply_text(
+        f"✅ Logged!\n\n{name}\n📅 {datetime.now(TZ).strftime('%B %-d')}",
+        parse_mode="Markdown",
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MAIN — after all handlers are defined
+# ══════════════════════════════════════════════════════════════════════════════
 
 def main() -> None:
     from telegram.ext import CommandHandler
@@ -1319,90 +1302,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# /done COMMAND — combined habit + task picker
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def handle_done_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    /done — shows habit picker (pending only) + task picker (today/overdue).
-    The secretary's combined completion dashboard in one command.
-    """
-    if update.effective_chat.id != MY_CHAT_ID:
-        return
-
-    pending_habits = [
-        h for h in sorted(habit_cache.values(), key=lambda x: x["sort"])
-        if not already_logged_today(h["page_id"])
-    ]
-    tasks = get_today_and_overdue_tasks()
-
-    if not pending_habits and not tasks:
-        await update.message.reply_text("✅ Everything done for today — nothing left to log!")
-        return
-
-    if pending_habits:
-        await update.message.reply_text(
-            "🏃 *Which habit did you complete?*",
-            parse_mode="Markdown",
-            reply_markup=habit_buttons(pending_habits, "hl"),
-        )
-
-    if tasks:
-        global _done_picker_counter
-        key = str(_done_picker_counter); _done_picker_counter += 1
-        done_picker_map[key] = tasks
-        await update.message.reply_text(
-            "✅ *Which task did you finish?*",
-            parse_mode="Markdown",
-            reply_markup=done_picker_keyboard(key, page=0),
-        )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# /start COMMAND — handles deep links from HabitKit HTML grid
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    /start log_<habit> — deep link from HabitKit grid taps.
-    e.g. https://t.me/MyBrainCapture_bot?start=log_creatine
-    """
-    if update.effective_chat.id != MY_CHAT_ID:
-        return
-
-    args = context.args
-    if not args or not args[0].startswith("log_"):
-        await update.message.reply_text(
-            "👋 *Second Brain Bot*\n\nSend me any task or habit to capture it.\nUse /done to mark completions.",
-            parse_mode="Markdown",
-        )
-        return
-
-    raw     = args[0][4:].replace("_", " ").strip()
-    matched = next(
-        (h for h in habit_cache.values() if raw.lower() in h["name"].lower()),
-        None,
-    )
-
-    if not matched:
-        await update.message.reply_text(
-            f"Couldn't find a habit matching *{raw}*.",
-            parse_mode="Markdown",
-        )
-        return
-
-    pid  = matched["page_id"]
-    name = matched["name"]
-
-    if already_logged_today(pid):
-        await update.message.reply_text(f"Already logged *{name}* today! ✅", parse_mode="Markdown")
-        return
-
-    log_habit(pid, name)
-    await update.message.reply_text(
-        f"✅ Logged!\n\n{name}\n📅 {date.today().strftime('%B %-d')}",
-        parse_mode="Markdown",
-    )
