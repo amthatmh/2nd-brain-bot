@@ -40,7 +40,7 @@
     .stat{background:rgba(255,255,255,.025);border:1px solid #222230;border-radius:16px;padding:12px 14px;box-shadow:var(--shadow)}
     .stat .k{color:var(--muted);font-size:.88rem;margin-bottom:8px}
     .stat .v{font-size:1.45rem;font-weight:800;letter-spacing:-.03em}
-    .layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:18px;align-items:start}
+    .layout{display:grid;grid-template-columns:minmax(0,1fr);gap:18px;align-items:start}
     .panel{background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,.01));border:1px solid #20202c;border-radius:var(--radius-xl);box-shadow:var(--shadow);overflow:hidden}
     .panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:20px 20px 10px}
     .panel-head h2{margin:0;font-size:1.1rem;letter-spacing:-.02em}
@@ -68,21 +68,13 @@
     .legend{display:flex;align-items:center;justify-content:space-between;color:var(--muted-2);font-size:.78rem;margin-top:12px}
     .legend-right{display:flex;align-items:center;gap:8px}
     .mini{width:11px;height:11px;border-radius:3px;display:inline-block;margin-right:2px}
-    .side{background:var(--panel);border:1px solid #20202c;border-radius:var(--radius-xl);box-shadow:var(--shadow);padding-bottom:16px}
-    .todaylist{display:flex;flex-direction:column;gap:10px;padding:0 16px 14px}
-    .row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 14px;background:#0d0d14;border:1px solid #242433;border-radius:14px;text-decoration:none;color:var(--text);transition:border-color .15s}
-    .row:hover{border-color:rgba(138,92,255,.4)}
-    .row strong{font-size:.95rem;display:block}
-    .row small{display:block;margin-top:3px;color:var(--muted);font-size:.82rem}
-    .dot{width:22px;height:22px;border-radius:50%;flex-shrink:0;display:grid;place-items:center;font-size:.8rem}
-    .dot.done{background:rgba(74,222,128,.2);color:#4ade80}
-    .dot.todo{background:rgba(138,92,255,.15);color:var(--purple)}
-    .tg-hint{color:var(--muted-2);font-size:.8rem;padding:8px 16px 0;text-align:center}
+    .check{font-size:2rem}
+    .check:not(.done){border:1px solid rgba(255,255,255,.08)}
     .loading{display:flex;align-items:center;justify-content:center;height:200px;color:var(--muted);font-size:.95rem;gap:12px}
     .spinner{width:20px;height:20px;border:2px solid rgba(138,92,255,.3);border-top-color:var(--purple);border-radius:50%;animation:spin .7s linear infinite}
     @keyframes spin{to{transform:rotate(360deg)}}
     .error-msg{color:#f47b88;padding:20px;text-align:center;font-size:.9rem}
-    @media(max-width:980px){.layout{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}}
+    @media(max-width:980px){.stats{grid-template-columns:repeat(2,1fr)}}
     @media(max-width:680px){
       :root{--square:14px;--gap:4px;--icon:66px;--check:64px}
       .app{padding:18px 10px 30px}.brand{font-size:1.6rem}
@@ -118,23 +110,13 @@
       </div>
     </section>
 
-    <aside class="side">
-      <div class="panel-head">
-        <h2>Today</h2>
-        <div class="chip" id="todayChip">—</div>
-      </div>
-      <div class="panel-sub">Tap to log via Telegram bot.</div>
-      <div class="todaylist" id="todayList">
-        <div class="loading" style="height:120px"><div class="spinner"></div></div>
-      </div>
-      <div class="tg-hint">Opens your Telegram bot to log</div>
-    </aside>
   </div>
 </div>
 
 <script>
-const API_URL    = 'https://worker-production-d366.up.railway.app/habits-data';
-const BOT_NAME   = 'MyBrainCapture_bot'; // ← your bot username
+const API_BASE    = 'https://worker-production-d366.up.railway.app';
+const API_URL     = `${API_BASE}/habits-data`;
+const LOG_API_URL = `${API_BASE}/log-habit`;
 
 const ICON_MAP = {
   'workout':'🏋️','exercise':'🏋️','creatine':'🥛',
@@ -147,10 +129,25 @@ function habitIcon(name) {
   return '⭐';
 }
 
-// Deep link: opens bot chat with pre-filled message
-function tgLink(habitName) {
-  const payload = 'log_' + habitName.toLowerCase().replace(/[^a-z0-9]+/g,'_');
-  return `https://t.me/${BOT_NAME}?start=${payload}`;
+async function logHabitFromWeb(habit, triggerEl) {
+  if (!habit?.id || !triggerEl) return;
+  const old = triggerEl.textContent;
+  triggerEl.textContent = '…';
+  triggerEl.disabled = true;
+  try {
+    const res = await fetch(LOG_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ habitId: habit.id }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    triggerEl.textContent = '✅';
+    await loadData();
+  } catch (e) {
+    triggerEl.textContent = old;
+    triggerEl.disabled = false;
+    alert(`Could not log "${habit.name}" right now.\n${e.message}`);
+  }
 }
 
 function getColor(colorClass, on) {
@@ -192,9 +189,6 @@ function render(data) {
   document.getElementById('lastUpdated').textContent =
     gen.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 
-  // Today chip
-  document.getElementById('todayChip').textContent =
-    new Date().toLocaleDateString('en-US',{weekday:'short',day:'numeric',month:'short'});
   document.getElementById('weeksChip').textContent = `${weeksHistory} weeks`;
 
   // Defensive cleanup: if stale markup still contains removed stats, strip them.
@@ -218,9 +212,8 @@ function render(data) {
     const isDone  = todayIndex >= 0
       ? habit.days[todayIndex] === 1
       : habit.todayDone;
-    const link    = tgLink(habit.name);
     const checkBg = isDone ? 'rgba(74,222,128,.15)' : 'rgba(138,92,255,.18)';
-    const checkIcon = isDone ? '✓' : '📲';
+    const checkIcon = isDone ? '✅' : '⭕️';
 
     const article = document.createElement('article');
     article.className = `habit-card ${cc}`;
@@ -233,8 +226,8 @@ function render(data) {
         </div>
         ${isDone
           ? `<div class="check done" style="background:${checkBg}">${checkIcon}</div>`
-          : `<a class="check" href="${link}" target="_blank" rel="noopener"
-               style="background:${checkBg}" title="Log via Telegram">${checkIcon}</a>`
+          : `<button class="check" type="button"
+               style="background:${checkBg}" title="Log directly to Notion">${checkIcon}</button>`
         }
       </div>
       <div class="grid-wrap"><div class="grid"></div></div>
@@ -249,12 +242,16 @@ function render(data) {
 
     const gridWrap = article.querySelector('.grid-wrap');
     const grid = article.querySelector('.grid');
+    const checkBtn = article.querySelector('button.check');
+    if (checkBtn) {
+      checkBtn.addEventListener('click', () => logHabitFromWeb(habit, checkBtn));
+    }
     habit.days.forEach((v,i) => {
       const cell    = document.createElement('div');
       const isToday = i === habit.days.length-1;
       cell.className = `cell ${v?'on':'off'} ${isToday?'today':''}`;
       const d = new Date((dates[i]||'')+'T12:00:00');
-      cell.title = `${d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})} · ${v?'✓ done':'○ not done'}`;
+      cell.title = `${d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})} · ${v?'✅ done':'⭕️ not done'}`;
       grid.appendChild(cell);
     });
 
@@ -266,31 +263,6 @@ function render(data) {
     });
   });
 
-  // ── Today side panel ───────────────────────────────────────────────────────
-  const todayList = document.getElementById('todayList');
-  todayList.innerHTML = '';
-
-  if (!habits.length) {
-    todayList.innerHTML = '<div style="color:var(--muted);padding:12px;font-size:.9rem">No habits found.</div>';
-    return;
-  }
-
-  habits.forEach(habit => {
-    const isDone = todayIndex >= 0
-      ? habit.days[todayIndex] === 1
-      : habit.todayDone;
-    const link   = tgLink(habit.name);
-    const row    = document.createElement(isDone ? 'div' : 'a');
-    row.className = 'row';
-    if (!isDone) { row.href = link; row.target = '_blank'; row.rel = 'noopener'; }
-    row.innerHTML = `
-      <div>
-        <strong>${habitIcon(habit.name)} ${habit.name}</strong>
-        <small>${habit.frequency||''}</small>
-      </div>
-      <div class="dot ${isDone?'done':'todo'}">${isDone?'✓':'→'}</div>`;
-    todayList.appendChild(row);
-  });
 }
 
 loadData();
