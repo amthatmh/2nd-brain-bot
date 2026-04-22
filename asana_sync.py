@@ -1,173 +1,138 @@
-import json
+"""
+Asana <-> Notion sync worker.
+
+Runs as a separate Railway service from the Telegram bot.
+Polls every ASANA_SYNC_EVERY_SECONDS (default 15s for near-real-time feel).
+
+Key design choices:
+- Sequential cycles (never overlapping). If a sync takes longer than the
+  interval, the next one waits. Prevents doubled writes and rate-limit
+  thrashing under load.
+- Graceful shutdown via SIGTERM so Railway deploys don't interrupt
+  a mid-flight sync.
+- Exponential backoff on repeated failures so a broken Notion DB doesn't
+  hammer the API 5760 times a day.
+"""
+
 import logging
 import os
-from datetime import date, timedelta
-from typing import Any
-from urllib import parse, request
+import signal
+import sys
+import time
+from datetime import datetime, timezone
 
-log = logging.getLogger(__name__)
+from notion_client import Client
 
-ASANA_BASE_URL = "https://app.asana.com/api/1.0"
+from asana_sync import AsanaSyncError, reconcile
+
+# ── Logging ───────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-8s %(name)s - %(message)s",
+)
+log = logging.getLogger("sync_worker")
+
+# ── Config ────────────────────────────────────────────────────────────────
+NOTION_TOKEN = os.environ["NOTION_TOKEN"]
+NOTION_DB_ID = os.environ["NOTION_DB_ID"]
+
+ASANA_PAT = os.environ["ASANA_PAT"]
+ASANA_WORKSPACE_GID = os.environ.get("ASANA_WORKSPACE_GID", "")
+ASANA_PROJECT_GID = os.environ.get("ASANA_PROJECT_GID", "")
+ASANA_SYNC_SOURCE = os.environ.get("ASANA_SYNC_SOURCE", "project")
+INTERVAL = int(os.environ.get("ASANA_SYNC_EVERY_SECONDS", "15"))
+
+# Backoff ceiling: if we keep failing, wait up to this long between tries.
+MAX_BACKOFF = 300  # 5 minutes
+
+# ── Shutdown handling ─────────────────────────────────────────────────────
+_shutdown_requested = False
 
 
-class AsanaSyncError(Exception):
-    pass
+def _handle_shutdown(signum, _frame):
+    """Railway sends SIGTERM on deploy/restart. Finish current cycle cleanly."""
+    global _shutdown_requested
+    log.info("Received signal %s, will exit after current cycle", signum)
+    _shutdown_requested = True
 
 
-def _asana_request(path: str, token: str, query: dict[str, Any] | None = None) -> dict[str, Any]:
-    query_str = f"?{parse.urlencode(query)}" if query else ""
-    url = f"{ASANA_BASE_URL}{path}{query_str}"
+signal.signal(signal.SIGTERM, _handle_shutdown)
+signal.signal(signal.SIGINT, _handle_shutdown)
 
-    req = request.Request(
-        url,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-        },
-        method="GET",
+
+# ── Sync loop ─────────────────────────────────────────────────────────────
+def main() -> None:
+    notion = Client(auth=NOTION_TOKEN)
+
+    log.info(
+        "Sync worker started | interval=%ss source=%s project=%s",
+        INTERVAL,
+        ASANA_SYNC_SOURCE,
+        ASANA_PROJECT_GID or "(my_tasks)",
     )
-    with request.urlopen(req, timeout=30) as resp:
-        body = resp.read().decode("utf-8")
-        return json.loads(body)
 
+    consecutive_failures = 0
 
-def _asana_tasks_for_project(project_gid: str, token: str) -> list[dict[str, Any]]:
-    tasks: list[dict[str, Any]] = []
-    offset = None
+    while not _shutdown_requested:
+        cycle_start = time.monotonic()
+        try:
+            stats = reconcile(
+                notion=notion,
+                notion_db_id=NOTION_DB_ID,
+                asana_token=ASANA_PAT,
+                asana_workspace_gid=ASANA_WORKSPACE_GID,
+                asana_project_gid=ASANA_PROJECT_GID,
+                source_mode=ASANA_SYNC_SOURCE,
+            )
+            elapsed = time.monotonic() - cycle_start
 
-    while True:
-        query: dict[str, Any] = {
-            "project": project_gid,
-            "limit": 100,
-            "completed_since": os.environ.get("ASANA_COMPLETED_SINCE", "1970-01-01T00:00:00Z"),
-            "opt_fields": "gid,name,completed,due_on,permalink_url,notes,memberships.section.name",
-        }
-        if offset:
-            query["offset"] = offset
+            # Only log when something happened — keeps logs readable at 15s polling.
+            if any(v for k, v in stats.items() if k != "skipped"):
+                log.info("Cycle OK in %.2fs: %s", elapsed, stats)
+            else:
+                log.debug("Cycle OK in %.2fs (no changes)", elapsed)
 
-        payload = _asana_request("/tasks", token, query=query)
-        tasks.extend(payload.get("data", []))
+            consecutive_failures = 0
 
-        next_page = payload.get("next_page")
-        if not next_page or not next_page.get("offset"):
-            break
-        offset = next_page["offset"]
+            # Warn if a cycle is approaching the interval — you'd want to know.
+            if elapsed > INTERVAL * 0.8:
+                log.warning(
+                    "Cycle took %.2fs (interval=%ss). Consider raising interval "
+                    "or reducing scope.",
+                    elapsed,
+                    INTERVAL,
+                )
 
-    return tasks
+        except AsanaSyncError as e:
+            # Config error — not transient. Log loudly but keep retrying in case
+            # the user fixes env vars without redeploying.
+            consecutive_failures += 1
+            log.error("Config error (cycle %d): %s", consecutive_failures, e)
 
+        except Exception:
+            consecutive_failures += 1
+            log.exception("Sync cycle failed (cycle %d)", consecutive_failures)
 
-def _asana_tasks_for_me(token: str) -> list[dict[str, Any]]:
-    tasks: list[dict[str, Any]] = []
-    offset = None
-
-    while True:
-        query: dict[str, Any] = {
-            "limit": 100,
-            "completed_since": os.environ.get("ASANA_COMPLETED_SINCE", "1970-01-01T00:00:00Z"),
-            "opt_fields": "gid,name,completed,due_on,permalink_url,notes,memberships.section.name",
-        }
-        if offset:
-            query["offset"] = offset
-
-        payload = _asana_request("/users/me/tasks", token, query=query)
-        tasks.extend(payload.get("data", []))
-
-        next_page = payload.get("next_page")
-        if not next_page or not next_page.get("offset"):
-            break
-        offset = next_page["offset"]
-
-    return tasks
-
-
-def _notion_prop(title: str) -> dict[str, Any]:
-    return {"title": [{"text": {"content": title}}]}
-
-
-def _notion_rich_text(value: str) -> dict[str, Any]:
-    return {"rich_text": [{"text": {"content": value}}]}
-
-
-def _notion_date(value: str | None) -> dict[str, Any]:
-    if not value:
-        return {"date": None}
-    return {"date": {"start": value}}
-
-
-def _horizon_deadline(days: int) -> str:
-    return (date.today() + timedelta(days=days)).isoformat()
-
-
-def _map_context(task: dict[str, Any]) -> str:
-    section_name = ((task.get("memberships") or [{}])[0].get("section") or {}).get("name", "").lower()
-    if any(k in section_name for k in ["health", "fitness", "workout"]):
-        return "🏃 Health"
-    if any(k in section_name for k in ["home", "personal", "family"]):
-        return "🏠 Personal"
-    if any(k in section_name for k in ["collab", "client", "team"]):
-        return "🤝 Collab"
-    return "💼 Work"
-
-
-def _find_notion_task_by_asana_id(notion, database_id: str, asana_gid: str) -> dict[str, Any] | None:
-    result = notion.databases.query(
-        database_id=database_id,
-        filter={"property": "Asana Task ID", "rich_text": {"equals": asana_gid}},
-        page_size=1,
-    )
-    rows = result.get("results", [])
-    return rows[0] if rows else None
-
-
-def _build_notion_properties(task: dict[str, Any]) -> dict[str, Any]:
-    title = task.get("name") or "Untitled Asana Task"
-    due_on = task.get("due_on")
-    completed = bool(task.get("completed"))
-
-    return {
-        "Name": _notion_prop(title),
-        "Deadline": _notion_date(due_on or _horizon_deadline(7)),
-        "Context": {"select": {"name": _map_context(task)}},
-        "Source": {"select": {"name": "🟣 Asana"}},
-        "Done": {"checkbox": completed},
-        "Recurring": {"select": {"name": "None"}},
-        "Asana Task ID": _notion_rich_text(task["gid"]),
-        "Asana URL": {"url": task.get("permalink_url")},
-    }
-
-
-def sync_asana_project_to_notion(
-    *,
-    notion,
-    notion_db_id: str,
-    asana_token: str,
-    asana_project_gid: str,
-    source_mode: str = "project",
-) -> tuple[int, int]:
-    if not asana_token:
-        raise AsanaSyncError("ASANA_PAT is missing")
-    if source_mode == "project" and not asana_project_gid:
-        raise AsanaSyncError("ASANA_PROJECT_GID is missing")
-
-    if source_mode == "my_tasks":
-        tasks = _asana_tasks_for_me(asana_token)
-    else:
-        tasks = _asana_tasks_for_project(asana_project_gid, asana_token)
-    created = 0
-    updated = 0
-
-    for task in tasks:
-        if not task.get("gid"):
-            continue
-
-        properties = _build_notion_properties(task)
-        existing = _find_notion_task_by_asana_id(notion, notion_db_id, task["gid"])
-
-        if existing:
-            notion.pages.update(page_id=existing["id"], properties=properties)
-            updated += 1
+        # ── Sleep until next cycle, with backoff on repeated failures ──
+        if consecutive_failures > 0:
+            # Exponential backoff: 15s, 30s, 60s, 120s, 300s (capped)
+            wait = min(INTERVAL * (2 ** min(consecutive_failures - 1, 5)), MAX_BACKOFF)
+            log.info("Backing off %ss after %d failures", wait, consecutive_failures)
         else:
-            notion.pages.create(parent={"database_id": notion_db_id}, properties=properties)
-            created += 1
+            # Subtract time already spent so we hit roughly INTERVAL pacing.
+            elapsed = time.monotonic() - cycle_start
+            wait = max(0, INTERVAL - elapsed)
 
-    return created, updated
+        # Sleep in short chunks so SIGTERM response stays snappy.
+        slept = 0.0
+        while slept < wait and not _shutdown_requested:
+            chunk = min(1.0, wait - slept)
+            time.sleep(chunk)
+            slept += chunk
+
+    log.info("Shutdown complete")
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
