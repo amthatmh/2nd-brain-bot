@@ -572,6 +572,57 @@ def parse_done_numbers_command(text: str) -> list[int] | None:
     return nums or None
 
 
+def recover_digest_items_from_text(text: str) -> dict[int, dict]:
+    """
+    Rebuild digest numbering from a replied digest message so number-based completion
+    still works after a bot restart (when in-memory digest_map is empty).
+    """
+    if not text:
+        return {}
+
+    emoji_to_num = {emoji: i + 1 for i, emoji in enumerate(NUMBER_EMOJIS)}
+    numbered_names: dict[int, str] = {}
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        n = None
+        remainder = ""
+
+        for emoji, value in emoji_to_num.items():
+            if line.startswith(f"{emoji} "):
+                n = value
+                remainder = line[len(emoji):].strip()
+                break
+
+        if n is None:
+            m = re.match(r"^(\d+)[\.\)]?\s+(.+)$", line)
+            if m:
+                n = int(m.group(1))
+                remainder = m.group(2).strip()
+
+        if n is None or not remainder:
+            continue
+
+        # Digest lines are formatted as "<num> <name>  <context>".
+        task_name = remainder.split("  ")[0].strip()
+        if task_name:
+            numbered_names[n] = task_name
+
+    if not numbered_names:
+        return {}
+
+    active_tasks = get_all_active_tasks()
+    recovered: dict[int, dict] = {}
+    for n, name in numbered_names.items():
+        matched = fuzzy_match(name, active_tasks)
+        if matched:
+            recovered[n] = matched
+    return recovered
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # RECURRING LOGIC
 # ══════════════════════════════════════════════════════════════════════════════
@@ -941,8 +992,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     numbers = parse_done_numbers_command(text)
     if numbers:
         source_id = message.reply_to_message.message_id if message.reply_to_message else last_digest_msg_id
+        done_names: list[str] = []
+
         if source_id and source_id in digest_map:
-            items, done_names = digest_map[source_id], []
+            items = digest_map[source_id]
             for n in numbers:
                 if 1 <= n <= len(items):
                     pid  = items[n - 1]["page_id"]
@@ -950,7 +1003,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     mark_done(pid)
                     suffix = " ↻ next queued" if handle_done_recurring(pid) else ""
                     done_names.append(f"{name}{suffix}")
-            msg = "Marked done:\n" + "\n".join(f"✅ {n}" for n in done_names) if done_names else "Couldn't find those items."
+        elif message.reply_to_message:
+            replied_text = (message.reply_to_message.text or message.reply_to_message.caption or "").strip()
+            recovered = recover_digest_items_from_text(replied_text)
+            for n in numbers:
+                task = recovered.get(n)
+                if task:
+                    pid = task["page_id"]
+                    name = task["name"]
+                    mark_done(pid)
+                    suffix = " ↻ next queued" if handle_done_recurring(pid) else ""
+                    done_names.append(f"{name}{suffix}")
+
+        if done_names:
+            msg = "Marked done:\n" + "\n".join(f"✅ {n}" for n in done_names)
             await message.reply_text(msg)
         else:
             await message.reply_text("No recent digest found. Try replying directly to a digest message.")
