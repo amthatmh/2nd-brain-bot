@@ -147,6 +147,33 @@ def habits_by_time(time_str: str) -> list[dict]:
     return [h for h in habit_cache.values() if h["time"] == time_str]
 
 
+def notion_query_all(database_id: str, **kwargs) -> list[dict]:
+    """Return all rows from a Notion database query (handles pagination)."""
+    rows: list[dict] = []
+    cursor = None
+
+    while True:
+        query_args = dict(kwargs)
+        if cursor:
+            query_args["start_cursor"] = cursor
+        resp = notion.databases.query(database_id=database_id, **query_args)
+        rows.extend(resp.get("results", []))
+        if not resp.get("has_more"):
+            break
+        cursor = resp.get("next_cursor")
+
+    return rows
+
+
+def extract_date_only(date_str: str | None) -> str | None:
+    """Normalize Notion date strings to YYYY-MM-DD for calendar matching."""
+    if not date_str:
+        return None
+    if len(date_str) >= 10 and date_str[4] == "-" and date_str[7] == "-":
+        return date_str[:10]
+    return date_str
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MULTI-TASK PARSING
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1133,7 +1160,7 @@ async def habits_data_handler(request: web.Request) -> web.Response:
         num_days = WEEKS_HISTORY * 7
         start_dt = today - timedelta(days=num_days - 1)
 
-        results = notion.databases.query(
+        results = notion_query_all(
             database_id=NOTION_LOG_DB,
             filter={
                 "and": [
@@ -1146,10 +1173,10 @@ async def habits_data_handler(request: web.Request) -> web.Response:
 
         # Build lookup set — strip dashes from relation IDs (Notion returns them without)
         logged: set[tuple] = set()
-        for page in results.get("results", []):
+        for page in results:
             p        = page["properties"]
             d        = p.get("Date", {}).get("date", {})
-            date_str = d.get("start") if d else None
+            date_str = extract_date_only(d.get("start") if d else None)
             rels     = p.get("Habit", {}).get("relation", [])
             for rel in rels:
                 if date_str:
