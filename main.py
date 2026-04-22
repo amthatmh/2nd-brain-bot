@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Second Brain — Telegram Bot (v9.2)
+Second Brain — Telegram Bot (v9.3)
 ────────────────────────────────────────────────────────────────
-All v9.1 features preserved plus:
+All v9.2 features preserved plus:
 
-v9.2 changes:
-- New ASANA_WORKSPACE_GID env var, required when ASANA_SYNC_SOURCE=my_tasks.
-  Passed through to asana_sync.reconcile() so the modern User Task List
-  endpoint can be used (the deprecated /users/me/tasks returns 404).
+v9.3 changes:
+- Startup smoke test for Asana↔Notion integration boundary:
+  fetch sample Asana task → create Notion row → archive Notion row.
+- Deploy receipt Telegram message on boot with version, git SHA, and Asana mode.
 """
 
 import asyncio
@@ -16,6 +16,7 @@ import json
 import re
 import logging
 import calendar
+import subprocess
 from datetime import date, datetime, timedelta
 from collections import defaultdict
 
@@ -34,7 +35,12 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import anthropic
 from notion_client import Client as NotionClient
 
-from asana_sync import reconcile, AsanaSyncError, validate_notion_schema
+from asana_sync import (
+    reconcile,
+    AsanaSyncError,
+    validate_notion_schema,
+    startup_smoke_test,
+)
 
 load_dotenv()
 
@@ -59,6 +65,7 @@ CLAUDE_MODEL   = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
 HTTP_PORT      = int(os.environ.get("PORT", "8080"))
 WEEKS_HISTORY  = int(os.environ.get("WEEKS_HISTORY", "52"))
+APP_VERSION    = os.environ.get("APP_VERSION", "v9.3.0")
 
 # ── Asana sync config ────────────────────────────────────────────────────────
 ASANA_PAT           = os.environ.get("ASANA_PAT", "")
@@ -66,6 +73,7 @@ ASANA_PROJECT_GID   = os.environ.get("ASANA_PROJECT_GID", "")
 ASANA_WORKSPACE_GID = os.environ.get("ASANA_WORKSPACE_GID", "")  # v9.2: required for my_tasks mode
 ASANA_SYNC_SOURCE   = os.environ.get("ASANA_SYNC_SOURCE", "project").strip().lower()
 ASANA_SYNC_INTERVAL = max(1, int(os.environ.get("ASANA_SYNC_EVERY_SECONDS", "15")))
+ASANA_STARTUP_SMOKE = os.environ.get("ASANA_STARTUP_SMOKE", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 # ── Clients ──────────────────────────────────────────────────────────────────
 notion = NotionClient(auth=NOTION_TOKEN)
@@ -1464,6 +1472,24 @@ async def _try_send_telegram(bot, text: str) -> None:
         log.error(f"Could not send schema alert via Telegram: {e}")
 
 
+def _git_sha() -> str:
+    """Best-effort short commit SHA for deploy receipts."""
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
+def _asana_boot_mode_label() -> str:
+    if ASANA_SYNC_SOURCE == "project":
+        return f"project:{ASANA_PROJECT_GID or 'missing_gid'}"
+    return f"my_tasks:{ASANA_WORKSPACE_GID or 'missing_gid'}"
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # STARTUP
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1484,6 +1510,7 @@ async def post_init(app: Application) -> None:
 
     # ── Asana reconciler — gated by schema validation ──
     asana_status = "OFF"
+    smoke_status = "SKIPPED"
     if ASANA_PAT:
         problems = validate_notion_schema(notion, NOTION_DB_ID)
         # v9.2: also catch missing workspace GID for my_tasks mode early
@@ -1498,6 +1525,46 @@ async def post_init(app: Application) -> None:
             await _try_send_telegram(app.bot, _format_schema_alert(problems))
             asana_status = "DISABLED (schema)"
         else:
+            if ASANA_STARTUP_SMOKE:
+                try:
+                    loop = asyncio.get_event_loop()
+                    smoke = await loop.run_in_executor(
+                        None,
+                        lambda: startup_smoke_test(
+                            notion=notion,
+                            notion_db_id=NOTION_DB_ID,
+                            asana_token=ASANA_PAT,
+                            asana_project_gid=ASANA_PROJECT_GID,
+                            asana_workspace_gid=ASANA_WORKSPACE_GID,
+                            source_mode=ASANA_SYNC_SOURCE,
+                        ),
+                    )
+                    smoke_status = f"PASS (sample={smoke.get('sample_task_gid')})"
+                    log.info("Asana startup smoke test passed ✓ %s", smoke)
+                except AsanaSyncError as e:
+                    smoke_status = f"FAIL ({e})"
+                    asana_status = "DISABLED (smoke)"
+                    log.error("Asana sync DISABLED — startup smoke failed: %s", e)
+                    await _try_send_telegram(
+                        app.bot,
+                        "🚨 *Asana sync DISABLED — startup smoke test failed*\n\n"
+                        f"• {e}\n\n"
+                        "_Fix config/integration and redeploy. Scheduler was not started for Asana sync._",
+                    )
+                except Exception as e:
+                    smoke_status = f"FAIL ({e})"
+                    asana_status = "DISABLED (smoke)"
+                    log.exception("Asana sync DISABLED — unexpected smoke test error: %s", e)
+                    await _try_send_telegram(
+                        app.bot,
+                        "🚨 *Asana sync DISABLED — startup smoke test crashed*\n\n"
+                        f"• {e}\n\n"
+                        "_Fix and redeploy._",
+                    )
+            else:
+                smoke_status = "SKIPPED (disabled by ASANA_STARTUP_SMOKE)"
+
+        if asana_status not in {"DISABLED (schema)", "DISABLED (smoke)"}:
             scheduler.add_job(
                 run_asana_sync,
                 "interval",
@@ -1516,7 +1583,15 @@ async def post_init(app: Application) -> None:
         f"Scheduler started ✓  TZ={TZ}  "
         f"weekday={_wk_h:02d}:{_wk_m:02d}  weekend={_we_h:02d}:{_we_m:02d}  "
         f"recurring={_rc_h:02d}:{_rc_m:02d}  "
-        f"asana_sync={asana_status}"
+        f"asana_sync={asana_status}  smoke={smoke_status}"
+    )
+    await _try_send_telegram(
+        app.bot,
+        f"🚀 {APP_VERSION} booted\n"
+        f"sha={_git_sha()}\n"
+        f"asana={asana_status}\n"
+        f"source={_asana_boot_mode_label()}\n"
+        f"smoke={smoke_status}",
     )
 
 

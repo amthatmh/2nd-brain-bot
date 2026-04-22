@@ -24,6 +24,7 @@ v9.2 changes:
 
 import json
 import logging
+import re
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -212,11 +213,21 @@ _utl_cache: dict[str, str] = {}
 _utl_cache_lock = threading.Lock()
 
 
+def _looks_like_gid(value: str) -> bool:
+    return bool(re.fullmatch(r"\d+", (value or "").strip()))
+
+
 def _get_user_task_list_gid(workspace_gid: str, token: str) -> str:
     """
     Look up (and cache) the current user's User Task List GID for a given workspace.
     Raises AsanaSyncError if Asana refuses or returns no UTL.
     """
+    if not _looks_like_gid(workspace_gid):
+        raise AsanaSyncError(
+            f"ASANA_WORKSPACE_GID looks malformed: {workspace_gid!r}. "
+            "Expected a numeric workspace GID (digits only), e.g. 1234567890123456."
+        )
+
     with _utl_cache_lock:
         cached = _utl_cache.get(workspace_gid)
         if cached:
@@ -322,6 +333,32 @@ def _asana_fetch_tasks(
 
     base["project"] = project_gid
     return _asana_paginated("/tasks", token, base)
+
+
+def _asana_fetch_single_task(
+    token: str,
+    source_mode: str,
+    project_gid: str,
+    workspace_gid: str,
+) -> dict[str, Any] | None:
+    """
+    Fetch one task for startup health checks. Returns None if no tasks exist.
+    """
+    base = {
+        "completed_since": _dynamic_completed_since(),
+        "opt_fields": ASANA_OPT_FIELDS,
+        "limit": 1,
+    }
+
+    if source_mode == "my_tasks":
+        utl_gid = _get_user_task_list_gid(workspace_gid, token)
+        payload = _asana_request(f"/user_task_lists/{utl_gid}/tasks", token, query=base)
+    else:
+        base["project"] = project_gid
+        payload = _asana_request("/tasks", token, query=base)
+
+    tasks = payload.get("data") or []
+    return tasks[0] if tasks else None
 
 
 def _asana_update_task(gid: str, token: str, fields: dict[str, Any]) -> dict[str, Any]:
@@ -629,3 +666,73 @@ def reconcile(
             log.exception("Failed to archive orphaned Notion page %s", page_id)
 
     return stats
+
+
+def startup_smoke_test(
+    *,
+    notion,
+    notion_db_id: str,
+    asana_token: str,
+    asana_project_gid: str = "",
+    asana_workspace_gid: str = "",
+    source_mode: str = "project",
+) -> dict[str, str]:
+    """
+    Integration-boundary startup test:
+    1) Fetch one Asana task
+    2) Create one Notion row
+    3) Archive that Notion row (cleanup)
+    """
+    source_mode = (source_mode or "project").strip().lower()
+    if source_mode not in {"project", "my_tasks"}:
+        raise AsanaSyncError("ASANA_SYNC_SOURCE must be 'project' or 'my_tasks'")
+    if source_mode == "project" and not asana_project_gid:
+        raise AsanaSyncError("ASANA_PROJECT_GID is missing for source_mode=project")
+    if source_mode == "my_tasks" and not asana_workspace_gid:
+        raise AsanaSyncError("ASANA_WORKSPACE_GID is missing for source_mode=my_tasks")
+
+    sample_task = _asana_fetch_single_task(
+        asana_token, source_mode, asana_project_gid, asana_workspace_gid
+    )
+
+    marker = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    if sample_task:
+        smoke_name = f"🧪 startup-smoke: {sample_task.get('name') or sample_task['gid']}"
+        smoke_gid = sample_task["gid"]
+    else:
+        smoke_name = "🧪 startup-smoke: no source task found"
+        smoke_gid = "no-source-task"
+
+    created_page_id: str | None = None
+    try:
+        page = notion.pages.create(
+            parent={"database_id": notion_db_id},
+            properties={
+                "Name": _notion_title(smoke_name),
+                "Source": {"select": {"name": ASANA_SOURCE_LABEL}},
+                "Done": {"checkbox": False},
+                "Recurring": {"select": {"name": "None"}},
+                "Asana Task ID": _notion_rich_text(f"{smoke_gid}::smoke::{marker}"),
+                "Asana URL": {"url": sample_task.get("permalink_url") if sample_task else None},
+                "Asana Modified At": _notion_rich_text(sample_task.get("modified_at") if sample_task else None),
+                "Last Synced At": _notion_date(_now_iso()),
+            },
+        )
+        created_page_id = page["id"]
+    except Exception as e:
+        raise AsanaSyncError(f"Startup smoke failed at Notion write step: {e}") from e
+    finally:
+        if created_page_id:
+            try:
+                notion.pages.update(page_id=created_page_id, archived=True)
+            except Exception as e:
+                raise AsanaSyncError(
+                    f"Startup smoke cleanup failed (row {created_page_id}): {e}"
+                ) from e
+
+    return {
+        "fetch": "ok",
+        "write": "ok",
+        "cleanup": "ok",
+        "sample_task_gid": smoke_gid,
+    }
