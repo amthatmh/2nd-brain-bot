@@ -13,6 +13,13 @@ Design:
 v9.1 changes:
 - Single source of truth for the "Asana" Source label via ASANA_SOURCE_LABEL.
 - New validate_notion_schema() helper for fail-loud startup validation.
+
+v9.2 changes:
+- Fix my_tasks mode: deprecated /users/me/tasks endpoint replaced with the
+  modern User Task List flow (lookup UTL GID per workspace, then query it).
+- New required parameter `asana_workspace_gid` for my_tasks mode.
+- Module-level cache of UTL GIDs keyed by workspace, so we only look up
+  the User Task List once per process.
 """
 
 import json
@@ -193,6 +200,54 @@ _cache = GidCache()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# USER TASK LIST GID CACHE
+# ═══════════════════════════════════════════════════════════════════════════
+# Asana deprecated /users/me/tasks. Modern flow: each user has a per-workspace
+# "User Task List" (UTL) — you GET its GID once, then query that UTL's tasks.
+# We cache {workspace_gid -> utl_gid} for the process lifetime; the UTL ID
+# never changes for a given (user, workspace) pair, so this is safe forever.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_utl_cache: dict[str, str] = {}
+_utl_cache_lock = threading.Lock()
+
+
+def _get_user_task_list_gid(workspace_gid: str, token: str) -> str:
+    """
+    Look up (and cache) the current user's User Task List GID for a given workspace.
+    Raises AsanaSyncError if Asana refuses or returns no UTL.
+    """
+    with _utl_cache_lock:
+        cached = _utl_cache.get(workspace_gid)
+        if cached:
+            return cached
+
+    try:
+        payload = _asana_request(
+            "/users/me/user_task_list",
+            token,
+            query={"workspace": workspace_gid, "opt_fields": "gid"},
+        )
+    except Exception as e:
+        raise AsanaSyncError(
+            f"Could not look up User Task List for workspace {workspace_gid}: {e}"
+        ) from e
+
+    data = payload.get("data") or {}
+    utl_gid = data.get("gid")
+    if not utl_gid:
+        raise AsanaSyncError(
+            f"Asana returned no User Task List for workspace {workspace_gid}. "
+            "Check that ASANA_WORKSPACE_GID is correct and the PAT owner has access."
+        )
+
+    with _utl_cache_lock:
+        _utl_cache[workspace_gid] = utl_gid
+    log.info("Resolved User Task List GID %s for workspace %s", utl_gid, workspace_gid)
+    return utl_gid
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # ASANA HTTP LAYER
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -243,13 +298,28 @@ def _dynamic_completed_since() -> str:
     return cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _asana_fetch_tasks(token: str, source_mode: str, project_gid: str) -> list[dict[str, Any]]:
+def _asana_fetch_tasks(
+    token: str,
+    source_mode: str,
+    project_gid: str,
+    workspace_gid: str,
+) -> list[dict[str, Any]]:
+    """
+    Pull tasks from Asana based on source_mode:
+    - 'project'  → all tasks in ASANA_PROJECT_GID
+    - 'my_tasks' → all tasks in the current user's User Task List for the
+                   given workspace (modern replacement for the deprecated
+                   /users/me/tasks endpoint)
+    """
     base = {
         "completed_since": _dynamic_completed_since(),
         "opt_fields": ASANA_OPT_FIELDS,
     }
+
     if source_mode == "my_tasks":
-        return _asana_paginated("/users/me/tasks", token, base)
+        utl_gid = _get_user_task_list_gid(workspace_gid, token)
+        return _asana_paginated(f"/user_task_lists/{utl_gid}/tasks", token, base)
+
     base["project"] = project_gid
     return _asana_paginated("/tasks", token, base)
 
@@ -455,11 +525,13 @@ def reconcile(
     notion_db_id: str,
     asana_token: str,
     asana_project_gid: str = "",
+    asana_workspace_gid: str = "",
     source_mode: str = "project",
 ) -> dict[str, int]:
     """
     Run one reconciliation cycle. Returns stats dict.
-    Safe to call repeatedly; holds no state between calls except the module-level cache.
+    Safe to call repeatedly; holds no state between calls except the
+    module-level caches (GidCache and User Task List GID cache).
     """
     source_mode = (source_mode or "project").strip().lower()
 
@@ -469,6 +541,8 @@ def reconcile(
         raise AsanaSyncError("ASANA_SYNC_SOURCE must be 'project' or 'my_tasks'")
     if source_mode == "project" and not asana_project_gid:
         raise AsanaSyncError("ASANA_PROJECT_GID is missing for source_mode=project")
+    if source_mode == "my_tasks" and not asana_workspace_gid:
+        raise AsanaSyncError("ASANA_WORKSPACE_GID is missing for source_mode=my_tasks")
 
     stats = {"created": 0, "a2n": 0, "n2a": 0, "deleted": 0, "skipped": 0}
 
@@ -477,7 +551,9 @@ def reconcile(
         _cache.rebuild(notion, notion_db_id)
 
     # ── Pull Asana side ──
-    asana_tasks  = _asana_fetch_tasks(asana_token, source_mode, asana_project_gid)
+    asana_tasks  = _asana_fetch_tasks(
+        asana_token, source_mode, asana_project_gid, asana_workspace_gid
+    )
     asana_by_gid = {t["gid"]: t for t in asana_tasks if t.get("gid")}
 
     # ── Cache trigger 3: rebuild on detected miss ──
