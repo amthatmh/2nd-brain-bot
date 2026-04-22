@@ -188,6 +188,54 @@ def split_tasks(text: str) -> list[str]:
     return [text]
 
 
+def looks_like_task_batch(text: str) -> bool:
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if len(lines) <= 1:
+        return False
+    numbered_or_bulleted = sum(1 for l in lines if _BULLET_RE.match(l))
+    if numbered_or_bulleted >= 2:
+        return True
+    lead = lines[0].lower()
+    if lead in {"add", "todo", "to-do", "tasks"}:
+        return True
+    return False
+
+
+def infer_batch_overrides(text: str) -> dict:
+    lower = text.lower()
+    context = None
+    context_aliases = [
+        ("💼 Work", ["work", "💼"]),
+        ("🏠 Personal", ["personal", "🏠"]),
+        ("🏃 Health", ["health", "🏃"]),
+        ("🤝 Collab", ["collab", "🤝"]),
+    ]
+
+    explicit_scope = re.search(r"\b(?:under|for|in)\s+([^\n,.;:]+)", lower)
+    scoped_text = explicit_scope.group(1) if explicit_scope else ""
+    haystacks = [scoped_text, lower] if scoped_text else [lower]
+
+    for hay in haystacks:
+        for notion_context, aliases in context_aliases:
+            if any((a in hay) if not a.isalpha() else re.search(rf"\b{re.escape(a)}\b", hay) for a in aliases):
+                context = notion_context
+                break
+        if context:
+            break
+
+    deadline_days = None
+    if re.search(r"\btomorrow\b", lower):
+        deadline_days = 1
+    elif re.search(r"\b(?:today|tonight)\b", lower):
+        deadline_days = 0
+    elif re.search(r"\bthis week\b", lower):
+        deadline_days = 5
+    elif re.search(r"\bthis month\b", lower):
+        deadline_days = 20
+
+    return {"context": context, "deadline_days": deadline_days}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CLAUDE CLASSIFICATION
 # ══════════════════════════════════════════════════════════════════════════════
@@ -594,18 +642,22 @@ def handle_done_recurring(page_id: str) -> bool:
 # BATCH CAPTURE
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _run_capture(raw_text: str, force_create: bool = False) -> dict:
+def _run_capture(raw_text: str, force_create: bool = False,
+                 context_override: str | None = None,
+                 deadline_override: int | None = None) -> dict:
     try:
         result        = classify_task(raw_text)
         task_name     = result.get("task_name", raw_text)
         deadline_days = result.get("deadline_days")
-        ctx           = result.get("context", "🏠 Personal")
+        ctx           = context_override or result.get("context", "🏠 Personal")
         recurring     = result.get("recurring", "None") or "None"
         repeat_day    = result.get("repeat_day")
         if recurring == "📅 Weekly" and repeat_day in REPEAT_DAY_TO_WEEKDAY:
             if deadline_days is None:
                 target        = next_weekday(REPEAT_DAY_TO_WEEKDAY[repeat_day])
                 deadline_days = (target - date.today()).days
+        if deadline_override is not None:
+            deadline_days = deadline_override
         horizon_label = deadline_days_to_label(deadline_days)
     except Exception as e:
         log.error(f"Claude error for '{raw_text}': {e}")
@@ -784,9 +836,12 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
     )
 
     if is_multi:
+        overrides = infer_batch_overrides(raw_text)
+        context_override = overrides.get("context")
+        deadline_override = overrides.get("deadline_days")
         loop    = asyncio.get_event_loop()
         results = await asyncio.gather(*[
-            loop.run_in_executor(None, _run_capture, t, force_create)
+            loop.run_in_executor(None, _run_capture, t, force_create, context_override, deadline_override)
             for t in task_texts
         ])
         await thinking.edit_text(format_batch_summary(list(results)), parse_mode="Markdown")
@@ -939,12 +994,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if match_force:
         await create_or_prompt_task(message, match_force.group(1).strip(), force_create=True); return
 
+    if looks_like_task_batch(text):
+        await create_or_prompt_task(message, text)
+        return
+
     thinking = await message.reply_text("🧠 Got it...")
     try:
         result = classify_message(text)
     except Exception as e:
         log.error(f"Claude error: {e}")
-        await thinking.edit_text("⚠️ Couldn't process that. Try rephrasing?")
+        await thinking.delete()
+        await create_or_prompt_task(message, text)
         return
 
     if result.get("type") == "habit":
