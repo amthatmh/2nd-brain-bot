@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """
-Second Brain — Telegram Bot (v9.1)
+Second Brain — Telegram Bot (v9.2)
 ────────────────────────────────────────────────────────────────
-All v9 features preserved plus:
+All v9.1 features preserved plus:
 
-v9.1 changes:
-- Startup schema validation for the Asana sync via validate_notion_schema().
-- If the To-Do DB schema is missing required properties or `Source` options,
-  the Asana job is NOT scheduled (other features keep running) and a clear
-  alert is sent via Telegram + logged.
-- Eliminates the "fail every interval forever" log-spam failure mode.
+v9.2 changes:
+- New ASANA_WORKSPACE_GID env var, required when ASANA_SYNC_SOURCE=my_tasks.
+  Passed through to asana_sync.reconcile() so the modern User Task List
+  endpoint can be used (the deprecated /users/me/tasks returns 404).
 """
 
 import asyncio
@@ -65,6 +63,7 @@ WEEKS_HISTORY  = int(os.environ.get("WEEKS_HISTORY", "52"))
 # ── Asana sync config ────────────────────────────────────────────────────────
 ASANA_PAT           = os.environ.get("ASANA_PAT", "")
 ASANA_PROJECT_GID   = os.environ.get("ASANA_PROJECT_GID", "")
+ASANA_WORKSPACE_GID = os.environ.get("ASANA_WORKSPACE_GID", "")  # v9.2: required for my_tasks mode
 ASANA_SYNC_SOURCE   = os.environ.get("ASANA_SYNC_SOURCE", "project").strip().lower()
 ASANA_SYNC_INTERVAL = max(1, int(os.environ.get("ASANA_SYNC_EVERY_SECONDS", "15")))
 
@@ -606,7 +605,7 @@ def recover_digest_items_from_text(text: str) -> dict[int, dict]:
         if n is None or not remainder:
             continue
 
-        # Digest lines are formatted as "<num> <name>  <context>".
+        # Digest lines are formatted as "<num> <n>  <context>".
         task_name = remainder.split("  ")[0].strip()
         if task_name:
             numbered_names[n] = task_name
@@ -1295,6 +1294,7 @@ async def run_asana_sync(bot) -> None:
                 notion_db_id=NOTION_DB_ID,
                 asana_token=ASANA_PAT,
                 asana_project_gid=ASANA_PROJECT_GID,
+                asana_workspace_gid=ASANA_WORKSPACE_GID,   # v9.2: required for my_tasks mode
                 source_mode=ASANA_SYNC_SOURCE,
             ),
         )
@@ -1486,8 +1486,13 @@ async def post_init(app: Application) -> None:
     asana_status = "OFF"
     if ASANA_PAT:
         problems = validate_notion_schema(notion, NOTION_DB_ID)
+        # v9.2: also catch missing workspace GID for my_tasks mode early
+        if ASANA_SYNC_SOURCE == "my_tasks" and not ASANA_WORKSPACE_GID:
+            problems.append(
+                "ASANA_WORKSPACE_GID env var is required when ASANA_SYNC_SOURCE=my_tasks"
+            )
         if problems:
-            log.error("Asana sync DISABLED — Notion schema problems detected:")
+            log.error("Asana sync DISABLED — startup checks failed:")
             for p in problems:
                 log.error(f"  - {p}")
             await _try_send_telegram(app.bot, _format_schema_alert(problems))
@@ -1503,7 +1508,7 @@ async def post_init(app: Application) -> None:
                 coalesce=True,                     # Don't backfill missed runs
                 next_run_time=datetime.now(TZ),    # Fire once immediately on startup
             )
-            asana_status = f"ON ({ASANA_SYNC_INTERVAL}s)"
+            asana_status = f"ON ({ASANA_SYNC_INTERVAL}s, mode={ASANA_SYNC_SOURCE})"
             log.info("Notion schema validation passed ✓")
 
     scheduler.start()
@@ -1587,7 +1592,7 @@ def main() -> None:
     app.add_handler(CommandHandler("done",  handle_done_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    log.info("🤖 Second Brain bot starting (v9.1)...")
+    log.info("🤖 Second Brain bot starting (v9.2)...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
