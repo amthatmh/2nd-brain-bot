@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Second Brain — Telegram Bot (v9)
+Second Brain — Telegram Bot (v9.1)
 ────────────────────────────────────────────────────────────────
-All v8 features preserved plus:
+All v9 features preserved plus:
 
-v9 changes:
-- Bi-directional Asana ↔ Notion sync via APScheduler (every 15s).
-- Reconciler offloaded to thread pool to keep Telegram event loop responsive.
-- Sync logic self-contained in asana_sync.py (no bot dependency).
-- Telegram tasks stay Notion-only; only Asana-sourced rows are reconciled.
-- Startup log now reports sync status (ON/OFF + interval).
+v9.1 changes:
+- Startup schema validation for the Asana sync via validate_notion_schema().
+- If the To-Do DB schema is missing required properties or `Source` options,
+  the Asana job is NOT scheduled (other features keep running) and a clear
+  alert is sent via Telegram + logged.
+- Eliminates the "fail every interval forever" log-spam failure mode.
 """
 
 import asyncio
@@ -36,7 +36,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import anthropic
 from notion_client import Client as NotionClient
 
-from asana_sync import reconcile, AsanaSyncError
+from asana_sync import reconcile, AsanaSyncError, validate_notion_schema
 
 load_dotenv()
 
@@ -1309,8 +1309,6 @@ async def run_asana_sync(bot) -> None:
 
 # ══════════════════════════════════════════════════════════════════════════════
 # /habits-data JSON ENDPOINT
-# ── FIX: Notion relation IDs have no dashes; habit_cache IDs do.
-#         Strip dashes on both sides before comparing.
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def habits_data_handler(request: web.Request) -> web.Response:
@@ -1345,7 +1343,7 @@ async def habits_data_handler(request: web.Request) -> web.Response:
         all_dates  = [(start_dt + timedelta(days=i)).isoformat() for i in range(num_days)]
         habits_out = []
         for habit in habits_sorted:
-            pid  = habit["page_id"].replace("-", "")   # normalise to match relation IDs
+            pid  = habit["page_id"].replace("-", "")
             days = [1 if (pid, d) in logged else 0 for d in all_dates]
             habits_out.append({
                 "id":          habit["page_id"],
@@ -1444,6 +1442,29 @@ async def start_http_server() -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# STARTUP HELPERS — schema validation + alert
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _format_schema_alert(problems: list[str]) -> str:
+    """Telegram-friendly alert message for schema validation problems."""
+    bullets = "\n".join(f"• {p}" for p in problems)
+    return (
+        "🚨 *Asana sync DISABLED — Notion schema check failed*\n\n"
+        f"{bullets}\n\n"
+        "_Fix the To-Do DB and redeploy. The bot is otherwise running normally "
+        "(habits, tasks, digests all work)._"
+    )
+
+
+async def _try_send_telegram(bot, text: str) -> None:
+    """Best-effort Telegram alert. Never raises."""
+    try:
+        await bot.send_message(chat_id=MY_CHAT_ID, text=text, parse_mode="Markdown")
+    except Exception as e:
+        log.error(f"Could not send schema alert via Telegram: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # STARTUP
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1461,25 +1482,36 @@ async def post_init(app: Application) -> None:
                       day_of_week="sun", hour=_we_h, minute=_we_m, args=[app.bot])
     register_habit_schedules(scheduler, app.bot)
 
-    # Asana reconciler — runs every ASANA_SYNC_INTERVAL seconds
+    # ── Asana reconciler — gated by schema validation ──
+    asana_status = "OFF"
     if ASANA_PAT:
-        scheduler.add_job(
-            run_asana_sync,
-            "interval",
-            seconds=ASANA_SYNC_INTERVAL,
-            args=[app.bot],
-            id="asana_sync",
-            max_instances=1,                   # Skip a tick if previous still running
-            coalesce=True,                     # Don't backfill missed runs
-            next_run_time=datetime.now(TZ),    # Fire once immediately on startup
-        )
+        problems = validate_notion_schema(notion, NOTION_DB_ID)
+        if problems:
+            log.error("Asana sync DISABLED — Notion schema problems detected:")
+            for p in problems:
+                log.error(f"  - {p}")
+            await _try_send_telegram(app.bot, _format_schema_alert(problems))
+            asana_status = "DISABLED (schema)"
+        else:
+            scheduler.add_job(
+                run_asana_sync,
+                "interval",
+                seconds=ASANA_SYNC_INTERVAL,
+                args=[app.bot],
+                id="asana_sync",
+                max_instances=1,                   # Skip a tick if previous still running
+                coalesce=True,                     # Don't backfill missed runs
+                next_run_time=datetime.now(TZ),    # Fire once immediately on startup
+            )
+            asana_status = f"ON ({ASANA_SYNC_INTERVAL}s)"
+            log.info("Notion schema validation passed ✓")
 
     scheduler.start()
     log.info(
         f"Scheduler started ✓  TZ={TZ}  "
         f"weekday={_wk_h:02d}:{_wk_m:02d}  weekend={_we_h:02d}:{_we_m:02d}  "
         f"recurring={_rc_h:02d}:{_rc_m:02d}  "
-        f"asana_sync={'ON' if ASANA_PAT else 'OFF'} ({ASANA_SYNC_INTERVAL}s)"
+        f"asana_sync={asana_status}"
     )
 
 
@@ -1555,7 +1587,7 @@ def main() -> None:
     app.add_handler(CommandHandler("done",  handle_done_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    log.info("🤖 Second Brain bot starting (v9)...")
+    log.info("🤖 Second Brain bot starting (v9.1)...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
