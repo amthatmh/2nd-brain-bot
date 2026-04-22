@@ -9,11 +9,14 @@ Design:
 - Dynamic 90-day completion window (self-tuning, no env var needed).
 - Writable from Notion back to Asana: name, due date, completion.
 - Context is Notion-owned after initial creation.
+
+v9.1 changes:
+- Single source of truth for the "Asana" Source label via ASANA_SOURCE_LABEL.
+- New validate_notion_schema() helper for fail-loud startup validation.
 """
 
 import json
 import logging
-import os
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -36,9 +39,83 @@ COMPLETED_WINDOW_DAYS = 90
 # Cache safety-net: force a full rebuild every N seconds regardless of misses.
 CACHE_FULL_REBUILD_SECONDS = 600  # 10 minutes
 
+# ── Single source of truth for the Notion `Source` select option that marks
+#    an Asana-sourced row. MUST match the exact label (incl. emoji) in Notion.
+#    Change here → propagates to query filter AND new-row creation.
+ASANA_SOURCE_LABEL = "🔗 Asana"
+
+# ── Required Notion schema for the To-Do DB used by this reconciler.
+#    Used by validate_notion_schema(). property_name → expected Notion type.
+REQUIRED_NOTION_PROPERTIES: dict[str, str] = {
+    "Name":              "title",
+    "Source":            "select",
+    "Deadline":          "date",
+    "Done":              "checkbox",
+    "Asana Task ID":     "rich_text",
+    "Asana URL":         "url",
+    "Asana Modified At": "rich_text",
+    "Last Synced At":    "date",
+}
+
+# Required `Source` select options (the reconciler writes these names).
+REQUIRED_SOURCE_OPTIONS: set[str] = {ASANA_SOURCE_LABEL}
+
 
 class AsanaSyncError(Exception):
     pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SCHEMA VALIDATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+def validate_notion_schema(notion, database_id: str) -> list[str]:
+    """
+    Verify the To-Do DB has every property the reconciler writes to,
+    with the right type, and every required `Source` select option.
+
+    Returns a list of human-readable problems. Empty list = schema healthy.
+    Designed to be called once at startup so failures surface BEFORE the
+    sync job starts hammering the API every N seconds.
+
+    Never raises; on Notion API error returns a single "could not validate"
+    entry so the caller can decide whether to proceed.
+    """
+    problems: list[str] = []
+    try:
+        db = notion.databases.retrieve(database_id=database_id)
+    except Exception as e:
+        return [f"Could not retrieve Notion DB {database_id}: {e}"]
+
+    props = db.get("properties", {}) or {}
+
+    # 1) Required properties exist with correct type
+    for prop_name, expected_type in REQUIRED_NOTION_PROPERTIES.items():
+        prop = props.get(prop_name)
+        if prop is None:
+            problems.append(f"Missing property: '{prop_name}' (expected {expected_type})")
+            continue
+        actual_type = prop.get("type")
+        if actual_type != expected_type:
+            problems.append(
+                f"Property '{prop_name}' has wrong type: got '{actual_type}', expected '{expected_type}'"
+            )
+
+    # 2) `Source` select must contain every label the reconciler writes
+    source_prop = props.get("Source") or {}
+    if source_prop.get("type") == "select":
+        existing_options = {
+            opt.get("name") for opt in source_prop.get("select", {}).get("options", [])
+        }
+        for required_option in REQUIRED_SOURCE_OPTIONS:
+            if required_option not in existing_options:
+                pretty_existing = ", ".join(sorted(o for o in existing_options if o)) or "(none)"
+                problems.append(
+                    f"`Source` select is missing option '{required_option}'. "
+                    f"Existing options: {pretty_existing}"
+                )
+
+    return problems
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -91,7 +168,7 @@ class GidCache:
         while True:
             kwargs: dict[str, Any] = {
                 "database_id": database_id,
-                "filter": {"property": "Source", "select": {"equals": "🟣 Asana"}},
+                "filter": {"property": "Source", "select": {"equals": ASANA_SOURCE_LABEL}},
                 "page_size": 100,
             }
             if cursor:
@@ -278,7 +355,7 @@ def _build_notion_create_props(task: dict[str, Any]) -> dict[str, Any]:
         "Name":              _notion_title(task.get("name") or "Untitled Asana Task"),
         "Deadline":          _notion_date(task.get("due_on")),
         "Context":           {"select": {"name": _infer_context_from_asana(task)}},
-        "Source":            {"select": {"name": "🟣 Asana"}},
+        "Source":            {"select": {"name": ASANA_SOURCE_LABEL}},
         "Done":              {"checkbox": bool(task.get("completed"))},
         "Recurring":         {"select": {"name": "None"}},
         "Asana Task ID":     _notion_rich_text(task["gid"]),
