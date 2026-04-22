@@ -65,8 +65,8 @@ WEEKS_HISTORY  = int(os.environ.get("WEEKS_HISTORY", "52"))
 # ── Asana sync config ────────────────────────────────────────────────────────
 ASANA_PAT           = os.environ.get("ASANA_PAT", "")
 ASANA_PROJECT_GID   = os.environ.get("ASANA_PROJECT_GID", "")
-ASANA_SYNC_SOURCE   = os.environ.get("ASANA_SYNC_SOURCE", "project")
-ASANA_SYNC_INTERVAL = int(os.environ.get("ASANA_SYNC_EVERY_SECONDS", "15"))
+ASANA_SYNC_SOURCE   = os.environ.get("ASANA_SYNC_SOURCE", "project").strip().lower()
+ASANA_SYNC_INTERVAL = max(1, int(os.environ.get("ASANA_SYNC_EVERY_SECONDS", "15")))
 
 # ── Clients ──────────────────────────────────────────────────────────────────
 notion = NotionClient(auth=NOTION_TOKEN)

@@ -309,6 +309,20 @@ def _notion_to_asana_fields(page: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _notion_matches_asana_writable_fields(notion_page: dict[str, Any], asana_task: dict[str, Any]) -> bool:
+    """
+    Compare only fields that are writable Notion -> Asana.
+    This avoids false N->A writes caused by coarse `Last Synced At` date-only values.
+    """
+    notion_fields = _notion_to_asana_fields(notion_page)
+    asana_fields = {
+        "name": asana_task.get("name") or "Untitled",
+        "due_on": asana_task.get("due_on"),
+        "completed": bool(asana_task.get("completed")),
+    }
+    return notion_fields == asana_fields
+
+
 def _stamp_notion_after_reverse_write(page_id: str, asana_modified_at: str | None, notion) -> None:
     """Stamp Notion row after pushing Notion→Asana so next cycle doesn't re-trigger."""
     notion.pages.update(
@@ -327,6 +341,7 @@ def _stamp_notion_after_reverse_write(page_id: str, asana_modified_at: str | Non
 def _classify(asana_task: dict[str, Any], notion_page: dict[str, Any]) -> str:
     """Return 'skip', 'asana_to_notion', or 'notion_to_asana'."""
     last_synced = _parse_iso(_read_date(notion_page, "Last Synced At"))
+    notion_asana_mod = _parse_iso(_read_rich_text(notion_page, "Asana Modified At"))
     asana_mod   = _parse_iso(asana_task.get("modified_at"))
     notion_mod  = _parse_iso(notion_page.get("last_edited_time"))
 
@@ -334,8 +349,11 @@ def _classify(asana_task: dict[str, Any], notion_page: dict[str, Any]) -> str:
     if last_synced is None:
         return "asana_to_notion"
 
-    asana_changed  = asana_mod  is not None and asana_mod  > last_synced
-    notion_changed = notion_mod is not None and notion_mod > last_synced
+    baseline_asana_mod = notion_asana_mod or last_synced
+    asana_changed = asana_mod is not None and (
+        baseline_asana_mod is None or asana_mod > baseline_asana_mod
+    )
+    notion_changed = not _notion_matches_asana_writable_fields(notion_page, asana_task)
 
     if not asana_changed and not notion_changed:
         return "skip"
@@ -366,8 +384,12 @@ def reconcile(
     Run one reconciliation cycle. Returns stats dict.
     Safe to call repeatedly; holds no state between calls except the module-level cache.
     """
+    source_mode = (source_mode or "project").strip().lower()
+
     if not asana_token:
         raise AsanaSyncError("ASANA_PAT is missing")
+    if source_mode not in {"project", "my_tasks"}:
+        raise AsanaSyncError("ASANA_SYNC_SOURCE must be 'project' or 'my_tasks'")
     if source_mode == "project" and not asana_project_gid:
         raise AsanaSyncError("ASANA_PROJECT_GID is missing for source_mode=project")
 
