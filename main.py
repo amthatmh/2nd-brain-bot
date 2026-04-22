@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
 """
-Second Brain — Telegram Bot (v8)
+Second Brain — Telegram Bot (v9)
 ────────────────────────────────────────────────────────────────
-All v7 features preserved plus:
+All v8 features preserved plus:
 
-v8 changes:
-- Dynamic habit scheduling: bot reads Time field from 🎯 Habits DB
-  at startup and registers one APScheduler job per unique hour.
-- Per-habit individual reminders (secretary model).
-- Frequency-aware pacing.
-- /habits-data JSON endpoint served by aiohttp alongside the bot.
-- /done command — combined habit + task picker.
-- /start deep link handler for HabitKit HTML grid taps.
-- ID normalisation fix: Notion relation IDs have no dashes,
-  habit_cache IDs do — both sides now stripped before comparison.
+v9 changes:
+- Bi-directional Asana ↔ Notion sync via APScheduler (every 15s).
+- Reconciler offloaded to thread pool to keep Telegram event loop responsive.
+- Sync logic self-contained in asana_sync.py (no bot dependency).
+- Telegram tasks stay Notion-only; only Asana-sourced rows are reconciled.
+- Startup log now reports sync status (ON/OFF + interval).
 """
 
 import asyncio
@@ -40,6 +36,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import anthropic
 from notion_client import Client as NotionClient
 
+from asana_sync import reconcile, AsanaSyncError
+
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
@@ -63,6 +61,12 @@ CLAUDE_MODEL   = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
 HTTP_PORT      = int(os.environ.get("PORT", "8080"))
 WEEKS_HISTORY  = int(os.environ.get("WEEKS_HISTORY", "52"))
+
+# ── Asana sync config ────────────────────────────────────────────────────────
+ASANA_PAT           = os.environ.get("ASANA_PAT", "")
+ASANA_PROJECT_GID   = os.environ.get("ASANA_PROJECT_GID", "")
+ASANA_SYNC_SOURCE   = os.environ.get("ASANA_SYNC_SOURCE", "project")
+ASANA_SYNC_INTERVAL = int(os.environ.get("ASANA_SYNC_EVERY_SECONDS", "15"))
 
 # ── Clients ──────────────────────────────────────────────────────────────────
 notion = NotionClient(auth=NOTION_TOKEN)
@@ -1207,6 +1211,36 @@ def register_habit_schedules(scheduler: AsyncIOScheduler, bot) -> None:
             log.error(f"Failed to register habit job for {time_str}: {e}")
 
 
+async def run_asana_sync(bot) -> None:
+    """
+    Bi-directional Asana ↔ Notion reconcile.
+    Offloads blocking I/O to thread pool so Telegram event loop stays responsive.
+    Self-contained: does not touch Telegram, does not read habit_cache.
+    """
+    if not ASANA_PAT:
+        return  # Sync disabled — bot still works without Asana
+
+    loop = asyncio.get_event_loop()
+    try:
+        stats = await loop.run_in_executor(
+            None,
+            lambda: reconcile(
+                notion=notion,
+                notion_db_id=NOTION_DB_ID,
+                asana_token=ASANA_PAT,
+                asana_project_gid=ASANA_PROJECT_GID,
+                source_mode=ASANA_SYNC_SOURCE,
+            ),
+        )
+        # Only log when something happened — keeps logs readable at 15s polling
+        if any(v for k, v in stats.items() if k != "skipped"):
+            log.info(f"Asana sync: {stats}")
+    except AsanaSyncError as e:
+        log.error(f"Asana sync config error: {e}")
+    except Exception as e:
+        log.exception(f"Asana sync failed: {e}")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # /habits-data JSON ENDPOINT
 # ── FIX: Notion relation IDs have no dashes; habit_cache IDs do.
@@ -1360,11 +1394,26 @@ async def post_init(app: Application) -> None:
     scheduler.add_job(send_sunday_review, "cron",
                       day_of_week="sun", hour=_we_h, minute=_we_m, args=[app.bot])
     register_habit_schedules(scheduler, app.bot)
+
+    # Asana reconciler — runs every ASANA_SYNC_INTERVAL seconds
+    if ASANA_PAT:
+        scheduler.add_job(
+            run_asana_sync,
+            "interval",
+            seconds=ASANA_SYNC_INTERVAL,
+            args=[app.bot],
+            id="asana_sync",
+            max_instances=1,                   # Skip a tick if previous still running
+            coalesce=True,                     # Don't backfill missed runs
+            next_run_time=datetime.now(TZ),    # Fire once immediately on startup
+        )
+
     scheduler.start()
     log.info(
         f"Scheduler started ✓  TZ={TZ}  "
         f"weekday={_wk_h:02d}:{_wk_m:02d}  weekend={_we_h:02d}:{_we_m:02d}  "
-        f"recurring={_rc_h:02d}:{_rc_m:02d}"
+        f"recurring={_rc_h:02d}:{_rc_m:02d}  "
+        f"asana_sync={'ON' if ASANA_PAT else 'OFF'} ({ASANA_SYNC_INTERVAL}s)"
     )
 
 
@@ -1440,7 +1489,7 @@ def main() -> None:
     app.add_handler(CommandHandler("done",  handle_done_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    log.info("🤖 Second Brain bot starting (v8)...")
+    log.info("🤖 Second Brain bot starting (v9)...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
