@@ -274,7 +274,7 @@ def deadline_days_to_label(days: int | None) -> str:
 # NOTION — HABIT LOG
 # ══════════════════════════════════════════════════════════════════════════════
 
-def log_habit(habit_page_id: str, habit_name: str) -> None:
+def log_habit(habit_page_id: str, habit_name: str, source: str = "📱 Telegram") -> None:
     today = datetime.now(TZ).date().isoformat()
     notion.pages.create(
         parent={"database_id": NOTION_LOG_DB},
@@ -283,10 +283,10 @@ def log_habit(habit_page_id: str, habit_name: str) -> None:
             "Habit":     {"relation": [{"id": habit_page_id}]},
             "Completed": {"checkbox": True},
             "Date":      {"date":     {"start": today}},
-            "Source":    {"select":   {"name": "📱 Telegram"}},
+            "Source":    {"select":   {"name": source}},
         },
     )
-    log.info(f"Habit logged: {habit_name} on {today}")
+    log.info(f"Habit logged: {habit_name} on {today} via {source}")
 
 
 def already_logged_today(habit_page_id: str) -> bool:
@@ -1208,16 +1208,73 @@ async def habits_data_handler(request: web.Request) -> web.Response:
         return web.Response(
             text=json.dumps(payload),
             content_type="application/json",
-            headers={"Access-Control-Allow-Origin": "*"},
+            headers=_cors_headers(),
         )
     except Exception as e:
         log.error(f"/habits-data error: {e}")
-        return web.Response(status=500, text=str(e))
+        return web.Response(status=500, text=str(e), headers=_cors_headers())
+
+
+def _cors_headers() -> dict[str, str]:
+    return {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+    }
+
+
+async def log_habit_http_handler(request: web.Request) -> web.Response:
+    if request.method == "OPTIONS":
+        return web.Response(status=204, headers=_cors_headers())
+
+    try:
+        body = await request.json()
+        habit_id = (body.get("habitId") or "").strip()
+        if not habit_id:
+            return web.Response(
+                status=400,
+                text=json.dumps({"ok": False, "error": "habitId is required"}),
+                content_type="application/json",
+                headers=_cors_headers(),
+            )
+
+        matched = next((h for h in habit_cache.values() if h["page_id"] == habit_id), None)
+        if not matched:
+            return web.Response(
+                status=404,
+                text=json.dumps({"ok": False, "error": "Habit not found"}),
+                content_type="application/json",
+                headers=_cors_headers(),
+            )
+
+        if already_logged_today(matched["page_id"]):
+            return web.Response(
+                text=json.dumps({"ok": True, "alreadyLogged": True, "habitName": matched["name"]}),
+                content_type="application/json",
+                headers=_cors_headers(),
+            )
+
+        log_habit(matched["page_id"], matched["name"], source="🌐 HabitKit")
+        return web.Response(
+            text=json.dumps({"ok": True, "alreadyLogged": False, "habitName": matched["name"]}),
+            content_type="application/json",
+            headers=_cors_headers(),
+        )
+    except Exception as e:
+        log.error(f"/log-habit error: {e}")
+        return web.Response(
+            status=500,
+            text=json.dumps({"ok": False, "error": str(e)}),
+            content_type="application/json",
+            headers=_cors_headers(),
+        )
 
 
 async def start_http_server() -> None:
     app    = web.Application()
     app.router.add_get("/habits-data", habits_data_handler)
+    app.router.add_post("/log-habit", log_habit_http_handler)
+    app.router.add_options("/log-habit", log_habit_http_handler)
     app.router.add_get("/health", lambda r: web.Response(text="ok"))
     runner = web.AppRunner(app)
     await runner.setup()
@@ -1285,7 +1342,7 @@ async def handle_done_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/start log_<habit> — deep link from HabitKit HTML grid."""
+    """/start log_<habit> — optional Telegram deep-link fallback."""
     if update.effective_chat.id != MY_CHAT_ID:
         return
     args = context.args
