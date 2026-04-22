@@ -510,13 +510,18 @@ def get_today_and_overdue_tasks() -> list[dict]:
     today_str = date.today().isoformat()
     selected  = []
     for t in tasks:
-        is_today   = t["auto_horizon"] == "🔴 Today"
-        is_overdue = bool(t["deadline"] and t["deadline"] < today_str)
-        if is_today or is_overdue:
+        is_today    = t["auto_horizon"] == "🔴 Today"
+        is_overdue  = bool(t["deadline"] and t["deadline"] < today_str)
+        is_carryover = t["auto_horizon"] in {"🟠 This Week", "🟡 This Month"}
+        if is_today or is_overdue or is_carryover:
             selected.append(t)
-    overdue    = [t for t in selected if t["deadline"] and t["deadline"] < today_str]
-    today_only = [t for t in selected if t not in overdue]
-    return overdue + today_only
+    overdue = [t for t in selected if t["deadline"] and t["deadline"] < today_str]
+    today_only = [t for t in selected if t["auto_horizon"] == "🔴 Today" and t not in overdue]
+    carryover = [
+        t for t in selected
+        if t not in overdue and t not in today_only and t["auto_horizon"] in {"🟠 This Week", "🟡 This Month"}
+    ]
+    return overdue + today_only + carryover
 
 
 def get_recurring_templates() -> list[dict]:
@@ -775,26 +780,63 @@ def format_batch_summary(results: list[dict]) -> str:
 # MESSAGE FORMATTERS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def format_daily_digest(tasks: list[dict]) -> tuple[str, list[dict]]:
+def pending_habits_for_digest(time_str: str | None = None) -> list[dict]:
+    habits = habit_cache.values() if time_str is None else habits_by_time(time_str)
+    pending: list[dict] = []
+    for habit in sorted(habits, key=lambda h: h["sort"]):
+        pid = habit["page_id"]
+        if already_logged_today(pid):
+            continue
+        if is_on_pace(habit):
+            continue
+        pending.append(habit)
+    return pending
+
+
+def format_daily_digest(tasks: list[dict], habits: list[dict] | None = None) -> tuple[str, list[dict]]:
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
-    if not tasks:
-        return f"☀️ *{date_str}*\n\nAll clear — no tasks due today! 🎉", []
-    today_str          = date.today().isoformat()
-    overdue            = [t for t in tasks if t["deadline"] and t["deadline"] < today_str]
-    today_now          = [t for t in tasks if t not in overdue]
-    lines, ordered, n  = [f"☀️ *{date_str}*\n"], [], 1
+    habits = habits or []
+    if not tasks and not habits:
+        return f"☀️ *{date_str}*\n\nAll clear — no tasks or habits pending right now! 🎉", []
+
+    today_str = date.today().isoformat()
+    overdue = [t for t in tasks if t["deadline"] and t["deadline"] < today_str]
+    today_now = [t for t in tasks if t["auto_horizon"] == "🔴 Today" and t not in overdue]
+    carryover = [t for t in tasks if t not in overdue and t not in today_now]
+
+    lines, ordered, n = [f"☀️ *{date_str}*\n"], [], 1
+
     if overdue:
         lines.append("🚨 *Overdue*")
         for t in overdue:
             lines.append(f"{num_emoji(n)} {t['name']}  {t['context']}")
             ordered.append(t); n += 1
         lines.append("")
+
     if today_now:
         lines.append("📌 *Today*")
         for t in today_now:
             lines.append(f"{num_emoji(n)} {t['name']}  {t['context']}")
             ordered.append(t); n += 1
-    lines.append("\n_Reply `done 1`, `done 1,3`, `mark 1,3 done`, or `done: task name` to mark complete_")
+        lines.append("")
+
+    if carryover:
+        lines.append("🔁 *Carry-over (still open)*")
+        for t in carryover:
+            lines.append(f"{num_emoji(n)} {t['name']}  {t['context']} · {t['auto_horizon']}")
+            ordered.append(t); n += 1
+        lines.append("")
+
+    if habits:
+        lines.append("⏰ *Reminders*")
+        for habit in habits:
+            freq_label = habit.get("frequency_label") or ""
+            desc = habit.get("description") or ""
+            detail = " · ".join(filter(None, [freq_label, desc]))
+            lines.append(f"• {habit['name']}" + (f" — _{detail}_" if detail else ""))
+
+    if ordered:
+        lines.append("\n_Reply `done 1`, `done 1,3`, `mark 1,3 done`, or `done: task name` to mark complete_")
     return "\n".join(lines), ordered
 
 
@@ -1211,13 +1253,20 @@ async def run_recurring_check(bot) -> None:
 
 async def send_daily_digest(bot) -> None:
     global last_digest_msg_id
-    tasks            = get_today_and_overdue_tasks()
-    message, ordered = format_daily_digest(tasks)
-    sent = await bot.send_message(chat_id=MY_CHAT_ID, text=message, parse_mode="Markdown")
+    tasks = get_today_and_overdue_tasks()
+    habits = pending_habits_for_digest()
+    message, ordered = format_daily_digest(tasks, habits)
+    reply_markup = habit_buttons(habits, "hc") if habits else None
+    sent = await bot.send_message(
+        chat_id=MY_CHAT_ID,
+        text=message,
+        parse_mode="Markdown",
+        reply_markup=reply_markup,
+    )
     if ordered:
         digest_map[sent.message_id] = ordered
-        last_digest_msg_id          = sent.message_id
-    log.info(f"Daily digest sent — {len(ordered)} tasks")
+        last_digest_msg_id = sent.message_id
+    log.info(f"Daily digest sent — {len(ordered)} tasks, {len(habits)} habits")
 
 
 async def send_sunday_review(bot) -> None:
@@ -1237,31 +1286,23 @@ async def send_sunday_review(bot) -> None:
 
 
 async def send_habit_reminder(bot, time_str: str) -> None:
-    habits = habits_by_time(time_str)
+    global last_digest_msg_id
+    habits = pending_habits_for_digest(time_str)
     if not habits:
         return
-    sent = 0
-    for habit in sorted(habits, key=lambda h: h["sort"]):
-        pid = habit["page_id"]
-        if already_logged_today(pid):
-            continue
-        if is_on_pace(habit):
-            log.info(f"Habit on pace, skipping reminder: {habit['name']}")
-            continue
-        freq_label = habit.get("frequency_label") or ""
-        desc       = habit.get("description") or ""
-        line2      = " · ".join(filter(None, [freq_label, desc]))
-        text       = f"⏰ *{habit['name']}*"
-        if line2:
-            text += f"\n_{line2}_"
-        await bot.send_message(
-            chat_id=MY_CHAT_ID,
-            text=text,
-            parse_mode="Markdown",
-            reply_markup=habit_buttons([habit], "hc"),
-        )
-        sent += 1
-    log.info(f"Habit reminders sent at {time_str} — {sent} habits")
+
+    tasks = get_today_and_overdue_tasks()
+    message, ordered = format_daily_digest(tasks, habits)
+    sent = await bot.send_message(
+        chat_id=MY_CHAT_ID,
+        text=message,
+        parse_mode="Markdown",
+        reply_markup=habit_buttons(habits, "hc"),
+    )
+    if ordered:
+        digest_map[sent.message_id] = ordered
+        last_digest_msg_id = sent.message_id
+    log.info(f"Combined digest sent at {time_str} — {len(ordered)} tasks, {len(habits)} habits")
 
 
 def register_habit_schedules(scheduler: AsyncIOScheduler, bot) -> None:
