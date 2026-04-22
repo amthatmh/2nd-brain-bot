@@ -1,138 +1,456 @@
 """
-Asana <-> Notion sync worker.
+Asana <-> Notion reconciler.
 
-Runs as a separate Railway service from the Telegram bot.
-Polls every ASANA_SYNC_EVERY_SECONDS (default 15s for near-real-time feel).
-
-Key design choices:
-- Sequential cycles (never overlapping). If a sync takes longer than the
-  interval, the next one waits. Prevents doubled writes and rate-limit
-  thrashing under load.
-- Graceful shutdown via SIGTERM so Railway deploys don't interrupt
-  a mid-flight sync.
-- Exponential backoff on repeated failures so a broken Notion DB doesn't
-  hammer the API 5760 times a day.
+Design:
+- Asana is source of truth for task lifecycle (creates, deletions).
+- Field edits flow bi-directionally using last-write-wins by timestamp.
+- Notion-side `Last Synced At` prevents sync-induced feedback loops.
+- Hybrid cache holds only {asana_gid -> notion_page_id} mappings.
+- Dynamic 90-day completion window (self-tuning, no env var needed).
+- Writable from Notion back to Asana: name, due date, completion.
+- Context is Notion-owned after initial creation.
 """
 
+import json
 import logging
 import os
-import signal
-import sys
-import time
-from datetime import datetime, timezone
+import threading
+from datetime import datetime, timedelta, timezone
+from typing import Any
+from urllib import parse, request
 
-from notion_client import Client
+log = logging.getLogger(__name__)
 
-from asana_sync import AsanaSyncError, reconcile
+ASANA_BASE_URL = "https://app.asana.com/api/1.0"
 
-# ── Logging ───────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(name)s - %(message)s",
+# Fields pulled from Asana every cycle. modified_at is critical for LWW.
+ASANA_OPT_FIELDS = (
+    "gid,name,completed,completed_at,due_on,modified_at,"
+    "permalink_url,notes,memberships.section.name,workspace.gid"
 )
-log = logging.getLogger("sync_worker")
 
-# ── Config ────────────────────────────────────────────────────────────────
-NOTION_TOKEN = os.environ["NOTION_TOKEN"]
-NOTION_DB_ID = os.environ["NOTION_DB_ID"]
+# How far back we pull completed tasks from Asana. Self-tuning window:
+# tasks completed more than this many days ago are filtered at the source.
+COMPLETED_WINDOW_DAYS = 90
 
-ASANA_PAT = os.environ["ASANA_PAT"]
-ASANA_WORKSPACE_GID = os.environ.get("ASANA_WORKSPACE_GID", "")
-ASANA_PROJECT_GID = os.environ.get("ASANA_PROJECT_GID", "")
-ASANA_SYNC_SOURCE = os.environ.get("ASANA_SYNC_SOURCE", "project")
-INTERVAL = int(os.environ.get("ASANA_SYNC_EVERY_SECONDS", "15"))
-
-# Backoff ceiling: if we keep failing, wait up to this long between tries.
-MAX_BACKOFF = 300  # 5 minutes
-
-# ── Shutdown handling ─────────────────────────────────────────────────────
-_shutdown_requested = False
+# Cache safety-net: force a full rebuild every N seconds regardless of misses.
+CACHE_FULL_REBUILD_SECONDS = 600  # 10 minutes
 
 
-def _handle_shutdown(signum, _frame):
-    """Railway sends SIGTERM on deploy/restart. Finish current cycle cleanly."""
-    global _shutdown_requested
-    log.info("Received signal %s, will exit after current cycle", signum)
-    _shutdown_requested = True
+class AsanaSyncError(Exception):
+    pass
 
 
-signal.signal(signal.SIGTERM, _handle_shutdown)
-signal.signal(signal.SIGINT, _handle_shutdown)
+# ═══════════════════════════════════════════════════════════════════════════
+# GID ↔ PAGE_ID CACHE
+# ═══════════════════════════════════════════════════════════════════════════
+
+class GidCache:
+    """
+    Thread-safe cache of {asana_gid -> notion_page_id} mappings.
+    Does NOT cache row contents — only the patch-bay map.
+    """
+
+    def __init__(self) -> None:
+        self._map: dict[str, str] = {}
+        self._last_full_rebuild: datetime | None = None
+        self._lock = threading.Lock()
+
+    def get(self, gid: str) -> str | None:
+        with self._lock:
+            return self._map.get(gid)
+
+    def has(self, gid: str) -> bool:
+        with self._lock:
+            return gid in self._map
+
+    def all_gids(self) -> set[str]:
+        with self._lock:
+            return set(self._map.keys())
+
+    def set(self, gid: str, page_id: str) -> None:
+        with self._lock:
+            self._map[gid] = page_id
+
+    def drop(self, gid: str) -> None:
+        with self._lock:
+            self._map.pop(gid, None)
+
+    def stale(self) -> bool:
+        """True if we've never rebuilt or haven't rebuilt in a while."""
+        with self._lock:
+            if self._last_full_rebuild is None:
+                return True
+            elapsed = (datetime.now(timezone.utc) - self._last_full_rebuild).total_seconds()
+            return elapsed > CACHE_FULL_REBUILD_SECONDS
+
+    def rebuild(self, notion, database_id: str) -> None:
+        """Full rebuild from Notion. Call on startup, periodically, and on miss."""
+        fresh: dict[str, str] = {}
+        cursor: str | None = None
+        while True:
+            kwargs: dict[str, Any] = {
+                "database_id": database_id,
+                "filter": {"property": "Source", "select": {"equals": "🟣 Asana"}},
+                "page_size": 100,
+            }
+            if cursor:
+                kwargs["start_cursor"] = cursor
+            result = notion.databases.query(**kwargs)
+            for page in result.get("results", []):
+                gid = _read_rich_text(page, "Asana Task ID")
+                if gid:
+                    fresh[gid] = page["id"]
+            if not result.get("has_more"):
+                break
+            cursor = result.get("next_cursor")
+
+        with self._lock:
+            self._map = fresh
+            self._last_full_rebuild = datetime.now(timezone.utc)
+        log.info("GID cache rebuilt: %d mappings", len(fresh))
 
 
-# ── Sync loop ─────────────────────────────────────────────────────────────
-def main() -> None:
-    notion = Client(auth=NOTION_TOKEN)
+# Module-level singleton — shared across all reconcile() calls in the process.
+_cache = GidCache()
 
-    log.info(
-        "Sync worker started | interval=%ss source=%s project=%s",
-        INTERVAL,
-        ASANA_SYNC_SOURCE,
-        ASANA_PROJECT_GID or "(my_tasks)",
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ASANA HTTP LAYER
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _asana_request(
+    path: str,
+    token: str,
+    method: str = "GET",
+    query: dict[str, Any] | None = None,
+    body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    query_str = f"?{parse.urlencode(query)}" if query else ""
+    url = f"{ASANA_BASE_URL}{path}{query_str}"
+
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+
+    req = request.Request(url, data=data, headers=headers, method=method)
+    with request.urlopen(req, timeout=30) as resp:
+        raw = resp.read().decode("utf-8")
+        return json.loads(raw) if raw else {}
+
+
+def _asana_paginated(path: str, token: str, base_query: dict[str, Any]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    offset = None
+    while True:
+        query = dict(base_query)
+        query["limit"] = 100
+        if offset:
+            query["offset"] = offset
+        payload = _asana_request(path, token, query=query)
+        results.extend(payload.get("data", []))
+        next_page = payload.get("next_page")
+        if not next_page or not next_page.get("offset"):
+            break
+        offset = next_page["offset"]
+    return results
+
+
+def _dynamic_completed_since() -> str:
+    """ISO timestamp for (now - 90 days). Self-tuning window."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=COMPLETED_WINDOW_DAYS)
+    return cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _asana_fetch_tasks(token: str, source_mode: str, project_gid: str) -> list[dict[str, Any]]:
+    base = {
+        "completed_since": _dynamic_completed_since(),
+        "opt_fields": ASANA_OPT_FIELDS,
+    }
+    if source_mode == "my_tasks":
+        return _asana_paginated("/users/me/tasks", token, base)
+    base["project"] = project_gid
+    return _asana_paginated("/tasks", token, base)
+
+
+def _asana_update_task(gid: str, token: str, fields: dict[str, Any]) -> dict[str, Any]:
+    payload = _asana_request(
+        f"/tasks/{gid}",
+        token,
+        method="PUT",
+        query={"opt_fields": ASANA_OPT_FIELDS},
+        body={"data": fields},
+    )
+    return payload.get("data", {})
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# NOTION PROPERTY HELPERS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _notion_title(value: str) -> dict[str, Any]:
+    return {"title": [{"text": {"content": value or ""}}]}
+
+
+def _notion_rich_text(value: str | None) -> dict[str, Any]:
+    if not value:
+        return {"rich_text": []}
+    return {"rich_text": [{"text": {"content": value}}]}
+
+
+def _notion_date(value: str | None) -> dict[str, Any]:
+    if not value:
+        return {"date": None}
+    return {"date": {"start": value}}
+
+
+def _read_title(page: dict[str, Any], prop: str) -> str:
+    parts = page["properties"].get(prop, {}).get("title", []) or []
+    return "".join(p.get("plain_text", "") for p in parts)
+
+
+def _read_rich_text(page: dict[str, Any], prop: str) -> str:
+    parts = page["properties"].get(prop, {}).get("rich_text", []) or []
+    return "".join(p.get("plain_text", "") for p in parts)
+
+
+def _read_date(page: dict[str, Any], prop: str) -> str | None:
+    d = page["properties"].get(prop, {}).get("date")
+    return d.get("start") if d else None
+
+
+def _read_checkbox(page: dict[str, Any], prop: str) -> bool:
+    return bool(page["properties"].get(prop, {}).get("checkbox"))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TIME HANDLING
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _parse_iso(value: str | None) -> datetime | None:
+    """Parse ISO-8601 timestamp as tz-aware UTC, or None."""
+    if not value:
+        return None
+    cleaned = value.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(cleaned)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CONTEXT MAPPING — only used when creating a fresh Notion row
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _infer_context_from_asana(task: dict[str, Any]) -> str:
+    memberships = task.get("memberships") or []
+    section_name = ""
+    if memberships:
+        section = memberships[0].get("section") or {}
+        section_name = (section.get("name") or "").lower()
+    if any(k in section_name for k in ["health", "fitness", "workout"]):
+        return "🏃 Health"
+    if any(k in section_name for k in ["home", "personal", "family"]):
+        return "🏠 Personal"
+    if any(k in section_name for k in ["collab", "client", "team"]):
+        return "🤝 Collab"
+    return "💼 Work"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PROPERTY BUILDERS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _build_notion_create_props(task: dict[str, Any]) -> dict[str, Any]:
+    """Properties for a brand-new Notion row mirroring an Asana task."""
+    return {
+        "Name":              _notion_title(task.get("name") or "Untitled Asana Task"),
+        "Deadline":          _notion_date(task.get("due_on")),
+        "Context":           {"select": {"name": _infer_context_from_asana(task)}},
+        "Source":            {"select": {"name": "🟣 Asana"}},
+        "Done":              {"checkbox": bool(task.get("completed"))},
+        "Recurring":         {"select": {"name": "None"}},
+        "Asana Task ID":     _notion_rich_text(task["gid"]),
+        "Asana URL":         {"url": task.get("permalink_url")},
+        "Asana Modified At": _notion_rich_text(task.get("modified_at")),
+        "Last Synced At":    _notion_date(_now_iso()),
+    }
+
+
+def _asana_to_notion_update_props(task: dict[str, Any]) -> dict[str, Any]:
+    """Updates pushed Asana → Notion. Deliberately omits Context (Notion-owned)."""
+    return {
+        "Name":              _notion_title(task.get("name") or "Untitled Asana Task"),
+        "Deadline":          _notion_date(task.get("due_on")),
+        "Done":              {"checkbox": bool(task.get("completed"))},
+        "Asana URL":         {"url": task.get("permalink_url")},
+        "Asana Modified At": _notion_rich_text(task.get("modified_at")),
+        "Last Synced At":    _notion_date(_now_iso()),
+    }
+
+
+def _notion_to_asana_fields(page: dict[str, Any]) -> dict[str, Any]:
+    """Only the three fields writable from Notion to Asana."""
+    return {
+        "name":      _read_title(page, "Name") or "Untitled",
+        "due_on":    _read_date(page, "Deadline"),
+        "completed": _read_checkbox(page, "Done"),
+    }
+
+
+def _stamp_notion_after_reverse_write(page_id: str, asana_modified_at: str | None, notion) -> None:
+    """Stamp Notion row after pushing Notion→Asana so next cycle doesn't re-trigger."""
+    notion.pages.update(
+        page_id=page_id,
+        properties={
+            "Asana Modified At": _notion_rich_text(asana_modified_at),
+            "Last Synced At":    _notion_date(_now_iso()),
+        },
     )
 
-    consecutive_failures = 0
 
-    while not _shutdown_requested:
-        cycle_start = time.monotonic()
-        try:
-            stats = reconcile(
-                notion=notion,
-                notion_db_id=NOTION_DB_ID,
-                asana_token=ASANA_PAT,
-                asana_workspace_gid=ASANA_WORKSPACE_GID,
-                asana_project_gid=ASANA_PROJECT_GID,
-                source_mode=ASANA_SYNC_SOURCE,
-            )
-            elapsed = time.monotonic() - cycle_start
+# ═══════════════════════════════════════════════════════════════════════════
+# RECONCILIATION DECISION
+# ═══════════════════════════════════════════════════════════════════════════
 
-            # Only log when something happened — keeps logs readable at 15s polling.
-            if any(v for k, v in stats.items() if k != "skipped"):
-                log.info("Cycle OK in %.2fs: %s", elapsed, stats)
-            else:
-                log.debug("Cycle OK in %.2fs (no changes)", elapsed)
+def _classify(asana_task: dict[str, Any], notion_page: dict[str, Any]) -> str:
+    """Return 'skip', 'asana_to_notion', or 'notion_to_asana'."""
+    last_synced = _parse_iso(_read_date(notion_page, "Last Synced At"))
+    asana_mod   = _parse_iso(asana_task.get("modified_at"))
+    notion_mod  = _parse_iso(notion_page.get("last_edited_time"))
 
-            consecutive_failures = 0
+    # Never synced → treat as fresh Asana→Notion
+    if last_synced is None:
+        return "asana_to_notion"
 
-            # Warn if a cycle is approaching the interval — you'd want to know.
-            if elapsed > INTERVAL * 0.8:
-                log.warning(
-                    "Cycle took %.2fs (interval=%ss). Consider raising interval "
-                    "or reducing scope.",
-                    elapsed,
-                    INTERVAL,
+    asana_changed  = asana_mod  is not None and asana_mod  > last_synced
+    notion_changed = notion_mod is not None and notion_mod > last_synced
+
+    if not asana_changed and not notion_changed:
+        return "skip"
+    if asana_changed and not notion_changed:
+        return "asana_to_notion"
+    if notion_changed and not asana_changed:
+        return "notion_to_asana"
+
+    # Both changed — last-write-wins
+    if asana_mod and notion_mod and asana_mod >= notion_mod:
+        return "asana_to_notion"
+    return "notion_to_asana"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MAIN RECONCILE ENTRY POINT
+# ═══════════════════════════════════════════════════════════════════════════
+
+def reconcile(
+    *,
+    notion,
+    notion_db_id: str,
+    asana_token: str,
+    asana_project_gid: str = "",
+    source_mode: str = "project",
+) -> dict[str, int]:
+    """
+    Run one reconciliation cycle. Returns stats dict.
+    Safe to call repeatedly; holds no state between calls except the module-level cache.
+    """
+    if not asana_token:
+        raise AsanaSyncError("ASANA_PAT is missing")
+    if source_mode == "project" and not asana_project_gid:
+        raise AsanaSyncError("ASANA_PROJECT_GID is missing for source_mode=project")
+
+    stats = {"created": 0, "a2n": 0, "n2a": 0, "deleted": 0, "skipped": 0}
+
+    # ── Cache trigger 1 & 2: rebuild on startup or periodic safety net ──
+    if _cache.stale():
+        _cache.rebuild(notion, notion_db_id)
+
+    # ── Pull Asana side ──
+    asana_tasks  = _asana_fetch_tasks(asana_token, source_mode, asana_project_gid)
+    asana_by_gid = {t["gid"]: t for t in asana_tasks if t.get("gid")}
+
+    # ── Cache trigger 3: rebuild on detected miss ──
+    asana_gids   = set(asana_by_gid.keys())
+    cached_gids  = _cache.all_gids()
+    unknown_gids = asana_gids - cached_gids
+    if unknown_gids:
+        log.info("Cache miss for %d GIDs, rebuilding", len(unknown_gids))
+        _cache.rebuild(notion, notion_db_id)
+        cached_gids = _cache.all_gids()
+
+    # ── Process tasks present in Asana ──
+    for gid, task in asana_by_gid.items():
+        page_id = _cache.get(gid)
+
+        if page_id is None:
+            # Genuinely new — doesn't exist in Notion. Create.
+            try:
+                new_page = notion.pages.create(
+                    parent={"database_id": notion_db_id},
+                    properties=_build_notion_create_props(task),
                 )
+                _cache.set(gid, new_page["id"])  # Cache trigger 4: update on create
+                stats["created"] += 1
+            except Exception:
+                log.exception("Failed to create Notion page for Asana GID %s", gid)
+            continue
 
-        except AsanaSyncError as e:
-            # Config error — not transient. Log loudly but keep retrying in case
-            # the user fixes env vars without redeploying.
-            consecutive_failures += 1
-            log.error("Config error (cycle %d): %s", consecutive_failures, e)
-
+        # Exists in both — retrieve fresh Notion state and reconcile
+        try:
+            notion_page = notion.pages.retrieve(page_id=page_id)
         except Exception:
-            consecutive_failures += 1
-            log.exception("Sync cycle failed (cycle %d)", consecutive_failures)
+            log.exception("Failed to retrieve Notion page %s, invalidating cache entry", page_id)
+            _cache.drop(gid)
+            continue
 
-        # ── Sleep until next cycle, with backoff on repeated failures ──
-        if consecutive_failures > 0:
-            # Exponential backoff: 15s, 30s, 60s, 120s, 300s (capped)
-            wait = min(INTERVAL * (2 ** min(consecutive_failures - 1, 5)), MAX_BACKOFF)
-            log.info("Backing off %ss after %d failures", wait, consecutive_failures)
-        else:
-            # Subtract time already spent so we hit roughly INTERVAL pacing.
-            elapsed = time.monotonic() - cycle_start
-            wait = max(0, INTERVAL - elapsed)
+        if notion_page.get("archived"):
+            # Notion row was archived out-of-band — drop from cache, skip.
+            _cache.drop(gid)
+            continue
 
-        # Sleep in short chunks so SIGTERM response stays snappy.
-        slept = 0.0
-        while slept < wait and not _shutdown_requested:
-            chunk = min(1.0, wait - slept)
-            time.sleep(chunk)
-            slept += chunk
+        decision = _classify(task, notion_page)
+        if decision == "skip":
+            stats["skipped"] += 1
 
-    log.info("Shutdown complete")
-    sys.exit(0)
+        elif decision == "asana_to_notion":
+            try:
+                notion.pages.update(page_id=page_id, properties=_asana_to_notion_update_props(task))
+                stats["a2n"] += 1
+            except Exception:
+                log.exception("Failed A→N update for GID %s", gid)
 
+        elif decision == "notion_to_asana":
+            try:
+                fields = _notion_to_asana_fields(notion_page)
+                refreshed = _asana_update_task(gid, asana_token, fields)
+                _stamp_notion_after_reverse_write(page_id, refreshed.get("modified_at"), notion)
+                stats["n2a"] += 1
+            except Exception:
+                log.exception("Failed N→A update for GID %s", gid)
 
-if __name__ == "__main__":
-    main()
+    # ── Handle deletions: in cache but not in Asana → archive Notion row ──
+    orphaned_gids = cached_gids - asana_gids
+    for gid in orphaned_gids:
+        page_id = _cache.get(gid)
+        if not page_id:
+            continue
+        try:
+            notion.pages.update(page_id=page_id, archived=True)
+            _cache.drop(gid)  # Cache trigger 4: update on delete
+            stats["deleted"] += 1
+        except Exception:
+            log.exception("Failed to archive orphaned Notion page %s", page_id)
+
+    return stats
