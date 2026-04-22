@@ -188,6 +188,19 @@ def split_tasks(text: str) -> list[str]:
     return [text]
 
 
+def looks_like_task_batch(text: str) -> bool:
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if len(lines) <= 1:
+        return False
+    numbered_or_bulleted = sum(1 for l in lines if _BULLET_RE.match(l))
+    if numbered_or_bulleted >= 2:
+        return True
+    lead = lines[0].lower()
+    if lead in {"add", "todo", "to-do", "tasks"}:
+        return True
+    return False
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CLAUDE CLASSIFICATION
 # ══════════════════════════════════════════════════════════════════════════════
@@ -939,12 +952,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if match_force:
         await create_or_prompt_task(message, match_force.group(1).strip(), force_create=True); return
 
+    if looks_like_task_batch(text):
+        await create_or_prompt_task(message, text)
+        return
+
     thinking = await message.reply_text("🧠 Got it...")
     try:
         result = classify_message(text)
     except Exception as e:
         log.error(f"Claude error: {e}")
-        await thinking.edit_text("⚠️ Couldn't process that. Try rephrasing?")
+        await thinking.delete()
+        await create_or_prompt_task(message, text)
         return
 
     if result.get("type") == "habit":
