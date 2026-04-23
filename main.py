@@ -1638,7 +1638,8 @@ async def post_init(app: Application) -> None:
         f"Scheduler started ✓  TZ={TZ}  "
         f"weekday={_wk_h:02d}:{_wk_m:02d}  weekend={_we_h:02d}:{_we_m:02d}  "
         f"recurring={_rc_h:02d}:{_rc_m:02d}  "
-        f"asana_sync={asana_status}  smoke={smoke_status}"
+        f"asana_sync={asana_status}  smoke={smoke_status}  "
+        f"archive_orphans={ASANA_ARCHIVE_ORPHANS}"
     )
     await _try_send_telegram(
         app.bot,
@@ -1646,6 +1647,7 @@ async def post_init(app: Application) -> None:
         f"sha={_git_sha()}\n"
         f"asana={asana_status}\n"
         f"source={_asana_boot_mode_label()}\n"
+        f"archive_orphans={ASANA_ARCHIVE_ORPHANS}\n"
         f"smoke={smoke_status}",
     )
 
