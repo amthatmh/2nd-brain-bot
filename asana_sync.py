@@ -304,7 +304,24 @@ def _asana_fetch_tasks(
 
     if source_mode == "my_tasks":
         utl_gid = _get_user_task_list_gid(workspace_gid, token)
-        return _asana_paginated(f"/user_task_lists/{utl_gid}/tasks", token, base)
+        # Primary: modern User Task List endpoint.
+        primary = _asana_paginated(f"/user_task_lists/{utl_gid}/tasks", token, base)
+
+        # Fallback/supplement: some tenants/views can omit tasks from UTL feeds
+        # transiently. Merge in assignee+workspace task query for completeness.
+        merged: dict[str, dict[str, Any]] = {t["gid"]: t for t in primary if t.get("gid")}
+        try:
+            supplemental_query = dict(base)
+            supplemental_query.update({"assignee": "me", "workspace": workspace_gid})
+            supplemental = _asana_paginated("/tasks", token, supplemental_query)
+            for task in supplemental:
+                gid = task.get("gid")
+                if gid and gid not in merged:
+                    merged[gid] = task
+        except Exception as e:
+            log.warning("Supplemental my_tasks fetch failed; using UTL-only result: %s", e)
+
+        return list(merged.values())
 
     base["project"] = project_gid
     return _asana_paginated("/tasks", token, base)
@@ -627,28 +644,13 @@ def reconcile(
             except Exception:
                 log.exception("Failed N→A update for GID %s", gid)
 
-    # ── Handle deletions: optional + only safe when source is authoritative ──
-    # `my_tasks` is not a full-project inventory; tasks can disappear from this
-    # feed due to assignment/list membership changes without being deleted.
-    effective_archive_orphans = archive_orphans and source_mode == "project"
-    if archive_orphans and source_mode != "project":
+    # ── Safety: do not archive "missing" rows automatically ──
+    # In practice, feed scoping/filtering differences can make valid tasks
+    # appear missing transiently. Auto-archival has repeatedly caused data loss.
+    if archive_orphans:
         log.warning(
-            "Ignoring archive_orphans=True because source_mode=%s is non-authoritative",
-            source_mode,
+            "archive_orphans=True requested but ignored: auto-archival is disabled for safety"
         )
-
-    if effective_archive_orphans:
-        orphaned_gids = cached_gids - asana_gids
-        for gid in orphaned_gids:
-            page_id = _cache.get(gid)
-            if not page_id:
-                continue
-            try:
-                notion.pages.update(page_id=page_id, archived=True)
-                _cache.drop(gid)  # Cache trigger 4: update on delete
-                stats["deleted"] += 1
-            except Exception:
-                log.exception("Failed to archive orphaned Notion page %s", page_id)
 
     return stats
 
