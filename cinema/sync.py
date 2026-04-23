@@ -14,6 +14,22 @@ def _plain_text(prop: dict) -> str:
     return "".join(chunk.get("plain_text", "") for chunk in chunks).strip()
 
 
+def _build_cinema_query_filter(tmdb_api_key: str | None) -> dict:
+    """
+    Build the Notion filter for cinema sync.
+    - With TMDB key: process unsynced rows OR rows still missing TMDB URL.
+    - Without TMDB key: process only unsynced rows.
+    """
+    if tmdb_api_key:
+        return {
+            "or": [
+                {"property": "Last Synced", "date": {"is_empty": True}},
+                {"property": "TMDB URL", "url": {"is_empty": True}},
+            ]
+        }
+    return {"property": "Last Synced", "date": {"is_empty": True}}
+
+
 async def _search_tmdb_url(title: str, tmdb_api_key: str | None) -> str | None:
     return await _search_tmdb_url_with_client(title, tmdb_api_key, client=None)
 
@@ -68,16 +84,7 @@ async def sync_cinema_log_to_notion(
         "added_to_fave": 0,
     }
 
-    query_filter: dict
-    if tmdb_api_key:
-        query_filter = {
-            "or": [
-                {"property": "Last Synced", "date": {"is_empty": True}},
-                {"property": "TMDB URL", "url": {"is_empty": True}},
-            ]
-        }
-    else:
-        query_filter = {"property": "Last Synced", "date": {"is_empty": True}}
+    query_filter = _build_cinema_query_filter(tmdb_api_key)
 
     rows: list[dict] = []
     cursor = None
