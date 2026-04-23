@@ -23,7 +23,12 @@ from collections import defaultdict
 import pytz
 from aiohttp import web
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+)
 from telegram.ext import (
     Application,
     MessageHandler,
@@ -50,6 +55,8 @@ log = logging.getLogger(__name__)
 # ── Config ───────────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
 MY_CHAT_ID      = int(os.environ["TELEGRAM_CHAT_ID"])
+ALERT_CHAT_ID   = int(os.environ.get("TELEGRAM_ALERT_CHAT_ID", str(MY_CHAT_ID)))
+ALERT_THREAD_ID = int(os.environ["TELEGRAM_ALERT_THREAD_ID"]) if os.environ.get("TELEGRAM_ALERT_THREAD_ID") else None
 ANTHROPIC_KEY   = os.environ["ANTHROPIC_API_KEY"]
 NOTION_TOKEN    = os.environ["NOTION_TOKEN"]
 NOTION_DB_ID    = os.environ["NOTION_DB_ID"]
@@ -100,6 +107,9 @@ NUMBER_EMOJIS = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7�
 REPEAT_DAY_TO_WEEKDAY  = {"Mon":0,"Tue":1,"Wed":2,"Thu":3,"Fri":4,"Sat":5,"Sun":6}
 REPEAT_DAY_TO_MONTHDAY = {"1st":1,"5th":5,"10th":10,"15th":15,"20th":20,"25th":25,"Last":-1}
 _BULLET_RE = re.compile(r"^[\s]*(?:[-•*]|\d+[.):])\s+", re.MULTILINE)
+BTN_REFRESH = "🔄 Refresh"
+BTN_ALL_OPEN = "📋 All Open"
+BTN_PRIORITY = "🔥 Priority"
 
 
 def num_emoji(n: int) -> str:
@@ -861,6 +871,66 @@ def format_sunday_intro(week_tasks: list[dict], month_tasks: list[dict]) -> tupl
     return "\n".join(lines), ordered
 
 
+def quick_actions_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [[BTN_REFRESH, BTN_ALL_OPEN, BTN_PRIORITY]],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        input_field_placeholder="Type a task, or tap a quick action…",
+    )
+
+
+def format_reminder_snapshot(mode: str = "priority", limit: int = 8) -> str:
+    today_str = date.today().isoformat()
+    date_str = datetime.now(TZ).strftime("%A, %B %-d")
+    all_tasks = get_all_active_tasks()
+    overdue = [t for t in all_tasks if t["deadline"] and t["deadline"] < today_str]
+    today_tasks = [t for t in all_tasks if t["auto_horizon"] == "🔴 Today" and t not in overdue]
+    priority_tasks = get_today_and_overdue_tasks()
+    open_count = len(all_tasks)
+
+    if mode == "all_open":
+        ordered = (
+            sorted(overdue, key=lambda t: (t.get("deadline") or "", t["name"]))
+            + sorted(today_tasks, key=lambda t: t["name"])
+            + sorted(
+                [t for t in all_tasks if t not in overdue and t not in today_tasks],
+                key=lambda t: (t["auto_horizon"], t["name"]),
+            )
+        )
+        header = f"📋 *All Open Tasks — {date_str}*"
+    else:
+        ordered = priority_tasks
+        header = f"🔔 *Reminder — {date_str}*"
+
+    lines = [
+        header,
+        "",
+        f"Open: *{open_count}*  ·  Overdue: *{len(overdue)}*  ·  Today: *{len(today_tasks)}*",
+        "",
+    ]
+
+    if not ordered:
+        lines.append("✅ Nothing urgent right now.")
+    else:
+        for idx, task in enumerate(ordered[:limit], start=1):
+            deadline = f" · due {task['deadline']}" if task.get("deadline") else ""
+            lines.append(f"{num_emoji(idx)} {task['name']}  {task['context']} · {task['auto_horizon']}{deadline}")
+        if len(ordered) > limit:
+            lines.append(f"\n…and *{len(ordered) - limit}* more.")
+
+    lines.append("\n_You can still type normally to add tasks anytime._")
+    return "\n".join(lines)
+
+
+async def send_quick_reminder(message, mode: str = "priority") -> None:
+    await message.reply_text(
+        format_reminder_snapshot(mode=mode),
+        parse_mode="Markdown",
+        reply_markup=quick_actions_keyboard(),
+    )
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # INLINE KEYBOARDS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1025,6 +1095,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not text:
         return
     lower = text.lower().strip()
+
+    if text == BTN_REFRESH:
+        await send_quick_reminder(message, mode="priority")
+        return
+    if text == BTN_ALL_OPEN:
+        await send_quick_reminder(message, mode="all_open")
+        return
+    if text == BTN_PRIORITY:
+        await send_quick_reminder(message, mode="priority")
+        return
 
     if lower == "done" and message.reply_to_message:
         replied_id = message.reply_to_message.message_id
@@ -1510,9 +1590,16 @@ def _format_schema_alert(problems: list[str]) -> str:
 async def _try_send_telegram(bot, text: str) -> None:
     """Best-effort Telegram alert. Never raises."""
     try:
-        await bot.send_message(chat_id=MY_CHAT_ID, text=text, parse_mode="Markdown")
+        kwargs = {
+            "chat_id": ALERT_CHAT_ID,
+            "text": text,
+            "parse_mode": "Markdown",
+        }
+        if ALERT_THREAD_ID is not None:
+            kwargs["message_thread_id"] = ALERT_THREAD_ID
+        await bot.send_message(**kwargs)
     except Exception as e:
-        log.error(f"Could not send schema alert via Telegram: {e}")
+        log.error(f"Could not send operational alert via Telegram: {e}")
 
 
 def _git_sha() -> str:
@@ -1692,8 +1779,9 @@ async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYP
     args = context.args
     if not args or not args[0].startswith("log_"):
         await update.message.reply_text(
-            "👋 *Second Brain Bot*\n\nSend me any task or habit to capture it.\nUse /done to mark completions.",
+            "👋 *Second Brain Bot*\n\nSend me any task or habit to capture it.\nUse /done to mark completions.\nUse /r or /remind for your quick snapshot.",
             parse_mode="Markdown",
+            reply_markup=quick_actions_keyboard(),
         )
         return
     raw     = args[0][4:].replace("_", " ").strip()
@@ -1710,7 +1798,15 @@ async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(
         f"✅ Logged!\n\n{name}\n📅 {datetime.now(TZ).strftime('%B %-d')}",
         parse_mode="Markdown",
+        reply_markup=quick_actions_keyboard(),
     )
+
+
+async def handle_remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/r and /remind — quick to-do reminder snapshot."""
+    if update.effective_chat.id != MY_CHAT_ID:
+        return
+    await send_quick_reminder(update.message, mode="priority")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1721,6 +1817,8 @@ def main() -> None:
     from telegram.ext import CommandHandler
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", handle_start_command))
+    app.add_handler(CommandHandler("r", handle_remind_command))
+    app.add_handler(CommandHandler("remind", handle_remind_command))
     app.add_handler(CommandHandler("done",  handle_done_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
