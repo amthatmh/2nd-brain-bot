@@ -137,6 +137,10 @@ _done_picker_counter = 0
 _v10_counter = 0
 habit_cache: dict[str, dict] = {}
 _tmdb_http_client: httpx.AsyncClient | None = None
+sync_status: dict[str, dict] = {
+    "asana": {"last_run": None, "ok": None, "error": None, "stats": None},
+    "cinema": {"last_run": None, "ok": None, "error": None, "stats": None},
+}
 
 # ── Constants ────────────────────────────────────────────────────────────────
 HORIZON_DEADLINE_OFFSETS = {"t": 0, "w": 6, "m": 30, "b": None}
@@ -163,6 +167,10 @@ def next_weekday(weekday: int) -> date:
     if days_ahead == 0:
         days_ahead = 7
     return today + timedelta(days=days_ahead)
+
+
+def _utc_now_iso() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1950,6 +1958,7 @@ async def run_asana_sync(bot) -> None:
         return  # Sync disabled — bot still works without Asana
 
     loop = asyncio.get_event_loop()
+    sync_status["asana"]["last_run"] = _utc_now_iso()
     try:
         stats = await loop.run_in_executor(
             None,
@@ -1966,10 +1975,17 @@ async def run_asana_sync(bot) -> None:
         # Only log when something happened — keeps logs readable at 15s polling
         if any(v for k, v in stats.items() if k != "skipped"):
             log.info(f"Asana sync: {stats}")
+        sync_status["asana"]["ok"] = True
+        sync_status["asana"]["error"] = None
+        sync_status["asana"]["stats"] = stats
     except AsanaSyncError as e:
         log.error(f"Asana sync config error: {e}")
+        sync_status["asana"]["ok"] = False
+        sync_status["asana"]["error"] = str(e)
     except Exception as e:
         log.exception(f"Asana sync failed: {e}")
+        sync_status["asana"]["ok"] = False
+        sync_status["asana"]["error"] = str(e)
 
 
 async def run_cinema_sync(bot) -> None:
@@ -1977,6 +1993,7 @@ async def run_cinema_sync(bot) -> None:
     if not CINEMA_ENABLED or not CINEMA_DB_ID or not FAVE_DB_ID:
         return
 
+    sync_status["cinema"]["last_run"] = _utc_now_iso()
     try:
         stats = await sync_cinema_log_to_notion(
             notion=notion,
@@ -2000,8 +2017,13 @@ async def run_cinema_sync(bot) -> None:
                 f"⭐ Added to Favourite Shows: {stats['added_to_fave']}\n"
                 f"⚠️ TMDB not found: {stats['tmdb_missing']}",
             )
+        sync_status["cinema"]["ok"] = True
+        sync_status["cinema"]["error"] = None
+        sync_status["cinema"]["stats"] = stats
     except Exception as e:
         log.exception("Cinema sync failed: %s", e)
+        sync_status["cinema"]["ok"] = False
+        sync_status["cinema"]["error"] = str(e)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2434,6 +2456,39 @@ async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await status.edit_text(f"⚠️ /sync failed: {e}")
 
 
+def _fmt_sync_block(name: str, info: dict) -> str:
+    ok = info.get("ok")
+    if ok is True:
+        state = "✅ OK"
+    elif ok is False:
+        state = "❌ Failed"
+    else:
+        state = "— Not yet run"
+    last_run = info.get("last_run") or "n/a"
+    error = info.get("error")
+    stats = info.get("stats")
+    lines = [f"*{name}*: {state}", f"last_run: `{last_run}`"]
+    if stats:
+        lines.append(f"stats: `{json.dumps(stats, separators=(',', ':'))}`")
+    if error:
+        lines.append(f"error: `{error}`")
+    return "\n".join(lines)
+
+
+async def handle_sync_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/syncstatus — show latest sync telemetry for Asana + Cinema."""
+    if update.effective_chat.id != MY_CHAT_ID:
+        return
+    msg = [
+        "📊 *Sync Status*",
+        "",
+        _fmt_sync_block("Asana", sync_status["asana"]),
+        "",
+        _fmt_sync_block("Cinema", sync_status["cinema"]),
+    ]
+    await update.message.reply_text("\n".join(msg), parse_mode="Markdown")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN — after all handlers are defined
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2445,6 +2500,7 @@ def main() -> None:
     app.add_handler(CommandHandler("r", handle_remind_command))
     app.add_handler(CommandHandler("remind", handle_remind_command))
     app.add_handler(CommandHandler("sync", handle_sync_command))
+    app.add_handler(CommandHandler("syncstatus", handle_sync_status_command))
     app.add_handler(CommandHandler("done",  handle_done_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
