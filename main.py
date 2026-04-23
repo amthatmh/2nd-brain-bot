@@ -74,6 +74,7 @@ ASANA_WORKSPACE_GID = os.environ.get("ASANA_WORKSPACE_GID", "")  # v9.2: require
 ASANA_SYNC_SOURCE   = os.environ.get("ASANA_SYNC_SOURCE", "project").strip().lower()
 ASANA_SYNC_INTERVAL = max(1, int(os.environ.get("ASANA_SYNC_EVERY_SECONDS", "15")))
 ASANA_STARTUP_SMOKE = os.environ.get("ASANA_STARTUP_SMOKE", "1").strip().lower() not in {"0", "false", "no", "off"}
+ASANA_ARCHIVE_ORPHANS = os.environ.get("ASANA_ARCHIVE_ORPHANS", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 # ── Clients ──────────────────────────────────────────────────────────────────
 notion = NotionClient(auth=NOTION_TOKEN)
@@ -1345,6 +1346,7 @@ async def run_asana_sync(bot) -> None:
                 asana_project_gid=ASANA_PROJECT_GID,
                 asana_workspace_gid=ASANA_WORKSPACE_GID,   # v9.2: required for my_tasks mode
                 source_mode=ASANA_SYNC_SOURCE,
+                archive_orphans=ASANA_ARCHIVE_ORPHANS,
             ),
         )
         # Only log when something happened — keeps logs readable at 15s polling
@@ -1515,6 +1517,18 @@ async def _try_send_telegram(bot, text: str) -> None:
 
 def _git_sha() -> str:
     """Best-effort short commit SHA for deploy receipts."""
+    # Prefer CI/deploy-provided commit SHAs because production images often
+    # don't include a full .git directory (e.g., Render/Heroku containers).
+    for env_key in (
+        "RAILWAY_GIT_COMMIT_SHA",
+        "GIT_SHA",
+        "RENDER_GIT_COMMIT",
+        "COMMIT_SHA",
+        "SOURCE_VERSION",
+    ):
+        val = os.environ.get(env_key, "").strip()
+        if val:
+            return val[:12]
     try:
         return subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"],
