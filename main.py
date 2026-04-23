@@ -104,6 +104,7 @@ CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
 HTTP_PORT      = int(os.environ.get("PORT", "8080"))
 WEEKS_HISTORY  = int(os.environ.get("WEEKS_HISTORY", "52"))
 APP_VERSION    = os.environ.get("APP_VERSION", "v10.0.0")
+SYNC_BUFFER_MINUTES = max(1, int(os.environ.get("SYNC_BUFFER_MINUTES", "5")))
 
 # ── Asana sync config ────────────────────────────────────────────────────────
 ASANA_PAT           = os.environ.get("ASANA_PAT", "")
@@ -2310,10 +2311,21 @@ async def post_init(app: Application) -> None:
             args=[app.bot],
             id="cinema_sync",
         )
+        scheduler.add_job(
+            run_cinema_sync,
+            "interval",
+            minutes=SYNC_BUFFER_MINUTES,
+            args=[app.bot],
+            id="cinema_sync_buffer",
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(TZ) + timedelta(minutes=SYNC_BUFFER_MINUTES),
+        )
         log.info(
-            "Cinema sync job registered (%02d:%02d UTC daily)",
+            "Cinema sync jobs registered (daily %02d:%02d UTC + every %d minutes)",
             CINEMA_SYNC_HOUR,
             CINEMA_SYNC_MINUTE,
+            SYNC_BUFFER_MINUTES,
         )
 
     scheduler.start()
@@ -2407,6 +2419,21 @@ async def handle_remind_command(update: Update, context: ContextTypes.DEFAULT_TY
     await send_quick_reminder(update.message, mode="priority")
 
 
+async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/sync — manual catch-up trigger for core sync pipelines."""
+    if update.effective_chat.id != MY_CHAT_ID:
+        return
+    status = await update.message.reply_text("🔄 Running full sync (Asana + Cinema + Habit cache)…")
+    try:
+        load_habit_cache()
+        await run_asana_sync(context.bot)
+        await run_cinema_sync(context.bot)
+        await status.edit_text("✅ Full sync finished.")
+    except Exception as e:
+        log.exception("Manual /sync failed: %s", e)
+        await status.edit_text(f"⚠️ /sync failed: {e}")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN — after all handlers are defined
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2417,6 +2444,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", handle_start_command))
     app.add_handler(CommandHandler("r", handle_remind_command))
     app.add_handler(CommandHandler("remind", handle_remind_command))
+    app.add_handler(CommandHandler("sync", handle_sync_command))
     app.add_handler(CommandHandler("done",  handle_done_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
