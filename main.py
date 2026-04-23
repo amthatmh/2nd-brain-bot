@@ -63,6 +63,26 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
 log = logging.getLogger(__name__)
 
+
+def _parse_hhmm_env(var_name: str, default: str) -> tuple[int, int]:
+    """Parse HH:MM env var with range checks and safe fallback."""
+    raw = os.environ.get(var_name, default).strip()
+    try:
+        h_str, m_str = raw.split(":")
+        hour, minute = int(h_str), int(m_str)
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError("out of range")
+        return hour, minute
+    except Exception:
+        log.warning(
+            "Invalid %s=%r (expected HH:MM, 24h). Falling back to %s.",
+            var_name,
+            raw,
+            default,
+        )
+        h_str, m_str = default.split(":")
+        return int(h_str), int(m_str)
+
 # ── Config ───────────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
 MY_CHAT_ID      = int(os.environ["TELEGRAM_CHAT_ID"])
@@ -75,9 +95,9 @@ NOTION_HABIT_DB = os.environ["NOTION_HABIT_DB"]
 NOTION_LOG_DB   = os.environ["NOTION_LOG_DB"]
 
 TZ           = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
-_wk_h, _wk_m = map(int, os.environ.get("DIGEST_TIME_WEEKDAY", "8:15").split(":"))
-_we_h, _we_m = map(int, os.environ.get("DIGEST_TIME_WEEKEND", "12:00").split(":"))
-_rc_h, _rc_m = map(int, os.environ.get("RECURRING_CHECK_TIME", "7:00").split(":"))
+_wk_h, _wk_m = _parse_hhmm_env("DIGEST_TIME_WEEKDAY", "8:15")
+_we_h, _we_m = _parse_hhmm_env("DIGEST_TIME_WEEKEND", "12:00")
+_rc_h, _rc_m = _parse_hhmm_env("RECURRING_CHECK_TIME", "7:00")
 
 CLAUDE_MODEL   = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
@@ -115,6 +135,7 @@ _pending_counter = 0
 _done_picker_counter = 0
 _v10_counter = 0
 habit_cache: dict[str, dict] = {}
+_tmdb_http_client: httpx.AsyncClient | None = None
 
 # ── Constants ────────────────────────────────────────────────────────────────
 HORIZON_DEADLINE_OFFSETS = {"t": 0, "w": 6, "m": 30, "b": None}
@@ -450,13 +471,13 @@ async def tmdb_search(title: str, media_type: str = "multi") -> list[dict]:
     if not TMDB_API_KEY:
         return []
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.get(
-                f"{TMDB_BASE}/search/{media_type}",
-                params={"api_key": TMDB_API_KEY, "query": title, "page": 1},
-            )
-            resp.raise_for_status()
-            results = resp.json().get("results", [])[:5]
+        client = _get_tmdb_http_client()
+        resp = await client.get(
+            f"{TMDB_BASE}/search/{media_type}",
+            params={"api_key": TMDB_API_KEY, "query": title, "page": 1},
+        )
+        resp.raise_for_status()
+        results = resp.json().get("results", [])[:5]
 
         candidates: list[dict] = []
         for r in results:
@@ -474,19 +495,18 @@ async def tmdb_search(title: str, media_type: str = "multi") -> list[dict]:
             }
             if mtype == "tv":
                 try:
-                    async with httpx.AsyncClient(timeout=8.0) as client:
-                        det = await client.get(
-                            f"{TMDB_BASE}/tv/{r['id']}",
-                            params={"api_key": TMDB_API_KEY},
-                        )
-                        det.raise_for_status()
-                        d = det.json()
+                    det = await client.get(
+                        f"{TMDB_BASE}/tv/{r['id']}",
+                        params={"api_key": TMDB_API_KEY},
+                    )
+                    det.raise_for_status()
+                    d = det.json()
                     candidate["seasons"] = d.get("number_of_seasons")
                     candidate["episodes"] = d.get("number_of_episodes")
                     rt = d.get("episode_run_time") or []
                     candidate["runtime"] = rt[0] if rt else None
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.warning("TMDB TV detail lookup failed for id=%s: %s", r.get("id"), e)
             candidates.append(candidate)
         return candidates
     except Exception as e:
@@ -496,6 +516,13 @@ async def tmdb_search(title: str, media_type: str = "multi") -> list[dict]:
 
 def _notion_type_from_tmdb(media_type: str) -> str:
     return {"tv": "Series", "movie": "Film"}.get(media_type, "Series")
+
+
+def _get_tmdb_http_client() -> httpx.AsyncClient:
+    global _tmdb_http_client
+    if _tmdb_http_client is None:
+        _tmdb_http_client = httpx.AsyncClient(timeout=8.0)
+    return _tmdb_http_client
 
 
 def create_watchlist_entry(
