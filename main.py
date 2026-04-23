@@ -47,6 +47,16 @@ from asana_sync import (
     validate_notion_schema,
     startup_smoke_test,
 )
+from cinema.sync import sync_cinema_log_to_notion
+from cinema.config import (
+    CINEMA_ENABLED,
+    CINEMA_DB_ID,
+    FAVE_DB_ID,
+    TMDB_API_KEY,
+    CINEMA_SYNC_HOUR,
+    CINEMA_SYNC_MINUTE,
+    validate_config as validate_cinema_config,
+)
 
 load_dotenv()
 
@@ -86,7 +96,6 @@ ASANA_ARCHIVE_ORPHANS = os.environ.get("ASANA_ARCHIVE_ORPHANS", "0").strip().low
 NOTION_WATCHLIST_DB    = os.environ.get("NOTION_WATCHLIST_DB", "")
 NOTION_WANTSLIST_V2_DB = os.environ.get("NOTION_WANTSLIST_V2_DB", "")
 NOTION_PHOTO_DB        = os.environ.get("NOTION_PHOTO_DB", "")
-TMDB_API_KEY           = os.environ.get("TMDB_API_KEY", "")
 TMDB_BASE              = "https://api.themoviedb.org/3"
 
 # ── Clients ──────────────────────────────────────────────────────────────────
@@ -1935,6 +1944,38 @@ async def run_asana_sync(bot) -> None:
         log.exception(f"Asana sync failed: {e}")
 
 
+async def run_cinema_sync(bot) -> None:
+    """Daily sync for Cinema Log → Favourite Shows."""
+    if not CINEMA_ENABLED or not CINEMA_DB_ID or not FAVE_DB_ID:
+        return
+
+    try:
+        stats = await sync_cinema_log_to_notion(
+            notion=notion,
+            cinema_db_id=CINEMA_DB_ID,
+            fave_db_id=FAVE_DB_ID,
+            tmdb_api_key=TMDB_API_KEY,
+        )
+        log.info(
+            "Cinema sync: new=%s, tmdb_found=%s, tmdb_missing=%s, added_to_fave=%s",
+            stats["new_entries"],
+            stats["tmdb_found"],
+            stats["tmdb_missing"],
+            stats["added_to_fave"],
+        )
+        if stats["new_entries"] > 0:
+            await _try_send_telegram(
+                bot,
+                f"📺 Cinema Sync Report\n\n"
+                f"New entries processed: {stats['new_entries']}\n"
+                f"✅ TMDB URLs filled: {stats['tmdb_found']}\n"
+                f"⭐ Added to Favourite Shows: {stats['added_to_fave']}\n"
+                f"⚠️ TMDB not found: {stats['tmdb_missing']}",
+            )
+    except Exception as e:
+        log.exception("Cinema sync failed: %s", e)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # /habits-data JSON ENDPOINT
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2226,6 +2267,27 @@ async def post_init(app: Application) -> None:
             )
             asana_status = f"ON ({ASANA_SYNC_INTERVAL}s, mode={ASANA_SYNC_SOURCE})"
             log.info("Notion schema validation passed ✓")
+
+    # ── Cinema sync — config validation + daily schedule ──
+    cinema_ok, cinema_problems = validate_cinema_config()
+    if not cinema_ok:
+        log.warning("Cinema sync disabled due to config issues:")
+        for p in cinema_problems:
+            log.warning(f"  - {p}")
+    elif CINEMA_ENABLED and CINEMA_DB_ID and FAVE_DB_ID:
+        scheduler.add_job(
+            run_cinema_sync,
+            "cron",
+            hour=CINEMA_SYNC_HOUR,
+            minute=CINEMA_SYNC_MINUTE,
+            args=[app.bot],
+            id="cinema_sync",
+        )
+        log.info(
+            "Cinema sync job registered (%02d:%02d UTC daily)",
+            CINEMA_SYNC_HOUR,
+            CINEMA_SYNC_MINUTE,
+        )
 
     scheduler.start()
     log.info(

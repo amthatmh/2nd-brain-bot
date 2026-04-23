@@ -1,0 +1,39 @@
+"""Cinema Log Sync configuration."""
+
+import os
+
+CINEMA_DB_ID = os.environ.get("NOTION_CINEMA_DB", "")
+FAVE_DB_ID = os.environ.get("NOTION_FAVE_DB", "")
+TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "")
+CINEMA_ENABLED = os.environ.get("CINEMA_SYNC_ENABLED", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+CINEMA_SYNC_HOUR = int(os.environ.get("CINEMA_SYNC_HOUR", "23"))
+CINEMA_SYNC_MINUTE = int(os.environ.get("CINEMA_SYNC_MINUTE", "30"))
+
+
+def validate_config() -> tuple[bool, list[str]]:
+    """Return whether cinema sync config is valid and any problems."""
+    if not CINEMA_ENABLED:
+        return True, []
+
+    problems: list[str] = []
+    if not CINEMA_DB_ID:
+        problems.append("NOTION_CINEMA_DB is missing or empty")
+    if not FAVE_DB_ID:
+        problems.append("NOTION_FAVE_DB is missing or empty")
+    return len(problems) == 0, problems
+
+
+def get_config_summary() -> dict:
+    """Return a safe, loggable summary of cinema configuration."""
+    return {
+        "enabled": CINEMA_ENABLED,
+        "cinema_db_set": bool(CINEMA_DB_ID),
+        "fave_db_set": bool(FAVE_DB_ID),
+        "tmdb_key_set": bool(TMDB_API_KEY),
+        "sync_time": f"{CINEMA_SYNC_HOUR:02d}:{CINEMA_SYNC_MINUTE:02d} UTC",
+    }
