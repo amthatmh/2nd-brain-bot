@@ -1995,7 +1995,7 @@ async def run_cinema_sync(bot) -> None:
             await _try_send_telegram(
                 bot,
                 f"📺 Cinema Sync Report\n\n"
-                f"New entries processed: {stats['new_entries']}\n"
+                f"Entries processed: {stats['new_entries']}\n"
                 f"✅ TMDB URLs filled: {stats['tmdb_found']}\n"
                 f"⭐ Added to Favourite Shows: {stats['added_to_fave']}\n"
                 f"⚠️ TMDB not found: {stats['tmdb_missing']}",

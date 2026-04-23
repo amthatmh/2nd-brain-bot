@@ -68,12 +68,23 @@ async def sync_cinema_log_to_notion(
         "added_to_fave": 0,
     }
 
+    query_filter: dict
+    if tmdb_api_key:
+        query_filter = {
+            "or": [
+                {"property": "Last Synced", "date": {"is_empty": True}},
+                {"property": "TMDB URL", "url": {"is_empty": True}},
+            ]
+        }
+    else:
+        query_filter = {"property": "Last Synced", "date": {"is_empty": True}}
+
     rows: list[dict] = []
     cursor = None
     while True:
         q = {
             "database_id": cinema_db_id,
-            "filter": {"property": "Last Synced", "date": {"is_empty": True}},
+            "filter": query_filter,
             "page_size": 100,
         }
         if cursor:
