@@ -564,6 +564,7 @@ def reconcile(
     asana_project_gid: str = "",
     asana_workspace_gid: str = "",
     source_mode: str = "project",
+    archive_orphans: bool = False,
 ) -> dict[str, int]:
     """
     Run one reconciliation cycle. Returns stats dict.
@@ -652,18 +653,19 @@ def reconcile(
             except Exception:
                 log.exception("Failed N→A update for GID %s", gid)
 
-    # ── Handle deletions: in cache but not in Asana → archive Notion row ──
-    orphaned_gids = cached_gids - asana_gids
-    for gid in orphaned_gids:
-        page_id = _cache.get(gid)
-        if not page_id:
-            continue
-        try:
-            notion.pages.update(page_id=page_id, archived=True)
-            _cache.drop(gid)  # Cache trigger 4: update on delete
-            stats["deleted"] += 1
-        except Exception:
-            log.exception("Failed to archive orphaned Notion page %s", page_id)
+    # ── Handle deletions: optionally archive cache entries missing from Asana ──
+    if archive_orphans:
+        orphaned_gids = cached_gids - asana_gids
+        for gid in orphaned_gids:
+            page_id = _cache.get(gid)
+            if not page_id:
+                continue
+            try:
+                notion.pages.update(page_id=page_id, archived=True)
+                _cache.drop(gid)  # Cache trigger 4: update on delete
+                stats["deleted"] += 1
+            except Exception:
+                log.exception("Failed to archive orphaned Notion page %s", page_id)
 
     return stats
 
