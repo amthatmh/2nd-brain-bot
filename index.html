@@ -6,14 +6,16 @@
   <title>Habit Grid</title>
   <style>
     :root{
-      --bg:#0b0b11;
-      --card:#06060b;
-      --card-border:#1d1d28;
-      --text:#f5f5f8;
-      --muted:#a2a3b3;
-      --muted-2:#6e7081;
-      --purple:#a259ff;
-      --panel:#12121a;
+      --bg:#090a10;
+      --card:#12141d;
+      --card-border:#252938;
+      --text:#f5f7ff;
+      --muted:#a5adbf;
+      --muted-2:#6f788d;
+      --accent:#f47b88;
+      --accent-soft:rgba(244,123,136,.2);
+      --success:#39d0a6;
+      --panel:#151822;
       --shadow:0 12px 34px rgba(0,0,0,.38);
       --radius-xl:28px;
       --square:17px;
@@ -25,23 +27,24 @@
     body{
       font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;
       color:var(--text);
-      background:radial-gradient(circle at top center,rgba(162,89,255,.16),transparent 28%),
-                 linear-gradient(180deg,#0b0b11 0%,#0c0c13 100%);
+      background:
+        radial-gradient(circle at top center,rgba(244,123,136,.24),transparent 35%),
+        linear-gradient(180deg,#08090f 0%,#0d111a 100%);
       min-height:100vh;
     }
     .app{max-width:1060px;margin:0 auto;padding:26px 16px 40px}
     .topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px}
     .brand{font-size:2rem;font-weight:800;letter-spacing:-.04em}
-    .brand .accent{color:var(--purple)}
+    .brand .accent{color:var(--accent)}
     .sub{color:var(--muted);margin-top:6px;font-size:.95rem}
     .chip{border:1px solid #232332;background:rgba(255,255,255,.02);color:var(--text);padding:10px 16px;border-radius:14px;font-size:.9rem}
-    .chip.active{background:rgba(138,92,255,.15);border-color:rgba(138,92,255,.42)}
+    .chip.active{background:var(--accent-soft);border-color:rgba(244,123,136,.42)}
     .stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:18px;max-width:460px}
     .stat{background:rgba(255,255,255,.025);border:1px solid #222230;border-radius:16px;padding:12px 14px;box-shadow:var(--shadow)}
     .stat .k{color:var(--muted);font-size:.88rem;margin-bottom:8px}
     .stat .v{font-size:1.45rem;font-weight:800;letter-spacing:-.03em}
     .layout{display:grid;grid-template-columns:minmax(0,1fr);gap:18px;align-items:start}
-    .panel{background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,.01));border:1px solid #20202c;border-radius:var(--radius-xl);box-shadow:var(--shadow);overflow:hidden}
+    .panel{background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,.01));border:1px solid #262b3b;border-radius:var(--radius-xl);box-shadow:var(--shadow);overflow:hidden}
     .panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:20px 20px 10px}
     .panel-head h2{margin:0;font-size:1.1rem;letter-spacing:-.02em}
     .panel-sub{padding:0 20px 18px;color:var(--muted);font-size:.9rem}
@@ -71,21 +74,21 @@
     .cell:hover{transform:scale(1.1);filter:brightness(1.15)}
     .cell.today{outline:2px solid rgba(255,255,255,.55);outline-offset:1px}
     .cell.future{opacity:.32;filter:saturate(.75)}
-    .c-pink   .cell.on{background:#f47b88}.c-pink   .cell.off{background:#2c1218}
-    .c-grey   .cell.on{background:#d6d2cb}.c-grey   .cell.off{background:#2b2b33}
-    .c-blue   .cell.on{background:#5b9cf6}.c-blue   .cell.off{background:#0d1e3a}
-    .c-green  .cell.on{background:#4ade80}.c-green  .cell.off{background:#0d2b1a}
-    .c-orange .cell.on{background:#fb923c}.c-orange .cell.off{background:#2b1408}
-    .c-purple .cell.on{background:#c084fc}.c-purple .cell.off{background:#1e0a38}
+    .c-pink   .cell.on{background:#f47b88}.c-pink   .cell.off{background:#2d1820}
+    .c-grey   .cell.on{background:#d2d6de}.c-grey   .cell.off{background:#2b303a}
+    .c-blue   .cell.on{background:#65b7ff}.c-blue   .cell.off{background:#162742}
+    .c-green  .cell.on{background:#39d0a6}.c-green  .cell.off{background:#103029}
+    .c-orange .cell.on{background:#ffa16b}.c-orange .cell.off{background:#332017}
+    .c-purple .cell.on{background:#9f8df4}.c-purple .cell.off{background:#272047}
     .legend{display:flex;align-items:center;justify-content:space-between;color:var(--muted-2);font-size:.78rem;margin-top:12px}
     .legend-right{display:flex;align-items:center;gap:8px}
     .mini{width:11px;height:11px;border-radius:3px;display:inline-block;margin-right:2px}
     .check{font-size:2rem}
     .check:not(.done){border:1px solid rgba(255,255,255,.08)}
     .loading{display:flex;align-items:center;justify-content:center;height:200px;color:var(--muted);font-size:.95rem;gap:12px}
-    .spinner{width:20px;height:20px;border:2px solid rgba(138,92,255,.3);border-top-color:var(--purple);border-radius:50%;animation:spin .7s linear infinite}
+    .spinner{width:20px;height:20px;border:2px solid rgba(244,123,136,.35);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
     @keyframes spin{to{transform:rotate(360deg)}}
-    .error-msg{color:#f47b88;padding:20px;text-align:center;font-size:.9rem}
+    .error-msg{color:var(--accent);padding:20px;text-align:center;font-size:.9rem}
     @media(max-width:980px){.stats{grid-template-columns:repeat(2,1fr)}}
     @media(max-width:680px){
       :root{--square:14px;--gap:4px;--icon:66px;--check:64px}
@@ -164,9 +167,9 @@ async function logHabitFromWeb(habit, triggerEl) {
 
 function getColor(colorClass, on) {
   const m = {
-    'c-pink':{on:'#f47b88',off:'#2c1218'},'c-grey':{on:'#d6d2cb',off:'#2b2b33'},
-    'c-blue':{on:'#5b9cf6',off:'#0d1e3a'},'c-green':{on:'#4ade80',off:'#0d2b1a'},
-    'c-orange':{on:'#fb923c',off:'#2b1408'},'c-purple':{on:'#c084fc',off:'#1e0a38'},
+    'c-pink':{on:'#f47b88',off:'#2d1820'},'c-grey':{on:'#d2d6de',off:'#2b303a'},
+    'c-blue':{on:'#65b7ff',off:'#162742'},'c-green':{on:'#39d0a6',off:'#103029'},
+    'c-orange':{on:'#ffa16b',off:'#332017'},'c-purple':{on:'#9f8df4',off:'#272047'},
   };
   return (m[colorClass]||m['c-pink'])[on?'on':'off'];
 }
@@ -224,7 +227,7 @@ function render(data) {
     const isDone  = todayIndex >= 0
       ? habit.days[todayIndex] === 1
       : habit.todayDone;
-    const checkBg = isDone ? 'rgba(74,222,128,.15)' : 'rgba(138,92,255,.18)';
+    const checkBg = isDone ? 'rgba(57,208,166,.18)' : 'rgba(244,123,136,.22)';
     const checkIcon = isDone ? '✅' : '⭕️';
 
     const article = document.createElement('article');
