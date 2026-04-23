@@ -11,7 +11,6 @@ Design:
 - Context is Notion-owned after initial creation.
 
 v9.1 changes:
-- Single source of truth for the "Asana" Source label via ASANA_SOURCE_LABEL.
 - New validate_notion_schema() helper for fail-loud startup validation.
 
 v9.2 changes:
@@ -47,16 +46,10 @@ COMPLETED_WINDOW_DAYS = 90
 # Cache safety-net: force a full rebuild every N seconds regardless of misses.
 CACHE_FULL_REBUILD_SECONDS = 600  # 10 minutes
 
-# ── Single source of truth for the Notion `Source` select option that marks
-#    an Asana-sourced row. MUST match the exact label (incl. emoji) in Notion.
-#    Change here → propagates to query filter AND new-row creation.
-ASANA_SOURCE_LABEL = "🔗 Asana"
-
 # ── Required Notion schema for the To-Do DB used by this reconciler.
 #    Used by validate_notion_schema(). property_name → expected Notion type.
 REQUIRED_NOTION_PROPERTIES: dict[str, str] = {
     "Name":              "title",
-    "Source":            "select",
     "Deadline":          "date",
     "Done":              "checkbox",
     "Asana Task ID":     "rich_text",
@@ -64,10 +57,6 @@ REQUIRED_NOTION_PROPERTIES: dict[str, str] = {
     "Asana Modified At": "rich_text",
     "Last Synced At":    "date",
 }
-
-# Required `Source` select options (the reconciler writes these names).
-REQUIRED_SOURCE_OPTIONS: set[str] = {ASANA_SOURCE_LABEL}
-
 
 class AsanaSyncError(Exception):
     pass
@@ -80,7 +69,7 @@ class AsanaSyncError(Exception):
 def validate_notion_schema(notion, database_id: str) -> list[str]:
     """
     Verify the To-Do DB has every property the reconciler writes to,
-    with the right type, and every required `Source` select option.
+    with the right type.
 
     Returns a list of human-readable problems. Empty list = schema healthy.
     Designed to be called once at startup so failures surface BEFORE the
@@ -108,20 +97,6 @@ def validate_notion_schema(notion, database_id: str) -> list[str]:
             problems.append(
                 f"Property '{prop_name}' has wrong type: got '{actual_type}', expected '{expected_type}'"
             )
-
-    # 2) `Source` select must contain every label the reconciler writes
-    source_prop = props.get("Source") or {}
-    if source_prop.get("type") == "select":
-        existing_options = {
-            opt.get("name") for opt in source_prop.get("select", {}).get("options", [])
-        }
-        for required_option in REQUIRED_SOURCE_OPTIONS:
-            if required_option not in existing_options:
-                pretty_existing = ", ".join(sorted(o for o in existing_options if o)) or "(none)"
-                problems.append(
-                    f"`Source` select is missing option '{required_option}'. "
-                    f"Existing options: {pretty_existing}"
-                )
 
     return problems
 
@@ -176,7 +151,7 @@ class GidCache:
         while True:
             kwargs: dict[str, Any] = {
                 "database_id": database_id,
-                "filter": {"property": "Source", "select": {"equals": ASANA_SOURCE_LABEL}},
+                "filter": {"property": "Asana Task ID", "rich_text": {"is_not_empty": True}},
                 "page_size": 100,
             }
             if cursor:
@@ -462,7 +437,6 @@ def _build_notion_create_props(task: dict[str, Any]) -> dict[str, Any]:
         "Name":              _notion_title(task.get("name") or "Untitled Asana Task"),
         "Deadline":          _notion_date(task.get("due_on")),
         "Context":           {"select": {"name": _infer_context_from_asana(task)}},
-        "Source":            {"select": {"name": ASANA_SOURCE_LABEL}},
         "Done":              {"checkbox": bool(task.get("completed"))},
         "Recurring":         {"select": {"name": "None"}},
         "Asana Task ID":     _notion_rich_text(task["gid"]),
@@ -564,6 +538,7 @@ def reconcile(
     asana_project_gid: str = "",
     asana_workspace_gid: str = "",
     source_mode: str = "project",
+    archive_orphans: bool = False,
 ) -> dict[str, int]:
     """
     Run one reconciliation cycle. Returns stats dict.
@@ -652,18 +627,28 @@ def reconcile(
             except Exception:
                 log.exception("Failed N→A update for GID %s", gid)
 
-    # ── Handle deletions: in cache but not in Asana → archive Notion row ──
-    orphaned_gids = cached_gids - asana_gids
-    for gid in orphaned_gids:
-        page_id = _cache.get(gid)
-        if not page_id:
-            continue
-        try:
-            notion.pages.update(page_id=page_id, archived=True)
-            _cache.drop(gid)  # Cache trigger 4: update on delete
-            stats["deleted"] += 1
-        except Exception:
-            log.exception("Failed to archive orphaned Notion page %s", page_id)
+    # ── Handle deletions: optional + only safe when source is authoritative ──
+    # `my_tasks` is not a full-project inventory; tasks can disappear from this
+    # feed due to assignment/list membership changes without being deleted.
+    effective_archive_orphans = archive_orphans and source_mode == "project"
+    if archive_orphans and source_mode != "project":
+        log.warning(
+            "Ignoring archive_orphans=True because source_mode=%s is non-authoritative",
+            source_mode,
+        )
+
+    if effective_archive_orphans:
+        orphaned_gids = cached_gids - asana_gids
+        for gid in orphaned_gids:
+            page_id = _cache.get(gid)
+            if not page_id:
+                continue
+            try:
+                notion.pages.update(page_id=page_id, archived=True)
+                _cache.drop(gid)  # Cache trigger 4: update on delete
+                stats["deleted"] += 1
+            except Exception:
+                log.exception("Failed to archive orphaned Notion page %s", page_id)
 
     return stats
 
@@ -709,7 +694,6 @@ def startup_smoke_test(
             parent={"database_id": notion_db_id},
             properties={
                 "Name": _notion_title(smoke_name),
-                "Source": {"select": {"name": ASANA_SOURCE_LABEL}},
                 "Done": {"checkbox": False},
                 "Recurring": {"select": {"name": "None"}},
                 "Asana Task ID": _notion_rich_text(f"{smoke_gid}::smoke::{marker}"),
