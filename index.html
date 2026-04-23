@@ -12,7 +12,7 @@
       --text:#f5f5f8;
       --muted:#a2a3b3;
       --muted-2:#6e7081;
-      --purple:#8a5cff;
+      --purple:#a259ff;
       --panel:#12121a;
       --shadow:0 12px 34px rgba(0,0,0,.38);
       --radius-xl:28px;
@@ -25,7 +25,7 @@
     body{
       font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;
       color:var(--text);
-      background:radial-gradient(circle at top center,rgba(138,92,255,.14),transparent 28%),
+      background:radial-gradient(circle at top center,rgba(162,89,255,.16),transparent 28%),
                  linear-gradient(180deg,#0b0b11 0%,#0c0c13 100%);
       min-height:100vh;
     }
@@ -55,10 +55,22 @@
     .check:hover{transform:scale(1.06);filter:brightness(1.1)}
     .check.done{background:rgba(74,222,128,.15)!important;cursor:default}
     .grid-wrap{overflow-x:auto;padding-bottom:4px;scrollbar-width:thin}
+    .grid-shell{display:flex;align-items:flex-start;gap:10px}
+    .day-labels{
+      display:grid;
+      grid-template-rows:repeat(7,var(--square));
+      gap:var(--gap);
+      color:var(--muted-2);
+      font-size:.78rem;
+      min-width:34px;
+      padding-top:2px;
+    }
+    .day-labels span{display:flex;align-items:center}
     .grid{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,var(--square));grid-auto-columns:var(--square);gap:var(--gap);width:max-content;padding:2px 0}
     .cell{width:var(--square);height:var(--square);border-radius:5px;transition:transform .08s ease,filter .12s ease;cursor:default}
     .cell:hover{transform:scale(1.1);filter:brightness(1.15)}
     .cell.today{outline:2px solid rgba(255,255,255,.55);outline-offset:1px}
+    .cell.future{opacity:.32;filter:saturate(.75)}
     .c-pink   .cell.on{background:#f47b88}.c-pink   .cell.off{background:#2c1218}
     .c-grey   .cell.on{background:#d6d2cb}.c-grey   .cell.off{background:#2b2b33}
     .c-blue   .cell.on{background:#5b9cf6}.c-blue   .cell.off{background:#0d1e3a}
@@ -104,7 +116,7 @@
         <h2>Week-by-week grid</h2>
         <div class="chip" id="weeksChip">— weeks</div>
       </div>
-      <div class="panel-sub">Each column is a week · each row is a day · today is outlined</div>
+      <div class="panel-sub">Weeks run Sun→Sat top-to-bottom · today is outlined · future days are faded</div>
       <div class="cards" id="cards">
         <div class="loading"><div class="spinner"></div> Fetching from Notion…</div>
       </div>
@@ -230,7 +242,14 @@ function render(data) {
                style="background:${checkBg}" title="Log directly to Notion">${checkIcon}</button>`
         }
       </div>
-      <div class="grid-wrap"><div class="grid"></div></div>
+      <div class="grid-wrap">
+        <div class="grid-shell">
+          <div class="day-labels">
+            <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span>
+          </div>
+          <div class="grid"></div>
+        </div>
+      </div>
       <div class="legend">
         <span>${weeksHistory} weeks ago</span>
         <div class="legend-right">
@@ -246,13 +265,37 @@ function render(data) {
     if (checkBtn) {
       checkBtn.addEventListener('click', () => logHabitFromWeb(habit, checkBtn));
     }
-    habit.days.forEach((v,i) => {
+    const dateRows = dates.map((day, i) => ({ day, value: habit.days[i] ?? 0 }));
+    const weekMap = new Map();
+    dateRows.forEach(({ day, value }) => {
+      const d = new Date(`${day}T12:00:00`);
+      if (Number.isNaN(d.getTime())) return;
+      const weekStart = new Date(d);
+      weekStart.setDate(d.getDate() - d.getDay());
+      const key = weekStart.toISOString().slice(0, 10);
+      if (!weekMap.has(key)) weekMap.set(key, new Array(7).fill(null));
+      weekMap.get(key)[d.getDay()] = { day, value };
+    });
+
+    [...weekMap.keys()].sort().forEach((weekKey) => {
+      const week = weekMap.get(weekKey);
+      week.forEach((entry, dayIdx) => {
       const cell    = document.createElement('div');
-      const isToday = i === habit.days.length-1;
-      cell.className = `cell ${v?'on':'off'} ${isToday?'today':''}`;
-      const d = new Date((dates[i]||'')+'T12:00:00');
-      cell.title = `${d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})} · ${v?'✅ done':'⭕️ not done'}`;
+      const value = entry?.value ?? 0;
+      const cellDate = entry?.day;
+      const isToday = cellDate === data.todayDate;
+      const isFuture = Boolean(cellDate && data.todayDate && cellDate > data.todayDate);
+      cell.className = `cell ${value?'on':'off'} ${isToday?'today':''} ${isFuture?'future':''}`;
+      if (cellDate) {
+        const d = new Date(`${cellDate}T12:00:00`);
+        cell.title = `${d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})} · ${value?'✅ done':'⭕️ not done'}`;
+      } else {
+        const d = new Date(`${weekKey}T12:00:00`);
+        d.setDate(d.getDate() + dayIdx);
+        cell.title = `${d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})} · outside tracking range`;
+      }
       grid.appendChild(cell);
+    });
     });
 
     cards.appendChild(article);
