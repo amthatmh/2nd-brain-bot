@@ -1515,6 +1515,12 @@ async def _try_send_telegram(bot, text: str) -> None:
 
 def _git_sha() -> str:
     """Best-effort short commit SHA for deploy receipts."""
+    # Prefer CI/deploy-provided commit SHAs because production images often
+    # don't include a full .git directory (e.g., Render/Heroku containers).
+    for env_key in ("GIT_SHA", "RENDER_GIT_COMMIT", "COMMIT_SHA", "SOURCE_VERSION"):
+        val = os.environ.get(env_key, "").strip()
+        if val:
+            return val[:12]
     try:
         return subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"],
