@@ -23,15 +23,19 @@ v9.2 changes:
 
 import json
 import logging
+import random
 import re
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib import parse, request
+from urllib.error import HTTPError, URLError
 
 log = logging.getLogger(__name__)
 
 ASANA_BASE_URL = "https://app.asana.com/api/1.0"
+ASANA_MAX_RETRIES = 3
 
 # Fields pulled from Asana every cycle. modified_at is critical for LWW.
 ASANA_OPT_FIELDS = (
@@ -256,9 +260,35 @@ def _asana_request(
         headers["Content-Type"] = "application/json"
 
     req = request.Request(url, data=data, headers=headers, method=method)
-    with request.urlopen(req, timeout=30) as resp:
-        raw = resp.read().decode("utf-8")
-        return json.loads(raw) if raw else {}
+    last_err: Exception | None = None
+
+    for attempt in range(ASANA_MAX_RETRIES):
+        try:
+            with request.urlopen(req, timeout=30) as resp:
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw) if raw else {}
+        except HTTPError as e:
+            # Retry transient classes only: rate limit and server-side failures.
+            if e.code not in {429, 500, 502, 503, 504}:
+                raise
+            last_err = e
+        except URLError as e:
+            last_err = e
+
+        if attempt < ASANA_MAX_RETRIES - 1:
+            backoff = (2 ** attempt) + random.uniform(0.05, 0.35)
+            log.warning(
+                "Asana request retrying in %.2fs (attempt %d/%d) path=%s err=%s",
+                backoff,
+                attempt + 1,
+                ASANA_MAX_RETRIES,
+                path,
+                last_err,
+            )
+            time.sleep(backoff)
+
+    assert last_err is not None
+    raise AsanaSyncError(f"Asana request failed after {ASANA_MAX_RETRIES} attempts: {last_err}")
 
 
 def _asana_paginated(path: str, token: str, base_query: dict[str, Any]) -> list[dict[str, Any]]:
