@@ -55,6 +55,8 @@ log = logging.getLogger(__name__)
 # ── Config ───────────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
 MY_CHAT_ID      = int(os.environ["TELEGRAM_CHAT_ID"])
+ALERT_CHAT_ID   = int(os.environ.get("TELEGRAM_ALERT_CHAT_ID", str(MY_CHAT_ID)))
+ALERT_THREAD_ID = int(os.environ["TELEGRAM_ALERT_THREAD_ID"]) if os.environ.get("TELEGRAM_ALERT_THREAD_ID") else None
 ANTHROPIC_KEY   = os.environ["ANTHROPIC_API_KEY"]
 NOTION_TOKEN    = os.environ["NOTION_TOKEN"]
 NOTION_DB_ID    = os.environ["NOTION_DB_ID"]
@@ -1588,9 +1590,16 @@ def _format_schema_alert(problems: list[str]) -> str:
 async def _try_send_telegram(bot, text: str) -> None:
     """Best-effort Telegram alert. Never raises."""
     try:
-        await bot.send_message(chat_id=MY_CHAT_ID, text=text, parse_mode="Markdown")
+        kwargs = {
+            "chat_id": ALERT_CHAT_ID,
+            "text": text,
+            "parse_mode": "Markdown",
+        }
+        if ALERT_THREAD_ID is not None:
+            kwargs["message_thread_id"] = ALERT_THREAD_ID
+        await bot.send_message(**kwargs)
     except Exception as e:
-        log.error(f"Could not send schema alert via Telegram: {e}")
+        log.error(f"Could not send operational alert via Telegram: {e}")
 
 
 def _git_sha() -> str:
