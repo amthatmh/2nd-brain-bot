@@ -57,6 +57,7 @@ from cinema.config import (
     CINEMA_SYNC_MINUTE,
     validate_config as validate_cinema_config,
 )
+from sync_telemetry import init_sync_status, utc_now_iso, format_sync_status_message
 
 load_dotenv()
 
@@ -137,10 +138,7 @@ _done_picker_counter = 0
 _v10_counter = 0
 habit_cache: dict[str, dict] = {}
 _tmdb_http_client: httpx.AsyncClient | None = None
-sync_status: dict[str, dict] = {
-    "asana": {"last_run": None, "ok": None, "error": None, "stats": None},
-    "cinema": {"last_run": None, "ok": None, "error": None, "stats": None},
-}
+sync_status: dict[str, dict] = init_sync_status()
 
 # ── Constants ────────────────────────────────────────────────────────────────
 HORIZON_DEADLINE_OFFSETS = {"t": 0, "w": 6, "m": 30, "b": None}
@@ -1958,7 +1956,7 @@ async def run_asana_sync(bot) -> None:
         return  # Sync disabled — bot still works without Asana
 
     loop = asyncio.get_event_loop()
-    sync_status["asana"]["last_run"] = _utc_now_iso()
+    sync_status["asana"]["last_run"] = utc_now_iso()
     try:
         stats = await loop.run_in_executor(
             None,
@@ -1993,7 +1991,7 @@ async def run_cinema_sync(bot) -> None:
     if not CINEMA_ENABLED or not CINEMA_DB_ID or not FAVE_DB_ID:
         return
 
-    sync_status["cinema"]["last_run"] = _utc_now_iso()
+    sync_status["cinema"]["last_run"] = utc_now_iso()
     try:
         stats = await sync_cinema_log_to_notion(
             notion=notion,
@@ -2456,37 +2454,11 @@ async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await status.edit_text(f"⚠️ /sync failed: {e}")
 
 
-def _fmt_sync_block(name: str, info: dict) -> str:
-    ok = info.get("ok")
-    if ok is True:
-        state = "✅ OK"
-    elif ok is False:
-        state = "❌ Failed"
-    else:
-        state = "— Not yet run"
-    last_run = info.get("last_run") or "n/a"
-    error = info.get("error")
-    stats = info.get("stats")
-    lines = [f"*{name}*: {state}", f"last_run: `{last_run}`"]
-    if stats:
-        lines.append(f"stats: `{json.dumps(stats, separators=(',', ':'))}`")
-    if error:
-        lines.append(f"error: `{error}`")
-    return "\n".join(lines)
-
-
 async def handle_sync_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/syncstatus — show latest sync telemetry for Asana + Cinema."""
     if update.effective_chat.id != MY_CHAT_ID:
         return
-    msg = [
-        "📊 *Sync Status*",
-        "",
-        _fmt_sync_block("Asana", sync_status["asana"]),
-        "",
-        _fmt_sync_block("Cinema", sync_status["cinema"]),
-    ]
-    await update.message.reply_text("\n".join(msg), parse_mode="Markdown")
+    await update.message.reply_text(format_sync_status_message(sync_status), parse_mode="Markdown")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
