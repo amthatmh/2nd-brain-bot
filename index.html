@@ -178,6 +178,7 @@ async function loadData() {
   try {
     const url = `${API_URL}?t=${Date.now()}`;
     const res  = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     render(data);
   } catch(e) {
@@ -191,7 +192,9 @@ function refreshIfVisible() {
 }
 
 function render(data) {
-  const {habits, dates, generated} = data;
+  const habits = Array.isArray(data?.habits) ? data.habits : [];
+  const dates = Array.isArray(data?.dates) ? data.dates : [];
+  const generated = data?.generated || new Date().toISOString();
   const weeksHistory = Number.isFinite(data.weeksHistory)
     ? data.weeksHistory
     : Math.max(1, Math.round((dates?.length || 0) / 7));
