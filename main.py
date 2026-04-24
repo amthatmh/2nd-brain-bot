@@ -168,6 +168,10 @@ def next_weekday(weekday: int) -> date:
     return today + timedelta(days=days_ahead)
 
 
+def _utc_now_iso() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # HABIT CACHE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2334,6 +2338,16 @@ async def post_init(app: Application) -> None:
             sync_buffer_minutes=SYNC_BUFFER_MINUTES,
             tz=TZ,
             now_fn=datetime.now,
+        )
+        scheduler.add_job(
+            run_cinema_sync,
+            "interval",
+            minutes=SYNC_BUFFER_MINUTES,
+            args=[app.bot],
+            id="cinema_sync_buffer",
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(TZ) + timedelta(minutes=SYNC_BUFFER_MINUTES),
         )
         log.info(
             "Cinema sync jobs registered (daily %02d:%02d UTC + every %d minutes)",
