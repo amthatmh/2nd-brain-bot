@@ -59,6 +59,12 @@ from cinema.config import (
 )
 from sync_telemetry import init_sync_status, utc_now_iso, format_sync_status_message
 from scheduler_setup import register_core_jobs, register_cinema_jobs
+from notes_flow import (
+    split_kind_keyboard,
+    ordered_topics,
+    note_topics_keyboard,
+    create_note_payload,
+)
 
 load_dotenv()
 
@@ -1270,6 +1276,14 @@ def format_batch_summary(results: list[dict]) -> str:
     return "\n".join(lines).strip()
 
 
+def create_note_entry(content: str, topic: str | None = None) -> str:
+    if not NOTION_NOTES_DB:
+        raise ValueError("NOTION_NOTES_DB is not configured")
+    props = create_note_payload(content, topic=topic)
+    page = notion.pages.create(parent={"database_id": NOTION_NOTES_DB}, properties=props)
+    return page["id"]
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # NOTES
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1852,6 +1866,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if match_force:
         await create_or_prompt_task(message, match_force.group(1).strip(), force_create=True); return
 
+    if await handle_photo_followup(message, text):
+        return
+
     global _v10_counter
     key = str(_v10_counter)
     _v10_counter += 1
@@ -1889,12 +1906,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not text:
             await q.edit_message_text("⚠️ This prompt expired — please send it again.")
             return
+        if not NOTION_NOTES_DB:
+            await q.edit_message_text("📝 Notes DB isn't configured yet — add NOTION_NOTES_DB first.")
+            return
         note_key = str(_v10_counter)
         _v10_counter += 1
-        pending_note_map[note_key] = {"content": text, "topic_order": _ordered_topics()}
+        ordered = ordered_topics(topic_recency_map)
+        pending_note_map[note_key] = {"content": text, "topic_order": ordered}
         await q.edit_message_text(
             "📝 Got it — choose a topic tag:",
-            reply_markup=note_topics_keyboard(note_key),
+            reply_markup=note_topics_keyboard(note_key, ordered),
         )
         return
 
