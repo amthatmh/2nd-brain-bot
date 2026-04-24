@@ -63,6 +63,26 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
 log = logging.getLogger(__name__)
 
+
+def _parse_hhmm_env(var_name: str, default: str) -> tuple[int, int]:
+    """Parse HH:MM env var with range checks and safe fallback."""
+    raw = os.environ.get(var_name, default).strip()
+    try:
+        h_str, m_str = raw.split(":")
+        hour, minute = int(h_str), int(m_str)
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError("out of range")
+        return hour, minute
+    except Exception:
+        log.warning(
+            "Invalid %s=%r (expected HH:MM, 24h). Falling back to %s.",
+            var_name,
+            raw,
+            default,
+        )
+        h_str, m_str = default.split(":")
+        return int(h_str), int(m_str)
+
 # ── Config ───────────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
 MY_CHAT_ID      = int(os.environ["TELEGRAM_CHAT_ID"])
@@ -75,15 +95,16 @@ NOTION_HABIT_DB = os.environ["NOTION_HABIT_DB"]
 NOTION_LOG_DB   = os.environ["NOTION_LOG_DB"]
 
 TZ           = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
-_wk_h, _wk_m = map(int, os.environ.get("DIGEST_TIME_WEEKDAY", "8:15").split(":"))
-_we_h, _we_m = map(int, os.environ.get("DIGEST_TIME_WEEKEND", "12:00").split(":"))
-_rc_h, _rc_m = map(int, os.environ.get("RECURRING_CHECK_TIME", "7:00").split(":"))
+_wk_h, _wk_m = _parse_hhmm_env("DIGEST_TIME_WEEKDAY", "8:15")
+_we_h, _we_m = _parse_hhmm_env("DIGEST_TIME_WEEKEND", "12:00")
+_rc_h, _rc_m = _parse_hhmm_env("RECURRING_CHECK_TIME", "7:00")
 
 CLAUDE_MODEL   = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
 HTTP_PORT      = int(os.environ.get("PORT", "8080"))
 WEEKS_HISTORY  = int(os.environ.get("WEEKS_HISTORY", "52"))
 APP_VERSION    = os.environ.get("APP_VERSION", "v10.0.0")
+SYNC_BUFFER_MINUTES = max(1, int(os.environ.get("SYNC_BUFFER_MINUTES", "5")))
 
 # ── Asana sync config ────────────────────────────────────────────────────────
 ASANA_PAT           = os.environ.get("ASANA_PAT", "")
@@ -115,6 +136,11 @@ _pending_counter = 0
 _done_picker_counter = 0
 _v10_counter = 0
 habit_cache: dict[str, dict] = {}
+_tmdb_http_client: httpx.AsyncClient | None = None
+sync_status: dict[str, dict] = {
+    "asana": {"last_run": None, "ok": None, "error": None, "stats": None},
+    "cinema": {"last_run": None, "ok": None, "error": None, "stats": None},
+}
 
 # ── Constants ────────────────────────────────────────────────────────────────
 HORIZON_DEADLINE_OFFSETS = {"t": 0, "w": 6, "m": 30, "b": None}
@@ -141,6 +167,10 @@ def next_weekday(weekday: int) -> date:
     if days_ahead == 0:
         days_ahead = 7
     return today + timedelta(days=days_ahead)
+
+
+def _utc_now_iso() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -450,13 +480,13 @@ async def tmdb_search(title: str, media_type: str = "multi") -> list[dict]:
     if not TMDB_API_KEY:
         return []
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.get(
-                f"{TMDB_BASE}/search/{media_type}",
-                params={"api_key": TMDB_API_KEY, "query": title, "page": 1},
-            )
-            resp.raise_for_status()
-            results = resp.json().get("results", [])[:5]
+        client = _get_tmdb_http_client()
+        resp = await client.get(
+            f"{TMDB_BASE}/search/{media_type}",
+            params={"api_key": TMDB_API_KEY, "query": title, "page": 1},
+        )
+        resp.raise_for_status()
+        results = resp.json().get("results", [])[:5]
 
         candidates: list[dict] = []
         for r in results:
@@ -474,19 +504,18 @@ async def tmdb_search(title: str, media_type: str = "multi") -> list[dict]:
             }
             if mtype == "tv":
                 try:
-                    async with httpx.AsyncClient(timeout=8.0) as client:
-                        det = await client.get(
-                            f"{TMDB_BASE}/tv/{r['id']}",
-                            params={"api_key": TMDB_API_KEY},
-                        )
-                        det.raise_for_status()
-                        d = det.json()
+                    det = await client.get(
+                        f"{TMDB_BASE}/tv/{r['id']}",
+                        params={"api_key": TMDB_API_KEY},
+                    )
+                    det.raise_for_status()
+                    d = det.json()
                     candidate["seasons"] = d.get("number_of_seasons")
                     candidate["episodes"] = d.get("number_of_episodes")
                     rt = d.get("episode_run_time") or []
                     candidate["runtime"] = rt[0] if rt else None
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.warning("TMDB TV detail lookup failed for id=%s: %s", r.get("id"), e)
             candidates.append(candidate)
         return candidates
     except Exception as e:
@@ -496,6 +525,13 @@ async def tmdb_search(title: str, media_type: str = "multi") -> list[dict]:
 
 def _notion_type_from_tmdb(media_type: str) -> str:
     return {"tv": "Series", "movie": "Film"}.get(media_type, "Series")
+
+
+def _get_tmdb_http_client() -> httpx.AsyncClient:
+    global _tmdb_http_client
+    if _tmdb_http_client is None:
+        _tmdb_http_client = httpx.AsyncClient(timeout=8.0)
+    return _tmdb_http_client
 
 
 def create_watchlist_entry(
@@ -1922,6 +1958,7 @@ async def run_asana_sync(bot) -> None:
         return  # Sync disabled — bot still works without Asana
 
     loop = asyncio.get_event_loop()
+    sync_status["asana"]["last_run"] = _utc_now_iso()
     try:
         stats = await loop.run_in_executor(
             None,
@@ -1938,10 +1975,17 @@ async def run_asana_sync(bot) -> None:
         # Only log when something happened — keeps logs readable at 15s polling
         if any(v for k, v in stats.items() if k != "skipped"):
             log.info(f"Asana sync: {stats}")
+        sync_status["asana"]["ok"] = True
+        sync_status["asana"]["error"] = None
+        sync_status["asana"]["stats"] = stats
     except AsanaSyncError as e:
         log.error(f"Asana sync config error: {e}")
+        sync_status["asana"]["ok"] = False
+        sync_status["asana"]["error"] = str(e)
     except Exception as e:
         log.exception(f"Asana sync failed: {e}")
+        sync_status["asana"]["ok"] = False
+        sync_status["asana"]["error"] = str(e)
 
 
 async def run_cinema_sync(bot) -> None:
@@ -1949,6 +1993,7 @@ async def run_cinema_sync(bot) -> None:
     if not CINEMA_ENABLED or not CINEMA_DB_ID or not FAVE_DB_ID:
         return
 
+    sync_status["cinema"]["last_run"] = _utc_now_iso()
     try:
         stats = await sync_cinema_log_to_notion(
             notion=notion,
@@ -1967,13 +2012,18 @@ async def run_cinema_sync(bot) -> None:
             await _try_send_telegram(
                 bot,
                 f"📺 Cinema Sync Report\n\n"
-                f"New entries processed: {stats['new_entries']}\n"
+                f"Entries processed: {stats['new_entries']}\n"
                 f"✅ TMDB URLs filled: {stats['tmdb_found']}\n"
                 f"⭐ Added to Favourite Shows: {stats['added_to_fave']}\n"
                 f"⚠️ TMDB not found: {stats['tmdb_missing']}",
             )
+        sync_status["cinema"]["ok"] = True
+        sync_status["cinema"]["error"] = None
+        sync_status["cinema"]["stats"] = stats
     except Exception as e:
         log.exception("Cinema sync failed: %s", e)
+        sync_status["cinema"]["ok"] = False
+        sync_status["cinema"]["error"] = str(e)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2283,10 +2333,21 @@ async def post_init(app: Application) -> None:
             args=[app.bot],
             id="cinema_sync",
         )
+        scheduler.add_job(
+            run_cinema_sync,
+            "interval",
+            minutes=SYNC_BUFFER_MINUTES,
+            args=[app.bot],
+            id="cinema_sync_buffer",
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(TZ) + timedelta(minutes=SYNC_BUFFER_MINUTES),
+        )
         log.info(
-            "Cinema sync job registered (%02d:%02d UTC daily)",
+            "Cinema sync jobs registered (daily %02d:%02d UTC + every %d minutes)",
             CINEMA_SYNC_HOUR,
             CINEMA_SYNC_MINUTE,
+            SYNC_BUFFER_MINUTES,
         )
 
     scheduler.start()
@@ -2380,6 +2441,54 @@ async def handle_remind_command(update: Update, context: ContextTypes.DEFAULT_TY
     await send_quick_reminder(update.message, mode="priority")
 
 
+async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/sync — manual catch-up trigger for core sync pipelines."""
+    if update.effective_chat.id != MY_CHAT_ID:
+        return
+    status = await update.message.reply_text("🔄 Running full sync (Asana + Cinema + Habit cache)…")
+    try:
+        load_habit_cache()
+        await run_asana_sync(context.bot)
+        await run_cinema_sync(context.bot)
+        await status.edit_text("✅ Full sync finished.")
+    except Exception as e:
+        log.exception("Manual /sync failed: %s", e)
+        await status.edit_text(f"⚠️ /sync failed: {e}")
+
+
+def _fmt_sync_block(name: str, info: dict) -> str:
+    ok = info.get("ok")
+    if ok is True:
+        state = "✅ OK"
+    elif ok is False:
+        state = "❌ Failed"
+    else:
+        state = "— Not yet run"
+    last_run = info.get("last_run") or "n/a"
+    error = info.get("error")
+    stats = info.get("stats")
+    lines = [f"*{name}*: {state}", f"last_run: `{last_run}`"]
+    if stats:
+        lines.append(f"stats: `{json.dumps(stats, separators=(',', ':'))}`")
+    if error:
+        lines.append(f"error: `{error}`")
+    return "\n".join(lines)
+
+
+async def handle_sync_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/syncstatus — show latest sync telemetry for Asana + Cinema."""
+    if update.effective_chat.id != MY_CHAT_ID:
+        return
+    msg = [
+        "📊 *Sync Status*",
+        "",
+        _fmt_sync_block("Asana", sync_status["asana"]),
+        "",
+        _fmt_sync_block("Cinema", sync_status["cinema"]),
+    ]
+    await update.message.reply_text("\n".join(msg), parse_mode="Markdown")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN — after all handlers are defined
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2390,6 +2499,8 @@ def main() -> None:
     app.add_handler(CommandHandler("start", handle_start_command))
     app.add_handler(CommandHandler("r", handle_remind_command))
     app.add_handler(CommandHandler("remind", handle_remind_command))
+    app.add_handler(CommandHandler("sync", handle_sync_command))
+    app.add_handler(CommandHandler("syncstatus", handle_sync_status_command))
     app.add_handler(CommandHandler("done",  handle_done_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
