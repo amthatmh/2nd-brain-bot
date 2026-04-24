@@ -14,6 +14,26 @@ def _plain_text(prop: dict) -> str:
     return "".join(chunk.get("plain_text", "") for chunk in chunks).strip()
 
 
+def _extract_title(props: dict) -> str:
+    """
+    Resolve the cinema title from common Notion title property names.
+
+    Some workspaces use "Film" while others keep the default "Name"/"Title".
+    We also fall back to any property whose type is "title".
+    """
+    for key in ("Film", "Title", "Name"):
+        title = _plain_text(props.get(key, {}))
+        if title:
+            return title
+
+    for prop in props.values():
+        if isinstance(prop, dict) and prop.get("type") == "title":
+            title = _plain_text(prop)
+            if title:
+                return title
+    return ""
+
+
 def _build_cinema_query_filter(tmdb_api_key: str | None) -> dict:
     """
     Build the Notion filter for cinema sync.
@@ -126,7 +146,7 @@ async def sync_cinema_log_to_notion(
     async with httpx.AsyncClient(timeout=12) as client:
         for row in rows:
             props = row.get("properties", {})
-            title = _plain_text(props.get("Film", {}))
+            title = _extract_title(props)
             tmdb_prop = props.get("TMDB URL", {}).get("url")
             favourite = props.get("Favourite", {}).get("checkbox", False)
 

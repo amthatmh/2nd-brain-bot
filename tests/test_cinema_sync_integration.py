@@ -174,6 +174,38 @@ class TestCinemaSyncIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stats["tmdb_missing"], 2)
         self.assertEqual(len(notion.pages.updated), 2)
 
+    async def test_backfills_tmdb_when_title_property_is_name(self):
+        notion = _FakeNotion()
+        notion.databases.cinema_pages = [
+            {
+                "results": [
+                    {
+                        "id": "row_name_1",
+                        "properties": {
+                            "Name": {"type": "title", "title": [{"plain_text": "The Matrix"}]},
+                            "TMDB URL": {"url": None},
+                            "Favourite": {"checkbox": False},
+                        },
+                    }
+                ],
+                "has_more": False,
+                "next_cursor": None,
+            }
+        ]
+
+        with patch("cinema.sync._search_tmdb_url_with_client", return_value="https://www.themoviedb.org/movie/603"):
+            stats = await sync_cinema_log_to_notion(
+                notion=notion,
+                cinema_db_id="cinema_db",
+                fave_db_id="fave_db",
+                tmdb_api_key="tmdb_key",
+            )
+
+        self.assertEqual(stats["tmdb_found"], 1)
+        self.assertEqual(stats["tmdb_missing"], 0)
+        updated_props = notion.pages.updated[0]["properties"]
+        self.assertEqual(updated_props["TMDB URL"]["url"], "https://www.themoviedb.org/movie/603")
+
 
 if __name__ == "__main__":
     unittest.main()
