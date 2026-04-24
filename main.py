@@ -177,9 +177,10 @@ REPEAT_DAY_TO_WEEKDAY  = {"Mon":0,"Tue":1,"Wed":2,"Thu":3,"Fri":4,"Sat":5,"Sun":
 REPEAT_DAY_TO_MONTHDAY = {"1st":1,"5th":5,"10th":10,"15th":15,"20th":20,"25th":25,"Last":-1}
 _BULLET_RE = re.compile(r"^[\s]*(?:[-•*]|\d+[.):])\s+", re.MULTILINE)
 BTN_REFRESH = "🔄 Refresh"
-BTN_ALL_OPEN = "📋 All Open"
+BTN_ALL_OPEN = "✅To Do"
 BTN_PRIORITY = "🔥 Priority"
 BTN_NOTES = "📝 Notes"
+LEGACY_BTN_ALL_OPEN = "📋 All Open"
 
 def num_emoji(n: int) -> str:
     return NUMBER_EMOJIS[n - 1] if 1 <= n <= 10 else f"{n}."
@@ -1597,10 +1598,7 @@ def format_sunday_intro(week_tasks: list[dict], month_tasks: list[dict]) -> tupl
 
 def quick_actions_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [
-            [BTN_REFRESH, BTN_ALL_OPEN, BTN_PRIORITY],
-            [BTN_NOTES],
-        ],
+        [[BTN_REFRESH, BTN_ALL_OPEN, BTN_NOTES]],
         resize_keyboard=True,
         one_time_keyboard=False,
         input_field_placeholder="Type a task, or tap a quick action…",
@@ -2001,7 +1999,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if text == BTN_REFRESH:
         await send_quick_reminder(message, mode="priority")
         return
-    if text == BTN_ALL_OPEN:
+    if text in {BTN_ALL_OPEN, LEGACY_BTN_ALL_OPEN}:
         await send_quick_reminder(message, mode="all_open")
         return
     if text == BTN_PRIORITY:
