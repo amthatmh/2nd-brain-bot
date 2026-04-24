@@ -59,6 +59,12 @@ from cinema.config import (
 )
 from sync_telemetry import init_sync_status, utc_now_iso, format_sync_status_message
 from scheduler_setup import register_core_jobs, register_cinema_jobs
+from notes_flow import (
+    split_kind_keyboard,
+    ordered_topics,
+    note_topics_keyboard,
+    create_note_payload,
+)
 
 load_dotenv()
 
@@ -95,6 +101,7 @@ NOTION_TOKEN    = os.environ["NOTION_TOKEN"]
 NOTION_DB_ID    = os.environ["NOTION_DB_ID"]
 NOTION_HABIT_DB = os.environ["NOTION_HABIT_DB"]
 NOTION_LOG_DB   = os.environ["NOTION_LOG_DB"]
+NOTION_NOTES_DB = os.environ.get("NOTION_NOTES_DB", "")
 
 TZ           = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
 _wk_h, _wk_m = _parse_hhmm_env("DIGEST_TIME_WEEKDAY", "8:15")
@@ -134,6 +141,9 @@ done_picker_map: dict[str, list[dict]] = {}
 pending_wantslist_map: dict[str, dict] = {}
 pending_photo_map: dict[str, dict] = {}
 pending_tmdb_map: dict[str, list[dict]] = {}
+pending_message_map: dict[str, str] = {}
+pending_note_map: dict[str, dict] = {}
+topic_recency_map: dict[str, datetime] = {}
 _pending_counter = 0
 _done_picker_counter = 0
 _v10_counter = 0
@@ -1256,6 +1266,14 @@ def format_batch_summary(results: list[dict]) -> str:
     return "\n".join(lines).strip()
 
 
+def create_note_entry(content: str, topic: str | None = None) -> str:
+    if not NOTION_NOTES_DB:
+        raise ValueError("NOTION_NOTES_DB is not configured")
+    props = create_note_payload(content, topic=topic)
+    page = notion.pages.create(parent={"database_id": NOTION_NOTES_DB}, properties=props)
+    return page["id"]
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MESSAGE FORMATTERS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1781,18 +1799,79 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if match_force:
         await create_or_prompt_task(message, match_force.group(1).strip(), force_create=True); return
 
-    if looks_like_task_batch(text):
-        await create_or_prompt_task(message, text)
-        return
-
-    await route_classified_message_v10(message, text)
+    global _v10_counter
+    key = str(_v10_counter)
+    _v10_counter += 1
+    pending_message_map[key] = text
+    await message.reply_text(
+        "Is this a 📌 Task or 📝 Note?",
+        reply_markup=split_kind_keyboard(key),
+    )
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global _v10_counter
     q     = update.callback_query
     await q.answer()
     parts = q.data.split(":")
     if await handle_v10_callback(q, parts):
+        return
+
+    if parts[0] == "kind_task" and len(parts) == 2:
+        key = parts[1]
+        text = pending_message_map.pop(key, None)
+        if not text:
+            await q.edit_message_text("⚠️ This prompt expired — please send it again.")
+            return
+        await q.edit_message_text("📌 Routed to task flow.")
+        if looks_like_task_batch(text):
+            await create_or_prompt_task(q.message, text)
+        else:
+            await route_classified_message_v10(q.message, text)
+        return
+
+    if parts[0] == "kind_note" and len(parts) == 2:
+        key = parts[1]
+        text = pending_message_map.pop(key, None)
+        if not text:
+            await q.edit_message_text("⚠️ This prompt expired — please send it again.")
+            return
+        note_key = str(_v10_counter)
+        _v10_counter += 1
+        ordered = ordered_topics(topic_recency_map)
+        pending_note_map[note_key] = {"content": text, "topic_order": ordered}
+        await q.edit_message_text(
+            "📝 Got it — choose a topic tag:",
+            reply_markup=note_topics_keyboard(note_key, ordered),
+        )
+        return
+
+    if parts[0] == "note_topic" and len(parts) == 3:
+        key = parts[1]
+        topic_ref = parts[2]
+        entry = pending_note_map.pop(key, None)
+        if not entry:
+            await q.edit_message_text("⚠️ This note prompt expired — please re-send the note.")
+            return
+        if topic_ref == "none":
+            selected_topic = None
+        else:
+            try:
+                selected_topic = entry["topic_order"][int(topic_ref)]
+            except Exception:
+                selected_topic = None
+        try:
+            create_note_entry(entry["content"], selected_topic)
+            if selected_topic:
+                topic_recency_map[selected_topic] = datetime.utcnow()
+            topic_line = f"\n🏷️ {selected_topic}" if selected_topic else ""
+            await q.edit_message_text(
+                f"✅ Note captured!\n{topic_line}\n_Saved to Notion_",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            log.error(f"Notion note error: {e}")
+            await q.edit_message_text("⚠️ Couldn't save note to Notion.")
         return
 
     if parts[0] in ("hl", "hc") and len(parts) == 2:
