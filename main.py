@@ -967,22 +967,41 @@ def get_all_active_tasks() -> list[dict]:
 
 
 def get_today_and_overdue_tasks() -> list[dict]:
-    tasks     = get_all_active_tasks()
-    today_str = date.today().isoformat()
-    selected  = []
+    tasks = get_all_active_tasks()
+    today = date.today()
+    today_str = today.isoformat()
+    cutoff_str = (today + timedelta(days=7)).isoformat()
+    max_tasks = 10
+    selected = []
+
+    def context_rank(task: dict) -> tuple[int, str]:
+        ctx = (task.get("context") or "").lower()
+        if "personal" in ctx or "🏠" in ctx:
+            return (0, task.get("name", "").lower())
+        if "work" in ctx or "💼" in ctx:
+            return (2, task.get("name", "").lower())
+        return (1, task.get("name", "").lower())
+
     for t in tasks:
-        is_today    = t["auto_horizon"] == "🔴 Today"
-        is_overdue  = bool(t["deadline"] and t["deadline"] < today_str)
-        is_carryover = t["auto_horizon"] in {"🟠 This Week", "🟡 This Month"}
-        if is_today or is_overdue or is_carryover:
+        deadline = t.get("deadline")
+        is_today = t["auto_horizon"] == "🔴 Today"
+        is_overdue = bool(deadline and deadline < today_str)
+        is_this_week = t["auto_horizon"] == "🟠 This Week"
+        due_within_7_days = bool(deadline and today_str <= deadline <= cutoff_str)
+        if is_today or is_overdue or is_this_week or due_within_7_days:
             selected.append(t)
+
     overdue = [t for t in selected if t["deadline"] and t["deadline"] < today_str]
     today_only = [t for t in selected if t["auto_horizon"] == "🔴 Today" and t not in overdue]
     carryover = [
         t for t in selected
-        if t not in overdue and t not in today_only and t["auto_horizon"] in {"🟠 This Week", "🟡 This Month"}
+        if t not in overdue and t not in today_only
     ]
-    return overdue + today_only + carryover
+
+    overdue = sorted(overdue, key=context_rank)
+    today_only = sorted(today_only, key=context_rank)
+    carryover = sorted(carryover, key=context_rank)
+    return (overdue + today_only + carryover)[:max_tasks]
 
 
 def get_recurring_templates() -> list[dict]:
