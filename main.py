@@ -413,7 +413,10 @@ def format_weather_snapshot() -> str:
         if line:
             lines.append(line)
     if len(lines) == 1:
-        lines.append("Weather is unavailable right now. Check OpenWeather credentials/location.")
+        if not OPENWEATHER_KEY:
+            lines.append("Weather is unavailable: OPENWEATHER_KEY is missing or invalid.")
+        else:
+            lines.append("Weather is unavailable. Verify OpenWeather location (try /location) and API key access.")
     return "\n".join(lines)
 
 
@@ -2034,9 +2037,12 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if context.user_data.get("awaiting_location"):
         if set_location(text):
             context.user_data["awaiting_location"] = False
-            await message.reply_text(f"📍 Location updated to {current_location}.")
+            await message.reply_text(f"📍 Saved weather location: {current_location}.")
         else:
-            await message.reply_text("Couldn't find that location. Please try again with city/state/country.")
+            await message.reply_text(
+                "Couldn't find that location. Try zipcode, `City,ST`, or `City,Country`.",
+                parse_mode="Markdown",
+            )
         return
 
     awaiting_note_capture = context.user_data.get("awaiting_note_capture")
@@ -3083,11 +3089,25 @@ async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Prompt for a new weather location."""
+    """/location [zipcode/city] — update and save weather location."""
     if update.effective_chat.id != MY_CHAT_ID:
         return
+    requested_location = " ".join(context.args or []).strip()
+    if requested_location:
+        if set_location(requested_location):
+            context.user_data["awaiting_location"] = False
+            await update.message.reply_text(f"📍 Saved weather location: {current_location}.")
+        else:
+            await update.message.reply_text(
+                "Couldn't find that location. Try zipcode, `City,ST`, or `City,Country`.",
+                parse_mode="Markdown",
+            )
+        return
     context.user_data["awaiting_location"] = True
-    await update.message.reply_text("📍 What city should I use for weather?")
+    await update.message.reply_text(
+        "📍 Send a zipcode or city (for example `60614` or `Chicago,IL`). I'll save it for next time.",
+        parse_mode="Markdown",
+    )
 
 
 async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
