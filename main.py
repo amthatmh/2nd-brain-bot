@@ -1267,6 +1267,39 @@ def get_today_and_overdue_tasks() -> list[dict]:
     return (overdue + today_only + carryover)[:max_tasks]
 
 
+def get_quick_refresh_tasks(limit: int = 10) -> list[dict]:
+    """
+    Tasks for quick Refresh / To Do:
+    - must have a due date
+    - include overdue and next 7 days (inclusive)
+    - order Personal first, then Work, then anything else
+    """
+    tasks = get_all_active_tasks()
+    today_str = date.today().isoformat()
+    cutoff_str = (date.today() + timedelta(days=7)).isoformat()
+
+    def in_window(task: dict) -> bool:
+        deadline = task.get("deadline")
+        if not deadline:
+            return False
+        return deadline < today_str or today_str <= deadline <= cutoff_str
+
+    def context_rank(task: dict) -> int:
+        ctx = (task.get("context") or "").lower()
+        if "personal" in ctx or "🏠" in ctx:
+            return 0
+        if "work" in ctx or "💼" in ctx:
+            return 1
+        return 2
+
+    visible = [t for t in tasks if in_window(t)]
+    ordered = sorted(
+        visible,
+        key=lambda t: (context_rank(t), t.get("deadline") or "9999-12-31", t.get("name", "").lower()),
+    )
+    return ordered[:limit]
+
+
 def get_recurring_templates() -> list[dict]:
     results = notion.databases.query(
         database_id=NOTION_DB_ID,
@@ -1661,21 +1694,14 @@ def format_reminder_snapshot(mode: str = "priority", limit: int = 8) -> str:
     all_tasks = get_all_active_tasks()
     overdue = [t for t in all_tasks if t["deadline"] and t["deadline"] < today_str]
     today_tasks = [t for t in all_tasks if t["auto_horizon"] == "🔴 Today" and t not in overdue]
-    priority_tasks = get_today_and_overdue_tasks()
+    quick_refresh_tasks = get_quick_refresh_tasks(limit=max(limit, 10))
     open_count = len(all_tasks)
 
     if mode == "all_open":
-        ordered = (
-            sorted(overdue, key=lambda t: (t.get("deadline") or "", t["name"]))
-            + sorted(today_tasks, key=lambda t: t["name"])
-            + sorted(
-                [t for t in all_tasks if t not in overdue and t not in today_tasks],
-                key=lambda t: (t["auto_horizon"], t["name"]),
-            )
-        )
-        header = f"📋 *All Open Tasks — {date_str}*"
+        ordered = quick_refresh_tasks
+        header = f"📋 *To Do (Due ≤ 7 Days) — {date_str}*"
     else:
-        ordered = priority_tasks
+        ordered = quick_refresh_tasks
         header = f"🔔 *Reminder — {date_str}*"
 
     lines = [
@@ -1686,7 +1712,7 @@ def format_reminder_snapshot(mode: str = "priority", limit: int = 8) -> str:
     ]
 
     if not ordered:
-        lines.append("✅ Nothing urgent right now.")
+        lines.append("✅ No Personal/Work tasks due within the next 7 days.")
     else:
         for idx, task in enumerate(ordered[:limit], start=1):
             deadline = f" · due {task['deadline']}" if task.get("deadline") else ""
