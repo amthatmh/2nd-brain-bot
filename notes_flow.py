@@ -25,8 +25,9 @@ _RICH_TEXT_LIMIT = 2000
 
 def split_kind_keyboard(key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("📌 Task", callback_data=f"kind_task:{key}"),
+        InlineKeyboardButton("✅ Tasks", callback_data=f"kind_task:{key}"),
         InlineKeyboardButton("📝 Note", callback_data=f"kind_note:{key}"),
+        InlineKeyboardButton("🔄", callback_data=f"kind_refresh:{key}"),
     ]])
 
 

@@ -1285,63 +1285,6 @@ def create_note_entry(content: str, topic: str | None = None) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# NOTES
-# ══════════════════════════════════════════════════════════════════════════════
-
-_URL_RE = re.compile(r"(https?://[^\s]+)")
-
-
-def split_kind_keyboard(key: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("📌 Task", callback_data=f"kind_task:{key}"),
-        InlineKeyboardButton("📝 Note", callback_data=f"kind_note:{key}"),
-    ]])
-
-
-def _ordered_topics() -> list[str]:
-    return sorted(
-        NOTE_TOPICS,
-        key=lambda topic: topic_recency_map.get(topic, datetime.min),
-        reverse=True,
-    )
-
-
-def note_topics_keyboard(key: str) -> InlineKeyboardMarkup:
-    ordered = _ordered_topics()
-    rows: list[list[InlineKeyboardButton]] = []
-    for i in range(0, len(ordered), 2):
-        row_topics = ordered[i:i + 2]
-        rows.append([InlineKeyboardButton(t, callback_data=f"note_topic:{key}:{j}") for j, t in enumerate(row_topics, start=i)])
-    rows.append([InlineKeyboardButton("⏭️ No topic", callback_data=f"note_topic:{key}:none")])
-    return InlineKeyboardMarkup(rows)
-
-
-def create_note_entry(content: str, topic: str | None = None) -> str:
-    if not NOTION_NOTES_DB:
-        raise ValueError("NOTION_NOTES_DB is not configured")
-    clean = content.strip()
-    first_line = clean.splitlines()[0] if clean else "Untitled"
-    title = first_line[:80]
-    url_match = _URL_RE.search(clean)
-    link = url_match.group(1) if url_match else None
-    note_type = "🔗 Link/Article" if link else "📝 Quick Note"
-    props: dict = {
-        "Title": {"title": [{"text": {"content": title}}]},
-        "Content": {"rich_text": [{"text": {"content": clean[:1900]}}]},
-        "Date Created": {"date": {"start": date.today().isoformat()}},
-        "Type": {"select": {"name": note_type}},
-        "Source": {"select": {"name": "📱 Telegram"}},
-        "Processed": {"checkbox": False},
-    }
-    if topic:
-        props["Topic"] = {"multi_select": [{"name": topic}]}
-    if link:
-        props["Link"] = {"url": link}
-    page = notion.pages.create(parent={"database_id": NOTION_NOTES_DB}, properties=props)
-    return page["id"]
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # MESSAGE FORMATTERS
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1874,7 +1817,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     _v10_counter += 1
     pending_message_map[key] = text
     await message.reply_text(
-        "Is this a 📌 Task or 📝 Note?",
+        "Choose: ✅ Tasks | 📝 Note | 🔄",
         reply_markup=split_kind_keyboard(key),
     )
 
@@ -1898,6 +1841,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await create_or_prompt_task(q.message, text)
         else:
             await route_classified_message_v10(q.message, text)
+        return
+
+    if parts[0] == "kind_refresh" and len(parts) == 2:
+        key = parts[1]
+        pending_message_map.pop(key, None)
+        await q.edit_message_text("🔄 Refreshed.")
+        await send_quick_reminder(q.message, mode="priority")
         return
 
     if parts[0] == "kind_note" and len(parts) == 2:
