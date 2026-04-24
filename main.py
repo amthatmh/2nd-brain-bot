@@ -164,17 +164,6 @@ _BULLET_RE = re.compile(r"^[\s]*(?:[-•*]|\d+[.):])\s+", re.MULTILINE)
 BTN_REFRESH = "🔄 Refresh"
 BTN_ALL_OPEN = "📋 All Open"
 BTN_PRIORITY = "🔥 Priority"
-NOTE_TOPICS = [
-    "🎵 Acoustics",
-    "💼 Work",
-    "🏠 Personal",
-    "💪 Health",
-    "🏢 LEED",
-    "✅ WELL",
-    "💡 Ideas",
-    "📚 Research",
-]
-
 
 def num_emoji(n: int) -> str:
     return NUMBER_EMOJIS[n - 1] if 1 <= n <= 10 else f"{n}."
@@ -190,6 +179,20 @@ def next_weekday(weekday: int) -> date:
 
 def _utc_now_iso() -> str:
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def fetch_note_topics_from_notion() -> list[str]:
+    """Read Topic multi-select options directly from the Notion Notes DB schema."""
+    if not NOTION_NOTES_DB:
+        return []
+
+    db = notion.databases.retrieve(database_id=NOTION_NOTES_DB)
+    topic_prop = db.get("properties", {}).get("Topic", {})
+    if topic_prop.get("type") != "multi_select":
+        return []
+
+    options = topic_prop.get("multi_select", {}).get("options", [])
+    return [opt.get("name", "").strip() for opt in options if opt.get("name", "").strip()]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1861,12 +1864,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         note_key = str(_v10_counter)
         _v10_counter += 1
-        ordered = ordered_topics(topic_recency_map)
+        try:
+            topics = fetch_note_topics_from_notion()
+        except Exception as e:
+            log.error(f"Failed to read note topics from Notion schema: {e}")
+            await q.edit_message_text("⚠️ Couldn't load note topics from Notion. Check the Topic property.")
+            return
+
+        ordered = ordered_topics(topics, topic_recency_map)
         pending_note_map[note_key] = {"content": text, "topic_order": ordered}
-        await q.edit_message_text(
-            "📝 Got it — choose a topic tag:",
-            reply_markup=note_topics_keyboard(note_key, ordered),
-        )
+        if ordered:
+            await q.edit_message_text(
+                "📝 Got it — choose a topic tag:",
+                reply_markup=note_topics_keyboard(note_key, ordered),
+            )
+        else:
+            try:
+                create_note_entry(text)
+                await q.edit_message_text("✅ Note captured!\n_Saved to Notion_", parse_mode="Markdown")
+            except Exception as e:
+                log.error(f"Notion note error: {e}")
+                await q.edit_message_text("⚠️ Couldn't save note to Notion.")
         return
 
     if parts[0] == "note_topic" and len(parts) == 3:
