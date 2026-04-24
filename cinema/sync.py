@@ -60,13 +60,31 @@ async def _search_tmdb_url_with_client(
         return await _search_tmdb_url_with_client(title, tmdb_api_key, owned_client)
 
 
-def _favourite_exists(notion, fave_db_id: str, title: str) -> bool:
-    result = notion.databases.query(
-        database_id=fave_db_id,
-        filter={"property": "Title", "title": {"equals": title}},
-        page_size=1,
-    )
-    return bool(result.get("results"))
+def _load_existing_favourites(notion, fave_db_id: str) -> set[str]:
+    """
+    Build an in-memory set of favourite titles once per sync run.
+
+    This avoids one Notion query per row (N+1 pattern), which can become a
+    bottleneck for larger sync batches and increases the risk of rate limits.
+    """
+    favourites: set[str] = set()
+    cursor = None
+    while True:
+        query = {
+            "database_id": fave_db_id,
+            "page_size": 100,
+        }
+        if cursor:
+            query["start_cursor"] = cursor
+        response = notion.databases.query(**query)
+        for row in response.get("results", []):
+            title = _plain_text(row.get("properties", {}).get("Title", {}))
+            if title:
+                favourites.add(title)
+        if not response.get("has_more"):
+            break
+        cursor = response.get("next_cursor")
+    return favourites
 
 
 async def sync_cinema_log_to_notion(
@@ -103,6 +121,7 @@ async def sync_cinema_log_to_notion(
         cursor = response.get("next_cursor")
 
     stats["new_entries"] = len(rows)
+    existing_favourites = _load_existing_favourites(notion, fave_db_id)
 
     async with httpx.AsyncClient(timeout=12) as client:
         for row in rows:
@@ -121,11 +140,12 @@ async def sync_cinema_log_to_notion(
                 else:
                     stats["tmdb_missing"] += 1
 
-            if favourite and title and not _favourite_exists(notion, fave_db_id, title):
+            if favourite and title and title not in existing_favourites:
                 notion.pages.create(
                     parent={"database_id": fave_db_id},
                     properties={"Title": {"title": [{"text": {"content": title}}]}},
                 )
+                existing_favourites.add(title)
                 stats["added_to_fave"] += 1
 
             update_props["Last Synced"] = {"date": {"start": date.today().isoformat()}}

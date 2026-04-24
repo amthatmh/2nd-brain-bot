@@ -1,6 +1,6 @@
 import unittest
 
-from cinema.sync import _build_cinema_query_filter, _plain_text
+from cinema.sync import _build_cinema_query_filter, _load_existing_favourites, _plain_text
 
 
 class TestCinemaSyncHelpers(unittest.TestCase):
@@ -23,6 +23,38 @@ class TestCinemaSyncHelpers(unittest.TestCase):
             filter_obj,
             {"property": "Last Synced", "date": {"is_empty": True}},
         )
+
+    def test_load_existing_favourites_handles_pagination(self):
+        test_case = self
+
+        class _FakeDatabases:
+            def __init__(self):
+                self.calls = 0
+
+            def query(self, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return {
+                        "results": [
+                            {"properties": {"Title": {"title": [{"plain_text": "Dune"}]}}},
+                        ],
+                        "has_more": True,
+                        "next_cursor": "cursor-1",
+                    }
+                test_case.assertEqual(kwargs.get("start_cursor"), "cursor-1")
+                return {
+                    "results": [
+                        {"properties": {"Title": {"title": [{"plain_text": "Arrival"}]}}},
+                    ],
+                    "has_more": False,
+                }
+
+        class _FakeNotion:
+            def __init__(self):
+                self.databases = _FakeDatabases()
+
+        favourites = _load_existing_favourites(_FakeNotion(), "fake-db")
+        self.assertEqual(favourites, {"Dune", "Arrival"})
 
 
 if __name__ == "__main__":
