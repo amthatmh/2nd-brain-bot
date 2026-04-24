@@ -20,6 +20,21 @@ class _FakeDatabases:
             return {"results": [], "has_more": False, "next_cursor": None}
 
         if database_id == "fave_db":
+            # Full-table scan path used by _load_existing_favourites
+            if "filter" not in kwargs:
+                return {
+                    "results": [
+                        {
+                            "id": f"fave_{idx}",
+                            "properties": {"Title": {"title": [{"plain_text": title}]}},
+                        }
+                        for idx, title in enumerate(sorted(self.fave_titles))
+                    ],
+                    "has_more": False,
+                    "next_cursor": None,
+                }
+
+            # Legacy targeted lookup (kept for compatibility in tests)
             title = kwargs["filter"]["title"]["equals"]
             found = title in self.fave_titles
             return {"results": ([{"id": "existing"}] if found else [])}
