@@ -8,17 +8,6 @@ from datetime import date, datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-NOTE_TOPICS = [
-    "🎵 Acoustics",
-    "💼 Work",
-    "🏠 Personal",
-    "💪 Health",
-    "🏢 LEED",
-    "✅ WELL",
-    "💡 Ideas",
-    "📚 Research",
-]
-
 _URL_RE = re.compile(r"(https?://[^\s]+)")
 _RICH_TEXT_LIMIT = 2000
 
@@ -31,9 +20,9 @@ def split_kind_keyboard(key: str) -> InlineKeyboardMarkup:
     ]])
 
 
-def ordered_topics(topic_recency_map: dict[str, datetime]) -> list[str]:
+def ordered_topics(topics: list[str], topic_recency_map: dict[str, datetime]) -> list[str]:
     return sorted(
-        NOTE_TOPICS,
+        topics,
         key=lambda topic: topic_recency_map.get(topic, datetime.min),
         reverse=True,
     )
