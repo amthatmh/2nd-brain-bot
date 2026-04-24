@@ -167,6 +167,10 @@ def next_weekday(weekday: int) -> date:
     return today + timedelta(days=days_ahead)
 
 
+def _utc_now_iso() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # HABIT CACHE
 # ══════════════════════════════════════════════════════════════════════════════
