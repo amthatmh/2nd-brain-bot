@@ -164,6 +164,16 @@ _BULLET_RE = re.compile(r"^[\s]*(?:[-•*]|\d+[.):])\s+", re.MULTILINE)
 BTN_REFRESH = "🔄 Refresh"
 BTN_ALL_OPEN = "📋 All Open"
 BTN_PRIORITY = "🔥 Priority"
+NOTE_TOPICS = [
+    "🎵 Acoustics",
+    "💼 Work",
+    "🏠 Personal",
+    "💪 Health",
+    "🏢 LEED",
+    "✅ WELL",
+    "💡 Ideas",
+    "📚 Research",
+]
 
 
 def num_emoji(n: int) -> str:
