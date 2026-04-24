@@ -413,7 +413,10 @@ def format_weather_snapshot() -> str:
         if line:
             lines.append(line)
     if len(lines) == 1:
-        lines.append("Weather is unavailable right now. Check OpenWeather credentials/location.")
+        if not OPENWEATHER_KEY:
+            lines.append("Weather is unavailable: OPENWEATHER_KEY is missing or invalid.")
+        else:
+            lines.append("Weather is unavailable. Verify OpenWeather location (try /location) and API key access.")
     return "\n".join(lines)
 
 
