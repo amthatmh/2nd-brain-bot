@@ -179,6 +179,7 @@ _BULLET_RE = re.compile(r"^[\s]*(?:[-•*]|\d+[.):])\s+", re.MULTILINE)
 BTN_REFRESH = "🔄 Refresh"
 BTN_ALL_OPEN = "📋 All Open"
 BTN_PRIORITY = "🔥 Priority"
+BTN_NOTES = "📝 Notes"
 
 def num_emoji(n: int) -> str:
     return NUMBER_EMOJIS[n - 1] if 1 <= n <= 10 else f"{n}."
@@ -1596,10 +1597,23 @@ def format_sunday_intro(week_tasks: list[dict], month_tasks: list[dict]) -> tupl
 
 def quick_actions_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[BTN_REFRESH, BTN_ALL_OPEN, BTN_PRIORITY]],
+        [
+            [BTN_REFRESH, BTN_ALL_OPEN, BTN_PRIORITY],
+            [BTN_NOTES],
+        ],
         resize_keyboard=True,
         one_time_keyboard=False,
         input_field_placeholder="Type a task, or tap a quick action…",
+    )
+
+
+def notes_options_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("📝 Quick Note", callback_data="nq:quick")],
+            [InlineKeyboardButton("🔗 Save Link", callback_data="nq:link")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="nq:cancel")],
+        ]
     )
 
 
@@ -1961,6 +1975,29 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             await message.reply_text("Couldn't find that location. Please try again with city/state/country.")
         return
 
+    awaiting_note_capture = context.user_data.get("awaiting_note_capture")
+    if awaiting_note_capture:
+        if not NOTION_NOTES_DB:
+            context.user_data["awaiting_note_capture"] = None
+            await message.reply_text("📝 Notes DB isn't configured yet — add NOTION_NOTES_DB first.")
+            return
+        if awaiting_note_capture == "link" and not re.search(r"https?://\S+", text):
+            await message.reply_text("Please send a valid URL starting with http:// or https://.")
+            return
+        try:
+            create_note_entry(text)
+            kind_label = "link" if awaiting_note_capture == "link" else "note"
+            await message.reply_text(
+                f"✅ {kind_label.capitalize()} saved to Notes.",
+                reply_markup=quick_actions_keyboard(),
+            )
+        except Exception as e:
+            log.error(f"Notion note error (quick action): {e}")
+            await message.reply_text("⚠️ Couldn't save note to Notion.")
+        finally:
+            context.user_data["awaiting_note_capture"] = None
+        return
+
     if text == BTN_REFRESH:
         await send_quick_reminder(message, mode="priority")
         return
@@ -1969,6 +2006,12 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     if text == BTN_PRIORITY:
         await send_quick_reminder(message, mode="priority")
+        return
+    if text == BTN_NOTES:
+        await message.reply_text(
+            "📝 Notes options:",
+            reply_markup=notes_options_keyboard(),
+        )
         return
 
     if lower == "done" and message.reply_to_message:
@@ -2098,6 +2141,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         pending_message_map.pop(key, None)
         await q.edit_message_text("🔄 Refreshed.")
         await send_quick_reminder(q.message, mode="priority")
+        return
+
+    if parts[0] == "nq" and len(parts) == 2:
+        mode = parts[1]
+        if mode == "cancel":
+            await q.edit_message_text("❌ Notes action canceled.")
+            return
+        if not NOTION_NOTES_DB:
+            await q.edit_message_text("📝 Notes DB isn't configured yet — add NOTION_NOTES_DB first.")
+            return
+        context.user_data["awaiting_note_capture"] = "link" if mode == "link" else "quick"
+        prompt = (
+            "🔗 Send the link you want to save."
+            if mode == "link"
+            else "📝 Send the note text you want to save."
+        )
+        await q.edit_message_text(prompt)
         return
 
     if parts[0] == "kind_note" and len(parts) == 2:
