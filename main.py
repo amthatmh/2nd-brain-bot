@@ -318,6 +318,110 @@ def set_location(location: str) -> bool:
         return False
 
 
+def _location_candidates(text: str) -> list[str]:
+    """Generate high-probability OpenWeather geocode query variants."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return []
+
+    candidates: list[str] = [cleaned]
+    normalized = re.sub(r"\s+", " ", cleaned)
+    if normalized != cleaned:
+        candidates.append(normalized)
+
+    slash_fixed = re.sub(r"\s*/\s*", ", ", normalized)
+    if slash_fixed != normalized:
+        candidates.append(slash_fixed)
+
+    comma_spaced = re.sub(r"\s*,\s*", ", ", slash_fixed)
+    if comma_spaced != slash_fixed:
+        candidates.append(comma_spaced)
+
+    no_zip = re.sub(r"\b\d{5}(?:-\d{4})?\b", "", comma_spaced).strip(" ,")
+    if no_zip and no_zip != comma_spaced:
+        candidates.append(no_zip)
+
+    state_map = {
+        "illinois": "IL", "california": "CA", "new york": "NY", "texas": "TX",
+        "florida": "FL", "washington": "WA", "massachusetts": "MA", "georgia": "GA",
+        "colorado": "CO", "arizona": "AZ",
+    }
+    lowered = no_zip.lower()
+    for full, abbr in state_map.items():
+        if full in lowered:
+            candidates.append(re.sub(rf"\b{re.escape(full)}\b", abbr, no_zip, flags=re.IGNORECASE))
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for c in candidates:
+        key = c.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            deduped.append(c.strip())
+    return deduped
+
+
+def normalize_location_with_claude(text: str) -> list[str]:
+    """Ask Claude for structured location parse and return query candidates."""
+    prompt = f"""Extract a weather location query from user input.
+Input: "{text}"
+
+Return ONLY valid JSON:
+{{
+  "city": "city name or null",
+  "state_code": "2-letter US state code or null",
+  "country_code": "2-letter country code or null",
+  "postal_code": "postal/zip code or null",
+  "normalized_query": "best query for OpenWeather geocoding, e.g. Chicago, IL, US",
+  "alternates": ["up to 3 alternate queries"]
+}}"""
+    try:
+        resp = claude.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=180,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
+        payload = json.loads(raw)
+        candidates = []
+        normalized = (payload.get("normalized_query") or "").strip()
+        if normalized:
+            candidates.append(normalized)
+        alt = payload.get("alternates") or []
+        if isinstance(alt, list):
+            candidates.extend(str(a).strip() for a in alt if str(a).strip())
+        city = (payload.get("city") or "").strip()
+        state_code = (payload.get("state_code") or "").strip().upper()
+        country_code = (payload.get("country_code") or "").strip().upper()
+        if city:
+            if state_code and country_code:
+                candidates.append(f"{city}, {state_code}, {country_code}")
+            if state_code:
+                candidates.append(f"{city}, {state_code}")
+            if country_code:
+                candidates.append(f"{city}, {country_code}")
+            candidates.append(city)
+        merged: list[str] = []
+        seen: set[str] = set()
+        for c in candidates + _location_candidates(text):
+            key = c.strip().lower()
+            if key and key not in seen:
+                seen.add(key)
+                merged.append(c.strip())
+        return merged
+    except Exception as e:
+        log.warning("Claude location normalization failed for %r: %s", text, e)
+        return _location_candidates(text)
+
+
+def set_location_smart(user_text: str) -> bool:
+    """Resolve user-provided location with Claude-assisted normalization."""
+    for query in normalize_location_with_claude(user_text):
+        if set_location(query):
+            return True
+    return False
+
+
 def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -> dict | None:
     """
     Fetch current/today/tomorrow weather from OpenWeatherMap.
@@ -2035,11 +2139,13 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     if context.user_data.get("awaiting_location"):
-        if set_location(text):
+        if set_location_smart(text):
             context.user_data["awaiting_location"] = False
             await message.reply_text(f"📍 Location updated to {current_location}.")
         else:
-            await message.reply_text("Couldn't find that location. Please try again with city/state/country.")
+            await message.reply_text(
+                "Couldn't find that location. Try city/state/country or ZIP (example: Chicago IL 60605)."
+            )
         return
 
     awaiting_note_capture = context.user_data.get("awaiting_note_capture")
@@ -3090,7 +3196,7 @@ async def cmd_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if update.effective_chat.id != MY_CHAT_ID:
         return
     context.user_data["awaiting_location"] = True
-    await update.message.reply_text("📍 What city should I use for weather?")
+    await update.message.reply_text("📍 What location should I use for weather? (city/state/country or ZIP)")
 
 
 async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
