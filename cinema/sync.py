@@ -14,11 +14,35 @@ def _plain_text(prop: dict) -> str:
     return "".join(chunk.get("plain_text", "") for chunk in chunks).strip()
 
 
+def _build_cinema_query_filter(tmdb_api_key: str | None) -> dict:
+    """
+    Build the Notion filter for cinema sync.
+    - With TMDB key: process unsynced rows OR rows still missing TMDB URL.
+    - Without TMDB key: process only unsynced rows.
+    """
+    if tmdb_api_key:
+        return {
+            "or": [
+                {"property": "Last Synced", "date": {"is_empty": True}},
+                {"property": "TMDB URL", "url": {"is_empty": True}},
+            ]
+        }
+    return {"property": "Last Synced", "date": {"is_empty": True}}
+
+
 async def _search_tmdb_url(title: str, tmdb_api_key: str | None) -> str | None:
+    return await _search_tmdb_url_with_client(title, tmdb_api_key, client=None)
+
+
+async def _search_tmdb_url_with_client(
+    title: str,
+    tmdb_api_key: str | None,
+    client: httpx.AsyncClient | None,
+) -> str | None:
     if not tmdb_api_key or not title:
         return None
 
-    async with httpx.AsyncClient(timeout=12) as client:
+    if client is not None:
         for media_type in ("movie", "tv"):
             resp = await client.get(
                 f"{TMDB_BASE}/search/{media_type}",
@@ -30,7 +54,19 @@ async def _search_tmdb_url(title: str, tmdb_api_key: str | None) -> str | None:
                 tmdb_id = results[0].get("id")
                 if tmdb_id:
                     return f"https://www.themoviedb.org/{media_type}/{tmdb_id}"
-    return None
+        return None
+
+    async with httpx.AsyncClient(timeout=12) as owned_client:
+        return await _search_tmdb_url_with_client(title, tmdb_api_key, owned_client)
+
+
+def _favourite_exists(notion, fave_db_id: str, title: str) -> bool:
+    result = notion.databases.query(
+        database_id=fave_db_id,
+        filter={"property": "Title", "title": {"equals": title}},
+        page_size=1,
+    )
+    return bool(result.get("results"))
 
 
 async def sync_cinema_log_to_notion(
@@ -48,37 +84,51 @@ async def sync_cinema_log_to_notion(
         "added_to_fave": 0,
     }
 
-    response = notion.databases.query(
-        database_id=cinema_db_id,
-        filter={"property": "Last Synced", "date": {"is_empty": True}},
-    )
-    rows = response.get("results", [])
+    query_filter = _build_cinema_query_filter(tmdb_api_key)
+
+    rows: list[dict] = []
+    cursor = None
+    while True:
+        q = {
+            "database_id": cinema_db_id,
+            "filter": query_filter,
+            "page_size": 100,
+        }
+        if cursor:
+            q["start_cursor"] = cursor
+        response = notion.databases.query(**q)
+        rows.extend(response.get("results", []))
+        if not response.get("has_more"):
+            break
+        cursor = response.get("next_cursor")
+
     stats["new_entries"] = len(rows)
 
-    for row in rows:
-        props = row.get("properties", {})
-        title = _plain_text(props.get("Film", {}))
-        tmdb_prop = props.get("TMDB URL", {}).get("url")
-        favourite = props.get("Favourite", {}).get("checkbox", False)
+    async with httpx.AsyncClient(timeout=12) as client:
+        for row in rows:
+            props = row.get("properties", {})
+            title = _plain_text(props.get("Film", {}))
+            tmdb_prop = props.get("TMDB URL", {}).get("url")
+            favourite = props.get("Favourite", {}).get("checkbox", False)
 
-        update_props: dict = {}
-        tmdb_url = tmdb_prop
-        if not tmdb_url:
-            tmdb_url = await _search_tmdb_url(title, tmdb_api_key)
-            if tmdb_url:
-                update_props["TMDB URL"] = {"url": tmdb_url}
-                stats["tmdb_found"] += 1
-            else:
-                stats["tmdb_missing"] += 1
+            update_props: dict = {}
+            tmdb_url = tmdb_prop
+            if not tmdb_url:
+                tmdb_url = await _search_tmdb_url_with_client(title, tmdb_api_key, client)
+                if tmdb_url:
+                    update_props["TMDB URL"] = {"url": tmdb_url}
+                    stats["tmdb_found"] += 1
+                else:
+                    stats["tmdb_missing"] += 1
 
-        if favourite and title:
-            notion.pages.create(
-                parent={"database_id": fave_db_id},
-                properties={"Title": {"title": [{"text": {"content": title}}]}},
-            )
-            stats["added_to_fave"] += 1
+            if favourite and title and not _favourite_exists(notion, fave_db_id, title):
+                notion.pages.create(
+                    parent={"database_id": fave_db_id},
+                    properties={"Title": {"title": [{"text": {"content": title}}]}},
+                )
+                stats["added_to_fave"] += 1
 
-        update_props["Last Synced"] = {"date": {"start": date.today().isoformat()}}
-        notion.pages.update(page_id=row["id"], properties=update_props)
+            update_props["Last Synced"] = {"date": {"start": date.today().isoformat()}}
+            notion.pages.update(page_id=row["id"], properties=update_props)
 
     return stats

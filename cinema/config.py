@@ -25,6 +25,10 @@ def validate_config() -> tuple[bool, list[str]]:
         problems.append("NOTION_CINEMA_DB is missing or empty")
     if not FAVE_DB_ID:
         problems.append("NOTION_FAVE_DB is missing or empty")
+    if not (0 <= CINEMA_SYNC_HOUR <= 23):
+        problems.append("CINEMA_SYNC_HOUR must be between 0 and 23")
+    if not (0 <= CINEMA_SYNC_MINUTE <= 59):
+        problems.append("CINEMA_SYNC_MINUTE must be between 0 and 59")
     return len(problems) == 0, problems
 
 
