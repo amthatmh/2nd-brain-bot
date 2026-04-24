@@ -58,6 +58,7 @@ from cinema.config import (
     validate_config as validate_cinema_config,
 )
 from sync_telemetry import init_sync_status, utc_now_iso, format_sync_status_message
+from scheduler_setup import register_core_jobs, register_cinema_jobs
 
 load_dotenv()
 
@@ -2236,15 +2237,20 @@ async def post_init(app: Application) -> None:
     load_habit_cache()
     await start_http_server()
     scheduler = AsyncIOScheduler(timezone=TZ)
-    scheduler.add_job(run_recurring_check, "cron",
-                      hour=_rc_h, minute=_rc_m, args=[app.bot])
-    scheduler.add_job(send_daily_digest, "cron",
-                      day_of_week="mon-fri", hour=_wk_h, minute=_wk_m, args=[app.bot])
-    scheduler.add_job(send_daily_digest, "cron",
-                      day_of_week="sat", hour=_we_h, minute=_we_m, args=[app.bot])
-    scheduler.add_job(send_sunday_review, "cron",
-                      day_of_week="sun", hour=_we_h, minute=_we_m, args=[app.bot])
-    register_habit_schedules(scheduler, app.bot)
+    register_core_jobs(
+        scheduler=scheduler,
+        bot=app.bot,
+        run_recurring_check=run_recurring_check,
+        send_daily_digest=send_daily_digest,
+        send_sunday_review=send_sunday_review,
+        register_habit_schedules=register_habit_schedules,
+        rc_h=_rc_h,
+        rc_m=_rc_m,
+        wk_h=_wk_h,
+        wk_m=_wk_m,
+        we_h=_we_h,
+        we_m=_we_m,
+    )
 
     # ── Asana reconciler — gated by schema validation ──
     asana_status = "OFF"
@@ -2323,13 +2329,15 @@ async def post_init(app: Application) -> None:
         for p in cinema_problems:
             log.warning(f"  - {p}")
     elif CINEMA_ENABLED and CINEMA_DB_ID and FAVE_DB_ID:
-        scheduler.add_job(
-            run_cinema_sync,
-            "cron",
-            hour=CINEMA_SYNC_HOUR,
-            minute=CINEMA_SYNC_MINUTE,
-            args=[app.bot],
-            id="cinema_sync",
+        register_cinema_jobs(
+            scheduler=scheduler,
+            bot=app.bot,
+            run_cinema_sync=run_cinema_sync,
+            cinema_sync_hour=CINEMA_SYNC_HOUR,
+            cinema_sync_minute=CINEMA_SYNC_MINUTE,
+            sync_buffer_minutes=SYNC_BUFFER_MINUTES,
+            tz=TZ,
+            now_fn=datetime.now,
         )
         scheduler.add_job(
             run_cinema_sync,
