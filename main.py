@@ -180,6 +180,8 @@ BTN_REFRESH = "🔄 Refresh"
 BTN_ALL_OPEN = "✅To Do"
 BTN_PRIORITY = "🔥 Priority"
 BTN_NOTES = "📝 Notes"
+BTN_WEATHER = "🌤️ Weather"
+BTN_MUTE = "🔕 Mute"
 LEGACY_BTN_ALL_OPEN = "📋 All Open"
 
 def num_emoji(n: int) -> str:
@@ -399,6 +401,27 @@ def format_weather_block(weather: dict | None, label: str = "🌤️") -> str:
             f"Low {weather['temp_low']}°F · 💧{weather.get('precip_chance', 0)}%"
         )
     return f"{label} {weather['temp']}°F ({weather['condition']})"
+
+
+def format_weather_snapshot() -> str:
+    """Compose a compact weather summary for quick access."""
+    lines = [f"📍 *Weather for {current_location}*"]
+    current = format_weather_block(fetch_weather("current"), label="🌤️ Now")
+    today = format_weather_block(fetch_weather("today"), label="📅 Today")
+    tomorrow = format_weather_block(fetch_weather("tomorrow"), label="🌙 Tomorrow")
+    for line in (current, today, tomorrow):
+        if line:
+            lines.append(line)
+    if len(lines) == 1:
+        lines.append("Weather is unavailable right now. Check OpenWeather credentials/location.")
+    return "\n".join(lines)
+
+
+def mute_status_text() -> str:
+    """Human-friendly mute status line."""
+    if is_muted() and mute_until:
+        return f"🔕 Digests paused until {mute_until.strftime('%Y-%m-%d %H:%M %Z')}."
+    return "🔔 Digests are active."
 
 
 async def fetch_weather_cache(bot) -> None:
@@ -1598,7 +1621,7 @@ def format_sunday_intro(week_tasks: list[dict], month_tasks: list[dict]) -> tupl
 
 def quick_actions_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[BTN_REFRESH, BTN_ALL_OPEN, BTN_NOTES]],
+        [[BTN_REFRESH, BTN_ALL_OPEN, BTN_PRIORITY], [BTN_NOTES, BTN_WEATHER, BTN_MUTE]],
         resize_keyboard=True,
         one_time_keyboard=False,
         input_field_placeholder="Type a task, or tap a quick action…",
@@ -1611,6 +1634,23 @@ def notes_options_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("📝 Quick Note", callback_data="nq:quick")],
             [InlineKeyboardButton("🔗 Save Link", callback_data="nq:link")],
             [InlineKeyboardButton("❌ Cancel", callback_data="nq:cancel")],
+        ]
+    )
+
+
+def mute_options_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("1 day", callback_data="mq:1"),
+                InlineKeyboardButton("3 days", callback_data="mq:3"),
+                InlineKeyboardButton("7 days", callback_data="mq:7"),
+            ],
+            [
+                InlineKeyboardButton("Status", callback_data="mq:status"),
+                InlineKeyboardButton("Unmute", callback_data="mq:unmute"),
+            ],
+            [InlineKeyboardButton("❌ Cancel", callback_data="mq:cancel")],
         ]
     )
 
@@ -2011,6 +2051,15 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_markup=notes_options_keyboard(),
         )
         return
+    if text == BTN_WEATHER:
+        await message.reply_text(format_weather_snapshot(), parse_mode="Markdown")
+        return
+    if text == BTN_MUTE:
+        await message.reply_text(
+            "🔕 Mute options for scheduled digests:",
+            reply_markup=mute_options_keyboard(),
+        )
+        return
 
     if lower == "done" and message.reply_to_message:
         replied_id = message.reply_to_message.message_id
@@ -2140,6 +2189,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await q.edit_message_text("🔄 Refreshed.")
         await send_quick_reminder(q.message, mode="priority")
         return
+
+    if parts[0] == "mq" and len(parts) == 2:
+        action = parts[1]
+        if action == "cancel":
+            await q.edit_message_text("❌ Mute action canceled.")
+            return
+        if action == "status":
+            await q.edit_message_text(mute_status_text())
+            return
+        if action == "unmute":
+            global mute_until
+            mute_until = None
+            save_mute_state()
+            context.user_data["awaiting_mute_days"] = False
+            await q.edit_message_text("🔔 Digests resumed.")
+            return
+        if action in {"1", "3", "7"}:
+            days = int(action)
+            mute_until = datetime.now(TZ) + timedelta(days=days)
+            save_mute_state()
+            context.user_data["awaiting_mute_days"] = False
+            await q.edit_message_text(
+                f"🔕 Digests paused for {days} day(s), until {mute_until.strftime('%Y-%m-%d %H:%M %Z')}."
+            )
+            return
 
     if parts[0] == "nq" and len(parts) == 2:
         mode = parts[1]
@@ -2693,6 +2767,9 @@ def v10_feature_flags() -> str:
         f"wantslist={'ON' if NOTION_WANTSLIST_V2_DB else 'OFF'}",
         f"photo={'ON' if NOTION_PHOTO_DB else 'OFF'}",
         f"tmdb={'ON' if TMDB_API_KEY else 'OFF (title-only)'}",
+        f"notes={'ON' if NOTION_NOTES_DB else 'OFF'}",
+        f"weather={'ON' if OPENWEATHER_KEY else 'OFF'}",
+        f"mute={'ON' if is_muted() else 'OFF'}",
     ]
     return "  ".join(flags)
 
@@ -2908,7 +2985,7 @@ async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYP
     args = context.args
     if not args or not args[0].startswith("log_"):
         await update.message.reply_text(
-            "👋 *Second Brain Bot*\n\nSend me any task or habit to capture it.\nUse /done to mark completions.\nUse /r or /remind for your quick snapshot.",
+            "👋 *Second Brain Bot*\n\nSend me any task or habit to capture it.\nUse /done to mark completions.\nUse /r or /remind for your quick snapshot.\nUse /notes for Notes capture and /weather for forecast.",
             parse_mode="Markdown",
             reply_markup=quick_actions_keyboard(),
         )
@@ -2987,6 +3064,23 @@ async def cmd_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text("📍 What city should I use for weather?")
 
 
+async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/weather — show current + upcoming forecast snapshot."""
+    if update.effective_chat.id != MY_CHAT_ID:
+        return
+    await update.message.reply_text(format_weather_snapshot(), parse_mode="Markdown")
+
+
+async def cmd_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/notes — open note capture shortcuts and show connection status."""
+    if update.effective_chat.id != MY_CHAT_ID:
+        return
+    if NOTION_NOTES_DB:
+        await update.message.reply_text("📝 Notes connected. Choose an option:", reply_markup=notes_options_keyboard())
+    else:
+        await update.message.reply_text("📝 Notes DB isn't configured yet — add NOTION_NOTES_DB first.")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN — after all handlers are defined
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3002,6 +3096,8 @@ def main() -> None:
     app.add_handler(CommandHandler("done",  handle_done_command))
     app.add_handler(CommandHandler("mute", cmd_mute))
     app.add_handler(CommandHandler("unmute", cmd_unmute))
+    app.add_handler(CommandHandler("weather", cmd_weather))
+    app.add_handler(CommandHandler("notes", cmd_notes))
     app.add_handler(CommandHandler("location", cmd_location))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message_text))
     app.add_handler(CallbackQueryHandler(handle_callback))
