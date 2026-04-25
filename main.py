@@ -748,10 +748,14 @@ def load_digest_slots() -> list[dict]:
 
         ww = props.get("Weekday/Weekend", {}).get("select")
         ww_name = (ww.get("name") if ww else "").strip()
-        if ww_name not in {"Weekday", "Weekend"}:
+        ww_norm = ww_name.lower()
+        if ww_norm in {"weekday", "weekdays", "mon-fri"}:
+            is_weekday = True
+        elif ww_norm in {"weekend", "weekends", "sat,sun", "sat/sun"}:
+            is_weekday = False
+        else:
             log.warning("Skipping digest selector row with invalid Weekday/Weekend=%r", ww_name)
             continue
-        is_weekday = ww_name == "Weekday"
 
         include_habits = bool(props.get("Habits", {}).get("checkbox", False))
         max_items_raw = props.get("Max Items", {}).get("number")
@@ -2170,7 +2174,59 @@ def format_batch_summary(results: list[dict]) -> str:
 def create_note_entry(content: str, topic: str | None = None) -> str:
     if not NOTION_NOTES_DB:
         raise ValueError("NOTION_NOTES_DB is not configured")
-    props = create_note_payload(content, topic=topic)
+    base_props = create_note_payload(content, topic=topic)
+    db = notion.databases.retrieve(database_id=NOTION_NOTES_DB)
+    schema_props = db.get("properties", {})
+
+    def schema_type(prop_name: str) -> str | None:
+        return schema_props.get(prop_name, {}).get("type")
+
+    props: dict = {}
+
+    # Map title payload to whichever title property exists in the DB.
+    title_payload = base_props.get("Title")
+    title_prop_name = next((name for name, p in schema_props.items() if p.get("type") == "title"), None)
+    if title_payload and title_prop_name:
+        props[title_prop_name] = title_payload
+
+    if "Content" in base_props and schema_type("Content") == "rich_text":
+        props["Content"] = base_props["Content"]
+    if "Date Created" in base_props and schema_type("Date Created") == "date":
+        props["Date Created"] = base_props["Date Created"]
+    if "Processed" in base_props and schema_type("Processed") == "checkbox":
+        props["Processed"] = base_props["Processed"]
+    if "Link" in base_props and schema_type("Link") == "url":
+        props["Link"] = base_props["Link"]
+
+    if "Type" in base_props and schema_type("Type") == "select":
+        desired = base_props["Type"]["select"]["name"]
+        options = schema_props["Type"].get("select", {}).get("options", [])
+        names = {o.get("name") for o in options}
+        if desired in names:
+            props["Type"] = base_props["Type"]
+        elif options:
+            props["Type"] = {"select": {"name": options[0]["name"]}}
+
+    if "Source" in base_props and schema_type("Source") == "select":
+        desired = base_props["Source"]["select"]["name"]
+        options = schema_props["Source"].get("select", {}).get("options", [])
+        names = {o.get("name") for o in options}
+        if desired in names:
+            props["Source"] = base_props["Source"]
+        elif options:
+            props["Source"] = {"select": {"name": options[0]["name"]}}
+
+    if "Topic" in base_props and schema_type("Topic") == "multi_select":
+        desired_topics = [t.get("name") for t in base_props["Topic"].get("multi_select", []) if t.get("name")]
+        options = schema_props["Topic"].get("multi_select", {}).get("options", [])
+        names = {o.get("name") for o in options}
+        selected = [{"name": t} for t in desired_topics if t in names]
+        if selected:
+            props["Topic"] = {"multi_select": selected}
+
+    if not props:
+        raise ValueError("Notes DB schema has no writable matching properties for note payload")
+
     page = notion.pages.create(parent={"database_id": NOTION_NOTES_DB}, properties=props)
     return page["id"]
 
