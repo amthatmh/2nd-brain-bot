@@ -1613,6 +1613,106 @@ def format_week_view(view_type: str) -> tuple[str, list[dict]]:
     return "\n".join(lines), shown
 
 
+def format_command_palette() -> InlineKeyboardMarkup:
+    """Returns the 6-button command palette."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📖 Digest", callback_data="qp:digest"),
+            InlineKeyboardButton("✅ To Do", callback_data="qp:todo"),
+            InlineKeyboardButton("🎯 Habits", callback_data="qp:habits"),
+        ],
+        [
+            InlineKeyboardButton("📝 Notes", callback_data="qp:notes"),
+            InlineKeyboardButton("🌤️ Weather", callback_data="qp:weather"),
+            InlineKeyboardButton("🔇 Mute", callback_data="qp:mute"),
+        ],
+    ])
+
+
+def back_to_palette_keyboard() -> InlineKeyboardMarkup:
+    """Single button to return to command palette."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📖 Back to Palette", callback_data="qp:back")],
+    ])
+
+
+def _get_today_tasks_for_palette() -> list[dict]:
+    """Get today's tasks only (for To Do view)."""
+    tasks = get_today_and_overdue_tasks()
+    today_str = date.today().isoformat()
+    return [t for t in tasks if t.get("deadline") == today_str]
+
+
+def format_digest_view() -> tuple[str, InlineKeyboardMarkup]:
+    """Build digest view for today + next 7 calendar days, grouped by date."""
+    today = date.today()
+    cutoff = today + timedelta(days=7)
+    tasks = get_all_active_tasks()
+    groups: dict[str, list[dict]] = defaultdict(list)
+    beyond_count = 0
+
+    for task in tasks:
+        raw_deadline = task.get("deadline")
+        parsed_deadline = _parse_deadline(raw_deadline)
+        if not parsed_deadline:
+            continue
+        if parsed_deadline < today:
+            continue
+        if parsed_deadline <= cutoff:
+            groups[parsed_deadline.isoformat()].append(task)
+        else:
+            beyond_count += 1
+
+    lines = ["📖 Digest — Today + 7 Days", ""]
+    if not groups:
+        lines.append("✅ Clear for next 7 days!")
+    else:
+        for d in sorted(groups.keys()):
+            day_tasks = sorted(groups[d], key=_task_sort_key)
+            date_label = date.fromisoformat(d).strftime("%A, %B %-d")
+            lines.append(f"📌 {date_label} ({len(day_tasks)})")
+            for task in day_tasks:
+                lines.append(f"  • {task.get('name', 'Untitled')}  {_context_label(task)}")
+            lines.append("")
+        if lines[-1] == "":
+            lines.pop()
+
+    if beyond_count:
+        lines.extend(["", f"...and {beyond_count} more beyond 7 days (view in Notion)"])
+
+    return "\n".join(lines).strip(), back_to_palette_keyboard()
+
+
+def format_todo_view(marked_done_indices: set | None = None) -> tuple[str, InlineKeyboardMarkup]:
+    """
+    Format today's tasks with quick-mark buttons.
+
+    Args:
+        marked_done_indices: Set of task indices already marked done.
+    """
+    marked_done_indices = marked_done_indices or set()
+    tasks = _get_today_tasks_for_palette()
+    lines = ["✅ Today's Tasks — Mark Complete", ""]
+    keyboard_rows: list[list[InlineKeyboardButton]] = []
+
+    if not tasks:
+        lines.append("✅ No tasks due today!")
+    else:
+        for idx, task in enumerate(tasks):
+            label = task.get("name", "Untitled")
+            if idx in marked_done_indices:
+                lines.append(f"✅ {label}")
+                continue
+            keyboard_rows.append(
+                [InlineKeyboardButton(f"{num_emoji(idx + 1)} {label}", callback_data=f"qp:done:{idx}")]
+            )
+        if len(marked_done_indices) >= len(tasks):
+            lines.append("✅ All today's tasks marked done! 🎉")
+
+    keyboard_rows.append([InlineKeyboardButton("📖 Back to Palette", callback_data="qp:back")])
+    return "\n".join(lines).strip(), InlineKeyboardMarkup(keyboard_rows)
+
+
 def quick_access_keyboard() -> InlineKeyboardMarkup:
     """Keyboard with live This Week and Backlog counts."""
     _, _, this_week, backlog = _get_tasks_by_deadline_horizon()
@@ -2843,6 +2943,89 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await q.edit_message_text("Done picker closed.")
         return
 
+    if parts[0] == "qp" and len(parts) >= 2:
+        action = parts[1]
+
+        if action == "digest":
+            try:
+                message, keyboard = format_digest_view()
+                await q.edit_message_text(message, reply_markup=keyboard)
+            except Exception as e:
+                log.error("Palette digest callback error: %s", e)
+                await q.edit_message_text("⚠️ Couldn't load digest view right now.")
+            return
+
+        if action == "todo":
+            context.user_data["palette_done_indices"] = set()
+            message, keyboard = format_todo_view()
+            await q.edit_message_text(message, reply_markup=keyboard)
+            return
+
+        if action == "done" and len(parts) == 3:
+            try:
+                idx = int(parts[2])
+            except ValueError:
+                await q.answer("Invalid task selection.", show_alert=False)
+                return
+
+            tasks = _get_today_tasks_for_palette()
+            if idx < 0 or idx >= len(tasks):
+                await q.answer("That task is no longer available.", show_alert=False)
+                message, keyboard = format_todo_view(context.user_data.get("palette_done_indices", set()))
+                await q.edit_message_text(message, reply_markup=keyboard)
+                return
+
+            done_indices = set(context.user_data.get("palette_done_indices", set()))
+            if idx in done_indices:
+                await q.answer("Already marked done.", show_alert=False)
+            else:
+                task = tasks[idx]
+                try:
+                    mark_done(task["page_id"])
+                    handle_done_recurring(task["page_id"])
+                    done_indices.add(idx)
+                    context.user_data["palette_done_indices"] = done_indices
+                except Exception as e:
+                    log.error("Palette done callback error: %s", e)
+                    await q.edit_message_text("⚠️ Couldn't mark that task done.")
+                    return
+
+            message, keyboard = format_todo_view(done_indices)
+            await q.edit_message_text(message, reply_markup=keyboard)
+            return
+
+        if action == "back":
+            context.user_data.pop("palette_done_indices", None)
+            await q.edit_message_text(
+                "🎯 *Quick Access*",
+                parse_mode="Markdown",
+                reply_markup=format_command_palette(),
+            )
+            return
+
+        if action == "habits":
+            await q.edit_message_text("🎯 Loading habits…")
+            await send_daily_habits_list(q.bot)
+            return
+
+        if action == "notes":
+            if NOTION_NOTES_DB:
+                await q.edit_message_text("📝 Notes connected. Choose an option:", reply_markup=notes_options_keyboard())
+            else:
+                await q.edit_message_text("📝 Notes DB isn't configured yet — add NOTION_NOTES_DB first.")
+            return
+
+        if action == "weather":
+            await q.edit_message_text(format_weather_snapshot(), parse_mode="Markdown")
+            return
+
+        if action == "mute":
+            await q.edit_message_text(
+                "🔕 Choose a mute option:",
+                reply_markup=mute_options_keyboard(),
+            )
+            return
+
     if parts[0] == "qv" and len(parts) == 2 and parts[1] in {"week", "backlog"}:
         try:
             message, ordered = format_week_view(parts[1])
@@ -2902,9 +3085,9 @@ async def send_daily_digest(bot, include_habits: bool = True) -> None:
     )
     await bot.send_message(
         chat_id=MY_CHAT_ID,
-        text="📖 *Quick Access*",
+        text="🎯 *Quick Access*",
         parse_mode="Markdown",
-        reply_markup=quick_access_keyboard(),
+        reply_markup=format_command_palette(),
     )
 
     habits: list[dict] = []
