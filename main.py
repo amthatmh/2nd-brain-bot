@@ -311,8 +311,10 @@ def load_location_state() -> None:
             return
         payload = json.loads(location_state_file.read_text() or "{}")
         current_location = payload.get("location") or WEATHER_LOCATION
-        current_lat = payload.get("lat")
-        current_lon = payload.get("lon")
+        lat_raw = payload.get("lat")
+        lon_raw = payload.get("lon")
+        current_lat = float(lat_raw) if lat_raw not in (None, "") else None
+        current_lon = float(lon_raw) if lon_raw not in (None, "") else None
     except Exception as e:
         log.error("Failed loading location state: %s", e)
 
@@ -514,7 +516,7 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
 
     try:
         if current_lat is None or current_lon is None:
-            if not set_location(current_location):
+            if not set_location_smart(current_location):
                 return None
 
         if forecast_type == "current":
@@ -3911,7 +3913,7 @@ async def post_init(app: Application) -> None:
     load_mute_state()
     load_location_state()
     if OPENWEATHER_KEY and (current_lat is None or current_lon is None):
-        set_location(current_location)
+        set_location_smart(current_location)
     load_habit_cache()
     await start_http_server()
     scheduler = AsyncIOScheduler(timezone=TZ)
