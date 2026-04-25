@@ -16,7 +16,6 @@ def split_kind_keyboard(key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Tasks", callback_data=f"kind_task:{key}"),
         InlineKeyboardButton("📝 Note", callback_data=f"kind_note:{key}"),
-        InlineKeyboardButton("🔄", callback_data=f"kind_refresh:{key}"),
     ]])
 
 

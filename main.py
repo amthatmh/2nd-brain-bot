@@ -765,6 +765,7 @@ def classify_message_v10(text: str) -> dict:
     watchlist_enabled = bool(NOTION_WATCHLIST_DB)
     wantslist_enabled = bool(NOTION_WANTSLIST_V2_DB)
     photo_enabled = bool(NOTION_PHOTO_DB)
+    notes_enabled = bool(NOTION_NOTES_DB)
 
     enabled_intents = ["habit", "task"]
     if watchlist_enabled:
@@ -773,6 +774,8 @@ def classify_message_v10(text: str) -> dict:
         enabled_intents.append("wantslist")
     if photo_enabled:
         enabled_intents.append("photo")
+    if notes_enabled:
+        enabled_intents.append("note")
 
     prompt = f"""You are a personal assistant classifier for a second brain system.
 Today is {date.today().strftime("%A, %B %-d, %Y")}.
@@ -797,6 +800,10 @@ WANTSLIST — user wants to buy or acquire a physical product/item.
 PHOTO — user wants to capture a photography scene/subject/location.
   Signals: "want to shoot", "want to photograph", "photo spot", "add to bucketlist", photography subjects
 
+NOTE — user wants to save information/reference/thought without an action.
+  Signals: "note:", "remember this", summaries, ideas, links/articles to keep, journaling.
+  Should NOT be used for actionable commitments with due timing (those are TASKs).
+
 HABIT — user saying they completed a recurring habit RIGHT NOW.
   Signals: "did", "took", "went to", "had", "completed" + habit name
 
@@ -806,6 +813,7 @@ If confidence is low on watchlist/wantslist/photo, return task instead.
 "Watch:" prefix = always watchlist, high confidence.
 "want:" prefix = always wantslist, high confidence.
 "photo:" prefix = always photo, high confidence.
+"note:" prefix = always note, high confidence.
 
 Return ONLY valid JSON, no markdown:
 
@@ -817,6 +825,9 @@ If WANTSLIST:
 
 If PHOTO:
 {{"type": "photo", "subject": "clean scene/subject description", "confidence": "high|low"}}
+
+If NOTE:
+{{"type": "note", "content": "clean note content", "confidence": "high|low"}}
 
 If HABIT:
 {{"type": "habit", "habit_name": "exact name from {habit_names} or null", "confidence": "high|low"}}
@@ -839,6 +850,38 @@ If TASK:
     )
     raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
     return json.loads(raw)
+
+
+async def start_note_capture_flow(message, text: str) -> None:
+    if not NOTION_NOTES_DB:
+        await create_or_prompt_task(message, text)
+        return
+
+    global _v10_counter
+    note_key = str(_v10_counter)
+    _v10_counter += 1
+    try:
+        topics = fetch_note_topics_from_notion()
+    except Exception as e:
+        log.error(f"Failed to read note topics from Notion schema: {e}")
+        await message.reply_text("⚠️ Couldn't load note topics from Notion. Check the Topic property.")
+        return
+
+    ordered = ordered_topics(topics, topic_recency_map)
+    pending_note_map[note_key] = {"content": text, "topic_order": ordered}
+    if ordered:
+        await message.reply_text(
+            "📝 Got it — choose a topic tag:",
+            reply_markup=note_topics_keyboard(note_key, ordered),
+        )
+        return
+
+    try:
+        create_note_entry(text)
+        await message.reply_text("✅ Note captured!\n_Saved to Notion_", parse_mode="Markdown")
+    except Exception as e:
+        log.error(f"Notion note error: {e}")
+        await message.reply_text("⚠️ Couldn't save note to Notion.")
 
 
 def classify_task(text: str) -> dict:
@@ -2126,6 +2169,11 @@ async def route_classified_message_v10(message, text: str) -> None:
         await handle_photo_intent(message, subject=result.get("subject", text))
         return
 
+    if intent == "note":
+        await thinking.delete()
+        await start_note_capture_flow(message, result.get("content", text))
+        return
+
     if intent == "habit":
         habit_name = result.get("habit_name")
         confidence = result.get("confidence", "low")
@@ -2324,14 +2372,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if await handle_photo_followup(message, text):
         return
 
-    global _v10_counter
-    key = str(_v10_counter)
-    _v10_counter += 1
-    pending_message_map[key] = text
-    await message.reply_text(
-        "Choose: ✅ Tasks | 📝 Note | 🔄",
-        reply_markup=split_kind_keyboard(key),
-    )
+    await route_classified_message_v10(message, text)
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2410,32 +2451,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not text:
             await q.edit_message_text("⚠️ This prompt expired — please send it again.")
             return
-        if not NOTION_NOTES_DB:
-            await q.edit_message_text("📝 Notes DB isn't configured yet — add NOTION_NOTES_DB first.")
-            return
-        note_key = str(_v10_counter)
-        _v10_counter += 1
-        try:
-            topics = fetch_note_topics_from_notion()
-        except Exception as e:
-            log.error(f"Failed to read note topics from Notion schema: {e}")
-            await q.edit_message_text("⚠️ Couldn't load note topics from Notion. Check the Topic property.")
-            return
-
-        ordered = ordered_topics(topics, topic_recency_map)
-        pending_note_map[note_key] = {"content": text, "topic_order": ordered}
-        if ordered:
-            await q.edit_message_text(
-                "📝 Got it — choose a topic tag:",
-                reply_markup=note_topics_keyboard(note_key, ordered),
-            )
-        else:
-            try:
-                create_note_entry(text)
-                await q.edit_message_text("✅ Note captured!\n_Saved to Notion_", parse_mode="Markdown")
-            except Exception as e:
-                log.error(f"Notion note error: {e}")
-                await q.edit_message_text("⚠️ Couldn't save note to Notion.")
+        await q.edit_message_text("📝 Routed to note flow.")
+        await start_note_capture_flow(q.message, text)
         return
 
     if parts[0] == "note_topic" and len(parts) == 3:
