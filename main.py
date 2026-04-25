@@ -509,7 +509,6 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
             return cache_entry["data"]
 
     try:
-        global current_lat, current_lon
         if current_lat is None or current_lon is None:
             if not set_location(current_location):
                 return None
@@ -654,6 +653,28 @@ def load_habit_cache() -> None:
 
 def habits_by_time(time_str: str) -> list[dict]:
     return [h for h in habit_cache.values() if h["time"] == time_str]
+
+
+def get_habits_by_time(time_filter: str) -> list[dict]:
+    try:
+        results = notion.databases.query(
+            database_id=NOTION_HABIT_DB,
+            filter={
+                "and": [
+                    {"property": "Active", "checkbox": {"equals": True}},
+                    {"property": "Time",   "select":   {"equals": time_filter}},
+                ]
+            },
+        )
+        habits = []
+        for page in results.get("results", []):
+            title_parts = page["properties"].get("Habit", {}).get("title", [])
+            name = title_parts[0]["text"]["content"] if title_parts else "Unknown"
+            habits.append({"page_id": page["id"], "name": name})
+        return habits
+    except Exception as e:
+        log.error(f"get_habits_by_time error: {e}")
+        return []
 
 
 def notion_query_all(database_id: str, **kwargs) -> list[dict]:
@@ -2836,7 +2857,6 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    global _v10_counter
     q     = update.callback_query
     await q.answer()
     parts = q.data.split(":")
