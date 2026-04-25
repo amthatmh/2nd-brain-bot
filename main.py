@@ -592,6 +592,15 @@ def format_weather_snapshot() -> str:
     return "\n".join(lines)
 
 
+def weather_unavailable_digest_line() -> str:
+    """Digest fallback text when weather cannot be rendered."""
+    if current_lat is not None and current_lon is not None and current_location:
+        return f"🌤️ Weather unavailable for {current_location} — send /weather to retry or /location to update"
+    if current_location:
+        return f"🌤️ Weather unavailable. Last location: {current_location} — send /location (city/state/country or ZIP)"
+    return "🌤️ Weather unavailable — set with /location (city/state/country or ZIP)"
+
+
 def mute_status_text() -> str:
     """Human-friendly mute status line."""
     if is_muted() and mute_until:
@@ -2123,7 +2132,7 @@ def format_daily_digest(
 
     lines, ordered, n = [f"☀️ *{date_str}*"], [], 1
     weather_block = format_weather_block(fetch_weather(weather_mode), label="🌤️")
-    lines.append(weather_block or "🌤️ Weather unavailable — set with /location (city/state/country or ZIP)")
+    lines.append(weather_block or weather_unavailable_digest_line())
     lines.append("")
 
     if overdue:
@@ -3256,7 +3265,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
     lines = [f"☀️ *{date_str}*", ""]
     weather_block = format_weather_block(fetch_weather("today"), label="🌤️")
-    lines.append(weather_block or "🌤️ Weather unavailable — set with /location (city/state/country or ZIP)")
+    lines.append(weather_block or weather_unavailable_digest_line())
     lines.append("")
     n = 1
 
