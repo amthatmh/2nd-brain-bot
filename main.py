@@ -719,19 +719,39 @@ def load_digest_slots() -> list[dict]:
         "🏃 Health": "🏃 Health",
         "🤝 HK": "🤝 HK",
     }
+    def first_text(prop: dict) -> str:
+        rich_text = prop.get("rich_text", [])
+        if rich_text:
+            return (rich_text[0].get("plain_text") or "").strip()
+        title = prop.get("title", [])
+        if title:
+            return (title[0].get("plain_text") or "").strip()
+        return ""
+
     slots: list[dict] = []
     rows = notion_query_all(NOTION_DIGEST_SELECTOR_DB)
     for row in rows:
         props = row.get("properties", {})
 
-        time_parts = props.get("Time", {}).get("rich_text", [])
-        slot_time = (time_parts[0].get("plain_text") if time_parts else "").strip()
+        slot_time_raw = first_text(props.get("Time", {}))
+        time_match = re.fullmatch(r"(\d{1,2}):(\d{2})", slot_time_raw)
+        if not time_match:
+            log.warning("Skipping digest selector row with invalid Time=%r", slot_time_raw)
+            continue
+        slot_time = f"{int(time_match.group(1)):02d}:{int(time_match.group(2)):02d}"
+        hh, mm = map(int, slot_time.split(":"))
+        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+            log.warning("Skipping digest selector row with out-of-range Time=%r", slot_time_raw)
+            continue
         if not slot_time:
             continue
 
         ww = props.get("Weekday/Weekend", {}).get("select")
         ww_name = (ww.get("name") if ww else "").strip()
-        is_weekday = ww_name != "Weekend"
+        if ww_name not in {"Weekday", "Weekend"}:
+            log.warning("Skipping digest selector row with invalid Weekday/Weekend=%r", ww_name)
+            continue
+        is_weekday = ww_name == "Weekday"
 
         include_habits = bool(props.get("Habits", {}).get("checkbox", False))
         max_items_raw = props.get("Max Items", {}).get("number")
@@ -757,6 +777,7 @@ def load_digest_slots() -> list[dict]:
             }
         )
 
+    log.info("Loaded %d digest selector slot(s) from Notion", len(slots))
     return slots
 
 
