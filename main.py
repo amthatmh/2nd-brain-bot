@@ -2129,21 +2129,21 @@ def format_daily_digest(
     if overdue:
         lines.append("🚨 *Overdue*")
         for t in overdue:
-            lines.append(f"{num_emoji(n)} {t['name']}  {t['context']}")
+            lines.append(f"{num_emoji(n)}{context_emoji(t.get('context'))} {t['name']}")
             ordered.append(t); n += 1
         lines.append("")
 
     if today_now:
         lines.append("📌 *Today*")
         for t in today_now:
-            lines.append(f"{num_emoji(n)} {t['name']}  {t['context']}")
+            lines.append(f"{num_emoji(n)}{context_emoji(t.get('context'))} {t['name']}")
             ordered.append(t); n += 1
         lines.append("")
 
     if carryover:
         lines.append("🔁 *Carry-over (still open)*")
         for t in carryover:
-            lines.append(f"{num_emoji(n)} {t['name']}  {t['context']} · {t['auto_horizon']}")
+            lines.append(f"{num_emoji(n)}{context_emoji(t.get('context'))} {t['name']} · {t['auto_horizon']}")
             ordered.append(t); n += 1
         lines.append("")
 
@@ -3263,21 +3263,21 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     if overdue:
         lines.append("🚨 *Overdue*")
         for task in overdue:
-            lines.append(f"{num_emoji(n)} {task['name']}  {context_emoji(task.get('context'))}")
+            lines.append(f"{num_emoji(n)}{context_emoji(task.get('context'))} {task['name']}")
             n += 1
         lines.append("")
 
     if today_tasks:
         lines.append("📌 *Today*")
         for task in today_tasks:
-            lines.append(f"{num_emoji(n)} {task['name']}  {context_emoji(task.get('context'))}")
+            lines.append(f"{num_emoji(n)}{context_emoji(task.get('context'))} {task['name']}")
             n += 1
         lines.append("")
 
     if this_week_tasks:
         lines.append("📅 *This Week*")
         for task in this_week_tasks:
-            lines.append(f"{num_emoji(n)} {task['name']}  {context_emoji(task.get('context'))}")
+            lines.append(f"{num_emoji(n)}{context_emoji(task.get('context'))} {task['name']}")
             n += 1
         lines.append("")
 
