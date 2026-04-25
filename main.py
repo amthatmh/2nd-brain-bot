@@ -2123,28 +2123,27 @@ def format_daily_digest(
 
     lines, ordered, n = [f"☀️ *{date_str}*"], [], 1
     weather_block = format_weather_block(fetch_weather(weather_mode), label="🌤️")
-    if weather_block:
-        lines.append(weather_block)
+    lines.append(weather_block or "🌤️ Weather unavailable")
     lines.append("")
 
     if overdue:
         lines.append("🚨 *Overdue*")
         for t in overdue:
-            lines.append(f"{num_emoji(n)} {t['name']}  {t['context']}")
+            lines.append(f"{num_emoji(n)}{context_emoji(t.get('context'))} {t['name']}")
             ordered.append(t); n += 1
         lines.append("")
 
     if today_now:
         lines.append("📌 *Today*")
         for t in today_now:
-            lines.append(f"{num_emoji(n)} {t['name']}  {t['context']}")
+            lines.append(f"{num_emoji(n)}{context_emoji(t.get('context'))} {t['name']}")
             ordered.append(t); n += 1
         lines.append("")
 
     if carryover:
         lines.append("🔁 *Carry-over (still open)*")
         for t in carryover:
-            lines.append(f"{num_emoji(n)} {t['name']}  {t['context']} · {t['auto_horizon']}")
+            lines.append(f"{num_emoji(n)}{context_emoji(t.get('context'))} {t['name']} · {t['auto_horizon']}")
             ordered.append(t); n += 1
         lines.append("")
 
@@ -3257,29 +3256,28 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
     lines = [f"☀️ *{date_str}*", ""]
     weather_block = format_weather_block(fetch_weather("today"), label="🌤️")
-    if weather_block:
-        lines.append(weather_block)
-        lines.append("")
+    lines.append(weather_block or "🌤️ Weather unavailable")
+    lines.append("")
     n = 1
 
     if overdue:
         lines.append("🚨 *Overdue*")
         for task in overdue:
-            lines.append(f"{num_emoji(n)} {task['name']}  {context_emoji(task.get('context'))}")
+            lines.append(f"{num_emoji(n)}{context_emoji(task.get('context'))} {task['name']}")
             n += 1
         lines.append("")
 
     if today_tasks:
         lines.append("📌 *Today*")
         for task in today_tasks:
-            lines.append(f"{num_emoji(n)} {task['name']}  {context_emoji(task.get('context'))}")
+            lines.append(f"{num_emoji(n)}{context_emoji(task.get('context'))} {task['name']}")
             n += 1
         lines.append("")
 
     if this_week_tasks:
         lines.append("📅 *This Week*")
         for task in this_week_tasks:
-            lines.append(f"{num_emoji(n)} {task['name']}  {context_emoji(task.get('context'))}")
+            lines.append(f"{num_emoji(n)}{context_emoji(task.get('context'))} {task['name']}")
             n += 1
         lines.append("")
 
