@@ -206,7 +206,7 @@ REPEAT_DAY_TO_MONTHDAY = {"1st":1,"5th":5,"10th":10,"15th":15,"20th":20,"25th":2
 _BULLET_RE = re.compile(r"^[\s]*(?:[-•*]|\d+[.):])\s+", re.MULTILINE)
 BTN_REFRESH = "🔄 Refresh"
 BTN_ALL_OPEN = "✅To Do"
-BTN_PRIORITY = "🔥 Priority"
+BTN_HABITS = "🏃 Habits"
 BTN_NOTES = "📝 Notes"
 BTN_WEATHER = "🌤️ Weather"
 BTN_MUTE = "🔕 Mute"
@@ -1871,7 +1871,7 @@ def format_sunday_intro(week_tasks: list[dict], month_tasks: list[dict]) -> tupl
 
 def quick_actions_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[BTN_REFRESH, BTN_ALL_OPEN, BTN_PRIORITY], [BTN_NOTES, BTN_WEATHER, BTN_MUTE]],
+        [[BTN_REFRESH, BTN_ALL_OPEN, BTN_HABITS], [BTN_NOTES, BTN_WEATHER, BTN_MUTE]],
         resize_keyboard=True,
         one_time_keyboard=False,
         input_field_placeholder="Type a task, or tap a quick action…",
@@ -2129,6 +2129,21 @@ async def open_done_picker(message) -> None:
     await message.reply_text("Which task should be marked done?", reply_markup=done_picker_keyboard(key, page=0))
 
 
+async def open_habit_picker(message) -> None:
+    pending_habits = [
+        h for h in sorted(habit_cache.values(), key=lambda x: x["sort"])
+        if not already_logged_today(h["page_id"])
+    ]
+    if not pending_habits:
+        await message.reply_text("✅ No habits left to log today.")
+        return
+    await message.reply_text(
+        "🏃 *Which habit did you complete?*",
+        parse_mode="Markdown",
+        reply_markup=habit_buttons(pending_habits, "hl"),
+    )
+
+
 async def handle_v10_callback(q, parts: list[str]) -> bool:
     if parts[0] == "wl_save" and len(parts) == 2:
         key = parts[1]
@@ -2326,8 +2341,8 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if text in {BTN_ALL_OPEN, LEGACY_BTN_ALL_OPEN}:
         await send_quick_reminder(message, mode="all_open")
         return
-    if text == BTN_PRIORITY:
-        await send_quick_reminder(message, mode="priority")
+    if text == BTN_HABITS:
+        await open_habit_picker(message)
         return
     if text == BTN_NOTES:
         await message.reply_text(
