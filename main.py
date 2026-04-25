@@ -2123,7 +2123,7 @@ def format_daily_digest(
 
     lines, ordered, n = [f"☀️ *{date_str}*"], [], 1
     weather_block = format_weather_block(fetch_weather(weather_mode), label="🌤️")
-    lines.append(weather_block or "🌤️ Weather unavailable")
+    lines.append(weather_block or "🌤️ Weather unavailable — set with /location (city/state/country or ZIP)")
     lines.append("")
 
     if overdue:
@@ -3256,7 +3256,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
     lines = [f"☀️ *{date_str}*", ""]
     weather_block = format_weather_block(fetch_weather("today"), label="🌤️")
-    lines.append(weather_block or "🌤️ Weather unavailable")
+    lines.append(weather_block or "🌤️ Weather unavailable — set with /location (city/state/country or ZIP)")
     lines.append("")
     n = 1
 
