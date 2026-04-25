@@ -1919,12 +1919,38 @@ def format_reminder_snapshot(mode: str = "priority", limit: int = 8) -> str:
         ordered = quick_refresh_tasks
         header = f"🔔 *Reminder — {date_str}*"
 
-    lines = [
+    lines = []
+
+    if mode == "all_open":
+        five_day_cutoff = (date.today() + timedelta(days=5)).isoformat()
+
+        def is_personal(task: dict) -> bool:
+            ctx = (task.get("context") or "").lower()
+            return "personal" in ctx or "🏠" in ctx
+
+        week_focus = [
+            t for t in all_tasks
+            if t.get("deadline")
+            and today_str <= t["deadline"] <= five_day_cutoff
+            and (t.get("auto_horizon") == "🔴 Today" or is_personal(t))
+        ]
+        week_focus = sorted(
+            week_focus,
+            key=lambda t: (t.get("deadline") or "9999-12-31", t.get("name", "").lower()),
+        )
+
+        if week_focus:
+            lines.append("🟠 *This Week*")
+            for t in week_focus[:5]:
+                lines.append(f"{t['name']} | {t['deadline']}")
+            lines.append("")
+
+    lines.extend([
         header,
         "",
         f"Open: *{open_count}*  ·  Overdue: *{len(overdue)}*  ·  Today: *{len(today_tasks)}*",
         "",
-    ]
+    ])
 
     if not ordered:
         lines.append("✅ No Personal/Work tasks due within the next 7 days.")
