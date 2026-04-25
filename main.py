@@ -92,6 +92,33 @@ def _parse_hhmm_env(var_name: str, default: str) -> tuple[int, int]:
         h_str, m_str = default.split(":")
         return int(h_str), int(m_str)
 
+
+def _resolve_state_dir() -> Path:
+    """
+    Pick a durable location for bot state files.
+
+    Priority:
+    1) BOT_STATE_DIR env override.
+    2) /data (common mounted persistent disk path on PaaS providers).
+    3) Current working directory.
+    """
+    override = os.environ.get("BOT_STATE_DIR", "").strip()
+    if override:
+        state_dir = Path(override).expanduser()
+    elif Path("/data").exists():
+        state_dir = Path("/data")
+    else:
+        state_dir = Path.cwd()
+
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        return state_dir
+    except Exception as e:
+        log.warning("Unable to use BOT_STATE_DIR=%s (%s). Falling back to cwd.", state_dir, e)
+        fallback = Path.cwd()
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+
 # ── Config ───────────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
 MY_CHAT_ID      = int(os.environ["TELEGRAM_CHAT_ID"])
@@ -160,11 +187,12 @@ weather_cache: dict[str, dict] = {
     "tomorrow": {"timestamp": None, "data": None},
 }
 mute_until: datetime | None = None
-mute_state_file = Path("mute_state.json")
+STATE_DIR = _resolve_state_dir()
+mute_state_file = STATE_DIR / "mute_state.json"
 current_location: str = WEATHER_LOCATION
 current_lat: float | None = None
 current_lon: float | None = None
-location_state_file = Path("location_state.json")
+location_state_file = STATE_DIR / "location_state.json"
 
 # ── Constants ────────────────────────────────────────────────────────────────
 HORIZON_DEADLINE_OFFSETS = {"t": 0, "w": 6, "m": 30, "b": None}
