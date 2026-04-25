@@ -1867,12 +1867,11 @@ def horizon_view_back_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def get_today_and_overdue_tasks() -> list[dict]:
+def get_today_and_overdue_tasks(limit: int | None = 10) -> list[dict]:
     tasks = get_all_active_tasks()
     today = date.today()
     today_str = today.isoformat()
     cutoff_str = (today + timedelta(days=7)).isoformat()
-    max_tasks = 10
     selected = []
 
     def context_rank(task: dict) -> tuple[int, str]:
@@ -1902,7 +1901,8 @@ def get_today_and_overdue_tasks() -> list[dict]:
     overdue = sorted(overdue, key=context_rank)
     today_only = sorted(today_only, key=context_rank)
     carryover = sorted(carryover, key=context_rank)
-    return (overdue + today_only + carryover)[:max_tasks]
+    ordered = overdue + today_only + carryover
+    return ordered[:limit] if isinstance(limit, int) else ordered
 
 
 def get_quick_refresh_tasks(limit: int = 10) -> list[dict]:
@@ -3399,12 +3399,22 @@ def _filter_digest_tasks(tasks: list[dict], config: dict | None = None) -> list[
         return tasks
     filtered = tasks
     contexts = config.get("contexts")
-    max_items = config.get("max_items")
+
+    def normalize_context_label(value: str | None) -> str:
+        v = (value or "").strip().lower()
+        if "personal" in v or "🏠" in v:
+            return "personal"
+        if "work" in v or "💼" in v:
+            return "work"
+        if "health" in v or "🏃" in v:
+            return "health"
+        if "hk" in v or "collab" in v or "🤝" in v:
+            return "hk"
+        return v
+
     if contexts is not None and isinstance(contexts, list):
-        allowed = {(c or "").strip().lower() for c in contexts}
-        filtered = [t for t in filtered if (t.get("context") or "").strip().lower() in allowed]
-    if isinstance(max_items, int):
-        filtered = filtered[:max_items]
+        allowed = {normalize_context_label(c) for c in contexts}
+        filtered = [t for t in filtered if normalize_context_label(t.get("context")) in allowed]
     return filtered
 
 
@@ -3463,17 +3473,28 @@ async def rebuild_digest_schedule_job(bot, scheduler) -> None:
         )
 
 
+async def refresh_digest_schedule_job(bot, scheduler) -> None:
+    """Periodic silent rebuild so new/edited Digest Selector rows take effect quickly."""
+    build_digest_schedule(scheduler, bot)
+
+
 async def send_daily_digest(bot, include_habits: bool = True, config: dict | None = None) -> None:
     global last_digest_msg_id
     if is_muted():
         log.info("Daily digest skipped (muted)")
         return
-    tasks = _filter_digest_tasks(get_today_and_overdue_tasks(), config=config)
+    tasks = _filter_digest_tasks(get_today_and_overdue_tasks(limit=None), config=config)
     today_str = date.today().isoformat()
     overdue = [t for t in tasks if t.get("deadline") and t["deadline"] < today_str]
     today_tasks = [t for t in tasks if t not in overdue and t.get("auto_horizon") == "🔴 Today"]
     this_week_tasks = [t for t in tasks if t not in overdue and t not in today_tasks]
     ordered = overdue + today_tasks + this_week_tasks
+    max_items = config.get("max_items") if config else None
+    if isinstance(max_items, int):
+        ordered = ordered[:max_items]
+        overdue = [t for t in ordered if t.get("deadline") and t["deadline"] < today_str]
+        today_tasks = [t for t in ordered if t not in overdue and t.get("auto_horizon") == "🔴 Today"]
+        this_week_tasks = [t for t in ordered if t not in overdue and t not in today_tasks]
 
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
     lines = [f"☀️ *{date_str}*", ""]
@@ -3492,9 +3513,6 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         habits_enabled = bool(config.get("include_habits"))
     if habits_enabled:
         habits = pending_habits_for_digest()
-        if habits:
-            lines.append("🌅  *Habits — tap to log:*")
-            lines.append("")
 
     if overdue:
         lines.append("🚨 *Overdue*")
@@ -3517,7 +3535,8 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
             n += 1
         lines.append("")
 
-    lines.append("_You can still type to add tasks anytime._")
+    if habits:
+        lines.append("🌅  *Habits — tap to log:*")
     message = "\n".join(lines).strip()
     sent_digest = await bot.send_message(
         chat_id=MY_CHAT_ID,
@@ -3568,6 +3587,8 @@ async def send_habit_reminder(bot, time_str: str) -> None:
         config = None
     if config and (config.get("contexts") is not None or config.get("max_items") is not None):
         tasks = _filter_digest_tasks(tasks, config=config)
+        if isinstance(config.get("max_items"), int):
+            tasks = tasks[:config["max_items"]]
     message, ordered = format_daily_digest(tasks, habits, weather_mode="current")
     sent = await bot.send_message(
         chat_id=MY_CHAT_ID,
@@ -3956,6 +3977,13 @@ async def post_init(app: Application) -> None:
         minute=0,
         args=[app.bot, scheduler],
         id="digest_schedule_rebuild",
+    )
+    scheduler.add_job(
+        refresh_digest_schedule_job,
+        "interval",
+        minutes=10,
+        args=[app.bot, scheduler],
+        id="digest_schedule_refresh",
     )
     scheduler.add_job(send_evening_checkin, "cron", hour=_ev_h, minute=_ev_m, args=[app.bot], id="evening_checkin")
     scheduler.add_job(
