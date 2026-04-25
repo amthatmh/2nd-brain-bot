@@ -829,7 +829,7 @@ PHOTO — user wants to capture a photography scene/subject/location.
   Signals: "want to shoot", "want to photograph", "photo spot", "add to bucketlist", photography subjects
 
 NOTE — user wants to save information/reference/thought without an action.
-  Signals: "note:", "remember this", summaries, ideas, links/articles to keep, journaling.
+  Signals: "note:", "idea:", "code:", "remember this", summaries, ideas, code snippets, links/articles to keep, journaling.
   Should NOT be used for actionable commitments with due timing (those are TASKs).
 
 HABIT — user saying they completed a recurring habit RIGHT NOW.
@@ -842,6 +842,8 @@ If confidence is low on watchlist/wantslist/photo, return task instead.
 "want:" prefix = always wantslist, high confidence.
 "photo:" prefix = always photo, high confidence.
 "note:" prefix = always note, high confidence.
+"idea:" prefix = always note, high confidence.
+"code:" prefix = always note, high confidence.
 
 Return ONLY valid JSON, no markdown:
 
@@ -1880,6 +1882,8 @@ def notes_options_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("📝 Quick Note", callback_data="nq:quick")],
+            [InlineKeyboardButton("💡 Save Idea", callback_data="nq:idea")],
+            [InlineKeyboardButton("💻 Save Code", callback_data="nq:code")],
             [InlineKeyboardButton("🔗 Save Link", callback_data="nq:link")],
             [InlineKeyboardButton("❌ Cancel", callback_data="nq:cancel")],
         ]
@@ -2298,7 +2302,13 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
         try:
             create_note_entry(text)
-            kind_label = "link" if awaiting_note_capture == "link" else "note"
+            kind_label_map = {
+                "quick": "note",
+                "idea": "idea",
+                "code": "code snippet",
+                "link": "link",
+            }
+            kind_label = kind_label_map.get(awaiting_note_capture, "note")
             await message.reply_text(
                 f"✅ {kind_label.capitalize()} saved to Notes.",
                 reply_markup=quick_actions_keyboard(),
@@ -2490,12 +2500,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not NOTION_NOTES_DB:
             await q.edit_message_text("📝 Notes DB isn't configured yet — add NOTION_NOTES_DB first.")
             return
-        context.user_data["awaiting_note_capture"] = "link" if mode == "link" else "quick"
-        prompt = (
-            "🔗 Send the link you want to save."
-            if mode == "link"
-            else "📝 Send the note text you want to save."
-        )
+        capture_mode = mode if mode in {"quick", "idea", "code", "link"} else "quick"
+        context.user_data["awaiting_note_capture"] = capture_mode
+        prompt_map = {
+            "quick": "📝 Send the note text you want to save.",
+            "idea": "💡 Send the idea you want to save.",
+            "code": "💻 Send the code snippet you want to save.",
+            "link": "🔗 Send the link you want to save.",
+        }
+        prompt = prompt_map[capture_mode]
         await q.edit_message_text(prompt)
         return
 
