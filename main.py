@@ -329,6 +329,20 @@ def _location_candidates(text: str) -> list[str]:
     if normalized != cleaned:
         candidates.append(normalized)
 
+    # Extract likely location phrase from conversational weather commands.
+    phrase_patterns = [
+        r"(?:weather|forecast)\s+(?:for|in|at)\s+(.+)$",
+        r"(?:set|use|change|update)\s+(?:my\s+)?location\s+(?:to|as)\s+(.+)$",
+        r"(?:i(?:'| a)?m|im)\s+in\s+(.+)$",
+        r"(?:for|in|at)\s+(.+)$",
+    ]
+    for pattern in phrase_patterns:
+        m = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if m:
+            fragment = m.group(1).strip(" .!?")
+            if fragment:
+                candidates.append(fragment)
+
     slash_fixed = re.sub(r"\s*/\s*", ", ", normalized)
     if slash_fixed != normalized:
         candidates.append(slash_fixed)
@@ -340,6 +354,10 @@ def _location_candidates(text: str) -> list[str]:
     no_zip = re.sub(r"\b\d{5}(?:-\d{4})?\b", "", comma_spaced).strip(" ,")
     if no_zip and no_zip != comma_spaced:
         candidates.append(no_zip)
+    # Keep just ZIP if user provides extra words around it.
+    zip_match = re.search(r"\b\d{5}(?:-\d{4})?\b", comma_spaced)
+    if zip_match:
+        candidates.append(zip_match.group(0))
 
     state_map = {
         "illinois": "IL", "california": "CA", "new york": "NY", "texas": "TX",
@@ -419,6 +437,25 @@ def set_location_smart(user_text: str) -> bool:
     for query in normalize_location_with_claude(user_text):
         if set_location(query):
             return True
+
+    # Fallback: if a ZIP code is present, try OpenWeather ZIP geocoding route.
+    zip_match = re.search(r"\b\d{5}(?:-\d{4})?\b", user_text or "")
+    if zip_match and OPENWEATHER_KEY:
+        zip_value = zip_match.group(0)
+        try:
+            resp = httpx.get(
+                "https://api.openweathermap.org/geo/1.0/zip",
+                params={"zip": zip_value, "appid": OPENWEATHER_KEY},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            lat = payload.get("lat")
+            lon = payload.get("lon")
+            if lat is not None and lon is not None:
+                return set_location(f"{payload.get('name') or zip_value}, {payload.get('country') or 'US'}")
+        except Exception as e:
+            log.warning("ZIP location fallback failed for %s: %s", zip_value, e)
     return False
 
 
@@ -448,7 +485,7 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
         if forecast_type == "current":
             resp = httpx.get(
                 "https://api.openweathermap.org/data/2.5/weather",
-                params={"lat": current_lat, "lon": current_lon, "appid": OPENWEATHER_KEY, "units": "imperial"},
+                params={"lat": current_lat, "lon": current_lon, "appid": OPENWEATHER_KEY, "units": "metric"},
                 timeout=10,
             )
             resp.raise_for_status()
@@ -462,7 +499,7 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
         else:
             resp = httpx.get(
                 "https://api.openweathermap.org/data/2.5/forecast",
-                params={"lat": current_lat, "lon": current_lon, "appid": OPENWEATHER_KEY, "units": "imperial"},
+                params={"lat": current_lat, "lon": current_lon, "appid": OPENWEATHER_KEY, "units": "metric"},
                 timeout=10,
             )
             resp.raise_for_status()
@@ -501,10 +538,10 @@ def format_weather_block(weather: dict | None, label: str = "🌤️") -> str:
         return ""
     if "temp_high" in weather and "temp_low" in weather:
         return (
-            f"{label} {weather['condition']} · High {weather['temp_high']}°F / "
-            f"Low {weather['temp_low']}°F · 💧{weather.get('precip_chance', 0)}%"
+            f"{label} {weather['condition']} · High {weather['temp_high']}°C / "
+            f"Low {weather['temp_low']}°C · 💧{weather.get('precip_chance', 0)}%"
         )
-    return f"{label} {weather['temp']}°F ({weather['condition']})"
+    return f"{label} {weather['temp']}°C ({weather['condition']})"
 
 
 def format_weather_snapshot() -> str:
