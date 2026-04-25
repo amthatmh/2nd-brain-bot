@@ -3561,6 +3561,13 @@ async def send_habit_reminder(bot, time_str: str) -> None:
         return
 
     tasks = get_today_and_overdue_tasks()
+    try:
+        weekday = datetime.now(TZ).weekday() < 5
+        config = await get_digest_config(time_str, weekday)
+    except Exception:
+        config = None
+    if config and (config.get("contexts") is not None or config.get("max_items") is not None):
+        tasks = _filter_digest_tasks(tasks, config=config)
     message, ordered = format_daily_digest(tasks, habits, weather_mode="current")
     sent = await bot.send_message(
         chat_id=MY_CHAT_ID,
