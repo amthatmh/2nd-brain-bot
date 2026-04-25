@@ -192,6 +192,7 @@ weather_cache: dict[str, dict] = {
     "tomorrow": {"timestamp": None, "data": None},
 }
 _digest_jobs: list = []
+_habit_jobs: list = []
 _scheduler: AsyncIOScheduler | None = None
 _digest_slots_last_load_succeeded = False
 mute_until: datetime | None = None
@@ -2644,6 +2645,10 @@ async def cmd_refresh(message, context: ContextTypes.DEFAULT_TYPE | None = None)
     del context
     if message.chat_id != MY_CHAT_ID:
         return
+    load_habit_cache()
+    if _scheduler is not None:
+        register_habit_schedules(_scheduler, message.get_bot())
+        build_digest_schedule(_scheduler, message.get_bot())
     await send_daily_digest(message.get_bot(), include_habits=True)
     if _scheduler is not None:
         build_digest_schedule(_scheduler, message.get_bot())
@@ -3649,6 +3654,13 @@ async def send_daily_habits_list(bot) -> None:
 
 
 def register_habit_schedules(scheduler: AsyncIOScheduler, bot) -> None:
+    for job in _habit_jobs:
+        try:
+            job.remove()
+        except Exception:
+            pass
+    _habit_jobs.clear()
+
     times_seen = set()
     for habit in habit_cache.values():
         time_str = habit.get("time")
@@ -3657,12 +3669,13 @@ def register_habit_schedules(scheduler: AsyncIOScheduler, bot) -> None:
         times_seen.add(time_str)
         try:
             h, m = map(int, time_str.split(":"))
-            scheduler.add_job(
+            job = scheduler.add_job(
                 send_habit_reminder, "cron",
                 hour=h, minute=m,
                 args=[bot, time_str],
                 id=f"habit_{time_str}",
             )
+            _habit_jobs.append(job)
             log.info(f"Registered habit reminder job at {time_str}")
         except Exception as e:
             log.error(f"Failed to register habit job for {time_str}: {e}")
