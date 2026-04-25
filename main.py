@@ -20,6 +20,7 @@ import subprocess
 from datetime import date, datetime, timedelta
 from collections import defaultdict
 from pathlib import Path
+from typing import Callable
 
 import pytz
 from aiohttp import web
@@ -170,6 +171,7 @@ last_digest_msg_id: int | None = None
 pending_map: dict[str, dict] = {}
 capture_map: dict[int, dict] = {}
 done_picker_map: dict[str, list[dict]] = {}
+todo_picker_map: dict[str, list[dict]] = {}
 pending_wantslist_map: dict[str, dict] = {}
 pending_photo_map: dict[str, dict] = {}
 pending_tmdb_map: dict[str, list[dict]] = {}
@@ -178,6 +180,7 @@ pending_note_map: dict[str, dict] = {}
 topic_recency_map: dict[str, datetime] = {}
 _pending_counter = 0
 _done_picker_counter = 0
+_todo_picker_counter = 0
 _v10_counter = 0
 habit_cache: dict[str, dict] = {}
 _tmdb_http_client: httpx.AsyncClient | None = None
@@ -2326,6 +2329,30 @@ def done_picker_keyboard(key: str, page: int = 0, page_size: int = 5) -> InlineK
     return InlineKeyboardMarkup(rows)
 
 
+def context_emoji(context: str | None) -> str:
+    ctx = (context or "").strip().lower()
+    if ctx == "💼 work":
+        return "💼"
+    if ctx == "🏠 personal":
+        return "🏠"
+    if ctx == "🏃 health":
+        return "🏃"
+    if ctx == "🤝 hk":
+        return "🤝"
+    return "📝"
+
+
+def todo_picker_keyboard(key: str) -> InlineKeyboardMarkup:
+    tasks = todo_picker_map.get(key, [])
+    rows: list[list[InlineKeyboardButton]] = []
+    for idx, task in enumerate(tasks):
+        if task.get("_done"):
+            continue
+        label = f"{context_emoji(task.get('context'))} {task.get('name', 'Untitled')}"
+        rows.append([InlineKeyboardButton(label, callback_data=f"td:{key}:{idx}")])
+    return InlineKeyboardMarkup(rows)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CAPTURE ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2429,6 +2456,81 @@ async def open_habit_picker(message) -> None:
         "🏃 *Which habit did you complete?*",
         parse_mode="Markdown",
         reply_markup=habit_buttons(pending_habits, "hl"),
+    )
+
+
+async def cmd_refresh(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
+    del context
+    if message.chat_id != MY_CHAT_ID:
+        return
+    await send_daily_digest(message.get_bot(), include_habits=True)
+
+
+async def cmd_todo(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
+    del context
+    global _todo_picker_counter
+    if message.chat_id != MY_CHAT_ID:
+        return
+    tasks = get_today_and_overdue_tasks()
+    if not tasks:
+        await message.reply_text("✅ Nothing open in Today or overdue right now.")
+        return
+    key = str(_todo_picker_counter)
+    _todo_picker_counter += 1
+    todo_picker_map[key] = tasks
+    await message.reply_text(
+        "✅ *What did you get done?*",
+        parse_mode="Markdown",
+        reply_markup=todo_picker_keyboard(key),
+    )
+
+
+async def cmd_done_bare(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
+    del context
+    if message.chat_id != MY_CHAT_ID:
+        return
+    await open_done_picker(message)
+
+
+async def cmd_habits_text(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
+    del context
+    if message.chat_id != MY_CHAT_ID:
+        return
+    await send_daily_habits_list(message.get_bot())
+
+
+async def cmd_habits_picker(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
+    del context
+    if message.chat_id != MY_CHAT_ID:
+        return
+    await open_habit_picker(message)
+
+
+async def cmd_notes_text(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
+    del context
+    if message.chat_id != MY_CHAT_ID:
+        return
+    await message.reply_text(
+        "📝 Notes options:",
+        reply_markup=notes_options_keyboard(),
+    )
+
+
+async def cmd_weather_text(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
+    del context
+    if message.chat_id != MY_CHAT_ID:
+        return
+    await message.reply_text(format_weather_snapshot(), parse_mode="Markdown")
+
+
+async def cmd_mute_text(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
+    if message.chat_id != MY_CHAT_ID:
+        return
+    if context is not None:
+        context.user_data["awaiting_mute_days"] = False
+    await message.reply_text(
+        "🔕 Mute options for scheduled digests:",
+        reply_markup=mute_options_keyboard(),
     )
 
 
@@ -2555,6 +2657,21 @@ async def route_classified_message_v10(message, text: str) -> None:
     await create_or_prompt_task(message, text)
 
 
+COMMAND_DISPATCH: dict[str, Callable] = {
+    "refresh": cmd_refresh,
+    "🔄 refresh": cmd_refresh,
+    "✅ to do": cmd_todo,
+    "✅to do": cmd_todo,
+    "📋 all open": cmd_todo,
+    "done": cmd_done_bare,
+    "/habits": cmd_habits_text,
+    "🏃 habits": cmd_habits_picker,
+    "📝 notes": cmd_notes_text,
+    "🌤️ weather": cmd_weather_text,
+    "🔕 mute": cmd_mute_text,
+}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # TELEGRAM HANDLERS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2623,31 +2740,6 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             context.user_data["awaiting_note_capture"] = None
         return
 
-    if text == BTN_REFRESH:
-        await send_quick_reminder(message, mode="priority")
-        return
-    if text in {BTN_ALL_OPEN, LEGACY_BTN_ALL_OPEN}:
-        await send_quick_reminder(message, mode="all_open")
-        return
-    if text == BTN_HABITS:
-        await open_habit_picker(message)
-        return
-    if text == BTN_NOTES:
-        await message.reply_text(
-            "📝 Notes options:",
-            reply_markup=notes_options_keyboard(),
-        )
-        return
-    if text == BTN_WEATHER:
-        await message.reply_text(format_weather_snapshot(), parse_mode="Markdown")
-        return
-    if text == BTN_MUTE:
-        await message.reply_text(
-            "🔕 Mute options for scheduled digests:",
-            reply_markup=mute_options_keyboard(),
-        )
-        return
-
     if lower == "done" and message.reply_to_message:
         replied_id = message.reply_to_message.message_id
         if replied_id in capture_map:
@@ -2658,8 +2750,10 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             await message.reply_text("Reply with `done 1` or `done 1,3`, or use `done: task name`.", parse_mode="Markdown")
             return
 
-    if lower == "done":
-        await open_done_picker(message); return
+    command_handler = COMMAND_DISPATCH.get(lower)
+    if command_handler:
+        await command_handler(message, context)
+        return
 
     numbers = parse_done_numbers_command(text)
     if numbers:
@@ -2735,13 +2829,6 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     match_force = re.match(r"force:\s*(.+)$", text, re.IGNORECASE)
     if match_force:
         await create_or_prompt_task(message, match_force.group(1).strip(), force_create=True); return
-
-    if lower == "/habits":
-        await send_daily_habits_list(context.bot)
-        return
-
-    if await handle_photo_followup(message, text):
-        return
 
     await route_classified_message_v10(message, text)
 
@@ -2918,6 +3005,42 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             log.error(f"Notion horizon error: {e}"); await q.edit_message_text("⚠️ Couldn't update Notion.")
         return
 
+    if parts[0] == "td" and len(parts) == 3:
+        _, key, idx_str = parts
+        if key not in todo_picker_map:
+            await q.edit_message_text("⚠️ This picker expired. Send `✅ To Do` again.", parse_mode="Markdown")
+            return
+        tasks = todo_picker_map[key]
+        try:
+            idx = int(idx_str)
+            task = tasks[idx]
+        except Exception:
+            await q.answer("That task is no longer available.", show_alert=False)
+            return
+        if task.get("_done"):
+            await q.answer("Already marked done.", show_alert=False)
+            return
+        try:
+            mark_done(task["page_id"])
+            handle_done_recurring(task["page_id"])
+            task["_done"] = True
+        except Exception as e:
+            log.error(f"To do picker error: {e}")
+            await q.edit_message_text("⚠️ Couldn't mark that task done.")
+            return
+
+        done_count = sum(1 for t in tasks if t.get("_done"))
+        remaining = len(tasks) - done_count
+        if remaining == 0:
+            todo_picker_map.pop(key, None)
+            await q.edit_message_text("🎉 All done!")
+            return
+        await q.edit_message_text(
+            f"✅ {done_count} done · {remaining} remaining",
+            reply_markup=todo_picker_keyboard(key),
+        )
+        return
+
     if parts[0] == "dp" and len(parts) == 3:
         _, key, idx_str = parts
         if key not in done_picker_map:
@@ -3071,50 +3194,99 @@ async def run_recurring_check(bot) -> None:
     log.info(f"Recurring check: {spawned} task(s) spawned")
 
 
-async def send_daily_digest(bot, include_habits: bool = True) -> None:
+async def get_digest_config(slot_time: str, weekday: bool) -> dict:
+    """
+    Future: queries Notion Digest Selector DB to determine which contexts,
+    max_items, and include_habits apply for a given time slot.
+    Returns hardcoded defaults for now:
+      {"contexts": None, "max_items": None, "include_habits": True}
+    contexts=None means no filter (show all). max_items=None means no cap.
+    """
+    del slot_time, weekday
+    return {"contexts": None, "max_items": None, "include_habits": True}
+
+
+def _filter_digest_tasks(tasks: list[dict], config: dict | None = None) -> list[dict]:
+    if not config:
+        return tasks
+    filtered = tasks
+    contexts = config.get("contexts")
+    max_items = config.get("max_items")
+    if isinstance(contexts, list):
+        allowed = {(c or "").strip().lower() for c in contexts}
+        filtered = [t for t in filtered if (t.get("context") or "").strip().lower() in allowed]
+    if isinstance(max_items, int):
+        filtered = filtered[:max_items]
+    return filtered
+
+
+async def send_daily_digest(bot, include_habits: bool = True, config: dict | None = None) -> None:
     global last_digest_msg_id
     if is_muted():
         log.info("Daily digest skipped (muted)")
         return
-    tasks = get_today_and_overdue_tasks()
-    message, ordered = format_hybrid_digest(tasks)
+    tasks = _filter_digest_tasks(get_today_and_overdue_tasks(), config=config)
+    today_str = date.today().isoformat()
+    overdue = [t for t in tasks if t.get("deadline") and t["deadline"] < today_str]
+    today_tasks = [t for t in tasks if t not in overdue and t.get("auto_horizon") == "🔴 Today"]
+    this_week_tasks = [t for t in tasks if t not in overdue and t not in today_tasks]
+    ordered = overdue + today_tasks + this_week_tasks
+
+    date_str = datetime.now(TZ).strftime("%A, %B %-d")
+    lines = [f"☀️ *{date_str}*", ""]
+    n = 1
+
+    if overdue:
+        lines.append("🚨 *Overdue*")
+        for task in overdue:
+            lines.append(f"{num_emoji(n)} {task['name']}  {context_emoji(task.get('context'))}")
+            n += 1
+        lines.append("")
+
+    if today_tasks:
+        lines.append("📌 *Today*")
+        for task in today_tasks:
+            lines.append(f"{num_emoji(n)} {task['name']}  {context_emoji(task.get('context'))}")
+            n += 1
+        lines.append("")
+
+    if this_week_tasks:
+        lines.append("📅 *This Week*")
+        for task in this_week_tasks:
+            lines.append(f"{num_emoji(n)} {task['name']}  {context_emoji(task.get('context'))}")
+            n += 1
+        lines.append("")
+
+    habits: list[dict] = []
+    habits_enabled = include_habits
+    if config and config.get("include_habits") is not None:
+        habits_enabled = bool(config.get("include_habits"))
+    if habits_enabled:
+        habits = pending_habits_for_digest()
+        if habits:
+            lines.append("🌅 *Morning Habits — tap to log:*")
+            lines.append("")
+
+    lines.append("_You can still type to add tasks anytime._")
+    message = "\n".join(lines).strip()
     sent_digest = await bot.send_message(
         chat_id=MY_CHAT_ID,
         text=message,
         parse_mode="Markdown",
+        reply_markup=habit_buttons(habits, "hc") if habits else None,
     )
-    await bot.send_message(
-        chat_id=MY_CHAT_ID,
-        text="🎯 *Quick Access*",
-        parse_mode="Markdown",
-        reply_markup=format_command_palette(),
-    )
-
-    habits: list[dict] = []
-    if include_habits:
-        habits = pending_habits_for_digest()
-        if habits:
-            await bot.send_message(
-                chat_id=MY_CHAT_ID,
-                text="🌅 Morning habits — tap to log:",
-                reply_markup=habit_buttons(habits, "hc"),
-            )
 
     if ordered:
         digest_map[sent_digest.message_id] = ordered
-        last_digest_msg_id = sent_digest.message_id
-    log.info(
-        "Hybrid digest sent — %d critical/today tasks%s",
-        len(ordered),
-        f", {len(habits)} habits" if include_habits else "",
-    )
+    last_digest_msg_id = sent_digest.message_id
+    log.info("Consolidated daily digest sent — %d tasks, %d habits", len(ordered), len(habits))
 
 
 async def send_sunday_review(bot) -> None:
     if is_muted():
         log.info("Sunday review skipped (muted)")
         return
-    await send_daily_digest(bot)
+    await send_daily_digest(bot, include_habits=True)
     week_tasks  = query_tasks_by_auto_horizon(["🟠 This Week"])
     month_tasks = query_tasks_by_auto_horizon(["🟡 This Month"])
     header, ordered = format_sunday_intro(week_tasks, month_tasks)
