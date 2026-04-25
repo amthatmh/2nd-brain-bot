@@ -61,7 +61,7 @@ from cinema.config import (
     validate_config as validate_cinema_config,
 )
 from sync_telemetry import init_sync_status, utc_now_iso, format_sync_status_message
-from scheduler_setup import register_core_jobs, register_cinema_jobs
+from scheduler_setup import register_cinema_jobs
 from notes_flow import (
     split_kind_keyboard,
     ordered_topics,
@@ -132,6 +132,7 @@ NOTION_DB_ID    = os.environ["NOTION_DB_ID"]
 NOTION_HABIT_DB = os.environ["NOTION_HABIT_DB"]
 NOTION_LOG_DB   = os.environ["NOTION_LOG_DB"]
 NOTION_NOTES_DB = os.environ.get("NOTION_NOTES_DB", "")
+NOTION_DIGEST_SELECTOR_DB = os.environ["NOTION_DIGEST_SELECTOR_DB"]
 
 TZ           = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
 _wk_h, _wk_m = _parse_hhmm_env("DIGEST_TIME_WEEKDAY", "8:15")
@@ -190,6 +191,10 @@ weather_cache: dict[str, dict] = {
     "today": {"timestamp": None, "data": None},
     "tomorrow": {"timestamp": None, "data": None},
 }
+_digest_jobs: list = []
+_habit_jobs: list = []
+_scheduler: AsyncIOScheduler | None = None
+_digest_slots_last_load_succeeded = False
 mute_until: datetime | None = None
 STATE_DIR = _resolve_state_dir()
 mute_state_file = STATE_DIR / "mute_state.json"
@@ -307,8 +312,10 @@ def load_location_state() -> None:
             return
         payload = json.loads(location_state_file.read_text() or "{}")
         current_location = payload.get("location") or WEATHER_LOCATION
-        current_lat = payload.get("lat")
-        current_lon = payload.get("lon")
+        lat_raw = payload.get("lat")
+        lon_raw = payload.get("lon")
+        current_lat = float(lat_raw) if lat_raw not in (None, "") else None
+        current_lon = float(lon_raw) if lon_raw not in (None, "") else None
     except Exception as e:
         log.error("Failed loading location state: %s", e)
 
@@ -510,7 +517,7 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
 
     try:
         if current_lat is None or current_lon is None:
-            if not set_location(current_location):
+            if not set_location_smart(current_location):
                 return None
 
         if forecast_type == "current":
@@ -573,6 +580,23 @@ def format_weather_block(weather: dict | None, label: str = "🌤️") -> str:
             f"Low {weather['temp_low']}°C · 💧{weather.get('precip_chance', 0)}%"
         )
     return f"{label} {weather['temp']}°C ({weather['condition']})"
+
+
+def digest_location_label() -> str:
+    """Compact location label for digest weather line (City, ST or country)."""
+    parts = [p.strip() for p in (current_location or "").split(",") if p.strip()]
+    if not parts:
+        return ""
+    if len(parts) >= 3:
+        city, state, country = parts[0], parts[1], parts[2]
+        country_upper = country.upper()
+        if country_upper in {"US", "USA", "UNITED STATES", "UNITED STATES OF AMERICA"}:
+            state_abbr = state.upper() if len(state) <= 3 else state[:2].upper()
+            return f"{city}, {state_abbr}"
+        return f"{city}, {country}"
+    if len(parts) == 2:
+        return f"{parts[0]}, {parts[1]}"
+    return parts[0]
 
 
 def format_weather_snapshot() -> str:
@@ -702,6 +726,83 @@ def notion_query_all(database_id: str, **kwargs) -> list[dict]:
         cursor = resp.get("next_cursor")
 
     return rows
+
+
+def load_digest_slots() -> list[dict]:
+    """
+    Queries Notion Digest Selector DB.
+    Returns list of slot dicts.
+    """
+    context_map = {
+        "🏠 Personal": "🏠 Personal",
+        "💼 Work": "💼 Work",
+        "🏃 Health": "🏃 Health",
+        "🤝 HK": "🤝 HK",
+    }
+    def first_text(prop: dict) -> str:
+        rich_text = prop.get("rich_text", [])
+        if rich_text:
+            return (rich_text[0].get("plain_text") or "").strip()
+        title = prop.get("title", [])
+        if title:
+            return (title[0].get("plain_text") or "").strip()
+        return ""
+
+    slots: list[dict] = []
+    rows = notion_query_all(NOTION_DIGEST_SELECTOR_DB)
+    for row in rows:
+        props = row.get("properties", {})
+
+        slot_time_raw = first_text(props.get("Time", {}))
+        time_match = re.fullmatch(r"(\d{1,2}):(\d{2})", slot_time_raw)
+        if not time_match:
+            log.warning("Skipping digest selector row with invalid Time=%r", slot_time_raw)
+            continue
+        slot_time = f"{int(time_match.group(1)):02d}:{int(time_match.group(2)):02d}"
+        hh, mm = map(int, slot_time.split(":"))
+        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+            log.warning("Skipping digest selector row with out-of-range Time=%r", slot_time_raw)
+            continue
+        if not slot_time:
+            continue
+
+        ww = props.get("Weekday/Weekend", {}).get("select")
+        ww_name = (ww.get("name") if ww else "").strip()
+        ww_norm = ww_name.lower()
+        if ww_norm in {"weekday", "weekdays", "mon-fri"}:
+            is_weekday = True
+        elif ww_norm in {"weekend", "weekends", "sat,sun", "sat/sun"}:
+            is_weekday = False
+        else:
+            log.warning("Skipping digest selector row with invalid Weekday/Weekend=%r", ww_name)
+            continue
+
+        include_habits = bool(props.get("Habits", {}).get("checkbox", False))
+        max_items_raw = props.get("Max Items", {}).get("number")
+        max_items = int(max_items_raw) if isinstance(max_items_raw, (int, float)) else None
+
+        selected_contexts = [
+            context_label
+            for prop_name, context_label in context_map.items()
+            if bool(props.get(prop_name, {}).get("checkbox", False))
+        ]
+        contexts = selected_contexts or None
+
+        if contexts is None and not include_habits:
+            continue
+
+        slots.append(
+            {
+                "time": slot_time,
+                "is_weekday": is_weekday,
+                "include_habits": include_habits,
+                "max_items": max_items,
+                "contexts": contexts,
+            }
+        )
+
+    log.info("Loaded %d digest selector slot(s) from Notion", len(slots))
+    return slots
 
 
 def extract_date_only(date_str: str | None) -> str | None:
@@ -1767,12 +1868,11 @@ def horizon_view_back_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def get_today_and_overdue_tasks() -> list[dict]:
+def get_today_and_overdue_tasks(limit: int | None = 10) -> list[dict]:
     tasks = get_all_active_tasks()
     today = date.today()
     today_str = today.isoformat()
     cutoff_str = (today + timedelta(days=7)).isoformat()
-    max_tasks = 10
     selected = []
 
     def context_rank(task: dict) -> tuple[int, str]:
@@ -1802,7 +1902,8 @@ def get_today_and_overdue_tasks() -> list[dict]:
     overdue = sorted(overdue, key=context_rank)
     today_only = sorted(today_only, key=context_rank)
     carryover = sorted(carryover, key=context_rank)
-    return (overdue + today_only + carryover)[:max_tasks]
+    ordered = overdue + today_only + carryover
+    return ordered[:limit] if isinstance(limit, int) else ordered
 
 
 def get_quick_refresh_tasks(limit: int = 10) -> list[dict]:
@@ -2093,7 +2194,59 @@ def format_batch_summary(results: list[dict]) -> str:
 def create_note_entry(content: str, topic: str | None = None) -> str:
     if not NOTION_NOTES_DB:
         raise ValueError("NOTION_NOTES_DB is not configured")
-    props = create_note_payload(content, topic=topic)
+    base_props = create_note_payload(content, topic=topic)
+    db = notion.databases.retrieve(database_id=NOTION_NOTES_DB)
+    schema_props = db.get("properties", {})
+
+    def schema_type(prop_name: str) -> str | None:
+        return schema_props.get(prop_name, {}).get("type")
+
+    props: dict = {}
+
+    # Map title payload to whichever title property exists in the DB.
+    title_payload = base_props.get("Title")
+    title_prop_name = next((name for name, p in schema_props.items() if p.get("type") == "title"), None)
+    if title_payload and title_prop_name:
+        props[title_prop_name] = title_payload
+
+    if "Content" in base_props and schema_type("Content") == "rich_text":
+        props["Content"] = base_props["Content"]
+    if "Date Created" in base_props and schema_type("Date Created") == "date":
+        props["Date Created"] = base_props["Date Created"]
+    if "Processed" in base_props and schema_type("Processed") == "checkbox":
+        props["Processed"] = base_props["Processed"]
+    if "Link" in base_props and schema_type("Link") == "url":
+        props["Link"] = base_props["Link"]
+
+    if "Type" in base_props and schema_type("Type") == "select":
+        desired = base_props["Type"]["select"]["name"]
+        options = schema_props["Type"].get("select", {}).get("options", [])
+        names = {o.get("name") for o in options}
+        if desired in names:
+            props["Type"] = base_props["Type"]
+        elif options:
+            props["Type"] = {"select": {"name": options[0]["name"]}}
+
+    if "Source" in base_props and schema_type("Source") == "select":
+        desired = base_props["Source"]["select"]["name"]
+        options = schema_props["Source"].get("select", {}).get("options", [])
+        names = {o.get("name") for o in options}
+        if desired in names:
+            props["Source"] = base_props["Source"]
+        elif options:
+            props["Source"] = {"select": {"name": options[0]["name"]}}
+
+    if "Topic" in base_props and schema_type("Topic") == "multi_select":
+        desired_topics = [t.get("name") for t in base_props["Topic"].get("multi_select", []) if t.get("name")]
+        options = schema_props["Topic"].get("multi_select", {}).get("options", [])
+        names = {o.get("name") for o in options}
+        selected = [{"name": t} for t in desired_topics if t in names]
+        if selected:
+            props["Topic"] = {"multi_select": selected}
+
+    if not props:
+        raise ValueError("Notes DB schema has no writable matching properties for note payload")
+
     page = notion.pages.create(parent={"database_id": NOTION_NOTES_DB}, properties=props)
     return page["id"]
 
@@ -2492,6 +2645,10 @@ async def cmd_refresh(message, context: ContextTypes.DEFAULT_TYPE | None = None)
     del context
     if message.chat_id != MY_CHAT_ID:
         return
+    load_habit_cache()
+    if _scheduler is not None:
+        register_habit_schedules(_scheduler, message.get_bot())
+        build_digest_schedule(_scheduler, message.get_bot())
     await send_daily_digest(message.get_bot(), include_habits=True)
 
 
@@ -3225,15 +3382,19 @@ async def run_recurring_check(bot) -> None:
 
 
 async def get_digest_config(slot_time: str, weekday: bool) -> dict:
-    """
-    Future: queries Notion Digest Selector DB to determine which contexts,
-    max_items, and include_habits apply for a given time slot.
-    Returns hardcoded defaults for now:
-      {"contexts": None, "max_items": None, "include_habits": True}
-    contexts=None means no filter (show all). max_items=None means no cap.
-    """
-    del slot_time, weekday
-    return {"contexts": None, "max_items": None, "include_habits": True}
+    try:
+        slots = load_digest_slots()
+    except Exception as e:
+        log.error("Failed to read digest config for %s (%s): %s", slot_time, "weekday" if weekday else "weekend", e)
+        return {"contexts": None, "max_items": None, "include_habits": False}
+    for slot in slots:
+        if slot.get("time") == slot_time and bool(slot.get("is_weekday")) == bool(weekday):
+            return {
+                "contexts": slot.get("contexts"),
+                "max_items": slot.get("max_items"),
+                "include_habits": bool(slot.get("include_habits")),
+            }
+    return {"contexts": None, "max_items": None, "include_habits": False}
 
 
 def _filter_digest_tasks(tasks: list[dict], config: dict | None = None) -> list[dict]:
@@ -3241,13 +3402,83 @@ def _filter_digest_tasks(tasks: list[dict], config: dict | None = None) -> list[
         return tasks
     filtered = tasks
     contexts = config.get("contexts")
-    max_items = config.get("max_items")
-    if isinstance(contexts, list):
-        allowed = {(c or "").strip().lower() for c in contexts}
-        filtered = [t for t in filtered if (t.get("context") or "").strip().lower() in allowed]
-    if isinstance(max_items, int):
-        filtered = filtered[:max_items]
+
+    def normalize_context_label(value: str | None) -> str:
+        v = (value or "").strip().lower()
+        if "personal" in v or "🏠" in v:
+            return "personal"
+        if "work" in v or "💼" in v:
+            return "work"
+        if "health" in v or "🏃" in v:
+            return "health"
+        if "hk" in v or "collab" in v or "🤝" in v:
+            return "hk"
+        return v
+
+    if contexts is not None and isinstance(contexts, list):
+        allowed = {normalize_context_label(c) for c in contexts}
+        filtered = [t for t in filtered if normalize_context_label(t.get("context")) in allowed]
     return filtered
+
+
+async def send_digest_for_slot(bot, slot: dict) -> None:
+    config = await get_digest_config(slot["time"], slot["is_weekday"])
+    if config.get("contexts") is None and config.get("include_habits") is False:
+        return
+    await send_daily_digest(bot, include_habits=slot["include_habits"], config=config)
+
+
+def build_digest_schedule(scheduler, bot) -> int:
+    global _digest_slots_last_load_succeeded
+    try:
+        slots = load_digest_slots()
+    except Exception as e:
+        _digest_slots_last_load_succeeded = False
+        log.error("Failed to load digest slots: %s", e)
+        return 0
+
+    for job in _digest_jobs:
+        try:
+            job.remove()
+        except Exception:
+            pass
+    _digest_jobs.clear()
+
+    for slot in slots:
+        try:
+            hour_str, minute_str = slot["time"].split(":")
+            hour, minute = int(hour_str), int(minute_str)
+        except Exception:
+            log.warning("Skipping invalid digest slot time: %r", slot.get("time"))
+            continue
+        day_of_week = "mon-fri" if slot.get("is_weekday") else "sat,sun"
+        job = scheduler.add_job(
+            send_digest_for_slot,
+            "cron",
+            day_of_week=day_of_week,
+            hour=hour,
+            minute=minute,
+            args=[bot, slot],
+        )
+        _digest_jobs.append(job)
+
+    _digest_slots_last_load_succeeded = True
+    log.info("Digest schedule built: %d slots registered", len(_digest_jobs))
+    return len(_digest_jobs)
+
+
+async def rebuild_digest_schedule_job(bot, scheduler) -> None:
+    result = build_digest_schedule(scheduler, bot)
+    if result == 0 and _digest_slots_last_load_succeeded:
+        await bot.send_message(
+            chat_id=MY_CHAT_ID,
+            text="⚠️ Digest schedule rebuild returned 0 slots. Check Digest Selector.",
+        )
+
+
+async def refresh_digest_schedule_job(bot, scheduler) -> None:
+    """Periodic silent rebuild so new/edited Digest Selector rows take effect quickly."""
+    build_digest_schedule(scheduler, bot)
 
 
 async def send_daily_digest(bot, include_habits: bool = True, config: dict | None = None) -> None:
@@ -3255,19 +3486,36 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     if is_muted():
         log.info("Daily digest skipped (muted)")
         return
-    tasks = _filter_digest_tasks(get_today_and_overdue_tasks(), config=config)
+    tasks = _filter_digest_tasks(get_today_and_overdue_tasks(limit=None), config=config)
     today_str = date.today().isoformat()
     overdue = [t for t in tasks if t.get("deadline") and t["deadline"] < today_str]
     today_tasks = [t for t in tasks if t not in overdue and t.get("auto_horizon") == "🔴 Today"]
     this_week_tasks = [t for t in tasks if t not in overdue and t not in today_tasks]
     ordered = overdue + today_tasks + this_week_tasks
+    max_items = config.get("max_items") if config else None
+    if isinstance(max_items, int):
+        ordered = ordered[:max_items]
+        overdue = [t for t in ordered if t.get("deadline") and t["deadline"] < today_str]
+        today_tasks = [t for t in ordered if t not in overdue and t.get("auto_horizon") == "🔴 Today"]
+        this_week_tasks = [t for t in ordered if t not in overdue and t not in today_tasks]
 
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
     lines = [f"☀️ *{date_str}*", ""]
     weather_block = format_weather_block(fetch_weather("today"), label="🌤️")
-    lines.append(weather_block or weather_unavailable_digest_line())
+    location_label = digest_location_label()
+    if weather_block and location_label:
+        lines.append(f"{weather_block} · 📍{location_label}")
+    else:
+        lines.append(weather_block or weather_unavailable_digest_line())
     lines.append("")
     n = 1
+
+    habits: list[dict] = []
+    habits_enabled = include_habits
+    if config and config.get("include_habits") is not None:
+        habits_enabled = bool(config.get("include_habits"))
+    if habits_enabled:
+        habits = pending_habits_for_digest()
 
     if overdue:
         lines.append("🚨 *Overdue*")
@@ -3290,17 +3538,8 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
             n += 1
         lines.append("")
 
-    habits: list[dict] = []
-    habits_enabled = include_habits
-    if config and config.get("include_habits") is not None:
-        habits_enabled = bool(config.get("include_habits"))
-    if habits_enabled:
-        habits = pending_habits_for_digest()
-        if habits:
-            lines.append("🌅 *Morning Habits — tap to log:*")
-            lines.append("")
-
-    lines.append("_You can still type to add tasks anytime._")
+    if habits:
+        lines.append("🌅  *Habits — tap to log:*")
     message = "\n".join(lines).strip()
     sent_digest = await bot.send_message(
         chat_id=MY_CHAT_ID,
@@ -3319,7 +3558,7 @@ async def send_sunday_review(bot) -> None:
     if is_muted():
         log.info("Sunday review skipped (muted)")
         return
-    await send_daily_digest(bot, include_habits=True)
+    await send_daily_digest(bot, include_habits=True, config=None)
     week_tasks  = query_tasks_by_auto_horizon(["🟠 This Week"])
     month_tasks = query_tasks_by_auto_horizon(["🟡 This Month"])
     header, ordered = format_sunday_intro(week_tasks, month_tasks)
@@ -3344,6 +3583,15 @@ async def send_habit_reminder(bot, time_str: str) -> None:
         return
 
     tasks = get_today_and_overdue_tasks()
+    try:
+        weekday = datetime.now(TZ).weekday() < 5
+        config = await get_digest_config(time_str, weekday)
+    except Exception:
+        config = None
+    if config and (config.get("contexts") is not None or config.get("max_items") is not None):
+        tasks = _filter_digest_tasks(tasks, config=config)
+        if isinstance(config.get("max_items"), int):
+            tasks = tasks[:config["max_items"]]
     message, ordered = format_daily_digest(tasks, habits, weather_mode="current")
     sent = await bot.send_message(
         chat_id=MY_CHAT_ID,
@@ -3404,6 +3652,13 @@ async def send_daily_habits_list(bot) -> None:
 
 
 def register_habit_schedules(scheduler: AsyncIOScheduler, bot) -> None:
+    for job in _habit_jobs:
+        try:
+            job.remove()
+        except Exception:
+            pass
+    _habit_jobs.clear()
+
     times_seen = set()
     for habit in habit_cache.values():
         time_str = habit.get("time")
@@ -3412,12 +3667,13 @@ def register_habit_schedules(scheduler: AsyncIOScheduler, bot) -> None:
         times_seen.add(time_str)
         try:
             h, m = map(int, time_str.split(":"))
-            scheduler.add_job(
+            job = scheduler.add_job(
                 send_habit_reminder, "cron",
                 hour=h, minute=m,
                 args=[bot, time_str],
                 id=f"habit_{time_str}",
             )
+            _habit_jobs.append(job)
             log.info(f"Registered habit reminder job at {time_str}")
         except Exception as e:
             log.error(f"Failed to register habit job for {time_str}: {e}")
@@ -3713,36 +3969,32 @@ def v10_feature_flags() -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def post_init(app: Application) -> None:
+    global _scheduler
     load_mute_state()
     load_location_state()
     if OPENWEATHER_KEY and (current_lat is None or current_lon is None):
-        set_location(current_location)
+        set_location_smart(current_location)
     load_habit_cache()
     await start_http_server()
     scheduler = AsyncIOScheduler(timezone=TZ)
-    register_core_jobs(
-        scheduler=scheduler,
-        bot=app.bot,
-        run_recurring_check=run_recurring_check,
-        send_daily_digest=send_daily_digest,
-        send_sunday_review=send_sunday_review,
-        register_habit_schedules=register_habit_schedules,
-        rc_h=_rc_h,
-        rc_m=_rc_m,
-        wk_h=_wk_h,
-        wk_m=_wk_m,
-        we_h=_we_h,
-        we_m=_we_m,
+    scheduler.add_job(run_recurring_check, "cron", hour=_rc_h, minute=_rc_m, args=[app.bot])
+    scheduler.add_job(send_sunday_review, "cron", day_of_week="sun", hour=_we_h, minute=_we_m, args=[app.bot])
+    register_habit_schedules(scheduler, app.bot)
+    build_digest_schedule(scheduler, app.bot)
+    scheduler.add_job(
+        rebuild_digest_schedule_job,
+        "cron",
+        hour=0,
+        minute=0,
+        args=[app.bot, scheduler],
+        id="digest_schedule_rebuild",
     )
     scheduler.add_job(
-        send_daily_digest,
-        "cron",
-        day_of_week="mon-fri",
-        hour=15,
-        minute=0,
-        args=[app.bot],
-        kwargs={"include_habits": False},
-        id="weekday_afternoon_digest",
+        refresh_digest_schedule_job,
+        "interval",
+        minutes=10,
+        args=[app.bot, scheduler],
+        id="digest_schedule_refresh",
     )
     scheduler.add_job(send_evening_checkin, "cron", hour=_ev_h, minute=_ev_m, args=[app.bot], id="evening_checkin")
     scheduler.add_job(
@@ -3869,6 +4121,7 @@ async def post_init(app: Application) -> None:
         )
 
     scheduler.start()
+    _scheduler = scheduler
     log.info(
         f"Scheduler started ✓  TZ={TZ}  "
         f"weekday={_wk_h:02d}:{_wk_m:02d}  weekend={_we_h:02d}:{_we_m:02d}  "
