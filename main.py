@@ -581,6 +581,23 @@ def format_weather_block(weather: dict | None, label: str = "🌤️") -> str:
     return f"{label} {weather['temp']}°C ({weather['condition']})"
 
 
+def digest_location_label() -> str:
+    """Compact location label for digest weather line (City, ST or country)."""
+    parts = [p.strip() for p in (current_location or "").split(",") if p.strip()]
+    if not parts:
+        return ""
+    if len(parts) >= 3:
+        city, state, country = parts[0], parts[1], parts[2]
+        country_upper = country.upper()
+        if country_upper in {"US", "USA", "UNITED STATES", "UNITED STATES OF AMERICA"}:
+            state_abbr = state.upper() if len(state) <= 3 else state[:2].upper()
+            return f"{city}, {state_abbr}"
+        return f"{city}, {country}"
+    if len(parts) == 2:
+        return f"{parts[0]}, {parts[1]}"
+    return parts[0]
+
+
 def format_weather_snapshot() -> str:
     """Compose a compact weather summary for quick access."""
     lines = [f"📍 *Weather for {current_location}*"]
@@ -3461,9 +3478,23 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
     lines = [f"☀️ *{date_str}*", ""]
     weather_block = format_weather_block(fetch_weather("today"), label="🌤️")
-    lines.append(weather_block or weather_unavailable_digest_line())
+    location_label = digest_location_label()
+    if weather_block and location_label:
+        lines.append(f"{weather_block} · 📍{location_label}")
+    else:
+        lines.append(weather_block or weather_unavailable_digest_line())
     lines.append("")
     n = 1
+
+    habits: list[dict] = []
+    habits_enabled = include_habits
+    if config and config.get("include_habits") is not None:
+        habits_enabled = bool(config.get("include_habits"))
+    if habits_enabled:
+        habits = pending_habits_for_digest()
+        if habits:
+            lines.append("🌅  *Habits — tap to log:*")
+            lines.append("")
 
     if overdue:
         lines.append("🚨 *Overdue*")
@@ -3485,16 +3516,6 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
             lines.append(f"{num_emoji(n)}{context_emoji(task.get('context'))} {task['name']}")
             n += 1
         lines.append("")
-
-    habits: list[dict] = []
-    habits_enabled = include_habits
-    if config and config.get("include_habits") is not None:
-        habits_enabled = bool(config.get("include_habits"))
-    if habits_enabled:
-        habits = pending_habits_for_digest()
-        if habits:
-            lines.append("🌅 *Morning Habits — tap to log:*")
-            lines.append("")
 
     lines.append("_You can still type to add tasks anytime._")
     message = "\n".join(lines).strip()
