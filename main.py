@@ -2650,6 +2650,8 @@ async def cmd_refresh(message, context: ContextTypes.DEFAULT_TYPE | None = None)
         register_habit_schedules(_scheduler, message.get_bot())
         build_digest_schedule(_scheduler, message.get_bot())
     await send_daily_digest(message.get_bot(), include_habits=True)
+    if _scheduler is not None:
+        build_digest_schedule(_scheduler, message.get_bot())
 
 
 async def cmd_todo(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
