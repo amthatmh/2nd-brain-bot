@@ -32,6 +32,7 @@ from telegram import (
 )
 from telegram.ext import (
     Application,
+    CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
     filters,
@@ -2448,6 +2449,10 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if match_force:
         await create_or_prompt_task(message, match_force.group(1).strip(), force_create=True); return
 
+    if lower == "/habits":
+        await send_daily_habits_list(context.bot)
+        return
+
     if await handle_photo_followup(message, text):
         return
 
@@ -2738,6 +2743,40 @@ async def send_evening_checkin(bot) -> None:
     if tomorrow_weather:
         msg += f"\n\n{tomorrow_weather}"
     await bot.send_message(chat_id=MY_CHAT_ID, text=msg, parse_mode="Markdown")
+
+
+async def send_daily_habits_list(bot) -> None:
+    """Fetch all active habits for today and send as clickable buttons."""
+    all_habits = (
+        get_habits_by_time("🌅 Morning")
+        + get_habits_by_time("🌙 Evening")
+        + get_habits_by_time("🕐 Anytime")
+    )
+
+    seen: set[str] = set()
+    unique_habits: list[dict] = []
+    for habit in all_habits:
+        page_id = habit.get("page_id")
+        if page_id and page_id not in seen:
+            unique_habits.append(habit)
+            seen.add(page_id)
+
+    if not unique_habits:
+        await bot.send_message(chat_id=MY_CHAT_ID, text="🎯 No habits for today.")
+        return
+
+    incomplete_habits = [h for h in unique_habits if not already_logged_today(h["page_id"])]
+    if not incomplete_habits:
+        await bot.send_message(chat_id=MY_CHAT_ID, text="🎯 All habits logged! ✅")
+        return
+
+    await bot.send_message(
+        chat_id=MY_CHAT_ID,
+        text="🎯 *Daily habits* — tap to log:",
+        parse_mode="Markdown",
+        reply_markup=habit_buttons(incomplete_habits, "hc"),
+    )
+    log.info("Habits list sent — %s incomplete habits", len(incomplete_habits))
 
 
 def register_habit_schedules(scheduler: AsyncIOScheduler, bot) -> None:
@@ -3352,12 +3391,18 @@ async def cmd_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("📝 Notes DB isn't configured yet — add NOTION_NOTES_DB first.")
 
 
+async def cmd_habits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/habits — show incomplete habits as one-tap check-ins."""
+    if update.effective_chat.id != MY_CHAT_ID:
+        return
+    await send_daily_habits_list(context.bot)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN — after all handlers are defined
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main() -> None:
-    from telegram.ext import CommandHandler
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", handle_start_command))
     app.add_handler(CommandHandler("r", handle_remind_command))
@@ -3370,6 +3415,7 @@ def main() -> None:
     app.add_handler(CommandHandler("weather", cmd_weather))
     app.add_handler(CommandHandler("notes", cmd_notes))
     app.add_handler(CommandHandler("location", cmd_location))
+    app.add_handler(CommandHandler("habits", cmd_habits))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message_text))
     app.add_handler(CallbackQueryHandler(handle_callback))
     log.info(f"🤖 Second Brain bot starting ({APP_VERSION})...")
