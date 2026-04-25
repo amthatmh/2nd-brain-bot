@@ -67,6 +67,14 @@ from notes_flow import (
     note_topics_keyboard,
     create_note_payload,
 )
+from digest_hybrid import (
+    configure_digest_hybrid,
+    _get_tasks_by_deadline_horizon,
+    format_hybrid_digest,
+    format_week_view,
+    quick_access_keyboard,
+    horizon_view_back_keyboard,
+)
 
 load_dotenv()
 
@@ -1447,6 +1455,13 @@ def get_all_active_tasks() -> list[dict]:
     ]
 
 
+configure_digest_hybrid(
+    get_all_active_tasks=get_all_active_tasks,
+    num_emoji=num_emoji,
+    tz=TZ,
+)
+
+
 def get_today_and_overdue_tasks() -> list[dict]:
     tasks = get_all_active_tasks()
     today = date.today()
@@ -2656,6 +2671,37 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await q.edit_message_text("Done picker closed.")
         return
 
+    if parts[0] == "qv" and len(parts) == 2 and parts[1] in {"week", "backlog"}:
+        try:
+            message, ordered = format_week_view(parts[1])
+            await q.edit_message_text(
+                text=message,
+                parse_mode="Markdown",
+                reply_markup=horizon_view_back_keyboard(),
+            )
+            if ordered and q.message:
+                digest_map[q.message.message_id] = ordered
+        except Exception as e:
+            log.error("Quick-view callback error (%s): %s", q.data, e)
+            await q.edit_message_text("⚠️ Couldn't load that view right now.")
+        return
+
+    if q.data == "digest:today":
+        try:
+            tasks = get_today_and_overdue_tasks()
+            message, ordered = format_hybrid_digest(tasks)
+            await q.edit_message_text(text=message, parse_mode="Markdown")
+            if ordered and q.message:
+                digest_map[q.message.message_id] = ordered
+        except Exception as e:
+            log.error("Digest today callback error: %s", e)
+            await q.edit_message_text("⚠️ Couldn't refresh today's digest right now.")
+        return
+
+    if q.data == "digest:sunday":
+        await send_sunday_review(q.bot)
+        return
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SCHEDULED JOBS
@@ -2670,25 +2716,43 @@ async def run_recurring_check(bot) -> None:
     log.info(f"Recurring check: {spawned} task(s) spawned")
 
 
-async def send_daily_digest(bot) -> None:
+async def send_daily_digest(bot, include_habits: bool = True) -> None:
     global last_digest_msg_id
     if is_muted():
         log.info("Daily digest skipped (muted)")
         return
     tasks = get_today_and_overdue_tasks()
-    habits = pending_habits_for_digest()
-    message, ordered = format_daily_digest(tasks, habits, weather_mode="today")
-    reply_markup = habit_buttons(habits, "hc") if habits else None
-    sent = await bot.send_message(
+    message, ordered = format_hybrid_digest(tasks)
+    sent_digest = await bot.send_message(
         chat_id=MY_CHAT_ID,
         text=message,
         parse_mode="Markdown",
-        reply_markup=reply_markup,
     )
+    await bot.send_message(
+        chat_id=MY_CHAT_ID,
+        text="📖 *Quick Access*",
+        parse_mode="Markdown",
+        reply_markup=quick_access_keyboard(),
+    )
+
+    habits: list[dict] = []
+    if include_habits:
+        habits = pending_habits_for_digest()
+        if habits:
+            await bot.send_message(
+                chat_id=MY_CHAT_ID,
+                text="🌅 Morning habits — tap to log:",
+                reply_markup=habit_buttons(habits, "hc"),
+            )
+
     if ordered:
-        digest_map[sent.message_id] = ordered
-        last_digest_msg_id = sent.message_id
-    log.info(f"Daily digest sent — {len(ordered)} tasks, {len(habits)} habits")
+        digest_map[sent_digest.message_id] = ordered
+        last_digest_msg_id = sent_digest.message_id
+    log.info(
+        "Hybrid digest sent — %d critical/today tasks%s",
+        len(ordered),
+        f", {len(habits)} habits" if include_habits else "",
+    )
 
 
 async def send_sunday_review(bot) -> None:
@@ -3110,6 +3174,16 @@ async def post_init(app: Application) -> None:
         we_h=_we_h,
         we_m=_we_m,
     )
+    scheduler.add_job(
+        send_daily_digest,
+        "cron",
+        day_of_week="mon-fri",
+        hour=15,
+        minute=0,
+        args=[app.bot],
+        kwargs={"include_habits": False},
+        id="weekday_afternoon_digest",
+    )
     scheduler.add_job(send_evening_checkin, "cron", hour=_ev_h, minute=_ev_m, args=[app.bot], id="evening_checkin")
     scheduler.add_job(
         fetch_weather_cache,
@@ -3238,6 +3312,7 @@ async def post_init(app: Application) -> None:
     log.info(
         f"Scheduler started ✓  TZ={TZ}  "
         f"weekday={_wk_h:02d}:{_wk_m:02d}  weekend={_we_h:02d}:{_we_m:02d}  "
+        f"afternoon=15:00  "
         f"recurring={_rc_h:02d}:{_rc_m:02d}  "
         f"asana_sync={asana_status}  smoke={smoke_status}  "
         f"archive_orphans={ASANA_ARCHIVE_ORPHANS}  "
