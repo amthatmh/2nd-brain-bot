@@ -104,6 +104,37 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         )
         self.assertEqual(props["Place"]["status"]["name"], "AMC Roosevelt Collection 16")
 
+    def test_normalize_entertainment_datetime_extracts_time_from_notes(self):
+        normalized = self.main._normalize_entertainment_datetime(
+            "2026-04-26",
+            "Seat D6, Auditorium D5, 20:40",
+        )
+        self.assertEqual(normalized, "2026-04-26T20:40:00")
+
+    def test_strip_cinema_structured_notes_removes_redundant_fields(self):
+        cleaned = self.main._strip_cinema_structured_notes("Seat D6, Auditorium D5, 20:40")
+        self.assertIsNone(cleaned)
+
+    def test_find_existing_cinema_venue_uses_previous_logs(self):
+        schema = {
+            "Film": "title",
+            "Place": "status",
+            "Date": "date",
+        }
+        self.main.NOTION_CINEMA_LOG_DB = "cinema_db"
+        self.main.notion_call = MagicMock(return_value={
+            "results": [
+                {
+                    "properties": {
+                        "Film": {"title": [{"plain_text": "The Drama"}]},
+                        "Place": {"type": "status", "status": {"name": "AMC Roosevelt Collection 16"}},
+                    }
+                }
+            ]
+        })
+        venue = self.main._find_existing_cinema_venue("The Drama", schema)
+        self.assertEqual(venue, "AMC Roosevelt Collection 16")
+
 
 if __name__ == "__main__":
     unittest.main()
