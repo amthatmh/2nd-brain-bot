@@ -83,6 +83,27 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["title"], "Cubs vs Sox")
         self.assertEqual(parsed["venue"], "Wrigley")
 
+    def test_extract_cinema_visit_details(self):
+        seat, auditorium = self.main._extract_cinema_visit_details("Seat D6, Auditorium D5, 20:40")
+        self.assertEqual(seat, "D6")
+        self.assertEqual(auditorium, 5)
+
+    def test_place_status_property_is_supported(self):
+        schema = {
+            "Film": "title",
+            "Date": "date",
+            "Place": "status",
+            "Notes": "rich_text",
+        }
+        props = self.main._build_common_entertainment_props(
+            schema,
+            title="Dune",
+            when_iso="2026-04-26",
+            venue="AMC Roosevelt Collection 16",
+            notes=None,
+        )
+        self.assertEqual(props["Place"]["status"]["name"], "AMC Roosevelt Collection 16")
+
 
 if __name__ == "__main__":
     unittest.main()

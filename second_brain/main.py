@@ -2709,9 +2709,12 @@ def _build_common_entertainment_props(
         props[date_prop] = {"date": {"start": when_iso}}
 
     venue_select_prop = _pick_exact_prop(schema, "select", ["Venue", "Place", "Location"])
+    venue_status_prop = _pick_exact_prop(schema, "status", ["Venue", "Place", "Location"])
     venue_rich_text_prop = _pick_exact_prop(schema, "rich_text", ["Venue", "Place", "Location"])
     if venue and venue_select_prop:
         props[venue_select_prop] = {"select": {"name": venue}}
+    elif venue and venue_status_prop:
+        props[venue_status_prop] = {"status": {"name": venue}}
     elif venue and venue_rich_text_prop:
         props[venue_rich_text_prop] = {"rich_text": [{"text": {"content": venue}}]}
     elif venue:
@@ -2726,6 +2729,22 @@ def _build_common_entertainment_props(
         props[source_prop] = {"select": {"name": source_name}}
 
     return props
+
+
+def _extract_cinema_visit_details(notes: str | None) -> tuple[str | None, int | None]:
+    if not notes:
+        return None, None
+
+    seat_match = re.search(r"\bseat\s*([A-Za-z0-9-]+)\b", notes, re.IGNORECASE)
+    seat = seat_match.group(1).strip().upper() if seat_match else None
+
+    auditorium_match = re.search(r"\bauditorium\s*([A-Za-z0-9-]+)\b", notes, re.IGNORECASE)
+    auditorium_value = None
+    if auditorium_match:
+        num_match = re.search(r"\d+", auditorium_match.group(1))
+        if num_match:
+            auditorium_value = int(num_match.group(0))
+    return seat, auditorium_value
 
 
 def _query_title_values(db_id: str, title_prop_name: str) -> list[dict]:
@@ -2755,6 +2774,21 @@ def create_entertainment_log_entry(payload: dict) -> tuple[str, bool]:
         if not schema:
             raise ValueError("Cinema schema is unavailable")
         props = _build_common_entertainment_props(schema, title=title, when_iso=when_iso, venue=venue, notes=notes)
+        seat, auditorium = _extract_cinema_visit_details(notes)
+        seat_select_prop = _pick_exact_prop(schema, "select", ["Seat"])
+        seat_rich_text_prop = _pick_exact_prop(schema, "rich_text", ["Seat"])
+        if seat and seat_select_prop:
+            props[seat_select_prop] = {"select": {"name": seat}}
+        elif seat and seat_rich_text_prop:
+            props[seat_rich_text_prop] = {"rich_text": [{"text": {"content": seat}}]}
+
+        auditorium_number_prop = _pick_exact_prop(schema, "number", ["Auditorium"])
+        auditorium_rich_text_prop = _pick_exact_prop(schema, "rich_text", ["Auditorium"])
+        if auditorium is not None and auditorium_number_prop:
+            props[auditorium_number_prop] = {"number": auditorium}
+        elif auditorium is not None and auditorium_rich_text_prop:
+            props[auditorium_rich_text_prop] = {"rich_text": [{"text": {"content": str(auditorium)}}]}
+
         favourite_prop = _pick_exact_prop(schema, "checkbox", ["Favourite", "Favorite"])
         if favourite_prop:
             props[favourite_prop] = {"checkbox": favourite}
