@@ -52,7 +52,6 @@ from asana_sync import (
 )
 from cinema.sync import sync_cinema_log_to_notion
 from cinema.config import (
-    CINEMA_ENABLED,
     CINEMA_DB_ID,
     FAVE_DB_ID,
     TMDB_API_KEY,
@@ -2651,6 +2650,8 @@ async def cmd_refresh(message, context: ContextTypes.DEFAULT_TYPE | None = None)
         register_habit_schedules(_scheduler, message.get_bot())
         build_digest_schedule(_scheduler, message.get_bot())
     await send_daily_digest(message.get_bot(), include_habits=True)
+    if _scheduler is not None:
+        build_digest_schedule(_scheduler, message.get_bot())
 
 
 async def cmd_todo(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
@@ -3772,7 +3773,7 @@ async def run_asana_sync(bot) -> None:
 
 async def run_cinema_sync(bot) -> None:
     """Daily sync for Cinema Log → Favourite Shows."""
-    if not CINEMA_ENABLED or not CINEMA_DB_ID or not FAVE_DB_ID:
+    if not CINEMA_DB_ID:
         return
 
     sync_status["cinema"]["last_run"] = utc_now_iso()
@@ -4143,7 +4144,7 @@ async def post_init(app: Application) -> None:
         log.warning("Cinema sync disabled due to config issues:")
         for p in cinema_problems:
             log.warning(f"  - {p}")
-    elif CINEMA_ENABLED and CINEMA_DB_ID and FAVE_DB_ID:
+    elif CINEMA_DB_ID:
         register_cinema_jobs(
             scheduler=scheduler,
             bot=app.bot,
@@ -4153,16 +4154,6 @@ async def post_init(app: Application) -> None:
             sync_buffer_minutes=SYNC_BUFFER_MINUTES,
             tz=TZ,
             now_fn=datetime.now,
-        )
-        scheduler.add_job(
-            run_cinema_sync,
-            "interval",
-            minutes=SYNC_BUFFER_MINUTES,
-            args=[app.bot],
-            id="cinema_sync_buffer",
-            max_instances=1,
-            coalesce=True,
-            next_run_time=datetime.now(TZ) + timedelta(minutes=SYNC_BUFFER_MINUTES),
         )
         log.info(
             "Cinema sync jobs registered (daily %02d:%02d UTC + every %d minutes)",
