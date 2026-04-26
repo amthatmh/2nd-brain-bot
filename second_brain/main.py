@@ -621,7 +621,7 @@ def format_weather_block(weather: dict | None, label: str = "🌤️") -> str:
         high_c, high_f = fmt_temp_pair(weather["temp_high"])
         low_c, low_f = fmt_temp_pair(weather["temp_low"])
         return (
-            f"{label} {weather['condition']} · C: High {high_c} / Low {low_c} · "
+            f"{label} {weather['condition']} · C: High {high_c} / Low {low_c}\n"
             f"F: High {high_f} / Low {low_f} · 💧{weather.get('precip_chance', 0)}%"
         )
     temp_c, temp_f = fmt_temp_pair(weather["temp"])
@@ -660,6 +660,17 @@ def format_weather_snapshot() -> str:
         else:
             lines.append("Weather is unavailable. Verify OpenWeather location (try /location) and API key access.")
     return "\n".join(lines)
+
+
+def append_location_to_weather_block(weather_block: str, location_label: str) -> str:
+    """Attach compact location to the final line of a weather block."""
+    if not weather_block:
+        return weather_block
+    if not location_label:
+        return weather_block
+    block_lines = weather_block.splitlines()
+    block_lines[-1] = f"{block_lines[-1]} · 📍{location_label}"
+    return "\n".join(block_lines)
 
 
 def weather_unavailable_digest_line() -> str:
@@ -4223,10 +4234,10 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     lines = [f"☀️ *{date_str}*", ""]
     weather_block = format_weather_block(fetch_weather("today"), label="🌤️")
     location_label = digest_location_label()
-    if weather_block and location_label:
-        lines.append(f"{weather_block} · 📍{location_label}")
+    if weather_block:
+        lines.append(append_location_to_weather_block(weather_block, location_label))
     else:
-        lines.append(weather_block or weather_unavailable_digest_line())
+        lines.append(weather_unavailable_digest_line())
     lines.append("")
     n = 1
 
