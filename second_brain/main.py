@@ -2673,16 +2673,24 @@ def _first_prop_by_type(schema: dict, desired_type: str) -> str | None:
 
 
 def _pick_prop(schema: dict, desired_type: str, candidates: list[str]) -> str | None:
+    lowered = {name.lower(): name for name in schema}
     for candidate in candidates:
         if schema.get(candidate) == desired_type:
             return candidate
+        alt = lowered.get(candidate.lower())
+        if alt and schema.get(alt) == desired_type:
+            return alt
     return _first_prop_by_type(schema, desired_type)
 
 
 def _pick_exact_prop(schema: dict, desired_type: str, candidates: list[str]) -> str | None:
+    lowered = {name.lower(): name for name in schema}
     for candidate in candidates:
         if schema.get(candidate) == desired_type:
             return candidate
+        alt = lowered.get(candidate.lower())
+        if alt and schema.get(alt) == desired_type:
+            return alt
     return None
 
 
@@ -2707,7 +2715,10 @@ def _build_common_entertainment_props(
 
     date_prop = _pick_prop(schema, "date", ["Date", "When", "Datetime", "Watched At"])
     if date_prop and when_iso:
-        props[date_prop] = {"date": {"start": when_iso}}
+        date_payload = {"start": when_iso}
+        if "T" in str(when_iso) and not re.search(r"(Z|[+-]\d{2}:\d{2})$", str(when_iso)):
+            date_payload["time_zone"] = os.environ.get("TIMEZONE", "America/Chicago")
+        props[date_prop] = {"date": date_payload}
 
     venue_select_prop = _pick_exact_prop(schema, "select", ["Venue", "Place", "Location"])
     venue_status_prop = _pick_exact_prop(schema, "status", ["Venue", "Place", "Location"])

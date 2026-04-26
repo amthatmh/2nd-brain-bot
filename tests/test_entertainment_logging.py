@@ -160,6 +160,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
             if fn == self.main.notion.pages.create:
                 props = kwargs["properties"]
                 self.assertEqual(props["Date"]["date"]["start"], "2026-04-27T20:40:00")
+                self.assertEqual(props["Date"]["date"]["time_zone"], "America/Chicago")
                 self.assertEqual(props["Place"]["status"]["name"], "AMC Roosevelt Collection 16")
                 self.assertNotIn("Notes", props)
                 self.assertEqual(props["Seat"]["rich_text"][0]["text"]["content"], "D6")
@@ -216,6 +217,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
             if fn == self.main.notion.pages.create:
                 props = kwargs["properties"]
                 self.assertEqual(props["Date"]["date"]["start"], "2026-04-25T20:40:00")
+                self.assertEqual(props["Date"]["date"]["time_zone"], "America/Chicago")
                 self.assertNotIn("Notes", props)
                 return {"id": "page-2"}
             if fn == self.main.notion.databases.query:
@@ -232,6 +234,21 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
             "favourite": False,
         })
         self.assertEqual(page_id, "page-2")
+
+    def test_place_property_lookup_is_case_insensitive(self):
+        schema = {
+            "Film": "title",
+            "date": "date",
+            "place": "status",
+        }
+        props = self.main._build_common_entertainment_props(
+            schema,
+            title="The Drama",
+            when_iso="2026-04-28T20:40:00",
+            venue="AMC Roosevelt Collection 16",
+            notes=None,
+        )
+        self.assertEqual(props["place"]["status"]["name"], "AMC Roosevelt Collection 16")
 
 
 if __name__ == "__main__":
