@@ -2820,6 +2820,17 @@ def _strip_cinema_structured_notes(notes: str | None) -> str | None:
     return cleaned or None
 
 
+def _strip_datetime_from_notes(notes: str | None) -> str | None:
+    if not notes:
+        return None
+    cleaned = re.sub(r"\b\d{4}[/-]\d{1,2}[/-]\d{1,2}\b", "", notes, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b([01]?\d|2[0-3]):[0-5]\d\b", "", cleaned)
+    cleaned = re.sub(r"\b(?:on|at)\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"[,\-–|]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned or None
+
+
 def _find_existing_cinema_venue(title: str, schema: dict) -> str | None:
     title_prop = _title_prop_name(schema)
     venue_prop = _pick_exact_prop(schema, "select", ["Venue", "Place", "Location"]) \
@@ -2980,6 +2991,9 @@ def create_entertainment_log_entry(payload: dict) -> tuple[str, bool]:
         schema = entertainment_schemas.get("performances")
         if not schema:
             raise ValueError("Performances schema is unavailable")
+        datetime_hint = " ".join(part for part in [title, venue, notes] if part)
+        when_iso = _normalize_entertainment_datetime(when_iso, datetime_hint)
+        notes = _strip_datetime_from_notes(notes)
         props = _build_common_entertainment_props(schema, title=title, when_iso=when_iso, venue=venue, notes=notes)
         page = notion_call(notion.pages.create, parent={"database_id": NOTION_PERFORMANCES_DB}, properties=props)
         return page["id"], False
@@ -2988,6 +3002,9 @@ def create_entertainment_log_entry(payload: dict) -> tuple[str, bool]:
         schema = entertainment_schemas.get("sports")
         if not schema:
             raise ValueError("Sports schema is unavailable")
+        datetime_hint = " ".join(part for part in [title, venue, notes] if part)
+        when_iso = _normalize_entertainment_datetime(when_iso, datetime_hint)
+        notes = _strip_datetime_from_notes(notes)
         props = _build_common_entertainment_props(schema, title=title, when_iso=when_iso, venue=venue, notes=notes)
         page = notion_call(notion.pages.create, parent={"database_id": NOTION_SPORTS_LOG_DB}, properties=props)
         return page["id"], False
@@ -3028,6 +3045,8 @@ async def handle_entertainment_log(message, payload: dict) -> None:
     summary_lines.append("")
     summary_lines.append("_Saved to Notion_")
     await message.reply_text("\n".join(summary_lines), parse_mode="Markdown")
+    if log_type == "sport":
+        await message.reply_text("🏆 Logged to Sports Log. Which competition should I set for this one?")
     log.info("Entertainment logged type=%s title=%s page_id=%s", log_type, title, entry_id)
 
 
@@ -4070,6 +4089,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 f"✅ Logged to {label}\n\n🎫 {payload.get('title','Untitled')}\n📅 {payload.get('date')}{suffix}\n\n_Saved to Notion_",
                 parse_mode="Markdown",
             )
+            if payload.get("log_type") == "sport":
+                await q.message.reply_text("🏆 Logged to Sports Log. Which competition should I set for this one?")
             log.info("Entertainment confirmed and saved page_id=%s", entry_id)
         except Exception as e:
             log.error("Entertainment callback save error: %s", e)
