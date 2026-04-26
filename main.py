@@ -17,6 +17,7 @@ import re
 import logging
 import calendar
 import subprocess
+import urllib.parse
 from datetime import date, datetime, timedelta
 from collections import defaultdict
 from pathlib import Path
@@ -130,7 +131,7 @@ NOTION_TOKEN    = os.environ["NOTION_TOKEN"]
 NOTION_DB_ID    = os.environ["NOTION_DB_ID"]
 NOTION_HABIT_DB = os.environ["NOTION_HABIT_DB"]
 NOTION_LOG_DB   = os.environ["NOTION_LOG_DB"]
-NOTION_NOTES_DB = os.environ.get("NOTION_NOTES_DB", "")
+NOTION_NOTES_DB = os.environ["NOTION_NOTES_DB"]    # 📒 Notes
 NOTION_DIGEST_SELECTOR_DB = os.environ["NOTION_DIGEST_SELECTOR_DB"]
 
 TZ           = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
@@ -182,6 +183,7 @@ _done_picker_counter = 0
 _todo_picker_counter = 0
 _v10_counter = 0
 habit_cache: dict[str, dict] = {}
+notes_pending: set[int] = set()  # chat_ids currently in note-capture mode
 _tmdb_http_client: httpx.AsyncClient | None = None
 sync_status: dict[str, dict] = init_sync_status()
 weather_cache: dict[str, dict] = {
@@ -219,6 +221,11 @@ BTN_NOTES = "📝 Notes"
 BTN_WEATHER = "🌤️ Weather"
 BTN_MUTE = "🔕 Mute"
 LEGACY_BTN_ALL_OPEN = "📋 All Open"
+TOPIC_OPTIONS = [
+    "🎵 Acoustics", "💼 Work", "🏠 Personal",
+    "💪 Health", "🏢 LEED", "✅ WELL", "💡 Ideas", "📚 Research",
+]
+_URL_RE = re.compile(r"https?://[^\s\)\]>\"']+", re.IGNORECASE)
 
 def num_emoji(n: int) -> str:
     return NUMBER_EMOJIS[n - 1] if 1 <= n <= 10 else f"{n}."
@@ -1046,6 +1053,137 @@ async def start_note_capture_flow(message, text: str) -> None:
     except Exception as e:
         log.error(f"Notion note error: {e}")
         await message.reply_text("⚠️ Couldn't save note to Notion.")
+
+
+def extract_url(text: str) -> str | None:
+    """Return first URL found in text, or None."""
+    m = _URL_RE.search(text)
+    return m.group(0) if m else None
+
+
+def fetch_url_metadata(url: str) -> dict:
+    """Fetch page title and meta description. Returns {title, description}."""
+    import urllib.request
+    import html
+    title, description = "", ""
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; SecondBrainBot/1.0)"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            raw = resp.read(32768).decode("utf-8", errors="replace")
+        tm = re.search(r"<title[^>]*>(.*?)</title>", raw, re.IGNORECASE | re.DOTALL)
+        if tm:
+            title = html.unescape(re.sub(r"\s+", " ", tm.group(1))).strip()[:200]
+        dm = re.search(
+            r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']{0,300})',
+            raw, re.IGNORECASE,
+        ) or re.search(
+            r'<meta[^>]+content=["\']([^"\']{0,300})[^>]+name=["\']description["\']',
+            raw, re.IGNORECASE,
+        )
+        if dm:
+            description = html.unescape(dm.group(1)).strip()
+    except Exception as e:
+        log.warning(f"fetch_url_metadata failed for {url}: {e}")
+    return {"title": title, "description": description}
+
+
+def classify_note(title: str, description: str, url: str, raw_text: str) -> dict:
+    """Ask Claude to pick Topic tags and a clean title. Returns {title, topics}."""
+    context = title or description or raw_text or url
+    prompt = f"""You are classifying a saved note/link for a second brain system.
+
+Note context: "{context}"
+URL: {url}
+
+Available topics: {TOPIC_OPTIONS}
+
+Return ONLY valid JSON, no markdown:
+{{
+  "title": "short descriptive title (max 80 chars, use the page title if good)",
+  "topics": ["pick 1-2 most relevant topics from the list above"]
+}}"""
+    try:
+        resp = claude.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=150,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
+        result = json.loads(raw)
+        valid_topics = [t for t in result.get("topics", []) if t in TOPIC_OPTIONS]
+        return {
+            "title": result.get("title", title or url)[:200],
+            "topics": valid_topics or ["💡 Ideas"],
+        }
+    except Exception as e:
+        log.error(f"classify_note error: {e}")
+        return {"title": title or url[:200], "topics": ["💡 Ideas"]}
+
+
+def save_note(title: str, url: str | None, content: str, topics: list[str], note_type: str) -> str:
+    """Write a note to the 📒 Notes Notion DB. Returns page_id."""
+    today = date.today().isoformat()
+    props: dict = {
+        "Title": {"title": [{"text": {"content": title or "Untitled"}}]},
+        "Type": {"select": {"name": note_type}},
+        "Source": {"select": {"name": "📱 Telegram"}},
+        "Date Created": {"date": {"start": today}},
+        "Processed": {"checkbox": False},
+    }
+    if url:
+        props["Link"] = {"url": url}
+    if content:
+        props["Content"] = {"rich_text": [{"text": {"content": content[:2000]}}]}
+    if topics:
+        props["Topic"] = {"multi_select": [{"name": t} for t in topics]}
+    page = notion.pages.create(
+        parent={"database_id": NOTION_NOTES_DB},
+        properties=props,
+    )
+    return page["id"]
+
+
+async def handle_note_input(message, text: str) -> None:
+    """Called when user sends content in note-capture mode."""
+    chat_id = message.chat_id
+    notes_pending.discard(chat_id)
+    url = extract_url(text)
+    thinking = await message.reply_text("📒 Saving note...")
+    try:
+        if url:
+            parsed = urllib.parse.urlsplit(url)
+            if not parsed.scheme or not parsed.netloc:
+                raise ValueError("invalid URL")
+            meta = await asyncio.get_event_loop().run_in_executor(
+                None, fetch_url_metadata, url
+            )
+            classified = await asyncio.get_event_loop().run_in_executor(
+                None, classify_note,
+                meta["title"], meta["description"], url, text,
+            )
+            note_title = classified["title"]
+            topics = classified["topics"]
+            content = meta["description"]
+            note_type = "🔗 Link/Article"
+        else:
+            note_title = text[:80]
+            topics = ["💡 Ideas"]
+            content = text
+            note_type = "📝 Quick Note"
+
+        save_note(note_title, url, content, topics, note_type)
+        icon = "🔗" if url else "📝"
+        topic_str = "  ".join(topics)
+        await thinking.edit_text(
+            f"📒 Saved!\n\n{icon} *{note_title}*\n🏷 {topic_str}\n\n_Saved to Notion_",
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        log.error(f"save_note error: {e}")
+        await thinking.edit_text(f"⚠️ Couldn't save note to Notion.\n_{e}_", parse_mode="Markdown")
 
 
 def classify_task(text: str) -> dict:
@@ -2929,6 +3067,27 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             context.user_data["awaiting_note_capture"] = None
         return
 
+    # Quick-action Notes button (ReplyKeyboard sends plain text "📝 Notes")
+    if lower in ("📝 notes", "notes"):
+        notes_pending.add(update.effective_chat.id)
+        await message.reply_text(
+            "📒 *Notes* — send me a link or type a note:",
+            parse_mode="Markdown",
+        )
+        return
+
+    # note: <text or url> — explicit inline command
+    match_note = re.match(r"note:\s*(.+)$", text, re.IGNORECASE)
+    if match_note:
+        notes_pending.discard(update.effective_chat.id)
+        await handle_note_input(message, match_note.group(1).strip())
+        return
+
+    # User is in note-capture mode — next message is the note content
+    if update.effective_chat.id in notes_pending:
+        await handle_note_input(message, text)
+        return
+
     if lower == "done" and message.reply_to_message:
         replied_id = message.reply_to_message.message_id
         if replied_id in capture_map:
@@ -3130,6 +3289,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except Exception as e:
             log.error(f"Notion note error: {e}")
             await q.edit_message_text("⚠️ Couldn't save note to Notion.")
+        return
+
+    if parts[0] == "notes_start":
+        notes_pending.add(q.message.chat_id)
+        await q.edit_message_text(
+            "📒 *Notes* — send me a link or type a note:",
+            parse_mode="Markdown",
+        )
         return
 
     if parts[0] in ("hl", "hc") and len(parts) == 2:
