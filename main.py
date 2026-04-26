@@ -146,7 +146,6 @@ APP_VERSION    = os.environ.get("APP_VERSION", "v10.1.0")
 SYNC_BUFFER_MINUTES = max(1, int(os.environ.get("SYNC_BUFFER_MINUTES", "5")))
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "").strip()
 WEATHER_LOCATION = os.environ.get("WEATHER_LOCATION", "Chicago,IL").strip()
-_ev_h, _ev_m = _parse_hhmm_env("EVENING_CHECKIN_TIME", "20:00")
 
 # ── Asana sync config ────────────────────────────────────────────────────────
 ASANA_PAT           = os.environ.get("ASANA_PAT", "")
@@ -3657,18 +3656,6 @@ async def send_habit_reminder(bot, time_str: str) -> None:
     log.info(f"Combined digest sent at {time_str} — {len(ordered)} tasks, {len(habits)} habits")
 
 
-async def send_evening_checkin(bot) -> None:
-    """Evening check-in with tomorrow's weather preview."""
-    if is_muted():
-        log.info("Evening check-in skipped (muted)")
-        return
-    tomorrow_weather = format_weather_block(fetch_weather("tomorrow"), label="🌙 Tomorrow")
-    msg = "🌙 *Evening Check-in*\n\nHow did today go?"
-    if tomorrow_weather:
-        msg += f"\n\n{tomorrow_weather}"
-    await bot.send_message(chat_id=MY_CHAT_ID, text=msg, parse_mode="Markdown")
-
-
 async def send_daily_habits_list(bot) -> None:
     """Fetch all active habits for today and send as clickable buttons."""
     all_habits = (
@@ -4048,7 +4035,6 @@ async def post_init(app: Application) -> None:
         args=[app.bot, scheduler],
         id="digest_schedule_refresh",
     )
-    scheduler.add_job(send_evening_checkin, "cron", hour=_ev_h, minute=_ev_m, args=[app.bot], id="evening_checkin")
     scheduler.add_job(
         fetch_weather_cache,
         "cron",

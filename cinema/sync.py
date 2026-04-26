@@ -3,10 +3,33 @@
 from __future__ import annotations
 
 from datetime import date
+import re
 
 import httpx
 
 TMDB_BASE = "https://api.themoviedb.org/3"
+
+def _title_search_candidates(title: str) -> list[str]:
+    """Generate progressively simpler TMDB search candidates for noisy titles."""
+    clean = " ".join((title or "").split()).strip()
+    if not clean:
+        return []
+
+    candidates: list[str] = [clean]
+
+    no_parens = re.sub(r"\s*\([^)]*\)", "", clean).strip()
+    if no_parens and no_parens not in candidates:
+        candidates.append(no_parens)
+
+    no_year = re.sub(r"\s*(19|20)\d{2}$", "", no_parens or clean).strip(" -:/")
+    if no_year and no_year not in candidates:
+        candidates.append(no_year)
+
+    primary_segment = re.split(r"[:\-–—|]", no_year or clean, maxsplit=1)[0].strip()
+    if primary_segment and primary_segment not in candidates:
+        candidates.append(primary_segment)
+
+    return candidates
 
 
 def _plain_text(prop: dict) -> str:
@@ -63,18 +86,21 @@ async def _search_tmdb_url_with_client(
     if not tmdb_api_key or not title:
         return None
 
+    search_titles = _title_search_candidates(title)
+
     if client is not None:
-        for media_type in ("movie", "tv"):
-            resp = await client.get(
-                f"{TMDB_BASE}/search/{media_type}",
-                params={"api_key": tmdb_api_key, "query": title, "page": 1},
-            )
-            resp.raise_for_status()
-            results = resp.json().get("results", [])
-            if results:
-                tmdb_id = results[0].get("id")
-                if tmdb_id:
-                    return f"https://www.themoviedb.org/{media_type}/{tmdb_id}"
+        for query_title in search_titles:
+            for media_type in ("movie", "tv"):
+                resp = await client.get(
+                    f"{TMDB_BASE}/search/{media_type}",
+                    params={"api_key": tmdb_api_key, "query": query_title, "page": 1},
+                )
+                resp.raise_for_status()
+                results = resp.json().get("results", [])
+                if results:
+                    tmdb_id = results[0].get("id")
+                    if tmdb_id:
+                        return f"https://www.themoviedb.org/{media_type}/{tmdb_id}"
         return None
 
     async with httpx.AsyncClient(timeout=12) as owned_client:

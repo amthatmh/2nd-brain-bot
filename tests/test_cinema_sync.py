@@ -1,7 +1,7 @@
 from datetime import date
 import unittest
 
-from cinema.sync import _build_cinema_query_filter, _load_existing_favourites, _plain_text
+from cinema.sync import _build_cinema_query_filter, _load_existing_favourites, _plain_text, _title_search_candidates
 
 
 class TestCinemaSyncHelpers(unittest.TestCase):
@@ -30,6 +30,11 @@ class TestCinemaSyncHelpers(unittest.TestCase):
                 ]
             },
         )
+
+
+    def test_title_search_candidates_strips_common_noise(self):
+        candidates = _title_search_candidates("Dune: Part Two (2024)")
+        self.assertEqual(candidates, ["Dune: Part Two (2024)", "Dune: Part Two", "Dune"])
 
     def test_load_existing_favourites_handles_pagination(self):
         test_case = self
