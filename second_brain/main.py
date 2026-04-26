@@ -245,6 +245,25 @@ def next_weekday(weekday: int) -> date:
     return today + timedelta(days=days_ahead)
 
 
+def _parse_time_to_minutes(time_str: str | None) -> int:
+    """
+    Parse "HH:MM" format to minutes since midnight.
+    Returns -1 if parse fails (will sort to end).
+    """
+    if not time_str:
+        return -1
+    try:
+        hhmm = str(time_str).strip()
+        hour_str, minute_str = hhmm.split(":")
+        hour = int(hour_str)
+        minute = int(minute_str)
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            return -1
+        return hour * 60 + minute
+    except Exception:
+        return -1
+
+
 def _utc_now_iso() -> str:
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
@@ -700,26 +719,80 @@ def habits_by_time(time_str: str) -> list[dict]:
     return [h for h in habit_cache.values() if h["time"] == time_str]
 
 
-def get_habits_by_time(time_filter: str) -> list[dict]:
+def get_active_habits_for_trigger() -> list[dict]:
+    """
+    Fetch active habits sorted by clock time and filtered by weekly frequency quota.
+    """
     try:
-        results = notion.databases.query(
+        results = notion_query_all(
             database_id=NOTION_HABIT_DB,
-            filter={
-                "and": [
-                    {"property": "Active", "checkbox": {"equals": True}},
-                    {"property": "Time",   "select":   {"equals": time_filter}},
-                ]
-            },
+            filter={"property": "Active", "checkbox": {"equals": True}},
         )
-        habits = []
-        for page in results.get("results", []):
-            title_parts = page["properties"].get("Habit", {}).get("title", [])
-            name = title_parts[0]["text"]["content"] if title_parts else "Unknown"
-            habits.append({"page_id": page["id"], "name": name})
-        return habits
     except Exception as e:
-        log.error(f"get_habits_by_time error: {e}")
+        log.error("get_active_habits_for_trigger query error: %s", e)
         return []
+
+    habits: list[dict] = []
+    for page in results:
+        try:
+            props = page.get("properties", {})
+            title_parts = props.get("Habit", {}).get("title", [])
+            name = title_parts[0].get("plain_text") if title_parts else None
+            if not name:
+                name = "Unknown"
+
+            time_prop = props.get("Time", {})
+            time_str = ""
+            if time_prop.get("type") == "select":
+                time_str = (time_prop.get("select") or {}).get("name") or ""
+            elif time_prop.get("type") == "rich_text":
+                rich = time_prop.get("rich_text", [])
+                time_str = (rich[0].get("plain_text") if rich else "") or ""
+            time_str = time_str.strip() or "—"
+            time_minutes = _parse_time_to_minutes(time_str if time_str != "—" else None)
+
+            frequency: int | None = None
+            freq_prop = props.get("Frequency", {})
+            freq_text = ""
+            if freq_prop.get("type") == "select":
+                freq_text = (freq_prop.get("select") or {}).get("name") or ""
+            elif freq_prop.get("type") == "rich_text":
+                rich = freq_prop.get("rich_text", [])
+                freq_text = (rich[0].get("plain_text") if rich else "") or ""
+            elif freq_prop.get("type") == "number":
+                raw_num = freq_prop.get("number")
+                if isinstance(raw_num, (int, float)) and raw_num > 0:
+                    frequency = int(raw_num)
+            if frequency is None and freq_text:
+                m = re.search(r"\d+", freq_text)
+                if m:
+                    frequency = int(m.group(0))
+
+            completion_count = _count_habit_completions_this_week(page["id"])
+            if frequency and frequency > 0 and completion_count >= frequency:
+                continue
+
+            habits.append(
+                {
+                    "page_id": page["id"],
+                    "name": name,
+                    "time_minutes": time_minutes,
+                    "time_str": time_str,
+                    "frequency": frequency,
+                    "completion_count": completion_count,
+                }
+            )
+        except Exception as e:
+            log.error("get_active_habits_for_trigger parse error for %s: %s", page.get("id"), e)
+
+    habits.sort(key=lambda h: (h["time_minutes"] < 0, h["time_minutes"] if h["time_minutes"] >= 0 else 10**9, h["name"].lower()))
+    return habits
+
+
+def get_habits_by_time(time_filter: str) -> list[dict]:
+    """Legacy wrapper kept for compatibility."""
+    del time_filter
+    return get_active_habits_for_trigger()
 
 
 def notion_query_all(database_id: str, **kwargs) -> list[dict]:
@@ -1646,6 +1719,41 @@ def already_logged_today(habit_page_id: str) -> bool:
         },
     )
     return len(results.get("results", [])) > 0
+
+
+def _count_habit_completions_this_week(habit_page_id: str) -> int:
+    """
+    Count completed logs for a habit from Monday through today (inclusive).
+    """
+    try:
+        today = datetime.now(TZ).date()
+        monday = today - timedelta(days=today.weekday())
+        results = notion.databases.query(
+            database_id=NOTION_LOG_DB,
+            filter={
+                "and": [
+                    {"property": "Habit", "relation": {"contains": habit_page_id}},
+                    {"property": "Completed", "checkbox": {"equals": True}},
+                    {"property": "Date", "date": {"on_or_after": monday.isoformat()}},
+                ]
+            },
+        )
+        count = 0
+        for row in results.get("results", []):
+            date_prop = row.get("properties", {}).get("Date", {}).get("date", {})
+            start = date_prop.get("start")
+            if not start:
+                continue
+            try:
+                row_day = date.fromisoformat(start[:10])
+            except Exception:
+                continue
+            if monday <= row_day <= today:
+                count += 1
+        return count
+    except Exception as e:
+        log.error("Habit weekly completion count error for %s: %s", habit_page_id, e)
+        return 0
 
 
 def logs_this_week(habit_page_id: str) -> int:
@@ -2688,15 +2796,31 @@ def new_task_keyboard(key: str) -> InlineKeyboardMarkup:
     ])
 
 
-def habit_buttons(habits: list[dict], prefix: str) -> InlineKeyboardMarkup:
-    rows, row = [], []
-    for habit in habits:
+def habit_buttons(habits: list[dict], prefix: str, page: int = 0, page_size: int = 8) -> InlineKeyboardMarkup:
+    start = max(0, page) * page_size
+    end = start + page_size
+    page_habits = habits[start:end]
+
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for habit in page_habits:
         p = _clean_pid(habit["page_id"])
         row.append(InlineKeyboardButton(habit["name"], callback_data=f"{prefix}:{p}"))
         if len(row) == 2:
-            rows.append(row); row = []
+            rows.append(row)
+            row = []
     if row:
         rows.append(row)
+
+    if len(habits) > page_size:
+        nav: list[InlineKeyboardButton] = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"hpag:{prefix}:{page-1}"))
+        if end < len(habits):
+            nav.append(InlineKeyboardButton("➡️ Next", callback_data=f"hpag:{prefix}:{page+1}"))
+        if nav:
+            rows.append(nav)
+
     return InlineKeyboardMarkup(rows)
 
 
@@ -3047,7 +3171,8 @@ async def route_classified_message_v10(message, text: str) -> None:
                 log_habit(habit_pid, habit_name)
                 await thinking.edit_text(f"✅ Logged!\n\n{habit_name}\n📅 {date.today().strftime('%B %-d')}")
         else:
-            all_habits = sorted(habit_cache.values(), key=lambda h: h["sort"])
+            all_habits = [{"page_id": h["page_id"], "name": name} for name, h in habit_cache.items()]
+            all_habits.sort(key=lambda h: h["name"].lower())
             await thinking.edit_text("Which habit did you complete?", reply_markup=habit_buttons(all_habits, "hl"))
         return
 
@@ -3412,6 +3537,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await q.edit_message_text(f"✅ {habit_name} logged!")
         except Exception as e:
             log.error(f"Habit log error: {e}"); await q.edit_message_text("⚠️ Couldn't log to Notion.")
+        return
+
+    if parts[0] == "hpag" and len(parts) == 3:
+        _, prefix, page_str = parts
+        all_habits = get_active_habits_for_trigger()
+        try:
+            await q.edit_message_reply_markup(
+                reply_markup=habit_buttons(all_habits, prefix, page=int(page_str))
+            )
+        except Exception as e:
+            log.error(f"Habit pagination error: {e}")
+            await q.edit_message_text("⚠️ Couldn't update habits view.")
         return
 
     if parts[0] == "nt" and len(parts) == 3:
@@ -3835,7 +3972,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     if config and config.get("include_habits") is not None:
         habits_enabled = bool(config.get("include_habits"))
     if habits_enabled:
-        habits = pending_habits_for_digest()
+        habits = get_active_habits_for_trigger()
 
     if overdue:
         lines.append("🚨 *Overdue*")
@@ -3858,20 +3995,53 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
             n += 1
         lines.append("")
 
-    if habits:
-        lines.append("🌅  *Habits — tap to log:*")
     message = "\n".join(lines).strip()
     sent_digest = await bot.send_message(
         chat_id=MY_CHAT_ID,
         text=message,
         parse_mode="Markdown",
-        reply_markup=habit_buttons(habits, "hc") if habits else None,
+        reply_markup=None,
     )
+
+    if habits:
+        habit_text = "🌅 *Morning habits* — tap to log:\n\n"
+        for h in habits[:5]:
+            habit_text += f"⏰ {h['time_str']} — {h['name']}\n"
+        if len(habits) > 5:
+            habit_text += f"\n_+{len(habits) - 5} more_"
+        await bot.send_message(
+            chat_id=MY_CHAT_ID,
+            text=habit_text.rstrip(),
+            parse_mode="Markdown",
+            reply_markup=habit_buttons(habits, "hc"),
+        )
 
     if ordered:
         digest_map[sent_digest.message_id] = ordered
     last_digest_msg_id = sent_digest.message_id
     log.info("Consolidated daily digest sent — %d tasks, %d habits", len(ordered), len(habits))
+
+
+async def send_evening_checkin(bot) -> None:
+    """Evening habit check-in with time display and frequency status."""
+    evening_habits = get_active_habits_for_trigger()
+    if not evening_habits:
+        return
+
+    habit_text = "🌙 *Evening check-in* — did you do these today?\n\n"
+    for h in evening_habits[:5]:
+        freq_tag = f" _{h['completion_count']}/{h['frequency']}_" if h.get("frequency") else ""
+        habit_text += f"⏰ {h['time_str']} — {h['name']}{freq_tag}\n"
+    if len(evening_habits) > 5:
+        habit_text += f"\n_+{len(evening_habits) - 5} more_"
+
+    await bot.send_message(
+        chat_id=MY_CHAT_ID,
+        text=habit_text.rstrip(),
+        parse_mode="Markdown",
+        reply_markup=habit_buttons(evening_habits, "hc"),
+    )
+    log.info("Evening check-in sent — %d habits", len(evening_habits))
 
 
 async def send_sunday_review(bot) -> None:
@@ -3898,7 +4068,7 @@ async def send_habit_reminder(bot, time_str: str) -> None:
     if is_muted():
         log.info("Habit reminder skipped (muted)")
         return
-    habits = pending_habits_for_digest(time_str)
+    habits = get_active_habits_for_trigger()
     if not habits:
         return
 
@@ -3927,36 +4097,18 @@ async def send_habit_reminder(bot, time_str: str) -> None:
 
 async def send_daily_habits_list(bot) -> None:
     """Fetch all active habits for today and send as clickable buttons."""
-    all_habits = (
-        get_habits_by_time("🌅 Morning")
-        + get_habits_by_time("🌙 Evening")
-        + get_habits_by_time("🕐 Anytime")
-    )
-
-    seen: set[str] = set()
-    unique_habits: list[dict] = []
-    for habit in all_habits:
-        page_id = habit.get("page_id")
-        if page_id and page_id not in seen:
-            unique_habits.append(habit)
-            seen.add(page_id)
-
-    if not unique_habits:
+    habits = get_active_habits_for_trigger()
+    if not habits:
         await bot.send_message(chat_id=MY_CHAT_ID, text="🎯 No habits for today.")
-        return
-
-    incomplete_habits = [h for h in unique_habits if not already_logged_today(h["page_id"])]
-    if not incomplete_habits:
-        await bot.send_message(chat_id=MY_CHAT_ID, text="🎯 All habits logged! ✅")
         return
 
     await bot.send_message(
         chat_id=MY_CHAT_ID,
         text="🎯 *Daily habits* — tap to log:",
         parse_mode="Markdown",
-        reply_markup=habit_buttons(incomplete_habits, "hc"),
+        reply_markup=habit_buttons(habits, "hc"),
     )
-    log.info("Habits list sent — %s incomplete habits", len(incomplete_habits))
+    log.info("Habits list sent — %s available habits", len(habits))
 
 
 def register_habit_schedules(scheduler: AsyncIOScheduler, bot) -> None:
