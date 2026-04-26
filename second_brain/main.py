@@ -758,7 +758,57 @@ def load_digest_slots() -> list[dict]:
         title = prop.get("title", [])
         if title:
             return (title[0].get("plain_text") or "").strip()
+        select = prop.get("select")
+        if select and select.get("name"):
+            return (select.get("name") or "").strip()
+        date_value = prop.get("date") or {}
+        if isinstance(date_value, dict) and date_value.get("start"):
+            return str(date_value.get("start")).strip()
         return ""
+
+    def normalize_slot_time(raw: str) -> str | None:
+        value = (raw or "").strip()
+        if not value:
+            return None
+
+        # Accept "HH:MM" / "H:MM", optionally with seconds.
+        iso_match = re.fullmatch(r"(\d{1,2}):(\d{2})(?::\d{2})?", value)
+        if iso_match:
+            hh = int(iso_match.group(1))
+            mm = int(iso_match.group(2))
+            if 0 <= hh <= 23 and 0 <= mm <= 59:
+                return f"{hh:02d}:{mm:02d}"
+            return None
+
+        # Accept "H:MM AM/PM" formats commonly used in select labels.
+        ampm_match = re.fullmatch(r"(\d{1,2}):(\d{2})\s*([AaPp][Mm])", value)
+        if ampm_match:
+            hh = int(ampm_match.group(1))
+            mm = int(ampm_match.group(2))
+            ampm = ampm_match.group(3).lower()
+            if not (1 <= hh <= 12 and 0 <= mm <= 59):
+                return None
+            if ampm == "am":
+                hh = 0 if hh == 12 else hh
+            else:
+                hh = 12 if hh == 12 else hh + 12
+            return f"{hh:02d}:{mm:02d}"
+
+        # If Notion date-time string is provided (e.g. 2026-04-26T09:00:00.000Z), parse time part.
+        dt_match = re.search(r"T(\d{2}):(\d{2})", value)
+        if dt_match:
+            hh = int(dt_match.group(1))
+            mm = int(dt_match.group(2))
+            if 0 <= hh <= 23 and 0 <= mm <= 59:
+                return f"{hh:02d}:{mm:02d}"
+
+        internal_match = re.search(r"\b(\d{1,2}):(\d{2})\b", value)
+        if internal_match:
+            hh = int(internal_match.group(1))
+            mm = int(internal_match.group(2))
+            if 0 <= hh <= 23 and 0 <= mm <= 59:
+                return f"{hh:02d}:{mm:02d}"
+        return None
 
     slots: list[dict] = []
     rows = notion_query_all(NOTION_DIGEST_SELECTOR_DB)
@@ -766,11 +816,10 @@ def load_digest_slots() -> list[dict]:
         props = row.get("properties", {})
 
         slot_time_raw = first_text(props.get("Time", {}))
-        time_match = re.fullmatch(r"(\d{1,2}):(\d{2})", slot_time_raw)
-        if not time_match:
+        slot_time = normalize_slot_time(slot_time_raw)
+        if not slot_time:
             log.warning("Skipping digest selector row with invalid Time=%r", slot_time_raw)
             continue
-        slot_time = f"{int(time_match.group(1)):02d}:{int(time_match.group(2)):02d}"
         hh, mm = map(int, slot_time.split(":"))
         if not (0 <= hh <= 23 and 0 <= mm <= 59):
             log.warning("Skipping digest selector row with out-of-range Time=%r", slot_time_raw)
@@ -1284,6 +1333,15 @@ def _notion_type_from_tmdb(media_type: str) -> str:
     return {"tv": "Series", "movie": "Film"}.get(media_type, "Series")
 
 
+def _tmdb_media_slug(media_type: str) -> str:
+    normalized = (media_type or "").strip().lower()
+    if normalized in {"film", "movie"}:
+        return "movie"
+    if normalized in {"series", "tv", "tv series", "anime", "documentary"}:
+        return "tv"
+    return ""
+
+
 def _get_tmdb_http_client() -> httpx.AsyncClient:
     global _tmdb_http_client
     if _tmdb_http_client is None:
@@ -1300,10 +1358,11 @@ def create_watchlist_entry(
     runtime: int | None = None,
 ) -> str:
     tmdb_url = ""
-    if tmdb_id:
-        media_slug = "movie" if media_type == "Film" else "tv" if media_type == "Series" else ""
+    tmdb_id_str = str(tmdb_id).strip() if tmdb_id is not None else ""
+    if tmdb_id_str:
+        media_slug = _tmdb_media_slug(media_type)
         if media_slug:
-            tmdb_url = f"https://www.themoviedb.org/{media_slug}/{tmdb_id}"
+            tmdb_url = f"https://www.themoviedb.org/{media_slug}/{tmdb_id_str}"
     props: dict = {
         "Title": {"title": [{"text": {"content": title}}]},
         "Type": {"select": {"name": media_type}},
@@ -1311,8 +1370,8 @@ def create_watchlist_entry(
         "Source": {"select": {"name": "📱 Telegram"}},
         "Added": {"date": {"start": date.today().isoformat()}},
     }
-    if tmdb_id:
-        props["TMDB ID"] = {"rich_text": [{"text": {"content": tmdb_id}}]}
+    if tmdb_id_str:
+        props["TMDB ID"] = {"rich_text": [{"text": {"content": tmdb_id_str}}]}
     if tmdb_url:
         props["TMDB URL"] = {"url": tmdb_url}
     if seasons is not None:
