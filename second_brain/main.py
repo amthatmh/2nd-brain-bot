@@ -138,6 +138,10 @@ NOTION_TOKEN    = os.environ["NOTION_TOKEN"]
 NOTION_DB_ID    = os.environ["NOTION_DB_ID"]
 NOTION_HABIT_DB = os.environ["NOTION_HABIT_DB"]
 NOTION_LOG_DB   = os.environ["NOTION_LOG_DB"]
+NOTION_CINEMA_LOG_DB = os.environ["NOTION_CINEMA_LOG_DB"]
+NOTION_PERFORMANCES_DB = os.environ["NOTION_PERFORMANCES_DB"]
+NOTION_SPORTS_LOG_DB = os.environ["NOTION_SPORTS_LOG_DB"]
+NOTION_FAVOURITE_FILMS_DB = os.environ["NOTION_FAVOURITE_FILMS_DB"]
 NOTION_NOTES_DB = os.environ["NOTION_NOTES_DB"]    # 📒 Notes
 NOTION_DIGEST_SELECTOR_DB = os.environ["NOTION_DIGEST_SELECTOR_DB"]
 
@@ -189,6 +193,7 @@ _pending_counter = 0
 _done_picker_counter = 0
 _todo_picker_counter = 0
 _v10_counter = 0
+_entertainment_counter = 0
 habit_cache: dict[str, dict] = STATE.habit_cache
 notes_pending: set[int] = STATE.notes_pending  # chat_ids currently in note-capture mode
 _tmdb_http_client: httpx.AsyncClient | None = None
@@ -210,6 +215,7 @@ current_location: str = WEATHER_LOCATION
 current_lat: float | None = None
 current_lon: float | None = None
 location_state_file = STATE_DIR / "location_state.json"
+entertainment_schemas: dict[str, dict] = {}
 
 # ── Constants ────────────────────────────────────────────────────────────────
 HORIZON_DEADLINE_OFFSETS = {"t": 0, "w": 6, "m": 30, "b": None}
@@ -1011,10 +1017,30 @@ Active habits to detect: {habit_names}
 Workout types that count as 💪 Workout: soccer, crossfit, hyrox, rowing, snowboard, skiing, gym, run, jog, trained
 
 First determine if this is:
-A) HABIT LOG — person saying they completed something NOW
-B) TASK — something to be done in the future
+A) ENTERTAINMENT LOG — user watched a film/show/game/event
+B) HABIT LOG — person saying they completed something NOW
+C) TASK — something to be done in the future
 
 Return ONLY valid JSON, no markdown:
+
+If ENTERTAINMENT LOG:
+{{
+  "type": "entertainment_log",
+  "log_type": "cinema|performance|sport",
+  "title": "extracted name of film/show/event",
+  "venue": "venue or null",
+  "date": "{date.today().isoformat()}",
+  "notes": "extra details or null",
+  "favourite": false,
+  "confidence": "high|low"
+}}
+
+Use these examples:
+- "watched [film]", "saw [film]", "caught [film]" => cinema
+- "went to [show/concert/play/performance]", "saw [performer] live" => performance
+- "watched [team] game", "went to [sport] game", "[team] vs [team]" => sport
+
+If title is ambiguous or confidence is low, set "confidence" to "low".
 
 If HABIT:
 {{"type": "habit", "habit_name": "exact name from {habit_names} or null", "confidence": "high or low"}}
@@ -1050,7 +1076,7 @@ def classify_message_v10(text: str) -> dict:
     photo_enabled = bool(NOTION_PHOTO_DB)
     notes_enabled = bool(NOTION_NOTES_DB)
 
-    enabled_intents = ["habit", "task"]
+    enabled_intents = ["habit", "entertainment_log", "task"]
     if watchlist_enabled:
         enabled_intents.append("watchlist")
     if wantslist_enabled:
@@ -1090,6 +1116,12 @@ NOTE — user wants to save information/reference/thought without an action.
 HABIT — user saying they completed a recurring habit RIGHT NOW.
   Signals: "did", "took", "went to", "had", "completed" + habit name
 
+ENTERTAINMENT_LOG — user logged media/event they watched or attended.
+  Signals:
+  - Cinema: "watched [film]", "saw [film]", "caught [film]"
+  - Performance: "went to [show/concert/play/performance]", "saw [performer] live"
+  - Sport: "watched [team] game", "went to [sport] game", "[team] vs [team]"
+
 TASK — something to be done in the future (default if nothing else matches).
 
 If confidence is low on watchlist/wantslist/photo, return task instead.
@@ -1116,6 +1148,18 @@ If NOTE:
 
 If HABIT:
 {{"type": "habit", "habit_name": "exact name from {habit_names} or null", "confidence": "high|low"}}
+
+If ENTERTAINMENT_LOG:
+{{
+  "type": "entertainment_log",
+  "log_type": "cinema|performance|sport",
+  "title": "extracted name of film/show/event",
+  "venue": "venue if mentioned, else null",
+  "date": "{date.today().isoformat()}",
+  "notes": "extra detail if mentioned, else null",
+  "favourite": false,
+  "confidence": "high|low"
+}}
 
 If TASK:
 {{
@@ -2555,6 +2599,177 @@ def create_note_entry(content: str, topic: str | None = None) -> str:
     return page["id"]
 
 
+def _inspect_database_schema(db_id: str, label: str) -> dict:
+    db = notion_call(notion.databases.retrieve, database_id=db_id)
+    properties = db.get("properties", {})
+    schema = {name: prop.get("type") for name, prop in properties.items()}
+    log.info("Entertainment schema loaded for %s:", label)
+    for name, prop_type in schema.items():
+        log.info("  - %s: %s", name, prop_type)
+    return schema
+
+
+def _first_prop_by_type(schema: dict, desired_type: str) -> str | None:
+    for name, prop_type in schema.items():
+        if prop_type == desired_type:
+            return name
+    return None
+
+
+def _pick_prop(schema: dict, desired_type: str, candidates: list[str]) -> str | None:
+    for candidate in candidates:
+        if schema.get(candidate) == desired_type:
+            return candidate
+    return _first_prop_by_type(schema, desired_type)
+
+
+def _title_prop_name(schema: dict) -> str | None:
+    return _first_prop_by_type(schema, "title")
+
+
+def _build_common_entertainment_props(
+    schema: dict,
+    *,
+    title: str,
+    when_iso: str | None,
+    venue: str | None,
+    notes: str | None,
+    source_name: str = "📱 Telegram",
+) -> dict:
+    props: dict = {}
+    title_prop = _title_prop_name(schema)
+    if title_prop:
+        props[title_prop] = {"title": [{"text": {"content": title}}]}
+
+    date_prop = _pick_prop(schema, "date", ["Date", "When", "Datetime", "Watched At"])
+    if date_prop and when_iso:
+        props[date_prop] = {"date": {"start": when_iso}}
+
+    venue_prop = _pick_prop(schema, "rich_text", ["Venue", "Place", "Location"])
+    if venue_prop and venue:
+        props[venue_prop] = {"rich_text": [{"text": {"content": venue}}]}
+
+    notes_prop = _pick_prop(schema, "rich_text", ["Notes", "Comment", "Details"])
+    if notes_prop and notes:
+        props[notes_prop] = {"rich_text": [{"text": {"content": notes}}]}
+
+    source_prop = _pick_prop(schema, "select", ["Source"])
+    if source_prop:
+        props[source_prop] = {"select": {"name": source_name}}
+
+    return props
+
+
+def _query_title_values(db_id: str, title_prop_name: str) -> list[dict]:
+    rows = notion_call(notion.databases.query, database_id=db_id).get("results", [])
+    values: list[dict] = []
+    for row in rows:
+        title_arr = row.get("properties", {}).get(title_prop_name, {}).get("title", [])
+        name = "".join(chunk.get("plain_text", "") for chunk in title_arr).strip()
+        if name:
+            values.append({"page_id": row["id"], "name": name})
+    return values
+
+
+def create_entertainment_log_entry(payload: dict) -> tuple[str, bool]:
+    log_type = payload.get("log_type")
+    title = (payload.get("title") or "").strip()
+    if not title:
+        raise ValueError("Entertainment log missing title")
+
+    when_iso = payload.get("date") or date.today().isoformat()
+    venue = payload.get("venue")
+    notes = payload.get("notes")
+    favourite = bool(payload.get("favourite"))
+
+    if log_type == "cinema":
+        props = {
+            "Film": {"title": [{"text": {"content": title}}]},
+            "Date": {"date": {"start": when_iso}},
+            "Favourite": {"checkbox": favourite},
+            "Source": {"select": {"name": "📱 Telegram"}},
+        }
+        if venue:
+            props["Place"] = {"rich_text": [{"text": {"content": venue}}]}
+        if notes:
+            props["Notes"] = {"rich_text": [{"text": {"content": notes}}]}
+        page = notion_call(notion.pages.create, parent={"database_id": NOTION_CINEMA_LOG_DB}, properties=props)
+
+        if favourite and NOTION_FAVOURITE_FILMS_DB and entertainment_schemas.get("favourite_films"):
+            fav_schema = entertainment_schemas["favourite_films"]
+            fav_title_prop = _title_prop_name(fav_schema)
+            if fav_title_prop:
+                existing = _query_title_values(NOTION_FAVOURITE_FILMS_DB, fav_title_prop)
+                if not fuzzy_match(title, existing):
+                    fav_props = _build_common_entertainment_props(
+                        fav_schema,
+                        title=title,
+                        when_iso=when_iso,
+                        venue=venue,
+                        notes=notes,
+                    )
+                    notion_call(
+                        notion.pages.create,
+                        parent={"database_id": NOTION_FAVOURITE_FILMS_DB},
+                        properties=fav_props,
+                    )
+        return page["id"], favourite
+
+    if log_type == "performance":
+        schema = entertainment_schemas.get("performances")
+        if not schema:
+            raise ValueError("Performances schema is unavailable")
+        props = _build_common_entertainment_props(schema, title=title, when_iso=when_iso, venue=venue, notes=notes)
+        page = notion_call(notion.pages.create, parent={"database_id": NOTION_PERFORMANCES_DB}, properties=props)
+        return page["id"], False
+
+    if log_type == "sport":
+        schema = entertainment_schemas.get("sports")
+        if not schema:
+            raise ValueError("Sports schema is unavailable")
+        props = _build_common_entertainment_props(schema, title=title, when_iso=when_iso, venue=venue, notes=notes)
+        page = notion_call(notion.pages.create, parent={"database_id": NOTION_SPORTS_LOG_DB}, properties=props)
+        return page["id"], False
+
+    raise ValueError(f"Unknown entertainment log type: {log_type}")
+
+
+def entertainment_confirm_keyboard(key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("✅ Save", callback_data=f"el:{key}:save")],
+            [InlineKeyboardButton("❌ Cancel", callback_data=f"el:{key}:cancel")],
+        ]
+    )
+
+
+async def handle_entertainment_log(message, payload: dict) -> None:
+    entry_id, fav_saved = create_entertainment_log_entry(payload)
+    title = payload.get("title", "Untitled")
+    log_type = payload.get("log_type", "cinema")
+    venue = payload.get("venue")
+    notes = payload.get("notes")
+    when_iso = payload.get("date") or date.today().isoformat()
+
+    labels = {"cinema": "🍿 Cinema", "performance": "🎟️ Performance", "sport": "🎬 Sports"}
+    summary_lines = [
+        f"✅ Logged to {labels.get(log_type, 'Entertainment')}",
+        "",
+        f"🎫 {title}",
+        f"📅 {when_iso}",
+    ]
+    if venue:
+        summary_lines.append(f"📍 {venue}")
+    if notes:
+        summary_lines.append(f"📝 {notes}")
+    if fav_saved and log_type == "cinema":
+        summary_lines.append("🎞️ Added to Favourite Films")
+    summary_lines.append("")
+    summary_lines.append("_Saved to Notion_")
+    await message.reply_text("\n".join(summary_lines), parse_mode="Markdown")
+    log.info("Entertainment logged type=%s title=%s page_id=%s", log_type, title, entry_id)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MESSAGE FORMATTERS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3123,6 +3338,7 @@ async def route_classified_message_v10(message, text: str) -> None:
         await create_or_prompt_task(message, text)
         return
 
+    global _entertainment_counter
     intent = result.get("type")
 
     if intent == "watchlist":
@@ -3160,6 +3376,30 @@ async def route_classified_message_v10(message, text: str) -> None:
             all_habits = [{"page_id": h["page_id"], "name": name} for name, h in habit_cache.items()]
             all_habits.sort(key=lambda h: h["name"].lower())
             await thinking.edit_text("Which habit did you complete?", reply_markup=habit_buttons(all_habits, "hl"))
+        return
+
+    if intent == "entertainment_log":
+        title = (result.get("title") or "").strip()
+        confidence = result.get("confidence", "low")
+        result.setdefault("date", date.today().isoformat())
+        if confidence == "high" and title:
+            try:
+                await thinking.delete()
+                await handle_entertainment_log(message, result)
+            except Exception as e:
+                log.error("Entertainment save error: %s", e)
+                await message.reply_text("⚠️ I understood that as entertainment, but couldn't save to Notion.")
+            return
+
+        key = str(_entertainment_counter)
+        _entertainment_counter += 1
+        pending_map[key] = {"type": "entertainment_log", "payload": result, "raw_text": text}
+        preview = title or text
+        await thinking.edit_text(
+            f"🎬 I think this is an entertainment log:\n\n*{preview}*\n\nSave it?",
+            parse_mode="Markdown",
+            reply_markup=entertainment_confirm_keyboard(key),
+        )
         return
 
     await thinking.delete()
@@ -3535,6 +3775,35 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except Exception as e:
             log.error(f"Habit pagination error: {e}")
             await q.edit_message_text("⚠️ Couldn't update habits view.")
+        return
+
+    if parts[0] == "el" and len(parts) == 3:
+        _, key, action = parts
+        entry = pending_map.pop(key, None)
+        if not entry or entry.get("type") != "entertainment_log":
+            await q.edit_message_text("⚠️ This entertainment prompt expired — please send it again.")
+            return
+        if action == "cancel":
+            await q.edit_message_text("❌ Not saved.")
+            return
+        payload = dict(entry.get("payload") or {})
+        raw_text = entry.get("raw_text", "")
+        if not (payload.get("title") or "").strip():
+            payload["title"] = raw_text
+        payload.setdefault("date", date.today().isoformat())
+        try:
+            entry_id, fav_saved = create_entertainment_log_entry(payload)
+            label_map = {"cinema": "🍿 Cinema", "performance": "🎟️ Performance", "sport": "🎬 Sports"}
+            label = label_map.get(payload.get("log_type"), "Entertainment")
+            suffix = "\n🎞️ Added to Favourite Films" if fav_saved and payload.get("log_type") == "cinema" else ""
+            await q.edit_message_text(
+                f"✅ Logged to {label}\n\n🎫 {payload.get('title','Untitled')}\n📅 {payload.get('date')}{suffix}\n\n_Saved to Notion_",
+                parse_mode="Markdown",
+            )
+            log.info("Entertainment confirmed and saved page_id=%s", entry_id)
+        except Exception as e:
+            log.error("Entertainment callback save error: %s", e)
+            await q.edit_message_text("⚠️ Couldn't save this entertainment log.")
         return
 
     if parts[0] == "nt" and len(parts) == 3:
@@ -4416,6 +4685,10 @@ def startup_notion_health_check() -> None:
         "NOTION_DB_ID": NOTION_DB_ID,
         "NOTION_HABIT_DB": NOTION_HABIT_DB,
         "NOTION_LOG_DB": NOTION_LOG_DB,
+        "NOTION_CINEMA_LOG_DB": NOTION_CINEMA_LOG_DB,
+        "NOTION_PERFORMANCES_DB": NOTION_PERFORMANCES_DB,
+        "NOTION_SPORTS_LOG_DB": NOTION_SPORTS_LOG_DB,
+        "NOTION_FAVOURITE_FILMS_DB": NOTION_FAVOURITE_FILMS_DB,
         "NOTION_NOTES_DB": NOTION_NOTES_DB,
         "NOTION_DIGEST_SELECTOR_DB": NOTION_DIGEST_SELECTOR_DB,
         "NOTION_WATCHLIST_DB": NOTION_WATCHLIST_DB,
@@ -4431,6 +4704,25 @@ def startup_notion_health_check() -> None:
             raise RuntimeError(f"Startup health check failed for {label} ({db_id}): {exc}") from exc
 
 
+def load_entertainment_schemas() -> None:
+    global entertainment_schemas
+    entertainment_schemas = {}
+    targets = [
+        ("cinema", "🍿 Cinema Log", NOTION_CINEMA_LOG_DB),
+        ("performances", "🎟️ Performances Viewings", NOTION_PERFORMANCES_DB),
+        ("sports", "🎬 Sports Log", NOTION_SPORTS_LOG_DB),
+        ("favourite_films", "🎞️ Favourite Films", NOTION_FAVOURITE_FILMS_DB),
+    ]
+    for key, label, db_id in targets:
+        if not db_id:
+            log.warning("Entertainment schema skipped for %s (missing DB id)", label)
+            continue
+        try:
+            entertainment_schemas[key] = _inspect_database_schema(db_id, label)
+        except Exception as exc:  # noqa: BLE001
+            log.error("Failed to inspect %s schema: %s", label, exc)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # STARTUP
 # ══════════════════════════════════════════════════════════════════════════════
@@ -4438,6 +4730,7 @@ def startup_notion_health_check() -> None:
 async def post_init(app: Application) -> None:
     global _scheduler
     startup_notion_health_check()
+    load_entertainment_schemas()
     load_mute_state()
     load_location_state()
     if OPENWEATHER_KEY and (current_lat is None or current_lon is None):
