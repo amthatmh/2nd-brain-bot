@@ -2747,6 +2747,132 @@ def _extract_cinema_visit_details(notes: str | None) -> tuple[str | None, int | 
     return seat, auditorium_value
 
 
+def _normalize_entertainment_datetime(when_iso: str | None, notes: str | None) -> str | None:
+    def _date_fragment(raw: str | None) -> str | None:
+        if not raw:
+            return None
+        s = str(raw).strip()
+        m = re.search(r"\b(\d{4})[/-](\d{1,2})[/-](\d{1,2})\b", s)
+        if not m:
+            return None
+        return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+
+    def _time_fragment(raw: str | None) -> str | None:
+        if not raw:
+            return None
+        s = str(raw).strip()
+        m = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", s)
+        if not m:
+            return None
+        return f"{int(m.group(1)):02d}:{int(m.group(2)):02d}:00"
+
+    date_part = _date_fragment(when_iso) or _date_fragment(notes)
+    if not date_part:
+        return when_iso
+    time_part = _time_fragment(when_iso) or _time_fragment(notes)
+    if not time_part:
+        return date_part
+    return f"{date_part}T{time_part}"
+
+
+def _parse_cinema_inline_context(raw: str | None) -> dict[str, str | None]:
+    text = (raw or "").strip()
+    if not text:
+        return {"title": None, "venue": None, "date": None, "time": None, "tail": None}
+    m = re.match(
+        r"^(?P<title>.+?)\s+at\s+(?P<venue>.+?)\s+on\s+(?P<date>\d{4}[/-]\d{1,2}[/-]\d{1,2})(?:\s+at\s+(?P<time>\d{1,2}:[0-5]\d))?(?:\s+(?P<tail>.*))?$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not m:
+        return {"title": None, "venue": None, "date": None, "time": None, "tail": None}
+    return {
+        "title": (m.group("title") or "").strip() or None,
+        "venue": (m.group("venue") or "").strip() or None,
+        "date": (m.group("date") or "").strip() or None,
+        "time": (m.group("time") or "").strip() or None,
+        "tail": (m.group("tail") or "").strip() or None,
+    }
+
+
+def _strip_cinema_structured_notes(notes: str | None) -> str | None:
+    if not notes:
+        return None
+    cleaned = re.sub(r"\bseat\s*[A-Za-z0-9-]+\b", "", notes, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bauditorium\s*[A-Za-z0-9-]+\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b\d{4}[/-]\d{1,2}[/-]\d{1,2}\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b([01]?\d|2[0-3]):[0-5]\d\b", "", cleaned)
+    cleaned = re.sub(r"\b(?:on|at)\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"[,\-–|]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned or None
+
+
+def _find_existing_cinema_venue(title: str, schema: dict) -> str | None:
+    title_prop = _title_prop_name(schema)
+    venue_prop = _pick_exact_prop(schema, "select", ["Venue", "Place", "Location"]) \
+        or _pick_exact_prop(schema, "status", ["Venue", "Place", "Location"]) \
+        or _pick_exact_prop(schema, "rich_text", ["Venue", "Place", "Location"])
+    if not title_prop or not venue_prop:
+        return None
+
+    rows = notion_call(notion.databases.query, database_id=NOTION_CINEMA_LOG_DB).get("results", [])
+    target = title.strip().lower()
+    for row in rows:
+        props = row.get("properties", {})
+        title_arr = props.get(title_prop, {}).get("title", [])
+        row_title = "".join(chunk.get("plain_text", "") for chunk in title_arr).strip().lower()
+        if row_title != target:
+            continue
+        venue_obj = props.get(venue_prop, {})
+        venue_type = venue_obj.get("type")
+        if venue_type == "select":
+            name = (venue_obj.get("select") or {}).get("name")
+            if name:
+                return name
+        if venue_type == "status":
+            name = (venue_obj.get("status") or {}).get("name")
+            if name:
+                return name
+        if venue_type == "rich_text":
+            chunks = venue_obj.get("rich_text", [])
+            value = "".join(c.get("plain_text", "") for c in chunks).strip()
+            if value:
+                return value
+    return None
+
+
+def _resolve_known_cinema_venue(venue: str | None, schema: dict) -> str | None:
+    if not venue:
+        return None
+    title_prop = _title_prop_name(schema)
+    venue_prop = _pick_exact_prop(schema, "select", ["Venue", "Place", "Location"]) \
+        or _pick_exact_prop(schema, "status", ["Venue", "Place", "Location"]) \
+        or _pick_exact_prop(schema, "rich_text", ["Venue", "Place", "Location"])
+    if not title_prop or not venue_prop:
+        return venue
+
+    rows = notion_call(notion.databases.query, database_id=NOTION_CINEMA_LOG_DB).get("results", [])
+    incoming = venue.strip().lower()
+    for row in rows:
+        venue_obj = row.get("properties", {}).get(venue_prop, {})
+        venue_type = venue_obj.get("type")
+        existing = None
+        if venue_type == "select":
+            existing = (venue_obj.get("select") or {}).get("name")
+        elif venue_type == "status":
+            existing = (venue_obj.get("status") or {}).get("name")
+        elif venue_type == "rich_text":
+            chunks = venue_obj.get("rich_text", [])
+            existing = "".join(c.get("plain_text", "") for c in chunks).strip()
+        if not existing:
+            continue
+        e = existing.strip().lower()
+        if incoming == e or incoming in e or e in incoming:
+            return existing
+    return venue
+
+
 def _query_title_values(db_id: str, title_prop_name: str) -> list[dict]:
     rows = notion_call(notion.databases.query, database_id=db_id).get("results", [])
     values: list[dict] = []
@@ -2773,8 +2899,32 @@ def create_entertainment_log_entry(payload: dict) -> tuple[str, bool]:
         schema = entertainment_schemas.get("cinema")
         if not schema:
             raise ValueError("Cinema schema is unavailable")
-        props = _build_common_entertainment_props(schema, title=title, when_iso=when_iso, venue=venue, notes=notes)
+        parsed_inline = _parse_cinema_inline_context(title)
+        if parsed_inline.get("title"):
+            title = parsed_inline["title"]
+        if not venue and parsed_inline.get("venue"):
+            venue = parsed_inline["venue"]
+        if parsed_inline.get("tail"):
+            notes = f"{parsed_inline['tail']}" if not notes else f"{notes}, {parsed_inline['tail']}"
+        elif not notes and parsed_inline.get("time"):
+            notes = parsed_inline["time"]
+
+        datetime_hint = " ".join(part for part in [title, venue, notes, parsed_inline.get("time")] if part)
+        when_iso = _normalize_entertainment_datetime(when_iso, datetime_hint)
+        venue = _resolve_known_cinema_venue(venue, schema)
         seat, auditorium = _extract_cinema_visit_details(notes)
+        if not venue:
+            venue = _find_existing_cinema_venue(title, schema)
+        cleaned_notes = None if (seat or auditorium is not None) else _strip_cinema_structured_notes(notes)
+        props = _build_common_entertainment_props(schema, title=title, when_iso=when_iso, venue=venue, notes=notes)
+        if cleaned_notes:
+            notes_prop = _pick_prop(schema, "rich_text", ["Notes", "Comment", "Details"])
+            if notes_prop:
+                props[notes_prop] = {"rich_text": [{"text": {"content": cleaned_notes}}]}
+        else:
+            notes_prop = _pick_prop(schema, "rich_text", ["Notes", "Comment", "Details"])
+            if notes_prop and notes_prop in props:
+                props.pop(notes_prop, None)
         seat_select_prop = _pick_exact_prop(schema, "select", ["Seat"])
         seat_rich_text_prop = _pick_exact_prop(schema, "rich_text", ["Seat"])
         if seat and seat_select_prop:
