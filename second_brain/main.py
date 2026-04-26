@@ -138,9 +138,9 @@ NOTION_TOKEN    = os.environ["NOTION_TOKEN"]
 NOTION_DB_ID    = os.environ["NOTION_DB_ID"]
 NOTION_HABIT_DB = os.environ["NOTION_HABIT_DB"]
 NOTION_LOG_DB   = os.environ["NOTION_LOG_DB"]
-NOTION_CINEMA_LOG_DB = os.environ["NOTION_CINEMA_LOG_DB"]
+NOTION_CINEMA_LOG_DB = os.environ.get("NOTION_CINEMA_LOG_DB", os.environ.get("NOTION_CINEMA_DB", "")).strip()
 NOTION_PERFORMANCES_DB = os.environ.get("NOTION_PERFORMANCES_DB", "").strip()
-NOTION_SPORTS_LOG_DB = os.environ.get("NOTION_SPORTS_LOG_DB", "").strip()
+NOTION_SPORTS_LOG_DB = os.environ.get("NOTION_SPORTS_LOG_DB", os.environ.get("NOTION_SPORTS_DB", "")).strip()
 NOTION_FAVOURITE_FILMS_DB = os.environ.get("NOTION_FAVOURITE_FILMS_DB", "").strip()
 NOTION_NOTES_DB = os.environ["NOTION_NOTES_DB"]    # 📒 Notes
 NOTION_DIGEST_SELECTOR_DB = os.environ["NOTION_DIGEST_SELECTOR_DB"]
@@ -2365,6 +2365,42 @@ def parse_done_numbers_command(text: str) -> list[int] | None:
     return nums or None
 
 
+def parse_explicit_entertainment_log(text: str) -> dict | None:
+    raw = (text or "").strip()
+    if not raw:
+        return None
+
+    normalized = re.sub(r"^\s*/?log\s+", "log ", raw, flags=re.IGNORECASE)
+    m = re.match(
+        r"^log\s+(cinema|performance|sport|sports)\s*:?\s*(.*?)\s*(?:\s+at\s+(.+))?$",
+        normalized,
+        re.IGNORECASE,
+    )
+    if not m:
+        return None
+
+    raw_log_type, raw_title, raw_venue = m.groups()
+    log_type = raw_log_type.lower()
+    if log_type == "sports":
+        log_type = "sport"
+
+    title = (raw_title or "").strip().rstrip(":")
+    if not title:
+        return None
+
+    payload = {
+        "type": "entertainment_log",
+        "log_type": log_type,
+        "title": title,
+        "date": date.today().isoformat(),
+        "confidence": "high",
+    }
+    venue = (raw_venue or "").strip()
+    if venue:
+        payload["venue"] = venue
+    return payload
+
+
 def recover_digest_items_from_text(text: str) -> dict[int, dict]:
     """
     Rebuild digest numbering from a replied digest message so number-based completion
@@ -2642,6 +2678,13 @@ def _pick_prop(schema: dict, desired_type: str, candidates: list[str]) -> str | 
     return _first_prop_by_type(schema, desired_type)
 
 
+def _pick_exact_prop(schema: dict, desired_type: str, candidates: list[str]) -> str | None:
+    for candidate in candidates:
+        if schema.get(candidate) == desired_type:
+            return candidate
+    return None
+
+
 def _title_prop_name(schema: dict) -> str | None:
     return _first_prop_by_type(schema, "title")
 
@@ -2656,6 +2699,7 @@ def _build_common_entertainment_props(
     source_name: str = "📱 Telegram",
 ) -> dict:
     props: dict = {}
+    notes_value = notes
     title_prop = _title_prop_name(schema)
     if title_prop:
         props[title_prop] = {"title": [{"text": {"content": title}}]}
@@ -2664,15 +2708,20 @@ def _build_common_entertainment_props(
     if date_prop and when_iso:
         props[date_prop] = {"date": {"start": when_iso}}
 
-    venue_prop = _pick_prop(schema, "rich_text", ["Venue", "Place", "Location"])
-    if venue_prop and venue:
-        props[venue_prop] = {"rich_text": [{"text": {"content": venue}}]}
+    venue_select_prop = _pick_exact_prop(schema, "select", ["Venue", "Place", "Location"])
+    venue_rich_text_prop = _pick_exact_prop(schema, "rich_text", ["Venue", "Place", "Location"])
+    if venue and venue_select_prop:
+        props[venue_select_prop] = {"select": {"name": venue}}
+    elif venue and venue_rich_text_prop:
+        props[venue_rich_text_prop] = {"rich_text": [{"text": {"content": venue}}]}
+    elif venue:
+        notes_value = f"Venue: {venue}" if not notes_value else f"{notes_value}\nVenue: {venue}"
 
     notes_prop = _pick_prop(schema, "rich_text", ["Notes", "Comment", "Details"])
-    if notes_prop and notes:
-        props[notes_prop] = {"rich_text": [{"text": {"content": notes}}]}
+    if notes_prop and notes_value:
+        props[notes_prop] = {"rich_text": [{"text": {"content": notes_value}}]}
 
-    source_prop = _pick_prop(schema, "select", ["Source"])
+    source_prop = _pick_exact_prop(schema, "select", ["Source"])
     if source_prop:
         props[source_prop] = {"select": {"name": source_name}}
 
@@ -2702,16 +2751,13 @@ def create_entertainment_log_entry(payload: dict) -> tuple[str, bool]:
     favourite = bool(payload.get("favourite"))
 
     if log_type == "cinema":
-        props = {
-            "Film": {"title": [{"text": {"content": title}}]},
-            "Date": {"date": {"start": when_iso}},
-            "Favourite": {"checkbox": favourite},
-            "Source": {"select": {"name": "📱 Telegram"}},
-        }
-        if venue:
-            props["Place"] = {"rich_text": [{"text": {"content": venue}}]}
-        if notes:
-            props["Notes"] = {"rich_text": [{"text": {"content": notes}}]}
+        schema = entertainment_schemas.get("cinema")
+        if not schema:
+            raise ValueError("Cinema schema is unavailable")
+        props = _build_common_entertainment_props(schema, title=title, when_iso=when_iso, venue=venue, notes=notes)
+        favourite_prop = _pick_exact_prop(schema, "checkbox", ["Favourite", "Favorite"])
+        if favourite_prop:
+            props[favourite_prop] = {"checkbox": favourite}
         page = notion_call(notion.pages.create, parent={"database_id": NOTION_CINEMA_LOG_DB}, properties=props)
 
         if favourite and NOTION_FAVOURITE_FILMS_DB and entertainment_schemas.get("favourite_films"):
@@ -3568,6 +3614,15 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     command_handler = COMMAND_DISPATCH.get(lower)
     if command_handler:
         await command_handler(message, context)
+        return
+
+    explicit_entertainment = parse_explicit_entertainment_log(text)
+    if explicit_entertainment:
+        try:
+            await handle_entertainment_log(message, explicit_entertainment)
+        except Exception as e:
+            log.error("Explicit entertainment text save error: %s", e)
+            await message.reply_text("⚠️ I couldn't save that entertainment log to Notion.")
         return
 
     numbers = parse_done_numbers_command(text)
@@ -4912,6 +4967,7 @@ async def post_init(app: Application) -> None:
             BotCommand("notes", "Open notes capture"),
             BotCommand("weather", "Show weather snapshot"),
             BotCommand("habits", "Show habits list"),
+            BotCommand("log", "Log cinema/performance/sport"),
             BotCommand("sync", "Run manual sync"),
             BotCommand("syncstatus", "Show sync status"),
             BotCommand("mute", "Pause scheduled digests"),
@@ -5064,6 +5120,27 @@ async def cmd_habits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await send_daily_habits_list(context.bot)
 
 
+async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/log <cinema|performance|sport> <title> at <venue> — explicit entertainment logging."""
+    if update.effective_chat.id != MY_CHAT_ID:
+        return
+    raw = " ".join(context.args or []).strip()
+    parsed = parse_explicit_entertainment_log(f"/log {raw}")
+    if not parsed:
+        await update.message.reply_text(
+            "Usage:\n"
+            "/log cinema Dune at AMC\n"
+            "/log performance ABBA Voyage at ABBA Arena\n"
+            "/log sport Cubs vs Sox at Wrigley"
+        )
+        return
+    try:
+        await handle_entertainment_log(update.message, parsed)
+    except Exception as e:
+        log.error("Explicit /log save error: %s", e)
+        await update.message.reply_text("⚠️ I couldn't save that entertainment log to Notion.")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN — after all handlers are defined
 # ══════════════════════════════════════════════════════════════════════════════
@@ -5082,6 +5159,7 @@ def main() -> None:
     app.add_handler(CommandHandler("notes", cmd_notes))
     app.add_handler(CommandHandler("location", cmd_location))
     app.add_handler(CommandHandler("habits", cmd_habits))
+    app.add_handler(CommandHandler("log", cmd_log))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message_text))
     app.add_handler(CallbackQueryHandler(handle_callback))
     log.info(f"🤖 Second Brain bot starting ({APP_VERSION})...")
