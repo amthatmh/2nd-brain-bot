@@ -1,7 +1,13 @@
 from datetime import date
 import unittest
 
-from cinema.sync import _build_cinema_query_filter, _load_existing_favourites, _plain_text, _title_search_candidates
+from cinema.sync import (
+    _build_cinema_query_filter,
+    _load_existing_favourites,
+    _plain_text,
+    _preferred_media_type,
+    _title_search_candidates,
+)
 
 
 class TestCinemaSyncHelpers(unittest.TestCase):
@@ -67,6 +73,11 @@ class TestCinemaSyncHelpers(unittest.TestCase):
 
         favourites = _load_existing_favourites(_FakeNotion(), "fake-db")
         self.assertEqual(favourites, {"Dune", "Arrival"})
+
+    def test_preferred_media_type_maps_film_and_series(self):
+        self.assertEqual(_preferred_media_type({"Type": {"select": {"name": "Film"}}}), "movie")
+        self.assertEqual(_preferred_media_type({"Type": {"select": {"name": "Series"}}}), "tv")
+        self.assertIsNone(_preferred_media_type({"Type": {"select": {"name": "Documentary"}}}))
 
 
 if __name__ == "__main__":

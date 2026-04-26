@@ -32,6 +32,7 @@ def note_topics_keyboard(key: str, ordered: list[str]) -> InlineKeyboardMarkup:
     for i in range(0, len(ordered), 2):
         row_topics = ordered[i:i + 2]
         rows.append([InlineKeyboardButton(t, callback_data=f"note_topic:{key}:{j}") for j, t in enumerate(row_topics, start=i)])
+    rows.append([InlineKeyboardButton("➕ Add topic", callback_data=f"note_topic:{key}:add")])
     rows.append([InlineKeyboardButton("⏭️ No topic", callback_data=f"note_topic:{key}:none")])
     return InlineKeyboardMarkup(rows)
 

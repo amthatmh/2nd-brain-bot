@@ -20,16 +20,17 @@ class TestNotesFlow(unittest.TestCase):
 
         self.assertEqual(ordered, ["Code", "Ideas", "Personal"])
 
-    def test_note_topics_keyboard_batches_two_per_row_and_has_none_option(self):
+    def test_note_topics_keyboard_batches_two_per_row_and_has_add_and_none_options(self):
         keyboard = note_topics_keyboard("k1", ["Code", "Ideas", "Health"])
 
         rows = keyboard.inline_keyboard
-        self.assertEqual(len(rows), 3)
+        self.assertEqual(len(rows), 4)
         self.assertEqual([button.text for button in rows[0]], ["Code", "Ideas"])
         self.assertEqual([button.callback_data for button in rows[0]], ["note_topic:k1:0", "note_topic:k1:1"])
         self.assertEqual([button.text for button in rows[1]], ["Health"])
         self.assertEqual(rows[1][0].callback_data, "note_topic:k1:2")
-        self.assertEqual(rows[2][0].callback_data, "note_topic:k1:none")
+        self.assertEqual(rows[2][0].callback_data, "note_topic:k1:add")
+        self.assertEqual(rows[3][0].callback_data, "note_topic:k1:none")
 
     def test_create_note_payload_sets_link_type_and_chunks_content(self):
         long_text = "Check this out https://example.com/post), then review notes.\n" + ("A" * 2100)
