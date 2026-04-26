@@ -158,6 +158,7 @@ APP_VERSION    = os.environ.get("APP_VERSION", "v10.1.0")
 SYNC_BUFFER_MINUTES = max(1, int(os.environ.get("SYNC_BUFFER_MINUTES", "5")))
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "").strip()
 WEATHER_LOCATION = os.environ.get("WEATHER_LOCATION", "Chicago,IL").strip()
+SUNDAY_REVIEW_CARD_LIMIT = max(1, int(os.environ.get("SUNDAY_REVIEW_CARD_LIMIT", "6")))
 
 # ── Asana sync config ────────────────────────────────────────────────────────
 ASANA_PAT           = os.environ.get("ASANA_PAT", "")
@@ -4557,12 +4558,22 @@ async def send_sunday_review(bot) -> None:
     month_tasks = query_tasks_by_auto_horizon(["🟡 This Month"])
     header, ordered = format_sunday_intro(week_tasks, month_tasks)
     await bot.send_message(chat_id=MY_CHAT_ID, text=header, parse_mode="Markdown")
-    for n, task in enumerate(ordered, 1):
+    review_items = ordered[:SUNDAY_REVIEW_CARD_LIMIT]
+    for n, task in enumerate(review_items, 1):
         await bot.send_message(
             chat_id=MY_CHAT_ID,
             text=f"{num_emoji(n)} *{task['name']}*  {task['context']}\n_Currently: {task['auto_horizon']}_",
             parse_mode="Markdown",
             reply_markup=review_keyboard(task["page_id"]),
+        )
+    if len(ordered) > len(review_items):
+        await bot.send_message(
+            chat_id=MY_CHAT_ID,
+            text=(
+                f"…plus *{len(ordered) - len(review_items)}* more items not expanded "
+                "to avoid flooding chat. You can still adjust their urgency in Notion."
+            ),
+            parse_mode="Markdown",
         )
     log.info(f"Sunday review sent — {len(ordered)} items")
 
