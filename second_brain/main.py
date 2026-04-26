@@ -72,6 +72,7 @@ from notes_flow import (
 from second_brain.ai.classify import claude_classify
 from second_brain.config import FEATURES
 from second_brain.notion import notion_call, notion_call_async
+from second_brain.notion.habits import extract_habit_frequency
 from second_brain.state import STATE
 from second_brain.utils import ExpiringDict, reply_notion_error
 
@@ -751,22 +752,7 @@ def get_active_habits_for_trigger() -> list[dict]:
             time_str = time_str.strip() or "—"
             time_minutes = _parse_time_to_minutes(time_str if time_str != "—" else None)
 
-            frequency: int | None = None
-            freq_prop = props.get("Frequency", {})
-            freq_text = ""
-            if freq_prop.get("type") == "select":
-                freq_text = (freq_prop.get("select") or {}).get("name") or ""
-            elif freq_prop.get("type") == "rich_text":
-                rich = freq_prop.get("rich_text", [])
-                freq_text = (rich[0].get("plain_text") if rich else "") or ""
-            elif freq_prop.get("type") == "number":
-                raw_num = freq_prop.get("number")
-                if isinstance(raw_num, (int, float)) and raw_num > 0:
-                    frequency = int(raw_num)
-            if frequency is None and freq_text:
-                m = re.search(r"\d+", freq_text)
-                if m:
-                    frequency = int(m.group(0))
+            frequency = extract_habit_frequency(props)
 
             completion_count = _count_habit_completions_this_week(page["id"])
             if frequency and frequency > 0 and completion_count >= frequency:
