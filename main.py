@@ -3479,19 +3479,19 @@ def _queue_missed_slots_for_today(scheduler, bot, slots: list[dict]) -> None:
 
 def build_digest_schedule(scheduler, bot) -> int:
     global _digest_slots_last_load_succeeded
-    try:
-        slots = load_digest_slots()
-    except Exception as e:
-        _digest_slots_last_load_succeeded = False
-        log.error("Failed to load digest slots: %s", e)
-        return 0
-
     for job in _digest_jobs:
         try:
             job.remove()
         except Exception:
             pass
     _digest_jobs.clear()
+
+    try:
+        slots = load_digest_slots()
+    except Exception as e:
+        _digest_slots_last_load_succeeded = False
+        log.error("Failed to load digest slots: %s", e)
+        return 0
 
     for slot in slots:
         try:
