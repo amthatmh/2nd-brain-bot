@@ -37,17 +37,18 @@ def _extract_title(props: dict) -> str:
 def _build_cinema_query_filter(tmdb_api_key: str | None) -> dict:
     """
     Build the Notion filter for cinema sync.
-    - With TMDB key: process unsynced rows OR rows still missing TMDB URL.
-    - Without TMDB key: process only unsynced rows.
+
+    We always process rows that were never synced or were synced before today,
+    so operators can verify the job is running daily via the Last Synced column.
+    With a TMDB key, we also keep retrying rows that are still missing TMDB URL.
     """
+    base_conditions = [
+        {"property": "Last Synced", "date": {"is_empty": True}},
+        {"property": "Last Synced", "date": {"before": date.today().isoformat()}},
+    ]
     if tmdb_api_key:
-        return {
-            "or": [
-                {"property": "Last Synced", "date": {"is_empty": True}},
-                {"property": "TMDB URL", "url": {"is_empty": True}},
-            ]
-        }
-    return {"property": "Last Synced", "date": {"is_empty": True}}
+        base_conditions.append({"property": "TMDB URL", "url": {"is_empty": True}})
+    return {"or": base_conditions}
 
 
 async def _search_tmdb_url(title: str, tmdb_api_key: str | None) -> str | None:
