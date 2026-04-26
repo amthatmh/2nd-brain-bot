@@ -2,7 +2,7 @@ import importlib
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 REQUIRED_ENV = {
@@ -249,6 +249,61 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
             notes=None,
         )
         self.assertEqual(props["place"]["status"]["name"], "AMC Roosevelt Collection 16")
+
+    def test_strip_datetime_from_notes_removes_redundant_time(self):
+        cleaned = self.main._strip_datetime_from_notes("21:00 Venue: Soldier Field")
+        self.assertEqual(cleaned, "Venue: Soldier Field")
+
+    def test_create_sports_entry_extracts_time_and_cleans_notes(self):
+        self.main.NOTION_SPORTS_LOG_DB = "sports_db"
+        self.main.entertainment_schemas["sports"] = {
+            "Game": "title",
+            "Date": "date",
+            "Notes": "rich_text",
+            "Place": "status",
+        }
+
+        def fake_notion_call(fn, **kwargs):
+            if fn == self.main.notion.pages.create:
+                props = kwargs["properties"]
+                self.assertEqual(props["Date"]["date"]["start"], "2026-02-01T21:00:00")
+                self.assertEqual(props["Date"]["date"]["time_zone"], "America/Chicago")
+                self.assertEqual(props["Notes"]["rich_text"][0]["text"]["content"], "Venue: Soldier Field")
+                return {"id": "sport-page-1"}
+            return {}
+
+        self.main.notion_call = fake_notion_call
+        page_id, fav_saved = self.main.create_entertainment_log_entry({
+            "log_type": "sport",
+            "title": "Cubs vs Dodgers",
+            "date": "2026-02-01",
+            "venue": None,
+            "notes": "21:00 Venue: Soldier Field",
+            "favourite": False,
+        })
+        self.assertEqual(page_id, "sport-page-1")
+        self.assertFalse(fav_saved)
+
+
+class TestEntertainmentLogFollowups(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.main = load_main_module()
+
+    async def test_handle_entertainment_log_prompts_competition_for_sports(self):
+        message = MagicMock()
+        message.reply_text = AsyncMock()
+        with patch.object(self.main, "create_entertainment_log_entry", return_value=("sport-page", False)):
+            await self.main.handle_entertainment_log(message, {
+                "log_type": "sport",
+                "title": "Cubs vs Dodgers",
+                "date": "2026-02-01",
+                "venue": "Soldier Field",
+                "notes": None,
+            })
+        self.assertEqual(message.reply_text.await_count, 2)
+        second_call_text = message.reply_text.await_args_list[1].args[0]
+        self.assertIn("competition", second_call_text.lower())
 
 
 if __name__ == "__main__":
