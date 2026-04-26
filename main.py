@@ -194,6 +194,7 @@ _digest_jobs: list = []
 _habit_jobs: list = []
 _scheduler: AsyncIOScheduler | None = None
 _digest_slots_last_load_succeeded = False
+_digest_catchup_sent: set[str] = set()
 mute_until: datetime | None = None
 STATE_DIR = _resolve_state_dir()
 mute_state_file = STATE_DIR / "mute_state.json"
@@ -3429,6 +3430,54 @@ async def send_digest_for_slot(bot, slot: dict) -> None:
     await send_daily_digest(bot, include_habits=slot["include_habits"], config=config)
 
 
+def _queue_missed_slots_for_today(scheduler, bot, slots: list[dict]) -> None:
+    """
+    Queue immediate one-off sends for slots that were added/updated shortly after
+    their scheduled minute on the current day.
+    """
+    now = datetime.now(TZ)
+    weekday = now.weekday() < 5
+    grace_minutes = 20
+
+    # Keep memory bounded; keys include yyyy-mm-dd and expire naturally.
+    today_prefix = now.date().isoformat()
+    for key in list(_digest_catchup_sent):
+        if not key.startswith(today_prefix):
+            _digest_catchup_sent.discard(key)
+
+    for slot in slots:
+        if bool(slot.get("is_weekday")) != weekday:
+            continue
+        try:
+            slot_hour, slot_minute = map(int, str(slot["time"]).split(":"))
+        except Exception:
+            continue
+
+        slot_dt = now.replace(hour=slot_hour, minute=slot_minute, second=0, microsecond=0)
+        age_minutes = (now - slot_dt).total_seconds() / 60.0
+        if age_minutes < 0 or age_minutes > grace_minutes:
+            continue
+
+        catchup_key = f"{today_prefix}|{'wd' if weekday else 'we'}|{slot['time']}"
+        if catchup_key in _digest_catchup_sent:
+            continue
+
+        try:
+            job = scheduler.add_job(
+                send_digest_for_slot,
+                "date",
+                run_date=now + timedelta(seconds=2),
+                args=[bot, slot],
+                id=f"digest_catchup_{today_prefix}_{'wd' if weekday else 'we'}_{slot_hour:02d}{slot_minute:02d}",
+                replace_existing=True,
+            )
+            _digest_jobs.append(job)
+            _digest_catchup_sent.add(catchup_key)
+            log.info("Queued digest catch-up for slot %s (%s)", slot["time"], "weekday" if weekday else "weekend")
+        except Exception as e:
+            log.warning("Failed to queue digest catch-up for slot %s: %s", slot.get("time"), e)
+
+
 def build_digest_schedule(scheduler, bot) -> int:
     global _digest_slots_last_load_succeeded
     try:
@@ -3463,14 +3512,16 @@ def build_digest_schedule(scheduler, bot) -> int:
         )
         _digest_jobs.append(job)
 
+    _queue_missed_slots_for_today(scheduler, bot, slots)
     _digest_slots_last_load_succeeded = True
     log.info("Digest schedule built: %d slots registered", len(_digest_jobs))
     return len(_digest_jobs)
 
 
 async def rebuild_digest_schedule_job(bot, scheduler) -> None:
+    was_last_success = _digest_slots_last_load_succeeded
     result = build_digest_schedule(scheduler, bot)
-    if result == 0 and _digest_slots_last_load_succeeded:
+    if result == 0 and was_last_success:
         await bot.send_message(
             chat_id=MY_CHAT_ID,
             text="⚠️ Digest schedule rebuild returned 0 slots. Check Digest Selector.",
