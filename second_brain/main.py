@@ -4250,26 +4250,17 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
             n += 1
         lines.append("")
 
+    if habits:
+        lines.append("🌅 *Morning habits* — tap to log://")
+        lines.append("")
+
     message = "\n".join(lines).strip()
     sent_digest = await bot.send_message(
         chat_id=MY_CHAT_ID,
         text=message,
         parse_mode="Markdown",
-        reply_markup=None,
+        reply_markup=habit_buttons(habits, "hc") if habits else None,
     )
-
-    if habits:
-        habit_text = "🌅 *Morning habits* — tap to log:\n\n"
-        for h in habits[:5]:
-            habit_text += f"⏰ {h['time_str']} — {h['name']}\n"
-        if len(habits) > 5:
-            habit_text += f"\n_+{len(habits) - 5} more_"
-        await bot.send_message(
-            chat_id=MY_CHAT_ID,
-            text=habit_text.rstrip(),
-            parse_mode="Markdown",
-            reply_markup=habit_buttons(habits, "hc"),
-        )
 
     if ordered:
         digest_map[sent_digest.message_id] = ordered
