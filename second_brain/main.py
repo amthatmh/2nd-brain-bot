@@ -610,14 +610,19 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
 
 def format_weather_block(weather: dict | None, label: str = "🌤️") -> str:
     """Format weather payload into digest-friendly text."""
+    def fmt_temp(temp_c: float | int) -> str:
+        temp_f = round((float(temp_c) * 9 / 5) + 32)
+        temp_c_rounded = round(float(temp_c))
+        return f"{temp_c_rounded}°C ({temp_f}°F)"
+
     if not weather:
         return ""
     if "temp_high" in weather and "temp_low" in weather:
         return (
-            f"{label} {weather['condition']} · High {weather['temp_high']}°C / "
-            f"Low {weather['temp_low']}°C · 💧{weather.get('precip_chance', 0)}%"
+            f"{label} {weather['condition']} · High {fmt_temp(weather['temp_high'])} / "
+            f"Low {fmt_temp(weather['temp_low'])} · 💧{weather.get('precip_chance', 0)}%"
         )
-    return f"{label} {weather['temp']}°C ({weather['condition']})"
+    return f"{label} {fmt_temp(weather['temp'])} ({weather['condition']})"
 
 
 def digest_location_label() -> str:
