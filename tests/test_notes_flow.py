@@ -40,6 +40,8 @@ class TestNotesFlow(unittest.TestCase):
         self.assertEqual(payload["Link"]["url"], "https://example.com/post")
         self.assertEqual(payload["Topic"]["multi_select"][0]["name"], "Ideas")
         self.assertEqual(len(payload["Content"]["rich_text"]), 2)
+        self.assertEqual(payload["Title"]["title"][0]["type"], "text")
+        self.assertEqual(payload["Content"]["rich_text"][0]["type"], "text")
 
 
 if __name__ == "__main__":

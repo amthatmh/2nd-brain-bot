@@ -45,12 +45,18 @@ def create_note_payload(content: str, topic: str | None = None) -> dict:
     note_type = "🔗 Link/Article" if link else "📝 Quick Note"
     content_value = clean if clean else first_line
     content_chunks = [
-        {"text": {"content": content_value[i:i + _RICH_TEXT_LIMIT]}}
+        {
+            "type": "text",
+            "text": {"content": content_value[i:i + _RICH_TEXT_LIMIT]},
+        }
         for i in range(0, len(content_value), _RICH_TEXT_LIMIT)
-    ] or [{"text": {"content": "Untitled"}}]
+    ] or [{
+        "type": "text",
+        "text": {"content": "Untitled"},
+    }]
 
     props: dict = {
-        "Title": {"title": [{"text": {"content": title}}]},
+        "Title": {"title": [{"type": "text", "text": {"content": title}}]},
         "Content": {"rich_text": content_chunks},
         "Date Created": {"date": {"start": date.today().isoformat()}},
         "Type": {"select": {"name": note_type}},
