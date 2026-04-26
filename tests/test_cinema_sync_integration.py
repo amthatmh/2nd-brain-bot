@@ -206,6 +206,39 @@ class TestCinemaSyncIntegration(unittest.IsolatedAsyncioTestCase):
         updated_props = notion.pages.updated[0]["properties"]
         self.assertEqual(updated_props["TMDB URL"]["url"], "https://www.themoviedb.org/movie/603")
 
+    async def test_sync_runs_without_fave_db(self):
+        notion = _FakeNotion()
+        notion.databases.cinema_pages = [
+            {
+                "results": [
+                    {
+                        "id": "row_no_fave",
+                        "properties": {
+                            "Film": {"title": [{"plain_text": "Inception"}]},
+                            "TMDB URL": {"url": None},
+                            "Favourite": {"checkbox": True},
+                        },
+                    }
+                ],
+                "has_more": False,
+                "next_cursor": None,
+            }
+        ]
+
+        with patch("cinema.sync._search_tmdb_url_with_client", return_value="https://www.themoviedb.org/movie/27205"):
+            stats = await sync_cinema_log_to_notion(
+                notion=notion,
+                cinema_db_id="cinema_db",
+                fave_db_id="",
+                tmdb_api_key="tmdb_key",
+            )
+
+        self.assertEqual(stats["new_entries"], 1)
+        self.assertEqual(stats["tmdb_found"], 1)
+        self.assertEqual(stats["added_to_fave"], 0)
+        self.assertEqual(len(notion.pages.created), 0)
+        self.assertEqual(len(notion.pages.updated), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

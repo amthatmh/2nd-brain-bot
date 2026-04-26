@@ -1,3 +1,4 @@
+from datetime import date
 import unittest
 
 from cinema.sync import _build_cinema_query_filter, _load_existing_favourites, _plain_text
@@ -15,13 +16,19 @@ class TestCinemaSyncHelpers(unittest.TestCase):
     def test_filter_with_tmdb_key_backfills_missing_urls(self):
         filter_obj = _build_cinema_query_filter("abc123")
         self.assertIn("or", filter_obj)
-        self.assertEqual(len(filter_obj["or"]), 2)
+        self.assertEqual(len(filter_obj["or"]), 3)
+        self.assertIn({"property": "TMDB URL", "url": {"is_empty": True}}, filter_obj["or"])
 
-    def test_filter_without_tmdb_key_targets_unsynced_only(self):
+    def test_filter_without_tmdb_key_targets_unsynced_or_stale_rows(self):
         filter_obj = _build_cinema_query_filter("")
         self.assertEqual(
             filter_obj,
-            {"property": "Last Synced", "date": {"is_empty": True}},
+            {
+                "or": [
+                    {"property": "Last Synced", "date": {"is_empty": True}},
+                    {"property": "Last Synced", "date": {"before": date.today().isoformat()}},
+                ]
+            },
         )
 
     def test_load_existing_favourites_handles_pagination(self):

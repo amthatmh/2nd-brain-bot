@@ -37,17 +37,18 @@ def _extract_title(props: dict) -> str:
 def _build_cinema_query_filter(tmdb_api_key: str | None) -> dict:
     """
     Build the Notion filter for cinema sync.
-    - With TMDB key: process unsynced rows OR rows still missing TMDB URL.
-    - Without TMDB key: process only unsynced rows.
+
+    We always process rows that were never synced or were synced before today,
+    so operators can verify the job is running daily via the Last Synced column.
+    With a TMDB key, we also keep retrying rows that are still missing TMDB URL.
     """
+    base_conditions = [
+        {"property": "Last Synced", "date": {"is_empty": True}},
+        {"property": "Last Synced", "date": {"before": date.today().isoformat()}},
+    ]
     if tmdb_api_key:
-        return {
-            "or": [
-                {"property": "Last Synced", "date": {"is_empty": True}},
-                {"property": "TMDB URL", "url": {"is_empty": True}},
-            ]
-        }
-    return {"property": "Last Synced", "date": {"is_empty": True}}
+        base_conditions.append({"property": "TMDB URL", "url": {"is_empty": True}})
+    return {"or": base_conditions}
 
 
 async def _search_tmdb_url(title: str, tmdb_api_key: str | None) -> str | None:
@@ -80,7 +81,7 @@ async def _search_tmdb_url_with_client(
         return await _search_tmdb_url_with_client(title, tmdb_api_key, owned_client)
 
 
-def _load_existing_favourites(notion, fave_db_id: str) -> set[str]:
+def _load_existing_favourites(notion, fave_db_id: str | None) -> set[str]:
     """
     Build an in-memory set of favourite titles once per sync run.
 
@@ -88,6 +89,9 @@ def _load_existing_favourites(notion, fave_db_id: str) -> set[str]:
     bottleneck for larger sync batches and increases the risk of rate limits.
     """
     favourites: set[str] = set()
+    if not fave_db_id:
+        return favourites
+
     cursor = None
     while True:
         query = {
@@ -111,7 +115,7 @@ async def sync_cinema_log_to_notion(
     *,
     notion,
     cinema_db_id: str,
-    fave_db_id: str,
+    fave_db_id: str | None = None,
     tmdb_api_key: str | None = None,
 ) -> dict[str, int]:
     """Sync unsynced cinema entries and optionally promote favourites."""
@@ -160,7 +164,7 @@ async def sync_cinema_log_to_notion(
                 else:
                     stats["tmdb_missing"] += 1
 
-            if favourite and title and title not in existing_favourites:
+            if fave_db_id and favourite and title and title not in existing_favourites:
                 notion.pages.create(
                     parent={"database_id": fave_db_id},
                     properties={"Title": {"title": [{"text": {"content": title}}]}},
