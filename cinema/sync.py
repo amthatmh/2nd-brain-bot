@@ -82,6 +82,7 @@ async def _search_tmdb_url_with_client(
     title: str,
     tmdb_api_key: str | None,
     client: httpx.AsyncClient | None,
+    preferred_media_type: str | None = None,
 ) -> str | None:
     if not tmdb_api_key or not title:
         return None
@@ -89,8 +90,11 @@ async def _search_tmdb_url_with_client(
     search_titles = _title_search_candidates(title)
 
     if client is not None:
+        media_types = ("movie", "tv")
+        if preferred_media_type in {"movie", "tv"}:
+            media_types = (preferred_media_type, "tv" if preferred_media_type == "movie" else "movie")
         for query_title in search_titles:
-            for media_type in ("movie", "tv"):
+            for media_type in media_types:
                 resp = await client.get(
                     f"{TMDB_BASE}/search/{media_type}",
                     params={"api_key": tmdb_api_key, "query": query_title, "page": 1},
@@ -135,6 +139,15 @@ def _load_existing_favourites(notion, fave_db_id: str | None) -> set[str]:
             break
         cursor = response.get("next_cursor")
     return favourites
+
+
+def _preferred_media_type(props: dict) -> str | None:
+    value = (props.get("Type", {}).get("select", {}) or {}).get("name", "").strip().lower()
+    if value == "film":
+        return "movie"
+    if value == "series":
+        return "tv"
+    return None
 
 
 async def sync_cinema_log_to_notion(
@@ -183,7 +196,12 @@ async def sync_cinema_log_to_notion(
             update_props: dict = {}
             tmdb_url = tmdb_prop
             if not tmdb_url:
-                tmdb_url = await _search_tmdb_url_with_client(title, tmdb_api_key, client)
+                tmdb_url = await _search_tmdb_url_with_client(
+                    title,
+                    tmdb_api_key,
+                    client,
+                    preferred_media_type=_preferred_media_type(props),
+                )
                 if tmdb_url:
                     update_props["TMDB URL"] = {"url": tmdb_url}
                     stats["tmdb_found"] += 1

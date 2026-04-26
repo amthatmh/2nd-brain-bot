@@ -1299,6 +1299,11 @@ def create_watchlist_entry(
     episodes: int | None = None,
     runtime: int | None = None,
 ) -> str:
+    tmdb_url = ""
+    if tmdb_id:
+        media_slug = "movie" if media_type == "Film" else "tv" if media_type == "Series" else ""
+        if media_slug:
+            tmdb_url = f"https://www.themoviedb.org/{media_slug}/{tmdb_id}"
     props: dict = {
         "Title": {"title": [{"text": {"content": title}}]},
         "Type": {"select": {"name": media_type}},
@@ -1308,6 +1313,8 @@ def create_watchlist_entry(
     }
     if tmdb_id:
         props["TMDB ID"] = {"rich_text": [{"text": {"content": tmdb_id}}]}
+    if tmdb_url:
+        props["TMDB URL"] = {"url": tmdb_url}
     if seasons is not None:
         props["Seasons"] = {"number": seasons}
     if episodes is not None:
@@ -2384,8 +2391,9 @@ def create_note_entry(content: str, topic: str | None = None) -> str:
         options = schema_props["Topic"].get("multi_select", {}).get("options", [])
         names = {o.get("name") for o in options}
         selected = [{"name": t} for t in desired_topics if t in names]
-        if selected:
-            props["Topic"] = {"multi_select": selected}
+        # Notion can create missing multi_select options on write, so include any
+        # user-provided topics that are not in the current schema yet.
+        props["Topic"] = {"multi_select": selected or [{"name": t} for t in desired_topics]}
 
     if not props:
         raise ValueError("Notes DB schema has no writable matching properties for note payload")
@@ -3044,6 +3052,30 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
         return
 
+    pending_custom_topic = context.user_data.get("awaiting_note_custom_topic")
+    if pending_custom_topic:
+        key = pending_custom_topic.get("key")
+        entry = pending_note_map.pop(key, None)
+        context.user_data["awaiting_note_custom_topic"] = None
+        if not entry:
+            await message.reply_text("⚠️ This note prompt expired — please re-send the note.")
+            return
+        custom_topic = text.strip()[:60]
+        if not custom_topic:
+            await message.reply_text("⚠️ Topic can't be empty — please re-send the note.")
+            return
+        try:
+            create_note_entry(entry["content"], custom_topic)
+            topic_recency_map[custom_topic] = datetime.utcnow()
+            await message.reply_text(
+                f"✅ Note captured!\n🏷️ {custom_topic}\n_Saved to Notion_",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            log.error(f"Notion note custom-topic error: {e}")
+            await message.reply_text("⚠️ Couldn't save note to Notion.")
+        return
+
     awaiting_note_capture = context.user_data.get("awaiting_note_capture")
     if awaiting_note_capture:
         if not NOTION_NOTES_DB:
@@ -3272,10 +3304,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if parts[0] == "note_topic" and len(parts) == 3:
         key = parts[1]
         topic_ref = parts[2]
-        entry = pending_note_map.pop(key, None)
+        entry = pending_note_map.get(key)
         if not entry:
             await q.edit_message_text("⚠️ This note prompt expired — please re-send the note.")
             return
+        if topic_ref == "add":
+            context.user_data["awaiting_note_custom_topic"] = {"key": key}
+            await q.edit_message_text("🏷️ Send the new topic name for this note.")
+            return
+        pending_note_map.pop(key, None)
         if topic_ref == "none":
             selected_topic = None
         else:
