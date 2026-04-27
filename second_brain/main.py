@@ -221,6 +221,7 @@ _habit_jobs: list = []
 _scheduler: AsyncIOScheduler | None = None
 _digest_slots_last_load_succeeded = False
 _digest_catchup_sent: set[str] = set()
+_digest_slot_sent_today: set[str] = set()
 notified_goals_this_week: set[str] = set()
 mute_until: datetime | None = None
 STATE_DIR = _resolve_state_dir()
@@ -916,6 +917,7 @@ def load_digest_slots() -> list[dict]:
         return None
 
     slots: list[dict] = []
+    seen_slot_keys: set[tuple[str, bool]] = set()
     rows = notion_query_all(NOTION_DIGEST_SELECTOR_DB)
     for row in rows:
         props = row.get("properties", {})
@@ -956,6 +958,12 @@ def load_digest_slots() -> list[dict]:
 
         if contexts is None and not include_habits:
             continue
+
+        slot_key = (slot_time, is_weekday)
+        if slot_key in seen_slot_keys:
+            log.warning("Skipping duplicate digest selector slot %s (%s)", slot_time, "weekday" if is_weekday else "weekend")
+            continue
+        seen_slot_keys.add(slot_key)
 
         slots.append(
             {
@@ -4897,10 +4905,21 @@ def _filter_digest_tasks(tasks: list[dict], config: dict | None = None) -> list[
 
 
 async def send_digest_for_slot(bot, slot: dict) -> None:
+    now = datetime.now(TZ)
+    day_key = now.date().isoformat()
+    for key in list(_digest_slot_sent_today):
+        if not key.startswith(day_key):
+            _digest_slot_sent_today.discard(key)
+    weekday = now.weekday() < 5
+    slot_key = f"{day_key}|{'wd' if weekday else 'we'}|{slot.get('time')}"
+    if slot_key in _digest_slot_sent_today:
+        log.info("Skipping duplicate digest send for slot %s (%s)", slot.get("time"), "weekday" if weekday else "weekend")
+        return
     config = await get_digest_config(slot["time"], slot["is_weekday"])
     if config.get("contexts") is None and config.get("include_habits") is False:
         return
     await send_daily_digest(bot, include_habits=slot["include_habits"], config=config)
+    _digest_slot_sent_today.add(slot_key)
 
 
 def _queue_missed_slots_for_today(scheduler, bot, slots: list[dict]) -> None:
@@ -4951,7 +4970,7 @@ def _queue_missed_slots_for_today(scheduler, bot, slots: list[dict]) -> None:
             log.warning("Failed to queue digest catch-up for slot %s: %s", slot.get("time"), e)
 
 
-def build_digest_schedule(scheduler, bot) -> int:
+def build_digest_schedule(scheduler, bot, queue_catchup: bool = False) -> int:
     global _digest_slots_last_load_succeeded
     for job in _digest_jobs:
         try:
@@ -4967,7 +4986,13 @@ def build_digest_schedule(scheduler, bot) -> int:
         log.error("Failed to load digest slots: %s", e)
         return 0
 
+    dedupe_keys: set[tuple[str, bool]] = set()
     for slot in slots:
+        slot_key = (slot.get("time", ""), bool(slot.get("is_weekday")))
+        if slot_key in dedupe_keys:
+            log.warning("Skipping duplicate digest slot %s (%s)", slot.get("time"), "weekday" if slot.get("is_weekday") else "weekend")
+            continue
+        dedupe_keys.add(slot_key)
         try:
             hour_str, minute_str = slot["time"].split(":")
             hour, minute = int(hour_str), int(minute_str)
@@ -4985,7 +5010,8 @@ def build_digest_schedule(scheduler, bot) -> int:
         )
         _digest_jobs.append(job)
 
-    _queue_missed_slots_for_today(scheduler, bot, slots)
+    if queue_catchup:
+        _queue_missed_slots_for_today(scheduler, bot, slots)
     _digest_slots_last_load_succeeded = True
     log.info("Digest schedule built: %d slots registered", len(_digest_jobs))
     return len(_digest_jobs)
@@ -5610,7 +5636,7 @@ async def post_init(app: Application) -> None:
         scheduler.add_job(send_sunday_review, "cron", day_of_week="sun", hour=_sr_h, minute=_sr_m, args=[app.bot])
     if FEATURES.get("FEATURE_HABITS", True):
         register_habit_schedules(scheduler, app.bot)
-    build_digest_schedule(scheduler, app.bot)
+    build_digest_schedule(scheduler, app.bot, queue_catchup=True)
     scheduler.add_job(
         rebuild_digest_schedule_job,
         "cron",
