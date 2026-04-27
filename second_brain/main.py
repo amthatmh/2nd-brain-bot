@@ -1008,6 +1008,9 @@ def split_tasks(text: str) -> list[str]:
         tasks = [_BULLET_RE.sub("", l).strip() for l in lines if _BULLET_RE.match(l)]
         return tasks if len(tasks) > 1 else [text]
     if len(lines) > 1:
+        lower = text.lower()
+        if re.search(r"\bschedule\b.*\brecurring\b", lower) and re.search(r"\bevery\b", lower):
+            return [text]
         return lines
     return [text]
 
