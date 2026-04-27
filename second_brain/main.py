@@ -5397,11 +5397,14 @@ async def habits_data_handler(request: web.Request) -> web.Response:
 
             current_monday = today - timedelta(days=today.weekday())
             if target and target > 0:
-                # Fallback for weeks missing streak rows (e.g., scheduler did not run):
-                # infer whether weekly goal was met from logs.
-                for week_of, completed in weekly_counts.items():
-                    if week_of < current_monday and week_of not in streak_weeks_by_date:
-                        streak_weeks_by_date[week_of] = completed >= target
+                # For UI display, compute weekly goal attainment directly from logs
+                # using the current target. This keeps streaks correct even when
+                # streak rows are stale/missing or created before target changes.
+                week_cursor = start_dt - timedelta(days=start_dt.weekday())
+                while week_cursor < current_monday:
+                    completed = weekly_counts.get(week_cursor, 0)
+                    streak_weeks_by_date[week_cursor] = completed >= target
+                    week_cursor += timedelta(days=7)
 
             streak_weeks = sorted(
                 ((week_date, goal_met) for week_date, goal_met in streak_weeks_by_date.items() if week_date < current_monday),
