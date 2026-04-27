@@ -135,6 +135,16 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["venue"], "Soldier Field")
         self.assertEqual(parsed["date"], "2026-04-27T21:00:00")
 
+    def test_parse_explicit_log_command_extracts_date_and_time_without_second_at(self):
+        parsed = self.main.parse_explicit_entertainment_log(
+            "/log sport Bears vs Dodgers at Soldier Field on 2026/02/02 21:00"
+        )
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["title"], "Bears vs Dodgers")
+        self.assertEqual(parsed["venue"], "Soldier Field")
+        self.assertEqual(parsed["date"], "2026-02-02T21:00:00")
+
     def test_extract_cinema_visit_details(self):
         seat, auditorium = self.main._extract_cinema_visit_details("Seat D6, Auditorium D5, 20:40")
         self.assertEqual(seat, "D6")
