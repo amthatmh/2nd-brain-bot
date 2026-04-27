@@ -38,7 +38,7 @@ class TestSchedulerSetup(unittest.TestCase):
         self.assertIn("habit", triggers)
         self.assertEqual(triggers.count("cron"), 4)
 
-    def test_register_cinema_jobs_adds_cron_and_interval(self):
+    def test_register_cinema_jobs_adds_hourly_interval(self):
         scheduler = _FakeScheduler()
 
         def fixed_now(_tz):
@@ -48,16 +48,14 @@ class TestSchedulerSetup(unittest.TestCase):
             scheduler=scheduler,
             bot="bot",
             run_cinema_sync=_dummy,
-            cinema_sync_hour=23,
-            cinema_sync_minute=30,
-            sync_buffer_minutes=5,
+            sync_interval_minutes=60,
             tz=timezone.utc,
             now_fn=fixed_now,
         )
-        self.assertEqual(len(scheduler.calls), 2)
-        self.assertEqual(scheduler.calls[0]["trigger"], "cron")
-        self.assertEqual(scheduler.calls[1]["trigger"], "interval")
-        self.assertIn("next_run_time", scheduler.calls[1]["kwargs"])
+        self.assertEqual(len(scheduler.calls), 1)
+        self.assertEqual(scheduler.calls[0]["trigger"], "interval")
+        self.assertEqual(scheduler.calls[0]["kwargs"]["minutes"], 60)
+        self.assertIn("next_run_time", scheduler.calls[0]["kwargs"])
 
 
 if __name__ == "__main__":
