@@ -4,7 +4,11 @@ import os
 
 CINEMA_DB_ID = os.environ.get("NOTION_CINEMA_LOG_DB", os.environ.get("NOTION_CINEMA_DB", "")).strip()
 FAVE_DB_ID = os.environ.get("NOTION_FAVE_DB", "")
-TMDB_API_KEY = os.environ.get("TMDB_API_KEY", os.environ.get("TMDB_KEY", "")).strip()
+TMDB_API_KEY = (
+    os.environ.get("TMDB_API_KEY")
+    or os.environ.get("TMDB_KEY")
+    or ""
+).strip()
 CINEMA_SYNC_HOUR = int(os.environ.get("CINEMA_SYNC_HOUR", "23"))
 CINEMA_SYNC_MINUTE = int(os.environ.get("CINEMA_SYNC_MINUTE", "30"))
 
