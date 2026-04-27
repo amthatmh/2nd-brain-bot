@@ -121,7 +121,7 @@
         <h2>Week-by-week grid</h2>
         <div class="chip" id="weeksChip">— weeks</div>
       </div>
-      <div class="panel-sub">Weeks run Mon→Sun top-to-bottom · today is outlined · future days are faded</div>
+      <div class="panel-sub">Weeks run Monday→Sunday top-to-bottom · today is outlined · future days are faded</div>
       <div class="cards" id="cards">
         <div class="loading"><div class="spinner"></div> Fetching from Notion…</div>
       </div>
@@ -134,6 +134,7 @@
 const API_BASE    = 'https://worker-production-d366.up.railway.app';
 const API_URL     = `${API_BASE}/habits-data`;
 const LOG_API_URL = `${API_BASE}/log-habit`;
+const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 const ICON_MAP = {
   'workout':'🏋️','exercise':'🏋️','creatine':'🥛',
@@ -174,6 +175,13 @@ function getColor(colorClass, on) {
     'c-orange':{on:'#ffa16b',off:'#332017'},'c-purple':{on:'#9f8df4',off:'#272047'},
   };
   return (m[colorClass]||m['c-pink'])[on?'on':'off'];
+}
+
+function formatLocalDateKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 async function loadData() {
@@ -259,7 +267,7 @@ function render(data) {
       <div class="grid-wrap">
         <div class="grid-shell">
           <div class="day-labels">
-            <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
+            ${WEEKDAY_LABELS.map(label => `<span>${label}</span>`).join('')}
           </div>
           <div class="grid"></div>
         </div>
@@ -287,7 +295,7 @@ function render(data) {
       const weekStart = new Date(d);
       const dayOffset = (d.getDay() + 6) % 7; // Mon=0 ... Sun=6
       weekStart.setDate(d.getDate() - dayOffset);
-      const key = weekStart.toISOString().slice(0, 10);
+      const key = formatLocalDateKey(weekStart);
       if (!weekMap.has(key)) weekMap.set(key, new Array(7).fill(null));
       weekMap.get(key)[dayOffset] = { day, value };
     });
