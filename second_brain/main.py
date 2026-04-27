@@ -5960,7 +5960,7 @@ async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await status.edit_text(
             "✅ Sync finished.\n"
             f"Cinema: scanned={cinema_stats['scanned']} updated={cinema_stats['updated']} "
-            f"skipped={cinema_stats['skipped']} failed={cinema_stats['failed']}"
+            f"missing={cinema_stats['tmdb_missing']} skipped={cinema_stats['skipped']} failed={cinema_stats['failed']}"
         )
     except Exception as e:
         log.exception("Manual /sync failed: %s", e)

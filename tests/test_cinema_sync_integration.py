@@ -387,6 +387,7 @@ class TestCinemaSyncIntegration(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(stats["scanned"], 2)
         self.assertEqual(stats["tmdb_missing"], 2)
+        self.assertEqual(stats["failed"], 0)
         self.assertEqual(len(notion.pages.updated), 0)
 
     async def test_backfills_tmdb_when_title_property_is_name(self):

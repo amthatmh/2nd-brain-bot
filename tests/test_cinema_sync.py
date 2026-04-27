@@ -68,6 +68,15 @@ class TestCinemaSyncHelpers(unittest.TestCase):
         best = _select_best_tmdb_movie_match(results, title="Interstellar", row_year=2014)
         self.assertIsNone(best)
 
+    def test_match_selection_considers_original_title(self):
+        results = [
+            {"id": 1, "title": "The Boy and the Heron", "original_title": "君たちはどう生きるか", "release_date": "2023-07-14"},
+            {"id": 2, "title": "Some Other Movie", "original_title": "別の映画", "release_date": "2023-01-01"},
+        ]
+        best = _select_best_tmdb_movie_match(results, title="君たちはどう生きるか", row_year=2023)
+        self.assertIsNotNone(best)
+        self.assertEqual(best["id"], 1)
+
 
     def test_title_search_candidates_strips_common_noise(self):
         candidates = _title_search_candidates("Dune: Part Two (2024)")

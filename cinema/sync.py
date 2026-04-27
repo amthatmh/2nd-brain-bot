@@ -112,19 +112,28 @@ def _release_year(result: dict) -> int | None:
     return None
 
 
-def _result_title(result: dict) -> str:
-    return str((result or {}).get("title") or (result or {}).get("original_title") or "").strip()
+def _result_titles(result: dict) -> list[str]:
+    titles: list[str] = []
+    for key in ("title", "original_title"):
+        value = str((result or {}).get(key) or "").strip()
+        if value and value not in titles:
+            titles.append(value)
+    return titles
 
 
 def _movie_match_score(result: dict, wanted_title: str, wanted_year: int | None) -> float:
-    title = _result_title(result)
-    if not title:
+    titles = _result_titles(result)
+    if not titles:
         return -1.0
     wanted = _normalize_title(wanted_title)
-    candidate = _normalize_title(title)
-    exact = 1.0 if candidate == wanted else 0.0
-    near = SequenceMatcher(None, candidate, wanted).ratio()
-    title_score = (exact * 1000.0) + (near * 100.0)
+    best_title_score = -1.0
+    for title in titles:
+        candidate = _normalize_title(title)
+        exact = 1.0 if candidate == wanted else 0.0
+        contains = 1.0 if (wanted and (wanted in candidate or candidate in wanted)) else 0.0
+        near = SequenceMatcher(None, candidate, wanted).ratio()
+        best_title_score = max(best_title_score, (exact * 1000.0) + (contains * 200.0) + (near * 100.0))
+    title_score = best_title_score
 
     year_score = 0.0
     candidate_year = _release_year(result)
@@ -461,7 +470,6 @@ async def _sync_rows(
                     stats["updated"] += 1 if "TMDB URL" in update_props else 0
                 else:
                     stats["tmdb_missing"] += 1
-                    stats["failed"] += 1
             except Exception:
                 stats["failed"] += 1
 
