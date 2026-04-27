@@ -366,6 +366,30 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(original, "martin")
         self.assertEqual(suggested, "Martin Theatre")
 
+    def test_entertainment_save_error_text_for_missing_performance_schema(self):
+        msg = self.main._entertainment_save_error_text(
+            ValueError("Performances schema is unavailable"),
+            {"log_type": "performance"},
+        )
+        self.assertIn("NOTION_PERFORMANCES_DB", msg)
+
+
+class TestEntertainmentEnvFallbacks(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.main = load_main_module()
+
+    def test_legacy_performance_env_var_is_accepted(self):
+        legacy_env = dict(REQUIRED_ENV)
+        legacy_env.pop("NOTION_PERFORMANCES_DB", None)
+        legacy_env["NOTION_PERFORMANCE_DB"] = "legacy_performance_db"
+        sys.modules.pop("second_brain.main", None)
+        with patch.dict(os.environ, legacy_env, clear=False), \
+            patch("notion_client.Client", return_value=MagicMock()), \
+            patch("anthropic.Anthropic", return_value=MagicMock()):
+            main = importlib.import_module("second_brain.main")
+        self.assertEqual(main.NOTION_PERFORMANCES_DB, "legacy_performance_db")
+
     def test_known_cinema_venue_is_normalized_from_previous_rows(self):
         schema = {
             "Film": "title",
@@ -466,6 +490,36 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
             "favourite": False,
         })
         self.assertEqual(page_id, "sport-page-1")
+        self.assertFalse(fav_saved)
+
+    def test_create_sports_entry_maps_seat_to_seat_column(self):
+        self.main.NOTION_SPORTS_LOG_DB = "sports_db"
+        self.main.entertainment_schemas["sports"] = {
+            "Game": "title",
+            "Date": "date",
+            "Notes": "rich_text",
+            "Seat": "rich_text",
+            "Venue": "select",
+        }
+
+        def fake_notion_call(fn, **kwargs):
+            if fn == self.main.notion.pages.create:
+                props = kwargs["properties"]
+                self.assertEqual(props["Seat"]["rich_text"][0]["text"]["content"], "D9")
+                self.assertNotIn("Notes", props)
+                return {"id": "sport-page-2"}
+            return {}
+
+        self.main.notion_call = fake_notion_call
+        page_id, fav_saved = self.main.create_entertainment_log_entry({
+            "log_type": "sport",
+            "title": "The Movie",
+            "date": "2026-04-26T20:35:00",
+            "venue": "House of Blues",
+            "notes": "Seat D9",
+            "favourite": False,
+        })
+        self.assertEqual(page_id, "sport-page-2")
         self.assertFalse(fav_saved)
 
 

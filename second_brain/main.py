@@ -140,7 +140,10 @@ NOTION_DB_ID    = os.environ["NOTION_DB_ID"]
 NOTION_HABIT_DB = os.environ["NOTION_HABIT_DB"]
 NOTION_LOG_DB   = os.environ["NOTION_LOG_DB"]
 NOTION_CINEMA_LOG_DB = os.environ.get("NOTION_CINEMA_LOG_DB", os.environ.get("NOTION_CINEMA_DB", "")).strip()
-NOTION_PERFORMANCES_DB = os.environ.get("NOTION_PERFORMANCES_DB", "").strip()
+NOTION_PERFORMANCES_DB = os.environ.get(
+    "NOTION_PERFORMANCES_DB",
+    os.environ.get("NOTION_PERFORMANCE_DB", os.environ.get("NOTION_PERFORMANCE_LOG_DB", "")),
+).strip()
 NOTION_SPORTS_LOG_DB = os.environ.get("NOTION_SPORTS_LOG_DB", os.environ.get("NOTION_SPORTS_DB", "")).strip()
 NOTION_FAVOURITE_FILMS_DB = os.environ.get("NOTION_FAVOURITE_FILMS_DB", "").strip()
 NOTION_NOTES_DB = os.environ["NOTION_NOTES_DB"]    # 📒 Notes
@@ -2986,6 +2989,15 @@ def _strip_datetime_from_notes(notes: str | None) -> str | None:
     return cleaned or None
 
 
+def _strip_seat_from_notes(notes: str | None) -> str | None:
+    if not notes:
+        return None
+    cleaned = re.sub(r"\bseat\s*[A-Za-z0-9-]+\b", "", notes, flags=re.IGNORECASE)
+    cleaned = re.sub(r"[,\-–|]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned or None
+
+
 def _find_existing_cinema_venue(title: str, schema: dict) -> str | None:
     title_prop = _title_prop_name(schema)
     venue_prop = _pick_exact_prop(schema, "select", ["Venue", "Place", "Location"]) \
@@ -3175,7 +3187,25 @@ def create_entertainment_log_entry(payload: dict) -> tuple[str, bool]:
         datetime_hint = " ".join(part for part in [title, venue, notes] if part)
         when_iso = _normalize_entertainment_datetime(when_iso, datetime_hint)
         notes = _strip_datetime_from_notes(notes)
+        seat, _ = _extract_cinema_visit_details(notes)
+        cleaned_notes = _strip_seat_from_notes(notes) if seat else notes
         props = _build_common_entertainment_props(schema, title=title, when_iso=when_iso, venue=venue, notes=notes)
+        if seat:
+            notes_prop = _pick_prop(schema, "rich_text", ["Notes", "Comment", "Details"])
+            if cleaned_notes and notes_prop:
+                props[notes_prop] = {"rich_text": [{"text": {"content": cleaned_notes}}]}
+            elif notes_prop and notes_prop in props:
+                props.pop(notes_prop, None)
+
+            seat_select_prop = _pick_exact_prop(schema, "select", ["Seat"])
+            seat_status_prop = _pick_exact_prop(schema, "status", ["Seat"])
+            seat_rich_text_prop = _pick_exact_prop(schema, "rich_text", ["Seat"])
+            if seat_select_prop:
+                props[seat_select_prop] = {"select": {"name": seat}}
+            elif seat_status_prop:
+                props[seat_status_prop] = {"status": {"name": seat}}
+            elif seat_rich_text_prop:
+                props[seat_rich_text_prop] = {"rich_text": [{"text": {"content": seat}}]}
         page = _safe_create_entertainment_page(schema, NOTION_SPORTS_LOG_DB, props)
         return page["id"], False
 
@@ -3218,6 +3248,21 @@ async def handle_entertainment_log(message, payload: dict) -> None:
         _remember_pending_sport_competition(message, entry_id)
         await message.reply_text("🏆 Logged to Sports Log. Which competition should I set for this one?")
     log.info("Entertainment logged type=%s title=%s page_id=%s", log_type, title, entry_id)
+
+
+def _entertainment_save_error_text(err: Exception, payload: dict | None = None) -> str:
+    text = str(err or "")
+    log_type = (payload or {}).get("log_type")
+    if "Performances schema is unavailable" in text:
+        return (
+            "⚠️ I couldn't save that performance log because the Performances DB isn't configured.\n"
+            "Set `NOTION_PERFORMANCES_DB` (or legacy `NOTION_PERFORMANCE_DB` / `NOTION_PERFORMANCE_LOG_DB`)."
+        )
+    if "Cinema schema is unavailable" in text:
+        return "⚠️ I couldn't save that cinema log because `NOTION_CINEMA_LOG_DB` isn't configured."
+    if "Sports schema is unavailable" in text:
+        return "⚠️ I couldn't save that sports log because `NOTION_SPORTS_LOG_DB` isn't configured."
+    return "⚠️ I couldn't save that entertainment log to Notion."
 
 
 def _entertainment_db_meta(log_type: str | None) -> tuple[str | None, str | None, str | None]:
@@ -4134,7 +4179,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             await handle_entertainment_log(message, explicit_entertainment)
         except Exception as e:
             log.error("Explicit entertainment text save error: %s", e)
-            await message.reply_text("⚠️ I couldn't save that entertainment log to Notion.")
+            await message.reply_text(_entertainment_save_error_text(e, explicit_entertainment))
         return
 
     numbers = parse_done_numbers_command(text)
@@ -4391,7 +4436,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             log.info("Entertainment confirmed and saved page_id=%s", entry_id)
         except Exception as e:
             log.error("Entertainment callback save error: %s", e)
-            await q.edit_message_text("⚠️ Couldn't save this entertainment log.")
+            await q.edit_message_text(_entertainment_save_error_text(e, payload))
         return
 
     if parts[0] == "nt" and len(parts) == 3:
@@ -5663,7 +5708,7 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await handle_entertainment_log(update.message, parsed)
     except Exception as e:
         log.error("Explicit /log save error: %s", e)
-        await update.message.reply_text("⚠️ I couldn't save that entertainment log to Notion.")
+        await update.message.reply_text(_entertainment_save_error_text(e, parsed))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
