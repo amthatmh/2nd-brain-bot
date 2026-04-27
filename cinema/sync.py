@@ -1,13 +1,15 @@
-"""Cinema Log daily sync helpers."""
+"""Cinema Log TMDB sync helpers."""
 
 from __future__ import annotations
 
 from datetime import date
 import re
+from difflib import SequenceMatcher
 
 import httpx
 
 TMDB_BASE = "https://api.themoviedb.org/3"
+TMDB_MOVIE_URL_BASE = "https://www.themoviedb.org/movie"
 
 def _title_search_candidates(title: str) -> list[str]:
     """Generate progressively simpler TMDB search candidates for noisy titles."""
@@ -68,33 +70,89 @@ def _parse_row_year(props: dict) -> int | None:
     return None
 
 
-def _build_cinema_query_filter(tmdb_api_key: str | None) -> dict:
-    """
-    Build the Notion filter for cinema sync.
+def _build_cinema_query_filter() -> dict:
+    """Query entries that need TMDB URL backfill."""
+    return {
+        "and": [
+            {"property": "TMDB URL", "url": {"is_empty": True}},
+            {
+                "or": [
+                    {"property": "Film", "title": {"is_not_empty": True}},
+                    {"property": "Title", "title": {"is_not_empty": True}},
+                    {"property": "Name", "title": {"is_not_empty": True}},
+                ]
+            },
+        ]
+    }
 
-    We always process rows that were never synced or were synced before today,
-    so operators can verify the job is running daily via the Last Synced column.
-    With a TMDB key, we also keep retrying rows that are still missing TMDB URL.
-    """
-    base_conditions = [
-        {"property": "Last Synced", "date": {"is_empty": True}},
-        {"property": "Last Synced", "date": {"before": date.today().isoformat()}},
-        {"property": "Favourite", "checkbox": {"equals": True}},
-    ]
-    if tmdb_api_key:
-        base_conditions.append({"property": "TMDB URL", "url": {"is_empty": True}})
-    return {"or": base_conditions}
+
+def _build_tmdb_movie_url(tmdb_movie_id: int | str) -> str:
+    return f"{TMDB_MOVIE_URL_BASE}/{tmdb_movie_id}"
+
+
+def _release_year(result: dict) -> int | None:
+    release_date = (result or {}).get("release_date")
+    if isinstance(release_date, str) and len(release_date) >= 4 and release_date[:4].isdigit():
+        return int(release_date[:4])
+    return None
+
+
+def _result_title(result: dict) -> str:
+    return str((result or {}).get("title") or (result or {}).get("original_title") or "").strip()
+
+
+def _movie_match_score(result: dict, wanted_title: str, wanted_year: int | None) -> float:
+    title = _result_title(result)
+    if not title:
+        return -1.0
+    wanted = _normalize_title(wanted_title)
+    candidate = _normalize_title(title)
+    exact = 1.0 if candidate == wanted else 0.0
+    near = SequenceMatcher(None, candidate, wanted).ratio()
+    title_score = (exact * 1000.0) + (near * 100.0)
+
+    year_score = 0.0
+    candidate_year = _release_year(result)
+    if wanted_year and candidate_year:
+        year_gap = abs(candidate_year - wanted_year)
+        if year_gap == 0:
+            year_score = 40.0
+        elif year_gap == 1:
+            year_score = 24.0
+        elif year_gap == 2:
+            year_score = 12.0
+        elif year_gap <= 5:
+            year_score = 5.0
+
+    popularity = float((result or {}).get("popularity") or 0.0)
+    vote_count = float((result or {}).get("vote_count") or 0.0)
+    return title_score + year_score + min(popularity, 50.0) + min(vote_count / 100.0, 25.0)
+
+
+def _select_best_tmdb_movie_match(results: list[dict], title: str, row_year: int | None) -> dict | None:
+    if not results:
+        return None
+    ranked = sorted(
+        results,
+        key=lambda r: _movie_match_score(r, title, row_year),
+        reverse=True,
+    )
+    best = ranked[0]
+    confidence = _movie_match_score(best, title, row_year)
+    if confidence < 60:
+        return None
+    return best
 
 
 async def _search_tmdb_url(title: str, tmdb_api_key: str | None) -> str | None:
-    return await _search_tmdb_url_with_client(title, tmdb_api_key, client=None)
+    return await _search_tmdb_url_with_client(title, tmdb_api_key, row_year=None, client=None)
 
 
 async def _search_tmdb_url_with_client(
     title: str,
     tmdb_api_key: str | None,
+    row_year: int | None,
     client: httpx.AsyncClient | None,
-    preferred_media_type: str | None = None,
 ) -> str | None:
     if not tmdb_api_key or not title:
         return None
@@ -102,25 +160,25 @@ async def _search_tmdb_url_with_client(
     search_titles = _title_search_candidates(title)
 
     if client is not None:
-        media_types = ("movie", "tv")
-        if preferred_media_type in {"movie", "tv"}:
-            media_types = (preferred_media_type, "tv" if preferred_media_type == "movie" else "movie")
         for query_title in search_titles:
-            for media_type in media_types:
-                resp = await client.get(
-                    f"{TMDB_BASE}/search/{media_type}",
-                    params={"api_key": tmdb_api_key, "query": query_title, "page": 1},
-                )
-                resp.raise_for_status()
-                results = resp.json().get("results", [])
-                if results:
-                    tmdb_id = results[0].get("id")
-                    if tmdb_id:
-                        return f"https://www.themoviedb.org/{media_type}/{tmdb_id}"
+            resp = await client.get(
+                f"{TMDB_BASE}/search/movie",
+                params={"api_key": tmdb_api_key, "query": query_title, "page": 1},
+            )
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+            best = _select_best_tmdb_movie_match(results, title=title, row_year=row_year)
+            if best and best.get("id"):
+                return _build_tmdb_movie_url(best["id"])
         return None
 
     async with httpx.AsyncClient(timeout=12) as owned_client:
-        return await _search_tmdb_url_with_client(title, tmdb_api_key, owned_client)
+        return await _search_tmdb_url_with_client(
+            title=title,
+            tmdb_api_key=tmdb_api_key,
+            row_year=row_year,
+            client=owned_client,
+        )
 
 
 def _detect_favourite_db_fields(notion, fave_db_id: str | None) -> dict[str, str | None]:
@@ -256,16 +314,20 @@ async def sync_cinema_log_to_notion(
     cinema_db_id: str,
     fave_db_id: str | None = None,
     tmdb_api_key: str | None = None,
+    force: bool = False,
 ) -> dict[str, int]:
-    """Sync unsynced cinema entries and optionally promote favourites."""
+    """Sync cinema entries missing TMDB URL and optionally promote favourites."""
     stats = {
-        "new_entries": 0,
+        "scanned": 0,
+        "updated": 0,
+        "skipped": 0,
+        "failed": 0,
         "tmdb_found": 0,
         "tmdb_missing": 0,
         "added_to_fave": 0,
     }
 
-    query_filter = _build_cinema_query_filter(tmdb_api_key)
+    query_filter = _build_cinema_query_filter()
 
     rows: list[dict] = []
     cursor = None
@@ -283,7 +345,7 @@ async def sync_cinema_log_to_notion(
             break
         cursor = response.get("next_cursor")
 
-    stats["new_entries"] = len(rows)
+    stats["scanned"] = len(rows)
     fave_fields = _detect_favourite_db_fields(notion, fave_db_id)
     existing_favourites = _load_existing_favourites(
         notion,
@@ -292,70 +354,137 @@ async def sync_cinema_log_to_notion(
     )
 
     async with httpx.AsyncClient(timeout=12) as client:
-        for row in rows:
-            props = row.get("properties", {})
-            title = _extract_title(props)
-            tmdb_prop = props.get("TMDB URL", {}).get("url")
-            favourite = props.get("Favourite", {}).get("checkbox", False)
-
-            update_props: dict = {}
-            tmdb_url = tmdb_prop
-            if not tmdb_url:
-                tmdb_id = _tmdb_id_from_props(props)
-                tmdb_media_slug = _tmdb_media_slug_from_props(props)
-                if tmdb_id and tmdb_media_slug:
-                    tmdb_url = f"https://www.themoviedb.org/{tmdb_media_slug}/{tmdb_id}"
-                else:
-                    tmdb_url = await _search_tmdb_url_with_client(
-                        title,
-                        tmdb_api_key,
-                        client,
-                        preferred_media_type=_preferred_media_type(props),
-                    )
-                if tmdb_url:
-                    update_props["TMDB URL"] = {"url": tmdb_url}
-                    stats["tmdb_found"] += 1
-                else:
-                    stats["tmdb_missing"] += 1
-
-            normalized_title = _normalize_title(title)
-            if fave_db_id and favourite and normalized_title and normalized_title not in existing_favourites:
-                favourite_props = {
-                    fave_fields["title_prop"] or "Title": {
-                        "title": [{"text": {"content": title}}],
-                    }
-                }
-                row_year = _parse_row_year(props)
-                if row_year and fave_fields["year_prop"]:
-                    if fave_fields["year_type"] == "number":
-                        favourite_props[fave_fields["year_prop"]] = {"number": row_year}
-                    elif fave_fields["year_type"] == "select":
-                        favourite_props[fave_fields["year_prop"]] = {"select": {"name": str(row_year)}}
-                    elif fave_fields["year_type"] == "rich_text":
-                        favourite_props[fave_fields["year_prop"]] = {
-                            "rich_text": [{"text": {"content": str(row_year)}}]
-                        }
-                    elif fave_fields["year_type"] == "date":
-                        favourite_props[fave_fields["year_prop"]] = {
-                            "date": {"start": f"{row_year}-01-01"}
-                        }
-
-                if fave_fields["category_prop"]:
-                    if fave_fields["category_type"] == "select":
-                        favourite_props[fave_fields["category_prop"]] = {"select": {"name": "Film"}}
-                    elif fave_fields["category_type"] == "multi_select":
-                        favourite_props[fave_fields["category_prop"]] = {
-                            "multi_select": [{"name": "Film"}]
-                        }
-
-                notion.pages.create(
-                    parent={"database_id": fave_db_id},
-                    properties=favourite_props,
-                )
-                existing_favourites.add(normalized_title)
-                stats["added_to_fave"] += 1
-
-            update_props["Last Synced"] = {"date": {"start": date.today().isoformat()}}
-            notion.pages.update(page_id=row["id"], properties=update_props)
+        await _sync_rows(
+            notion=notion,
+            rows=rows,
+            fave_db_id=fave_db_id,
+            tmdb_api_key=tmdb_api_key,
+            force=force,
+            stats=stats,
+            fave_fields=fave_fields,
+            existing_favourites=existing_favourites,
+            client=client,
+        )
 
     return stats
+
+
+async def sync_single_cinema_entry(
+    *,
+    notion,
+    page_id: str,
+    fave_db_id: str | None = None,
+    tmdb_api_key: str | None = None,
+    force: bool = False,
+) -> dict[str, int]:
+    row = notion.pages.retrieve(page_id=page_id)
+    stats = {"scanned": 1, "updated": 0, "skipped": 0, "failed": 0, "tmdb_found": 0, "tmdb_missing": 0, "added_to_fave": 0}
+    fave_fields = _detect_favourite_db_fields(notion, fave_db_id)
+    existing_favourites = _load_existing_favourites(
+        notion,
+        fave_db_id,
+        title_prop_name=fave_fields["title_prop"] or "Title",
+    )
+    async with httpx.AsyncClient(timeout=12) as client:
+        await _sync_rows(
+            notion=notion,
+            rows=[row],
+            fave_db_id=fave_db_id,
+            tmdb_api_key=tmdb_api_key,
+            force=force,
+            stats=stats,
+            fave_fields=fave_fields,
+            existing_favourites=existing_favourites,
+            client=client,
+        )
+    return stats
+
+
+async def _sync_rows(
+    *,
+    notion,
+    rows: list[dict],
+    fave_db_id: str | None,
+    tmdb_api_key: str | None,
+    force: bool,
+    stats: dict[str, int],
+    fave_fields: dict[str, str | None],
+    existing_favourites: set[str],
+    client: httpx.AsyncClient,
+) -> None:
+    for row in rows:
+        props = row.get("properties", {})
+        title = _extract_title(props)
+        tmdb_prop = props.get("TMDB URL", {}).get("url")
+        favourite = props.get("Favourite", {}).get("checkbox", False)
+        manual_source = ((props.get("Source", {}).get("select") or {}).get("name") or "").strip()
+
+        update_props: dict = {}
+        tmdb_url = tmdb_prop
+        if tmdb_url and not force:
+            stats["skipped"] += 1
+        elif manual_source == "✏️ Manual" and tmdb_url and not force:
+            stats["skipped"] += 1
+        else:
+            try:
+                tmdb_id = _tmdb_id_from_props(props)
+                tmdb_media_slug = _tmdb_media_slug_from_props(props)
+                if tmdb_id and tmdb_media_slug == "movie":
+                    tmdb_url = _build_tmdb_movie_url(tmdb_id)
+                else:
+                    tmdb_url = await _search_tmdb_url_with_client(
+                        title=title,
+                        tmdb_api_key=tmdb_api_key,
+                        row_year=_parse_row_year(props),
+                        client=client,
+                    )
+                if tmdb_url:
+                    if tmdb_prop != tmdb_url:
+                        update_props["TMDB URL"] = {"url": tmdb_url}
+                    stats["tmdb_found"] += 1
+                    stats["updated"] += 1 if "TMDB URL" in update_props else 0
+                else:
+                    stats["tmdb_missing"] += 1
+                    stats["failed"] += 1
+            except Exception:
+                stats["failed"] += 1
+
+        normalized_title = _normalize_title(title)
+        if fave_db_id and favourite and normalized_title and normalized_title not in existing_favourites:
+            favourite_props = {
+                fave_fields["title_prop"] or "Title": {
+                    "title": [{"text": {"content": title}}],
+                }
+            }
+            row_year = _parse_row_year(props)
+            if row_year and fave_fields["year_prop"]:
+                if fave_fields["year_type"] == "number":
+                    favourite_props[fave_fields["year_prop"]] = {"number": row_year}
+                elif fave_fields["year_type"] == "select":
+                    favourite_props[fave_fields["year_prop"]] = {"select": {"name": str(row_year)}}
+                elif fave_fields["year_type"] == "rich_text":
+                    favourite_props[fave_fields["year_prop"]] = {
+                        "rich_text": [{"text": {"content": str(row_year)}}]
+                    }
+                elif fave_fields["year_type"] == "date":
+                    favourite_props[fave_fields["year_prop"]] = {
+                        "date": {"start": f"{row_year}-01-01"}
+                    }
+
+            if fave_fields["category_prop"]:
+                if fave_fields["category_type"] == "select":
+                    favourite_props[fave_fields["category_prop"]] = {"select": {"name": "Film"}}
+                elif fave_fields["category_type"] == "multi_select":
+                    favourite_props[fave_fields["category_prop"]] = {
+                        "multi_select": [{"name": "Film"}]
+                    }
+
+            notion.pages.create(
+                parent={"database_id": fave_db_id},
+                properties=favourite_props,
+            )
+            existing_favourites.add(normalized_title)
+            stats["added_to_fave"] += 1
+
+        if update_props:
+            notion.pages.update(page_id=row["id"], properties=update_props)
