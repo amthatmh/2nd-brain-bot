@@ -746,13 +746,17 @@ def load_habit_cache() -> None:
             def txt(key):
                 parts = p.get(key, {}).get("rich_text", [])
                 return parts[0]["text"]["content"] if parts else None
+            parsed_frequency = extract_habit_frequency(p)
+            frequency_label = txt("Frequency Label")
+            if not frequency_label and parsed_frequency:
+                frequency_label = f"{parsed_frequency}x/week"
             habit_cache[name] = {
                 "page_id":         page["id"],
                 "name":            name,
                 "time":            sel("Time"),
                 "color":           sel("Color"),
-                "freq_per_week":   num("Frequency Per Week"),
-                "frequency_label": txt("Frequency Label"),
+                "freq_per_week":   parsed_frequency,
+                "frequency_label": frequency_label,
                 "description":     txt("Description"),
                 "sort":            num("Sort") or 99,
             }
@@ -1821,10 +1825,10 @@ def get_habit_frequency(habit_page_id: str) -> int:
     try:
         page = notion.pages.retrieve(page_id=habit_page_id)
         properties = page.get("properties", {})
-        number_value = properties.get("Frequency", {}).get("number")
-        if number_value is None:
-            return 7
-        return int(number_value)
+        frequency = extract_habit_frequency(properties)
+        if frequency and frequency > 0:
+            return frequency
+        return 7
     except Exception as e:
         log.error("Error reading habit frequency for %s: %s", habit_page_id, e)
         return 7
@@ -5374,7 +5378,34 @@ async def habits_data_handler(request: web.Request) -> web.Response:
                 # Keep one status per week, favoring goal_met=True if duplicates exist.
                 streak_weeks_by_date[week_date] = streak_weeks_by_date.get(week_date, False) or goal_met
 
+            target = habit.get("freq_per_week")
+            if not isinstance(target, int) or target <= 0:
+                label = habit.get("frequency_label") or ""
+                match = re.search(r"\d+", label)
+                target = int(match.group(0)) if match else None
+
+            weekly_counts: dict[date, int] = {}
+            for date_str, done in zip(all_dates, days):
+                if done != 1:
+                    continue
+                try:
+                    day_date = datetime.fromisoformat(date_str).date()
+                except ValueError:
+                    continue
+                week_of = day_date - timedelta(days=day_date.weekday())
+                weekly_counts[week_of] = weekly_counts.get(week_of, 0) + 1
+
             current_monday = today - timedelta(days=today.weekday())
+            if target and target > 0:
+                # For UI display, compute weekly goal attainment directly from logs
+                # using the current target. This keeps streaks correct even when
+                # streak rows are stale/missing or created before target changes.
+                week_cursor = start_dt - timedelta(days=start_dt.weekday())
+                while week_cursor < current_monday:
+                    completed = weekly_counts.get(week_cursor, 0)
+                    streak_weeks_by_date[week_cursor] = completed >= target
+                    week_cursor += timedelta(days=7)
+
             streak_weeks = sorted(
                 ((week_date, goal_met) for week_date, goal_met in streak_weeks_by_date.items() if week_date < current_monday),
                 key=lambda item: item[0],
