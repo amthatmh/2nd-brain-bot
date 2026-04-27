@@ -68,30 +68,6 @@ def _parse_row_year(props: dict) -> int | None:
     return None
 
 
-def _extract_date_year(value: str | None) -> int | None:
-    if isinstance(value, str) and len(value) >= 4 and value[:4].isdigit():
-        return int(value[:4])
-    return None
-
-
-def _extract_favourite_year(props: dict, year_prop_name: str | None) -> int | None:
-    if not year_prop_name:
-        return None
-    prop = props.get(year_prop_name, {})
-    prop_type = prop.get("type")
-    if prop_type == "number":
-        number = prop.get("number")
-        if isinstance(number, (int, float)):
-            return int(number)
-    if prop_type == "select":
-        return _extract_date_year((prop.get("select") or {}).get("name"))
-    if prop_type == "rich_text":
-        return _extract_date_year(_plain_text(prop))
-    if prop_type == "date":
-        return _extract_date_year((prop.get("date") or {}).get("start"))
-    return None
-
-
 def _build_cinema_query_filter(tmdb_api_key: str | None) -> dict:
     """
     Build the Notion filter for cinema sync.
@@ -103,6 +79,7 @@ def _build_cinema_query_filter(tmdb_api_key: str | None) -> dict:
     base_conditions = [
         {"property": "Last Synced", "date": {"is_empty": True}},
         {"property": "Last Synced", "date": {"before": date.today().isoformat()}},
+        {"property": "Favourite", "checkbox": {"equals": True}},
     ]
     if tmdb_api_key:
         base_conditions.append({"property": "TMDB URL", "url": {"is_empty": True}})

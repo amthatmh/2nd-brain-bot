@@ -24,8 +24,9 @@ class TestCinemaSyncHelpers(unittest.TestCase):
     def test_filter_with_tmdb_key_backfills_missing_urls(self):
         filter_obj = _build_cinema_query_filter("abc123")
         self.assertIn("or", filter_obj)
-        self.assertEqual(len(filter_obj["or"]), 3)
+        self.assertEqual(len(filter_obj["or"]), 4)
         self.assertIn({"property": "TMDB URL", "url": {"is_empty": True}}, filter_obj["or"])
+        self.assertIn({"property": "Favourite", "checkbox": {"equals": True}}, filter_obj["or"])
 
     def test_filter_without_tmdb_key_targets_unsynced_or_stale_rows(self):
         filter_obj = _build_cinema_query_filter("")
@@ -35,6 +36,7 @@ class TestCinemaSyncHelpers(unittest.TestCase):
                 "or": [
                     {"property": "Last Synced", "date": {"is_empty": True}},
                     {"property": "Last Synced", "date": {"before": date.today().isoformat()}},
+                    {"property": "Favourite", "checkbox": {"equals": True}},
                 ]
             },
         )

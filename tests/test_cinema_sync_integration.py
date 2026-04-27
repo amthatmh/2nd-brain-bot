@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import patch
+from datetime import date
 
 from cinema.sync import sync_cinema_log_to_notion
 
@@ -303,6 +304,40 @@ class TestCinemaSyncIntegration(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(stats["added_to_fave"], 0)
         self.assertEqual(len(notion.pages.created), 0)
+
+    async def test_favourite_row_synced_today_still_promotes_to_favourites(self):
+        notion = _FakeNotion()
+        notion.databases.cinema_pages = [
+            {
+                "results": [
+                    {
+                        "id": "row_fave_today",
+                        "properties": {
+                            "Film": {"title": [{"plain_text": "The Drama"}]},
+                            "TMDB URL": {"url": "https://www.themoviedb.org/movie/111"},
+                            "Favourite": {"checkbox": True},
+                            "Last Synced": {"date": {"start": date.today().isoformat()}},
+                            "Date": {"date": {"start": "2026-04-30"}},
+                        },
+                    }
+                ],
+                "has_more": False,
+                "next_cursor": None,
+            }
+        ]
+
+        stats = await sync_cinema_log_to_notion(
+            notion=notion,
+            cinema_db_id="cinema_db",
+            fave_db_id="fave_db",
+            tmdb_api_key="tmdb_key",
+        )
+
+        self.assertEqual(stats["added_to_fave"], 1)
+        self.assertEqual(len(notion.pages.created), 1)
+        created_props = notion.pages.created[0]["properties"]
+        self.assertEqual(created_props["Title"]["title"][0]["text"]["content"], "The Drama")
+        self.assertEqual(created_props["Category"]["select"]["name"], "Film")
 
     async def test_paginates_cinema_rows(self):
         notion = _FakeNotion()
