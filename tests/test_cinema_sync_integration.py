@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import patch
+from datetime import date
 
 from cinema.sync import sync_cinema_log_to_notion
 
@@ -8,7 +9,22 @@ class _FakeDatabases:
     def __init__(self):
         self.cinema_pages = []
         self.fave_titles = set()
+        self.fave_title_prop_name = "Title"
+        self.fave_year_prop_type = "number"
+        self.fave_category_prop_type = "select"
         self.cinema_query_calls = 0
+
+    def retrieve(self, **kwargs):
+        database_id = kwargs["database_id"]
+        if database_id != "fave_db":
+            raise AssertionError(f"Unexpected database_id: {database_id}")
+        return {
+            "properties": {
+                self.fave_title_prop_name: {"type": "title"},
+                "Year": {"type": self.fave_year_prop_type},
+                "Category": {"type": self.fave_category_prop_type},
+            }
+        }
 
     def query(self, **kwargs):
         database_id = kwargs["database_id"]
@@ -26,7 +42,11 @@ class _FakeDatabases:
                     "results": [
                         {
                             "id": f"fave_{idx}",
-                            "properties": {"Title": {"title": [{"plain_text": title}]}},
+                            "properties": {
+                                self.fave_title_prop_name: {
+                                    "title": [{"plain_text": title}]
+                                }
+                            },
                         }
                         for idx, title in enumerate(sorted(self.fave_titles))
                     ],
@@ -98,7 +118,42 @@ class TestCinemaSyncIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertIn("TMDB URL", updated_props)
         self.assertIn("Last Synced", updated_props)
 
-    async def test_favourite_duplicate_is_not_created(self):
+    async def test_favourite_checked_creates_new_favourite_row(self):
+        notion = _FakeNotion()
+        notion.databases.cinema_pages = [
+            {
+                "results": [
+                    {
+                        "id": "row_new_fave",
+                        "properties": {
+                            "Film": {"title": [{"plain_text": "Dune Part Two"}]},
+                            "TMDB URL": {"url": "https://www.themoviedb.org/movie/693134"},
+                            "Favourite": {"checkbox": True},
+                            "Date": {"date": {"start": "2025-03-15"}},
+                        },
+                    }
+                ],
+                "has_more": False,
+                "next_cursor": None,
+            }
+        ]
+
+        stats = await sync_cinema_log_to_notion(
+            notion=notion,
+            cinema_db_id="cinema_db",
+            fave_db_id="fave_db",
+            tmdb_api_key="tmdb_key",
+        )
+
+        self.assertEqual(stats["added_to_fave"], 1)
+        self.assertEqual(len(notion.pages.created), 1)
+        created_props = notion.pages.created[0]["properties"]
+        self.assertEqual(
+            created_props["Title"]["title"][0]["text"]["content"],
+            "Dune Part Two",
+        )
+
+    async def test_favourite_checked_existing_match_does_not_create_duplicate(self):
         notion = _FakeNotion()
         notion.databases.fave_titles.add("Severance")
         notion.databases.cinema_pages = [
@@ -128,6 +183,161 @@ class TestCinemaSyncIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stats["added_to_fave"], 0)
         self.assertEqual(len(notion.pages.created), 0)
         self.assertEqual(len(notion.pages.updated), 1)
+
+    async def test_favourite_db_title_property_name_works(self):
+        notion = _FakeNotion()
+        notion.databases.fave_title_prop_name = "Name"
+        notion.databases.cinema_pages = [
+            {
+                "results": [
+                    {
+                        "id": "row_name_fave",
+                        "properties": {
+                            "Film": {"title": [{"plain_text": "Arrival"}]},
+                            "TMDB URL": {"url": "https://www.themoviedb.org/movie/329865"},
+                            "Favourite": {"checkbox": True},
+                            "Date": {"date": {"start": "2024-10-01"}},
+                        },
+                    }
+                ],
+                "has_more": False,
+                "next_cursor": None,
+            }
+        ]
+
+        stats = await sync_cinema_log_to_notion(
+            notion=notion,
+            cinema_db_id="cinema_db",
+            fave_db_id="fave_db",
+            tmdb_api_key="tmdb_key",
+        )
+
+        self.assertEqual(stats["added_to_fave"], 1)
+        created_props = notion.pages.created[0]["properties"]
+        self.assertIn("Name", created_props)
+        self.assertEqual(created_props["Name"]["title"][0]["text"]["content"], "Arrival")
+
+    async def test_created_favourite_sets_category_to_film(self):
+        notion = _FakeNotion()
+        notion.databases.cinema_pages = [
+            {
+                "results": [
+                    {
+                        "id": "row_category",
+                        "properties": {
+                            "Film": {"title": [{"plain_text": "Inception"}]},
+                            "TMDB URL": {"url": "https://www.themoviedb.org/movie/27205"},
+                            "Favourite": {"checkbox": True},
+                        },
+                    }
+                ],
+                "has_more": False,
+                "next_cursor": None,
+            }
+        ]
+
+        await sync_cinema_log_to_notion(
+            notion=notion,
+            cinema_db_id="cinema_db",
+            fave_db_id="fave_db",
+            tmdb_api_key="tmdb_key",
+        )
+
+        created_props = notion.pages.created[0]["properties"]
+        self.assertEqual(created_props["Category"]["select"]["name"], "Film")
+
+    async def test_created_favourite_sets_year_from_cinema_date(self):
+        notion = _FakeNotion()
+        notion.databases.cinema_pages = [
+            {
+                "results": [
+                    {
+                        "id": "row_year",
+                        "properties": {
+                            "Film": {"title": [{"plain_text": "The Matrix"}]},
+                            "TMDB URL": {"url": "https://www.themoviedb.org/movie/603"},
+                            "Favourite": {"checkbox": True},
+                            "Date": {"date": {"start": "2021-12-09"}},
+                        },
+                    }
+                ],
+                "has_more": False,
+                "next_cursor": None,
+            }
+        ]
+
+        await sync_cinema_log_to_notion(
+            notion=notion,
+            cinema_db_id="cinema_db",
+            fave_db_id="fave_db",
+            tmdb_api_key="tmdb_key",
+        )
+
+        created_props = notion.pages.created[0]["properties"]
+        self.assertEqual(created_props["Year"]["number"], 2021)
+
+    async def test_non_favourite_rows_do_not_create_favourite_rows(self):
+        notion = _FakeNotion()
+        notion.databases.cinema_pages = [
+            {
+                "results": [
+                    {
+                        "id": "row_not_fave",
+                        "properties": {
+                            "Film": {"title": [{"plain_text": "Blade Runner"}]},
+                            "TMDB URL": {"url": "https://www.themoviedb.org/movie/78"},
+                            "Favourite": {"checkbox": False},
+                        },
+                    }
+                ],
+                "has_more": False,
+                "next_cursor": None,
+            }
+        ]
+
+        stats = await sync_cinema_log_to_notion(
+            notion=notion,
+            cinema_db_id="cinema_db",
+            fave_db_id="fave_db",
+            tmdb_api_key="tmdb_key",
+        )
+
+        self.assertEqual(stats["added_to_fave"], 0)
+        self.assertEqual(len(notion.pages.created), 0)
+
+    async def test_favourite_row_synced_today_still_promotes_to_favourites(self):
+        notion = _FakeNotion()
+        notion.databases.cinema_pages = [
+            {
+                "results": [
+                    {
+                        "id": "row_fave_today",
+                        "properties": {
+                            "Film": {"title": [{"plain_text": "The Drama"}]},
+                            "TMDB URL": {"url": "https://www.themoviedb.org/movie/111"},
+                            "Favourite": {"checkbox": True},
+                            "Last Synced": {"date": {"start": date.today().isoformat()}},
+                            "Date": {"date": {"start": "2026-04-30"}},
+                        },
+                    }
+                ],
+                "has_more": False,
+                "next_cursor": None,
+            }
+        ]
+
+        stats = await sync_cinema_log_to_notion(
+            notion=notion,
+            cinema_db_id="cinema_db",
+            fave_db_id="fave_db",
+            tmdb_api_key="tmdb_key",
+        )
+
+        self.assertEqual(stats["added_to_fave"], 1)
+        self.assertEqual(len(notion.pages.created), 1)
+        created_props = notion.pages.created[0]["properties"]
+        self.assertEqual(created_props["Title"]["title"][0]["text"]["content"], "The Drama")
+        self.assertEqual(created_props["Category"]["select"]["name"], "Film")
 
     async def test_paginates_cinema_rows(self):
         notion = _FakeNotion()

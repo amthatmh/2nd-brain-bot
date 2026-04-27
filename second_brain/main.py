@@ -142,7 +142,7 @@ NOTION_LOG_DB   = os.environ["NOTION_LOG_DB"]
 NOTION_CINEMA_LOG_DB = os.environ.get("NOTION_CINEMA_LOG_DB", os.environ.get("NOTION_CINEMA_DB", "")).strip()
 NOTION_PERFORMANCES_DB = os.environ.get("NOTION_PERFORMANCES_DB", "").strip()
 NOTION_SPORTS_LOG_DB = os.environ.get("NOTION_SPORTS_LOG_DB", os.environ.get("NOTION_SPORTS_DB", "")).strip()
-NOTION_FAVOURITE_FILMS_DB = os.environ.get("NOTION_FAVOURITE_FILMS_DB", "").strip()
+NOTION_FAVE_DB = os.environ.get("NOTION_FAVE_DB", "").strip()
 NOTION_NOTES_DB = os.environ["NOTION_NOTES_DB"]    # 📒 Notes
 NOTION_DIGEST_SELECTOR_DB = os.environ["NOTION_DIGEST_SELECTOR_DB"]
 
@@ -3137,11 +3137,11 @@ def create_entertainment_log_entry(payload: dict) -> tuple[str, bool]:
             props[favourite_prop] = {"checkbox": favourite}
         page = _safe_create_entertainment_page(schema, NOTION_CINEMA_LOG_DB, props)
 
-        if favourite and NOTION_FAVOURITE_FILMS_DB and entertainment_schemas.get("favourite_films"):
+        if favourite and NOTION_FAVE_DB and entertainment_schemas.get("favourite_films"):
             fav_schema = entertainment_schemas["favourite_films"]
             fav_title_prop = _title_prop_name(fav_schema)
             if fav_title_prop:
-                existing = _query_title_values(NOTION_FAVOURITE_FILMS_DB, fav_title_prop)
+                existing = _query_title_values(NOTION_FAVE_DB, fav_title_prop)
                 if not fuzzy_match(title, existing):
                     fav_props = _build_common_entertainment_props(
                         fav_schema,
@@ -3152,7 +3152,7 @@ def create_entertainment_log_entry(payload: dict) -> tuple[str, bool]:
                     )
                     notion_call(
                         notion.pages.create,
-                        parent={"database_id": NOTION_FAVOURITE_FILMS_DB},
+                        parent={"database_id": NOTION_FAVE_DB},
                         properties=fav_props,
                     )
         return page["id"], favourite
@@ -5274,7 +5274,7 @@ def startup_notion_health_check() -> None:
         "NOTION_CINEMA_LOG_DB": NOTION_CINEMA_LOG_DB,
         "NOTION_PERFORMANCES_DB": NOTION_PERFORMANCES_DB,
         "NOTION_SPORTS_LOG_DB": NOTION_SPORTS_LOG_DB,
-        "NOTION_FAVOURITE_FILMS_DB": NOTION_FAVOURITE_FILMS_DB,
+        "NOTION_FAVE_DB": NOTION_FAVE_DB,
         "NOTION_NOTES_DB": NOTION_NOTES_DB,
         "NOTION_DIGEST_SELECTOR_DB": NOTION_DIGEST_SELECTOR_DB,
         "NOTION_WATCHLIST_DB": NOTION_WATCHLIST_DB,
@@ -5297,7 +5297,7 @@ def load_entertainment_schemas() -> None:
         ("cinema", "🍿 Cinema Log", NOTION_CINEMA_LOG_DB),
         ("performances", "🎟️ Performances Viewings", NOTION_PERFORMANCES_DB),
         ("sports", "🏟️ Sports Log", NOTION_SPORTS_LOG_DB),
-        ("favourite_films", "🎞️ Favourite Films", NOTION_FAVOURITE_FILMS_DB),
+        ("favourite_films", "🎞️ Favourite Films", NOTION_FAVE_DB),
     ]
     for key, label, db_id in targets:
         if not db_id:

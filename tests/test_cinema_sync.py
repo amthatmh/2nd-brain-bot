@@ -3,7 +3,9 @@ import unittest
 
 from cinema.sync import (
     _build_cinema_query_filter,
+    _detect_favourite_db_fields,
     _load_existing_favourites,
+    _normalize_title,
     _plain_text,
     _preferred_media_type,
     _title_search_candidates,
@@ -22,8 +24,9 @@ class TestCinemaSyncHelpers(unittest.TestCase):
     def test_filter_with_tmdb_key_backfills_missing_urls(self):
         filter_obj = _build_cinema_query_filter("abc123")
         self.assertIn("or", filter_obj)
-        self.assertEqual(len(filter_obj["or"]), 3)
+        self.assertEqual(len(filter_obj["or"]), 4)
         self.assertIn({"property": "TMDB URL", "url": {"is_empty": True}}, filter_obj["or"])
+        self.assertIn({"property": "Favourite", "checkbox": {"equals": True}}, filter_obj["or"])
 
     def test_filter_without_tmdb_key_targets_unsynced_or_stale_rows(self):
         filter_obj = _build_cinema_query_filter("")
@@ -33,6 +36,7 @@ class TestCinemaSyncHelpers(unittest.TestCase):
                 "or": [
                     {"property": "Last Synced", "date": {"is_empty": True}},
                     {"property": "Last Synced", "date": {"before": date.today().isoformat()}},
+                    {"property": "Favourite", "checkbox": {"equals": True}},
                 ]
             },
         )
@@ -54,7 +58,7 @@ class TestCinemaSyncHelpers(unittest.TestCase):
                 if self.calls == 1:
                     return {
                         "results": [
-                            {"properties": {"Title": {"title": [{"plain_text": "Dune"}]}}},
+                            {"properties": {"Name": {"title": [{"plain_text": "Dune"}]}}},
                         ],
                         "has_more": True,
                         "next_cursor": "cursor-1",
@@ -62,7 +66,7 @@ class TestCinemaSyncHelpers(unittest.TestCase):
                 test_case.assertEqual(kwargs.get("start_cursor"), "cursor-1")
                 return {
                     "results": [
-                        {"properties": {"Title": {"title": [{"plain_text": "Arrival"}]}}},
+                        {"properties": {"Name": {"title": [{"plain_text": "Arrival"}]}}},
                     ],
                     "has_more": False,
                 }
@@ -71,8 +75,34 @@ class TestCinemaSyncHelpers(unittest.TestCase):
             def __init__(self):
                 self.databases = _FakeDatabases()
 
-        favourites = _load_existing_favourites(_FakeNotion(), "fake-db")
-        self.assertEqual(favourites, {"Dune", "Arrival"})
+        favourites = _load_existing_favourites(_FakeNotion(), "fake-db", "Name")
+        self.assertEqual(favourites, {"dune", "arrival"})
+
+    def test_detect_favourite_db_fields_supports_name_title(self):
+        class _FakeDatabases:
+            def retrieve(self, **kwargs):
+                self.kwargs = kwargs
+                return {
+                    "properties": {
+                        "Name": {"type": "title"},
+                        "Year": {"type": "number"},
+                        "Category": {"type": "select"},
+                    }
+                }
+
+        class _FakeNotion:
+            def __init__(self):
+                self.databases = _FakeDatabases()
+
+        fields = _detect_favourite_db_fields(_FakeNotion(), "fave_db")
+        self.assertEqual(fields["title_prop"], "Name")
+        self.assertEqual(fields["year_prop"], "Year")
+        self.assertEqual(fields["year_type"], "number")
+        self.assertEqual(fields["category_prop"], "Category")
+        self.assertEqual(fields["category_type"], "select")
+
+    def test_normalize_title(self):
+        self.assertEqual(_normalize_title("  The   Matrix "), "the matrix")
 
     def test_preferred_media_type_maps_film_and_series(self):
         self.assertEqual(_preferred_media_type({"Type": {"select": {"name": "Film"}}}), "movie")
