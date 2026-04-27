@@ -1987,13 +1987,13 @@ def _get_tasks_by_deadline_horizon() -> tuple[list, list, list, list]:
     """
     Returns: (overdue, today, this_week, backlog)
 
-    Overdue: deadline < date.today()
-    Today: deadline == date.today()
+    Overdue: deadline < local_today()
+    Today: deadline == local_today()
     This Week: 1 <= days_until_deadline <= 7
     Backlog: days_until_deadline > 7 OR no deadline set
     """
     tasks = get_all_active_tasks()
-    today = date.today()
+    today = local_today()
 
     overdue: list[dict] = []
     today_tasks: list[dict] = []
@@ -2157,7 +2157,7 @@ def _get_today_tasks_for_palette() -> list[dict]:
 
 def format_digest_view() -> tuple[str, InlineKeyboardMarkup]:
     """Build digest view for today + next 7 calendar days, grouped by date."""
-    today = date.today()
+    today = local_today()
     cutoff = today + timedelta(days=7)
     tasks = get_all_active_tasks()
     groups: dict[str, list[dict]] = defaultdict(list)
@@ -2249,8 +2249,6 @@ def horizon_view_back_keyboard() -> InlineKeyboardMarkup:
 def get_today_and_overdue_tasks(limit: int | None = 10) -> list[dict]:
     tasks = get_all_active_tasks()
     today = local_today()
-    today_str = today.isoformat()
-    cutoff_str = (today + timedelta(days=7)).isoformat()
     selected = []
 
     def context_rank(task: dict) -> tuple[int, str]:
@@ -2262,16 +2260,23 @@ def get_today_and_overdue_tasks(limit: int | None = 10) -> list[dict]:
         return (1, task.get("name", "").lower())
 
     for t in tasks:
-        deadline = t.get("deadline")
-        is_today = t["auto_horizon"] == "🔴 Today"
-        is_overdue = bool(deadline and deadline < today_str)
-        is_this_week = t["auto_horizon"] == "🟠 This Week"
-        due_within_7_days = bool(deadline and today_str <= deadline <= cutoff_str)
-        if is_today or is_overdue or is_this_week or due_within_7_days:
+        parsed_deadline = _parse_deadline(t.get("deadline"))
+        has_due_date = parsed_deadline is not None
+        is_overdue = bool(parsed_deadline and parsed_deadline < today)
+        due_within_7_days = bool(parsed_deadline and 0 <= (parsed_deadline - today).days <= 7)
+        horizon = t.get("auto_horizon") or ""
+        horizon_carry = (not has_due_date) and horizon in {"🔴 Today", "🟠 This Week"}
+        if is_overdue or due_within_7_days or horizon_carry:
             selected.append(t)
 
-    overdue = [t for t in selected if t["deadline"] and t["deadline"] < today_str]
-    today_only = [t for t in selected if t["auto_horizon"] == "🔴 Today" and t not in overdue]
+    overdue = [
+        t for t in selected
+        if (d := _parse_deadline(t.get("deadline"))) is not None and d < today
+    ]
+    today_only = [
+        t for t in selected
+        if (d := _parse_deadline(t.get("deadline"))) is not None and d == today and t not in overdue
+    ]
     carryover = [
         t for t in selected
         if t not in overdue and t not in today_only
@@ -3208,11 +3213,12 @@ def mute_options_keyboard() -> InlineKeyboardMarkup:
 
 
 def format_reminder_snapshot(mode: str = "priority", limit: int = 8) -> str:
-    today_str = date.today().isoformat()
+    today = local_today()
+    today_str = today.isoformat()
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
     all_tasks = get_all_active_tasks()
     overdue = [t for t in all_tasks if t["deadline"] and t["deadline"] < today_str]
-    today_tasks = [t for t in all_tasks if t["auto_horizon"] == "🔴 Today" and t not in overdue]
+    today_tasks = [t for t in all_tasks if t.get("deadline") == today_str and t not in overdue]
     quick_refresh_tasks = get_quick_refresh_tasks(limit=max(limit, 10))
     open_count = len(all_tasks)
 
@@ -3226,7 +3232,7 @@ def format_reminder_snapshot(mode: str = "priority", limit: int = 8) -> str:
     lines = []
 
     if mode == "all_open":
-        five_day_cutoff = (date.today() + timedelta(days=5)).isoformat()
+        five_day_cutoff = (today + timedelta(days=5)).isoformat()
 
         def is_personal(task: dict) -> bool:
             ctx = (task.get("context") or "").lower()
@@ -4545,16 +4551,16 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         log.info("Daily digest skipped (muted)")
         return
     tasks = _filter_digest_tasks(get_today_and_overdue_tasks(limit=None), config=config)
-    today_str = local_today().isoformat()
-    overdue = [t for t in tasks if t.get("deadline") and t["deadline"] < today_str]
-    today_tasks = [t for t in tasks if t not in overdue and t.get("auto_horizon") == "🔴 Today"]
+    today = local_today()
+    overdue = [t for t in tasks if (d := _parse_deadline(t.get("deadline"))) is not None and d < today]
+    today_tasks = [t for t in tasks if (d := _parse_deadline(t.get("deadline"))) is not None and d == today and t not in overdue]
     this_week_tasks = [t for t in tasks if t not in overdue and t not in today_tasks]
     ordered = overdue + today_tasks + this_week_tasks
     max_items = config.get("max_items") if config else None
     if isinstance(max_items, int):
         ordered = ordered[:max_items]
-        overdue = [t for t in ordered if t.get("deadline") and t["deadline"] < today_str]
-        today_tasks = [t for t in ordered if t not in overdue and t.get("auto_horizon") == "🔴 Today"]
+        overdue = [t for t in ordered if (d := _parse_deadline(t.get("deadline"))) is not None and d < today]
+        today_tasks = [t for t in ordered if (d := _parse_deadline(t.get("deadline"))) is not None and d == today and t not in overdue]
         this_week_tasks = [t for t in ordered if t not in overdue and t not in today_tasks]
 
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
