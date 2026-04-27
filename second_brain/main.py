@@ -2603,7 +2603,7 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
         rest = rest_without_favourite or rest
 
     match_on_datetime = re.search(
-        r"\s+on\s+(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:\s+at\s+([01]?\d|2[0-3]):([0-5]\d))?",
+        r"\s+on\s+(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:\s+(?:at\s+)?([01]?\d|2[0-3]):([0-5]\d))?",
         rest,
         re.IGNORECASE,
     )
