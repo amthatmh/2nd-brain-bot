@@ -83,6 +83,15 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["title"], "Cubs vs Sox")
         self.assertEqual(parsed["venue"], "Wrigley")
 
+    def test_parse_explicit_log_command_maps_movie_keyword_to_cinema(self):
+        parsed = self.main.parse_explicit_entertainment_log("/log movie The Drama at AMC Roosevelt Collection 16")
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["type"], "entertainment_log")
+        self.assertEqual(parsed["log_type"], "cinema")
+        self.assertEqual(parsed["title"], "The Drama")
+        self.assertEqual(parsed["venue"], "AMC Roosevelt Collection 16")
+
     def test_parse_explicit_log_command_for_sports_plural_and_action_verb(self):
         parsed = self.main.parse_explicit_entertainment_log("/log Sports watched Bears vs Arsenal at Soldier Field")
 
