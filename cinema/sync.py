@@ -46,9 +46,6 @@ def _normalize_title(value: str) -> str:
 def _extract_title(props: dict) -> str:
     """
     Resolve the cinema title from common Notion title property names.
-
-    Some workspaces use "Film" while others keep the default "Name"/"Title".
-    We also fall back to any property whose type is "title".
     """
     for key in ("Film", "Title", "Name"):
         title = _plain_text(props.get(key, {}))
@@ -71,11 +68,6 @@ def _parse_row_year(props: dict) -> int | None:
 
 
 def _resolve_cinema_title_property(notion, cinema_db_id: str) -> str:
-    """
-    Resolve the Notion title property used by Cinema Log.
-
-    We prefer `Film` when present to match the production schema.
-    """
     schema = notion.databases.retrieve(database_id=cinema_db_id)
     properties = schema.get("properties", {})
     if "Film" in properties and (properties.get("Film") or {}).get("type") == "title":
@@ -113,6 +105,7 @@ def _release_year(result: dict) -> int | None:
 
 
 def _result_titles(result: dict) -> list[str]:
+    """Return all title variants for a TMDB result, including original_title."""
     titles: list[str] = []
     for key in ("title", "original_title"):
         value = str((result or {}).get(key) or "").strip()
@@ -121,18 +114,37 @@ def _result_titles(result: dict) -> list[str]:
     return titles
 
 
+def _is_cjk_heavy(text: str) -> bool:
+    """Return True if the title is predominantly CJK characters."""
+    if not text:
+        return False
+    cjk_count = sum(
+        1 for ch in text
+        if (
+            "\u4e00" <= ch <= "\u9fff"    # CJK Unified Ideographs
+            or "\u3400" <= ch <= "\u4dbf"  # CJK Extension A
+            or "\u3040" <= ch <= "\u30ff"  # Hiragana + Katakana
+            or "\uac00" <= ch <= "\ud7af"  # Korean Hangul
+        )
+    )
+    return cjk_count / max(len(text.replace(" ", "")), 1) > 0.3
+
+
 def _movie_match_score(result: dict, wanted_title: str, wanted_year: int | None) -> float:
     titles = _result_titles(result)
     if not titles:
         return -1.0
+
     wanted = _normalize_title(wanted_title)
     best_title_score = -1.0
+
     for title in titles:
         candidate = _normalize_title(title)
         exact = 1.0 if candidate == wanted else 0.0
         contains = 1.0 if (wanted and (wanted in candidate or candidate in wanted)) else 0.0
         near = SequenceMatcher(None, candidate, wanted).ratio()
         best_title_score = max(best_title_score, (exact * 1000.0) + (contains * 200.0) + (near * 100.0))
+
     title_score = best_title_score
 
     year_score = 0.0
@@ -156,6 +168,7 @@ def _movie_match_score(result: dict, wanted_title: str, wanted_year: int | None)
 def _select_best_tmdb_movie_match(results: list[dict], title: str, row_year: int | None) -> dict | None:
     if not results:
         return None
+
     ranked = sorted(
         results,
         key=lambda r: _movie_match_score(r, title, row_year),
@@ -163,7 +176,13 @@ def _select_best_tmdb_movie_match(results: list[dict], title: str, row_year: int
     )
     best = ranked[0]
     confidence = _movie_match_score(best, title, row_year)
-    if confidence < 60:
+
+    # CJK/non-Latin titles score lower because SequenceMatcher on unicode
+    # characters against a translated English title gives poor similarity.
+    # Use a lower threshold so exact original_title matches aren't discarded.
+    threshold = 30.0 if _is_cjk_heavy(title) else 60.0
+
+    if confidence < threshold:
         return None
     return best
 
@@ -246,9 +265,6 @@ def _detect_favourite_db_fields(notion, fave_db_id: str | None) -> dict[str, str
 def _load_existing_favourites(notion, fave_db_id: str | None, title_prop_name: str) -> set[str]:
     """
     Build an in-memory set of favourite titles once per sync run.
-
-    This avoids one Notion query per row (N+1 pattern), which can become a
-    bottleneck for larger sync batches and increases the risk of rate limits.
     """
     favourites: set[str] = set()
     if not fave_db_id:
