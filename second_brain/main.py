@@ -5358,7 +5358,7 @@ async def habits_data_handler(request: web.Request) -> web.Response:
                 NOTION_STREAK_DB,
                 filter={"property": "Habit", "relation": {"contains": habit["page_id"]}},
             )
-            streak_weeks: list[tuple[date, bool]] = []
+            streak_weeks_by_date: dict[date, bool] = {}
             for streak_row in streak_results:
                 props = streak_row.get("properties", {})
                 week_date_raw = extract_date_only(
@@ -5371,15 +5371,20 @@ async def habits_data_handler(request: web.Request) -> web.Response:
                 except ValueError:
                     continue
                 goal_met = bool(props.get("Goal Met", {}).get("checkbox"))
-                streak_weeks.append((week_date, goal_met))
-            streak_weeks.sort(key=lambda item: item[0], reverse=True)
+                # Keep one status per week, favoring goal_met=True if duplicates exist.
+                streak_weeks_by_date[week_date] = streak_weeks_by_date.get(week_date, False) or goal_met
 
+            current_monday = today - timedelta(days=today.weekday())
+            streak_weeks = sorted(
+                ((week_date, goal_met) for week_date, goal_met in streak_weeks_by_date.items() if week_date < current_monday),
+                key=lambda item: item[0],
+                reverse=True,
+            )
             week_streak = 0
-            expected_week: date | None = None
+            expected_week: date = current_monday - timedelta(days=7)
             for week_date, goal_met in streak_weeks:
-                if expected_week is not None:
-                    if week_date != expected_week:
-                        break
+                if week_date != expected_week:
+                    break
                 if not goal_met:
                     break
                 week_streak += 1
