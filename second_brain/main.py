@@ -173,6 +173,11 @@ NOTION_WANTSLIST_V2_DB = os.environ.get("NOTION_WANTSLIST_V2_DB", "")
 NOTION_PHOTO_DB        = os.environ.get("NOTION_PHOTO_DB", "")
 TMDB_BASE              = "https://api.themoviedb.org/3"
 
+
+def local_today() -> date:
+    """Return today's date in the configured app timezone."""
+    return datetime.now(TZ).date()
+
 # ── Clients ──────────────────────────────────────────────────────────────────
 notion = NotionClient(auth=NOTION_TOKEN)
 claude = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
@@ -2140,7 +2145,7 @@ def back_to_palette_keyboard() -> InlineKeyboardMarkup:
 def _get_today_tasks_for_palette() -> list[dict]:
     """Get today's tasks only (for To Do view)."""
     tasks = get_today_and_overdue_tasks()
-    today_str = date.today().isoformat()
+    today_str = local_today().isoformat()
     return [t for t in tasks if t.get("deadline") == today_str]
 
 
@@ -2237,7 +2242,7 @@ def horizon_view_back_keyboard() -> InlineKeyboardMarkup:
 
 def get_today_and_overdue_tasks(limit: int | None = 10) -> list[dict]:
     tasks = get_all_active_tasks()
-    today = date.today()
+    today = local_today()
     today_str = today.isoformat()
     cutoff_str = (today + timedelta(days=7)).isoformat()
     selected = []
@@ -2281,8 +2286,9 @@ def get_quick_refresh_tasks(limit: int = 10) -> list[dict]:
     - order Personal first, then Work, then anything else
     """
     tasks = get_all_active_tasks()
-    today_str = date.today().isoformat()
-    cutoff_str = (date.today() + timedelta(days=7)).isoformat()
+    today = local_today()
+    today_str = today.isoformat()
+    cutoff_str = (today + timedelta(days=7)).isoformat()
 
     def in_window(task: dict) -> bool:
         deadline = task.get("deadline")
@@ -3077,7 +3083,7 @@ def format_daily_digest(
     if not tasks and not habits:
         return f"☀️ *{date_str}*\n\nAll clear — no tasks or habits pending right now! 🎉", []
 
-    today_str = date.today().isoformat()
+    today_str = local_today().isoformat()
     overdue = [t for t in tasks if t["deadline"] and t["deadline"] < today_str]
     today_now = [t for t in tasks if t["auto_horizon"] == "🔴 Today" and t not in overdue]
     carryover = [t for t in tasks if t not in overdue and t not in today_now]
@@ -3107,14 +3113,6 @@ def format_daily_digest(
             lines.append(f"{num_emoji(n)}{context_emoji(t.get('context'))} {t['name']} · {t['auto_horizon']}")
             ordered.append(t); n += 1
         lines.append("")
-
-    if habits:
-        lines.append("⏰ *Reminders*")
-        for habit in habits:
-            freq_label = habit.get("frequency_label") or ""
-            desc = habit.get("description") or ""
-            detail = " · ".join(filter(None, [freq_label, desc]))
-            lines.append(f"• {habit['name']}" + (f" — _{detail}_" if detail else ""))
 
     if ordered:
         lines.append("\n_Reply `done 1`, `done 1,3`, `mark 1,3 done`, or `done: task name` to mark complete_")
@@ -4490,7 +4488,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         log.info("Daily digest skipped (muted)")
         return
     tasks = _filter_digest_tasks(get_today_and_overdue_tasks(limit=None), config=config)
-    today_str = date.today().isoformat()
+    today_str = local_today().isoformat()
     overdue = [t for t in tasks if t.get("deadline") and t["deadline"] < today_str]
     today_tasks = [t for t in tasks if t not in overdue and t.get("auto_horizon") == "🔴 Today"]
     this_week_tasks = [t for t in tasks if t not in overdue and t not in today_tasks]
@@ -4518,7 +4516,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     if config and config.get("include_habits") is not None:
         habits_enabled = bool(config.get("include_habits"))
     if habits_enabled:
-        habits = get_active_habits_for_trigger()
+        habits = pending_habits_for_digest()
 
     if overdue:
         lines.append("🚨 *Overdue*")
@@ -4561,7 +4559,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
 
 async def send_evening_checkin(bot) -> None:
     """Evening habit check-in with time display and frequency status."""
-    evening_habits = get_active_habits_for_trigger()
+    evening_habits = pending_habits_for_digest()
     if not evening_habits:
         return
 
@@ -4615,10 +4613,6 @@ async def send_habit_reminder(bot, time_str: str) -> None:
     if is_muted():
         log.info("Habit reminder skipped (muted)")
         return
-    habits = get_active_habits_for_trigger()
-    if not habits:
-        return
-
     tasks = get_today_and_overdue_tasks()
     try:
         weekday = datetime.now(TZ).weekday() < 5
@@ -4629,12 +4623,13 @@ async def send_habit_reminder(bot, time_str: str) -> None:
         tasks = _filter_digest_tasks(tasks, config=config)
         if isinstance(config.get("max_items"), int):
             tasks = tasks[:config["max_items"]]
+    habits = pending_habits_for_digest(time_str)
     message, ordered = format_daily_digest(tasks, habits, weather_mode="current")
     sent = await bot.send_message(
         chat_id=MY_CHAT_ID,
         text=message,
         parse_mode="Markdown",
-        reply_markup=habit_buttons(habits, "hc"),
+        reply_markup=habit_buttons(habits, "hc") if habits else None,
     )
     if ordered:
         digest_map[sent.message_id] = ordered
@@ -4644,7 +4639,7 @@ async def send_habit_reminder(bot, time_str: str) -> None:
 
 async def send_daily_habits_list(bot) -> None:
     """Fetch all active habits for today and send as clickable buttons."""
-    habits = get_active_habits_for_trigger()
+    habits = pending_habits_for_digest()
     if not habits:
         await bot.send_message(chat_id=MY_CHAT_ID, text="🎯 No habits for today.")
         return
