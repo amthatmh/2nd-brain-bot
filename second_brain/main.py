@@ -2389,13 +2389,15 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
         return None
 
     normalized = re.sub(r"^\s*/?log\s+", "log ", raw, flags=re.IGNORECASE)
-    m = re.match(r"^log\s+(cinema|performance|sports|sport)\s*:?\s*(.+)$", normalized, re.IGNORECASE)
+    m = re.match(r"^log\s+(cinema|movie|film|performance|sports|sport)\s*:?\s*(.+)$", normalized, re.IGNORECASE)
     if not m:
         return None
 
     raw_log_type, remainder = m.groups()
     log_type = raw_log_type.lower()
-    if log_type == "sports":
+    if log_type in ("movie", "film"):
+        log_type = "cinema"
+    elif log_type == "sports":
         log_type = "sport"
 
     rest = (remainder or "").strip()
@@ -5452,7 +5454,7 @@ async def cmd_habits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/log <cinema|performance|sport> <title> at <venue> — explicit entertainment logging."""
+    """/log <cinema|movie|performance|sport> <title> at <venue> — explicit entertainment logging."""
     if update.effective_chat.id != MY_CHAT_ID:
         return
     raw = " ".join(context.args or []).strip()
@@ -5461,6 +5463,7 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
             "Usage:\n"
             "/log cinema Dune at AMC\n"
+            "/log movie Dune at AMC\n"
             "/log performance ABBA Voyage at ABBA Arena\n"
             "/log sport Cubs vs Sox at Wrigley"
         )
