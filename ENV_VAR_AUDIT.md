@@ -33,7 +33,6 @@ Keep these in Railway if you rely on the corresponding features:
 - `NOTION_DB_ID`
 - `NOTION_DIGEST_SELECTOR_DB`
 - `NOTION_FAVE_DB`
-- `NOTION_FAVOURITE_FILMS_DB`
 - `NOTION_HABIT_DB`
 - `NOTION_LOG_DB`
 - `NOTION_NOTES_DB`
@@ -67,4 +66,3 @@ Some vars are alternate/fallback names, so they may still be useful during migra
 - `NOTION_CINEMA_LOG_DB` falls back to `NOTION_CINEMA_DB` in `second_brain/main.py`.
 - `NOTION_SPORTS_LOG_DB` falls back to `NOTION_SPORTS_DB` in `second_brain/main.py`.
 - Commit SHA vars (`RAILWAY_GIT_COMMIT_SHA`, `GIT_SHA`, `RENDER_GIT_COMMIT`, `COMMIT_SHA`, `SOURCE_VERSION`) are checked in order for deploy receipts.
-
