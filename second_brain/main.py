@@ -2400,6 +2400,20 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
     parsed_time = None
     parsed_date = None
 
+    match_datetime = re.search(
+        r"\s+on\s+(\d{4})[/-](\d{1,2})[/-](\d{1,2})\s+(?:at\s+)?([01]?\d|2[0-3]):([0-5]\d)\s*$",
+        rest,
+        re.IGNORECASE,
+    )
+    if match_datetime:
+        parsed_date = (
+            f"{int(match_datetime.group(1)):04d}-"
+            f"{int(match_datetime.group(2)):02d}-"
+            f"{int(match_datetime.group(3)):02d}"
+        )
+        parsed_time = f"{int(match_datetime.group(4)):02d}:{match_datetime.group(5)}"
+        rest = rest[: match_datetime.start()].strip()
+
     match_time = re.search(r"\s+at\s+([01]?\d|2[0-3]):([0-5]\d)\s*$", rest, re.IGNORECASE)
     if match_time:
         parsed_time = f"{int(match_time.group(1)):02d}:{match_time.group(2)}"
