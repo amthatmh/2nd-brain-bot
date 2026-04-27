@@ -245,7 +245,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertFalse(fav_saved)
 
     def test_create_performance_entry_lazy_loads_schema_when_missing(self):
-        self.main.NOTION_PERFORMANCES_DB = "performances_db"
+        self.main.NOTION_PERFORMANCE_LOG_DB = "performances_db"
         self.main.entertainment_schemas.pop("performances", None)
 
         def fake_notion_call(fn, **kwargs):
@@ -280,7 +280,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertFalse(fav_saved)
 
     def test_create_performance_entry_retries_without_select_fields_on_write_error(self):
-        self.main.NOTION_PERFORMANCES_DB = "performances_db"
+        self.main.NOTION_PERFORMANCE_LOG_DB = "performances_db"
         self.main.entertainment_schemas["performances"] = {
             "Name": "title",
             "Date": "date",
@@ -343,7 +343,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(suggested, "AMC Roosevelt Collection 16")
 
     def test_suggest_known_venue_works_for_performance_logs(self):
-        self.main.NOTION_PERFORMANCES_DB = "performances_db"
+        self.main.NOTION_PERFORMANCE_LOG_DB = "performances_db"
         self.main.entertainment_schemas["performances"] = {
             "Name": "title",
             "Place": "status",
@@ -371,7 +371,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
             ValueError("Performances schema is unavailable"),
             {"log_type": "performance"},
         )
-        self.assertIn("NOTION_PERFORMANCES_DB", msg)
+        self.assertIn("NOTION_PERFORMANCE_LOG_DB", msg)
 
 
 class TestEntertainmentEnvFallbacks(unittest.TestCase):
@@ -379,16 +379,15 @@ class TestEntertainmentEnvFallbacks(unittest.TestCase):
     def setUpClass(cls):
         cls.main = load_main_module()
 
-    def test_legacy_performance_env_var_is_accepted(self):
-        legacy_env = dict(REQUIRED_ENV)
-        legacy_env.pop("NOTION_PERFORMANCES_DB", None)
-        legacy_env["NOTION_PERFORMANCE_DB"] = "legacy_performance_db"
+    def test_performance_log_env_var_is_loaded(self):
+        env = dict(REQUIRED_ENV)
+        env["NOTION_PERFORMANCE_LOG_DB"] = "performance_log_db"
         sys.modules.pop("second_brain.main", None)
-        with patch.dict(os.environ, legacy_env, clear=False), \
+        with patch.dict(os.environ, env, clear=False), \
             patch("notion_client.Client", return_value=MagicMock()), \
             patch("anthropic.Anthropic", return_value=MagicMock()):
             main = importlib.import_module("second_brain.main")
-        self.assertEqual(main.NOTION_PERFORMANCES_DB, "legacy_performance_db")
+        self.assertEqual(main.NOTION_PERFORMANCE_LOG_DB, "performance_log_db")
 
     def test_known_cinema_venue_is_normalized_from_previous_rows(self):
         schema = {
