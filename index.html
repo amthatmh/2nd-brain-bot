@@ -121,7 +121,7 @@
         <h2>Week-by-week grid</h2>
         <div class="chip" id="weeksChip">— weeks</div>
       </div>
-      <div class="panel-sub">Weeks run Sun→Sat top-to-bottom · today is outlined · future days are faded</div>
+      <div class="panel-sub">Weeks run Mon→Sun top-to-bottom · today is outlined · future days are faded</div>
       <div class="cards" id="cards">
         <div class="loading"><div class="spinner"></div> Fetching from Notion…</div>
       </div>
@@ -259,7 +259,7 @@ function render(data) {
       <div class="grid-wrap">
         <div class="grid-shell">
           <div class="day-labels">
-            <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span>
+            <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
           </div>
           <div class="grid"></div>
         </div>
@@ -285,10 +285,11 @@ function render(data) {
       const d = new Date(`${day}T12:00:00`);
       if (Number.isNaN(d.getTime())) return;
       const weekStart = new Date(d);
-      weekStart.setDate(d.getDate() - d.getDay());
+      const dayOffset = (d.getDay() + 6) % 7; // Mon=0 ... Sun=6
+      weekStart.setDate(d.getDate() - dayOffset);
       const key = weekStart.toISOString().slice(0, 10);
       if (!weekMap.has(key)) weekMap.set(key, new Array(7).fill(null));
-      weekMap.get(key)[d.getDay()] = { day, value };
+      weekMap.get(key)[dayOffset] = { day, value };
     });
 
     [...weekMap.keys()].sort().forEach((weekKey) => {
