@@ -5706,8 +5706,18 @@ def load_entertainment_schemas() -> None:
 
 async def post_init(app: Application) -> None:
     global _scheduler
-    startup_notion_health_check()
-    load_entertainment_schemas()
+    try:
+        startup_notion_health_check()
+    except RuntimeError as e:
+        log.warning("Startup health check failed (bot will still start): %s", e)
+        await _try_send_telegram(
+            app.bot,
+            f"⚠️ Startup health check failed — bot started anyway.\n`{e}`",
+        )
+    try:
+        load_entertainment_schemas()
+    except Exception as e:
+        log.warning("Entertainment schema load failed at startup: %s", e)
     load_mute_state()
     load_location_state()
     if OPENWEATHER_KEY and (current_lat is None or current_lon is None):
