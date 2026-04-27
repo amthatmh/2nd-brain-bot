@@ -150,9 +150,8 @@ NOTION_NOTES_DB = os.environ["NOTION_NOTES_DB"]    # 📒 Notes
 NOTION_DIGEST_SELECTOR_DB = os.environ["NOTION_DIGEST_SELECTOR_DB"]
 
 TZ           = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
-_wk_h, _wk_m = _parse_hhmm_env("DIGEST_TIME_WEEKDAY", "8:15")
-_we_h, _we_m = _parse_hhmm_env("DIGEST_TIME_WEEKEND", "12:00")
 _rc_h, _rc_m = _parse_hhmm_env("RECURRING_CHECK_TIME", "7:00")
+_sr_h, _sr_m = _parse_hhmm_env("SUNDAY_REVIEW_TIME", "12:00")
 
 CLAUDE_MODEL   = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
@@ -5378,7 +5377,7 @@ async def post_init(app: Application) -> None:
     if FEATURES.get("FEATURE_RECURRING", True):
         scheduler.add_job(run_recurring_check, "cron", hour=_rc_h, minute=_rc_m, args=[app.bot])
     if FEATURES.get("FEATURE_SUNDAY_REVIEW", True):
-        scheduler.add_job(send_sunday_review, "cron", day_of_week="sun", hour=_we_h, minute=_we_m, args=[app.bot])
+        scheduler.add_job(send_sunday_review, "cron", day_of_week="sun", hour=_sr_h, minute=_sr_m, args=[app.bot])
     if FEATURES.get("FEATURE_HABITS", True):
         register_habit_schedules(scheduler, app.bot)
     build_digest_schedule(scheduler, app.bot)
@@ -5399,21 +5398,10 @@ async def post_init(app: Application) -> None:
     )
     scheduler.add_job(
         fetch_weather_cache,
-        "cron",
-        day_of_week="mon-fri",
-        hour=(_wk_h if _wk_m >= 3 else (_wk_h - 1) % 24),
-        minute=(_wk_m - 3) % 60,
+        "interval",
+        hours=1,
         args=[app.bot],
-        id="weather_prefetch_weekday",
-    )
-    scheduler.add_job(
-        fetch_weather_cache,
-        "cron",
-        day_of_week="sat,sun",
-        hour=(_we_h if _we_m >= 3 else (_we_h - 1) % 24),
-        minute=(_we_m - 3) % 60,
-        args=[app.bot],
-        id="weather_prefetch_weekend",
+        id="weather_refresh_hourly",
     )
 
     # ── Asana reconciler — gated by schema validation ──
@@ -5514,8 +5502,8 @@ async def post_init(app: Application) -> None:
     _scheduler = scheduler
     log.info(
         f"Scheduler started ✓  TZ={TZ}  "
-        f"weekday={_wk_h:02d}:{_wk_m:02d}  weekend={_we_h:02d}:{_we_m:02d}  "
-        f"afternoon=15:00  "
+        f"sunday_review={_sr_h:02d}:{_sr_m:02d}  "
+        f"weather=hourly  "
         f"recurring={_rc_h:02d}:{_rc_m:02d}  "
         f"asana_sync={asana_status}  smoke={smoke_status}  "
         f"archive_orphans={ASANA_ARCHIVE_ORPHANS}  "
