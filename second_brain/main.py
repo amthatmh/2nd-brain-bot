@@ -5003,13 +5003,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def run_recurring_check(bot) -> None:
-    notified_goals_this_week.clear()
+    load_habit_cache()
+    if datetime.now(TZ).weekday() == 0:
+        notified_goals_this_week.clear()
+        await record_weekly_streaks(bot)
     if is_muted():
         log.info("Recurring check skipped (muted)")
         return
-    load_habit_cache()
-    if datetime.now(TZ).weekday() == 0:
-        await record_weekly_streaks(bot)
     spawned = process_recurring_tasks()
     log.info(f"Recurring check: {spawned} task(s) spawned")
 
