@@ -240,6 +240,11 @@ BTN_HABITS = "🏃 Habits"
 BTN_NOTES = "📝 Notes"
 BTN_WEATHER = "🌤️ Weather"
 BTN_MUTE = "🔕 Mute"
+ENTERTAINMENT_LOG_LABELS = {
+    "cinema": "🍿 Cinema Log",
+    "performance": "🎟️ Performances Viewings",
+    "sport": "🏟️ Sports Log",
+}
 LEGACY_BTN_ALL_OPEN = "📋 All Open"
 TOPIC_OPTIONS = [
     "🎵 Acoustics", "💼 Work", "🏠 Personal",
@@ -3060,9 +3065,8 @@ async def handle_entertainment_log(message, payload: dict) -> None:
     notes = payload.get("notes")
     when_iso = payload.get("date") or date.today().isoformat()
 
-    labels = {"cinema": "🍿 Cinema", "performance": "🎟️ Performance", "sport": "🎬 Sports"}
     summary_lines = [
-        f"✅ Logged to {labels.get(log_type, 'Entertainment')}",
+        f"✅ Logged to {ENTERTAINMENT_LOG_LABELS.get(log_type, 'Entertainment')}",
         "",
         f"🎫 {title}",
         f"📅 {when_iso}",
@@ -4133,8 +4137,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         payload.setdefault("date", date.today().isoformat())
         try:
             entry_id, fav_saved = create_entertainment_log_entry(payload)
-            label_map = {"cinema": "🍿 Cinema", "performance": "🎟️ Performance", "sport": "🎬 Sports"}
-            label = label_map.get(payload.get("log_type"), "Entertainment")
+            label = ENTERTAINMENT_LOG_LABELS.get(payload.get("log_type"), "Entertainment")
             suffix = "\n🎞️ Added to Favourite Films" if fav_saved and payload.get("log_type") == "cinema" else ""
             await q.edit_message_text(
                 f"✅ Logged to {label}\n\n🎫 {payload.get('title','Untitled')}\n📅 {payload.get('date')}{suffix}\n\n_Saved to Notion_",
@@ -5051,7 +5054,7 @@ def load_entertainment_schemas() -> None:
     targets = [
         ("cinema", "🍿 Cinema Log", NOTION_CINEMA_LOG_DB),
         ("performances", "🎟️ Performances Viewings", NOTION_PERFORMANCES_DB),
-        ("sports", "🎬 Sports Log", NOTION_SPORTS_LOG_DB),
+        ("sports", "🏟️ Sports Log", NOTION_SPORTS_LOG_DB),
         ("favourite_films", "🎞️ Favourite Films", NOTION_FAVOURITE_FILMS_DB),
     ]
     for key, label, db_id in targets:
