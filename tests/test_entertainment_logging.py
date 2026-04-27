@@ -105,6 +105,18 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["notes"], "Seat D6 Auditorium D5")
         self.assertTrue(parsed["favourite"])
 
+    def test_parse_explicit_performance_parses_date_time_and_tail_notes(self):
+        parsed = self.main.parse_explicit_entertainment_log(
+            "/log performance The Drama at Martin Theatre on 2026/04/29 at 20:40 Seat D6"
+        )
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["log_type"], "performance")
+        self.assertEqual(parsed["title"], "The Drama")
+        self.assertEqual(parsed["venue"], "Martin Theatre")
+        self.assertEqual(parsed["date"], "2026-04-29T20:40:00")
+        self.assertEqual(parsed["notes"], "Seat D6")
+
     def test_parse_explicit_log_command_for_sports_plural_and_action_verb(self):
         parsed = self.main.parse_explicit_entertainment_log("/log Sports watched Bears vs Arsenal at Soldier Field")
 

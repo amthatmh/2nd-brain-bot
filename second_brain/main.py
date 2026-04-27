@@ -2425,50 +2425,31 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
     favourite = False
 
     if log_type == "cinema":
-        inline = _parse_cinema_inline_context(rest)
-        if inline.get("title"):
-            raw_title = (inline.get("title") or "").strip()
-            raw_venue = (inline.get("venue") or "").strip() or None
-            if inline.get("date"):
-                date_match = re.match(r"^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$", inline["date"])
-                if date_match:
-                    parsed_date = (
-                        f"{int(date_match.group(1)):04d}-"
-                        f"{int(date_match.group(2)):02d}-"
-                        f"{int(date_match.group(3)):02d}"
-                    )
-            if inline.get("time"):
-                time_match = re.match(r"^([01]?\d|2[0-3]):([0-5]\d)$", inline["time"])
-                if time_match:
-                    parsed_time = f"{int(time_match.group(1)):02d}:{time_match.group(2)}"
-            extracted_notes, favourite = _extract_favourite_marker(inline.get("tail"))
-        else:
-            rest_without_favourite, favourite = _extract_favourite_marker(rest)
-            rest = rest_without_favourite or rest
+        rest_without_favourite, favourite = _extract_favourite_marker(rest)
+        rest = rest_without_favourite or rest
 
-    match_datetime = re.search(
-        r"\s+on\s+(\d{4})[/-](\d{1,2})[/-](\d{1,2})\s+(?:at\s+)?([01]?\d|2[0-3]):([0-5]\d)\s*$",
+    match_on_datetime = re.search(
+        r"\s+on\s+(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:\s+at\s+([01]?\d|2[0-3]):([0-5]\d))?",
         rest,
         re.IGNORECASE,
     )
-    if match_datetime:
+    if match_on_datetime:
         parsed_date = (
-            f"{int(match_datetime.group(1)):04d}-"
-            f"{int(match_datetime.group(2)):02d}-"
-            f"{int(match_datetime.group(3)):02d}"
+            f"{int(match_on_datetime.group(1)):04d}-"
+            f"{int(match_on_datetime.group(2)):02d}-"
+            f"{int(match_on_datetime.group(3)):02d}"
         )
-        parsed_time = f"{int(match_datetime.group(4)):02d}:{match_datetime.group(5)}"
-        rest = rest[: match_datetime.start()].strip()
-
-    match_time = re.search(r"\s+at\s+([01]?\d|2[0-3]):([0-5]\d)\s*$", rest, re.IGNORECASE)
-    if match_time and not parsed_time:
-        parsed_time = f"{int(match_time.group(1)):02d}:{match_time.group(2)}"
-        rest = rest[: match_time.start()].strip()
-
-    match_date = re.search(r"\s+on\s+(\d{4})[/-](\d{1,2})[/-](\d{1,2})\s*$", rest, re.IGNORECASE)
-    if match_date and not parsed_date:
-        parsed_date = f"{int(match_date.group(1)):04d}-{int(match_date.group(2)):02d}-{int(match_date.group(3)):02d}"
-        rest = rest[: match_date.start()].strip()
+        if match_on_datetime.group(4) and match_on_datetime.group(5):
+            parsed_time = f"{int(match_on_datetime.group(4)):02d}:{match_on_datetime.group(5)}"
+        tail = rest[match_on_datetime.end():].strip()
+        if tail:
+            extracted_notes = tail
+        rest = rest[: match_on_datetime.start()].strip()
+    else:
+        match_time = re.search(r"\s+at\s+([01]?\d|2[0-3]):([0-5]\d)\s*$", rest, re.IGNORECASE)
+        if match_time:
+            parsed_time = f"{int(match_time.group(1)):02d}:{match_time.group(2)}"
+            rest = rest[: match_time.start()].strip()
 
     if not raw_venue:
         title_and_venue = re.match(r"^(?P<title>.+?)\s+at\s+(?P<venue>.+)$", rest, re.IGNORECASE)
