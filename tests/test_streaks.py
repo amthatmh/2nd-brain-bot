@@ -51,6 +51,7 @@ class TestWeekStreakInHabitsDataHandler(unittest.IsolatedAsyncioTestCase):
             response = await main.habits_data_handler(MagicMock())
 
         payload = json.loads(response.text)
+        self.assertEqual(payload["habits"][0]["dayStreak"], 0)
         self.assertEqual(payload["habits"][0]["weekStreak"], 0)
 
     async def test_three_consecutive_goal_met_weeks(self):
@@ -68,6 +69,7 @@ class TestWeekStreakInHabitsDataHandler(unittest.IsolatedAsyncioTestCase):
             response = await main.habits_data_handler(MagicMock())
 
         payload = json.loads(response.text)
+        self.assertEqual(payload["habits"][0]["dayStreak"], 0)
         self.assertEqual(payload["habits"][0]["weekStreak"], 3)
 
     async def test_gap_week_resets_streak(self):
@@ -87,6 +89,7 @@ class TestWeekStreakInHabitsDataHandler(unittest.IsolatedAsyncioTestCase):
             response = await main.habits_data_handler(MagicMock())
 
         payload = json.loads(response.text)
+        self.assertEqual(payload["habits"][0]["dayStreak"], 0)
         self.assertEqual(payload["habits"][0]["weekStreak"], 1)
 
     async def test_non_consecutive_week_stops_streak(self):
@@ -104,7 +107,48 @@ class TestWeekStreakInHabitsDataHandler(unittest.IsolatedAsyncioTestCase):
             response = await main.habits_data_handler(MagicMock())
 
         payload = json.loads(response.text)
+        self.assertEqual(payload["habits"][0]["dayStreak"], 0)
         self.assertEqual(payload["habits"][0]["weekStreak"], 1)
+
+    async def test_day_streak_counts_consecutive_recent_completions(self):
+        main = load_main_module()
+        main.habit_cache = {
+            "Workout": {"page_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "name": "Workout", "sort": 1}
+        }
+
+        # Generate logs for the final 3 days in the response window.
+        fake_today = main.datetime(2026, 4, 27, tzinfo=main.TZ)
+        with patch.object(main, "notion_query_all") as mocked_query, \
+            patch.object(main, "datetime") as mocked_datetime:
+            mocked_datetime.now.return_value = fake_today
+            mocked_datetime.fromisoformat.side_effect = main.datetime.fromisoformat
+            mocked_query.side_effect = [
+                [
+                    {
+                        "properties": {
+                            "Date": {"date": {"start": "2026-04-25"}},
+                            "Habit": {"relation": [{"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]},
+                        }
+                    },
+                    {
+                        "properties": {
+                            "Date": {"date": {"start": "2026-04-26"}},
+                            "Habit": {"relation": [{"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]},
+                        }
+                    },
+                    {
+                        "properties": {
+                            "Date": {"date": {"start": "2026-04-27"}},
+                            "Habit": {"relation": [{"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]},
+                        }
+                    },
+                ],
+                [],
+            ]
+            response = await main.habits_data_handler(MagicMock())
+
+        payload = json.loads(response.text)
+        self.assertEqual(payload["habits"][0]["dayStreak"], 3)
 
 
 if __name__ == "__main__":

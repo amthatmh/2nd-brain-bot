@@ -5323,6 +5323,11 @@ async def habits_data_handler(request: web.Request) -> web.Response:
         for habit in habits_sorted:
             pid  = habit["page_id"].replace("-", "")
             days = [1 if (pid, d) in logged else 0 for d in all_dates]
+            day_streak = 0
+            for done in reversed(days):
+                if done != 1:
+                    break
+                day_streak += 1
             streak_results = notion_query_all(
                 NOTION_STREAK_DB,
                 filter={"property": "Habit", "relation": {"contains": habit["page_id"]}},
@@ -5362,6 +5367,7 @@ async def habits_data_handler(request: web.Request) -> web.Response:
                 "sort":        habit.get("sort"),
                 "days":        days,
                 "todayDone":   days[-1] == 1,
+                "dayStreak":   day_streak,
                 "weekStreak":  week_streak,
             })
 
