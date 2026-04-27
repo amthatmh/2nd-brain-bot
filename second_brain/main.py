@@ -189,6 +189,7 @@ pending_photo_map: dict[str, dict] = {}
 pending_tmdb_map: dict[str, list[dict]] = {}
 pending_message_map: dict[str, str] = {}
 pending_note_map: dict[str, dict] = {}
+pending_sport_competition_map: dict[int, dict] = {}
 topic_recency_map: dict[str, datetime] = {}
 _pending_counter = 0
 _done_picker_counter = 0
@@ -2743,6 +2744,30 @@ def _build_common_entertainment_props(
     return props
 
 
+def _build_sport_competition_props(schema: dict, competition: str) -> dict:
+    competition_select_prop = _pick_exact_prop(schema, "select", ["Competition", "League", "Tournament"])
+    competition_status_prop = _pick_exact_prop(schema, "status", ["Competition", "League", "Tournament"])
+    competition_multi_select_prop = _pick_exact_prop(schema, "multi_select", ["Competition", "League", "Tournament"])
+    competition_rich_text_prop = _pick_exact_prop(schema, "rich_text", ["Competition", "League", "Tournament"])
+    if competition_select_prop:
+        return {competition_select_prop: {"select": {"name": competition}}}
+    if competition_status_prop:
+        return {competition_status_prop: {"status": {"name": competition}}}
+    if competition_multi_select_prop:
+        return {competition_multi_select_prop: {"multi_select": [{"name": competition}]}}
+    if competition_rich_text_prop:
+        return {competition_rich_text_prop: {"rich_text": [{"text": {"content": competition}}]}}
+    return {}
+
+
+def _remember_pending_sport_competition(message, page_id: str) -> None:
+    chat = getattr(message, "chat", None)
+    chat_id = getattr(chat, "id", None)
+    if chat_id is None:
+        return
+    pending_sport_competition_map[chat_id] = {"page_id": page_id}
+
+
 def _extract_cinema_visit_details(notes: str | None) -> tuple[str | None, int | None]:
     if not notes:
         return None, None
@@ -3046,6 +3071,7 @@ async def handle_entertainment_log(message, payload: dict) -> None:
     summary_lines.append("_Saved to Notion_")
     await message.reply_text("\n".join(summary_lines), parse_mode="Markdown")
     if log_type == "sport":
+        _remember_pending_sport_competition(message, entry_id)
         await message.reply_text("🏆 Logged to Sports Log. Which competition should I set for this one?")
     log.info("Entertainment logged type=%s title=%s page_id=%s", log_type, title, entry_id)
 
@@ -3742,6 +3768,33 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
         return
 
+    pending_sport_competition = pending_sport_competition_map.get(update.effective_chat.id)
+    if pending_sport_competition:
+        competition = text.strip()
+        if competition:
+            schema = entertainment_schemas.get("sports") or {}
+            page_id = pending_sport_competition.get("page_id")
+            props = _build_sport_competition_props(schema, competition)
+            if page_id and props:
+                try:
+                    notion_call(notion.pages.update, page_id=page_id, properties=props)
+                    pending_sport_competition_map.pop(update.effective_chat.id, None)
+                    await message.reply_text(
+                        f"🏆 Competition set: *{competition}*\n_Saved to Notion_",
+                        parse_mode="Markdown",
+                    )
+                    return
+                except Exception as e:
+                    log.error("Sports competition update error: %s", e)
+                    await message.reply_text("⚠️ I couldn't update that competition in Notion.")
+                    return
+            if page_id and not props:
+                pending_sport_competition_map.pop(update.effective_chat.id, None)
+                await message.reply_text(
+                    "⚠️ I couldn't find a Competition property in your Sports Log schema to update."
+                )
+                return
+
     pending_custom_topic = context.user_data.get("awaiting_note_custom_topic")
     if pending_custom_topic:
         key = pending_custom_topic.get("key")
@@ -4090,6 +4143,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 parse_mode="Markdown",
             )
             if payload.get("log_type") == "sport":
+                _remember_pending_sport_competition(q.message, entry_id)
                 await q.message.reply_text("🏆 Logged to Sports Log. Which competition should I set for this one?")
             log.info("Entertainment confirmed and saved page_id=%s", entry_id)
         except Exception as e:
