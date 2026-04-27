@@ -13,6 +13,7 @@ REQUIRED_ENV = {
     "NOTION_DB_ID": "x",
     "NOTION_HABIT_DB": "x",
     "NOTION_LOG_DB": "x",
+    "NOTION_STREAK_DB": "x",
     "NOTION_CINEMA_LOG_DB": "x",
     "NOTION_NOTES_DB": "x",
     "NOTION_DIGEST_SELECTOR_DB": "x",

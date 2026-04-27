@@ -110,6 +110,52 @@ class TestWeekStreakInHabitsDataHandler(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["habits"][0]["dayStreak"], 0)
         self.assertEqual(payload["habits"][0]["weekStreak"], 1)
 
+    async def test_duplicate_week_rows_favor_goal_met(self):
+        main = load_main_module()
+        main.habit_cache = {
+            "Workout": {"page_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "name": "Workout", "sort": 1}
+        }
+
+        # Duplicate rows for the same week can exist historically; True should win.
+        streak_rows = [
+            _streak_row("2026-04-20", False),
+            _streak_row("2026-04-20", True),
+            _streak_row("2026-04-13", True),
+        ]
+        fake_today = main.datetime(2026, 4, 27, tzinfo=main.TZ)
+        real_fromisoformat = main.datetime.fromisoformat
+        with patch.object(main, "notion_query_all", side_effect=[[], streak_rows]), \
+            patch.object(main, "datetime") as mocked_datetime:
+            mocked_datetime.now.return_value = fake_today
+            mocked_datetime.fromisoformat.side_effect = real_fromisoformat
+            response = await main.habits_data_handler(MagicMock())
+
+        payload = json.loads(response.text)
+        self.assertEqual(payload["habits"][0]["weekStreak"], 2)
+
+    async def test_current_week_row_does_not_reset_streak(self):
+        main = load_main_module()
+        main.habit_cache = {
+            "Workout": {"page_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "name": "Workout", "sort": 1}
+        }
+
+        # Current week can be in progress and not met yet; it should be ignored.
+        streak_rows = [
+            _streak_row("2026-04-27", False),
+            _streak_row("2026-04-20", True),
+            _streak_row("2026-04-13", True),
+        ]
+        fake_today = main.datetime(2026, 4, 27, tzinfo=main.TZ)
+        real_fromisoformat = main.datetime.fromisoformat
+        with patch.object(main, "notion_query_all", side_effect=[[], streak_rows]), \
+            patch.object(main, "datetime") as mocked_datetime:
+            mocked_datetime.now.return_value = fake_today
+            mocked_datetime.fromisoformat.side_effect = real_fromisoformat
+            response = await main.habits_data_handler(MagicMock())
+
+        payload = json.loads(response.text)
+        self.assertEqual(payload["habits"][0]["weekStreak"], 2)
+
     async def test_day_streak_counts_consecutive_recent_completions(self):
         main = load_main_module()
         main.habit_cache = {
