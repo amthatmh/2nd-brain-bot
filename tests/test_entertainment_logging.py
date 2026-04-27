@@ -292,6 +292,7 @@ class TestEntertainmentLogFollowups(unittest.IsolatedAsyncioTestCase):
 
     async def test_handle_entertainment_log_prompts_competition_for_sports(self):
         message = MagicMock()
+        message.chat = MagicMock(id=1)
         message.reply_text = AsyncMock()
         with patch.object(self.main, "create_entertainment_log_entry", return_value=("sport-page", False)):
             await self.main.handle_entertainment_log(message, {
@@ -304,6 +305,32 @@ class TestEntertainmentLogFollowups(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.reply_text.await_count, 2)
         second_call_text = message.reply_text.await_args_list[1].args[0]
         self.assertIn("competition", second_call_text.lower())
+        self.assertEqual(self.main.pending_sport_competition_map[1]["page_id"], "sport-page")
+
+    async def test_handle_message_text_sets_sport_competition_followup(self):
+        self.main.pending_sport_competition_map.clear()
+        self.main.pending_sport_competition_map[1] = {"page_id": "sport-page"}
+        self.main.entertainment_schemas["sports"] = {"Competition": "select"}
+        self.main.notion_call = MagicMock()
+        self.main.route_classified_message_v10 = AsyncMock()
+
+        update = MagicMock()
+        update.effective_chat.id = 1
+        update.message = MagicMock()
+        update.message.text = "Major League Baseball"
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        context.user_data = {}
+
+        await self.main.handle_message_text(update, context)
+
+        self.main.notion_call.assert_called_once_with(
+            self.main.notion.pages.update,
+            page_id="sport-page",
+            properties={"Competition": {"select": {"name": "Major League Baseball"}}},
+        )
+        self.assertNotIn(1, self.main.pending_sport_competition_map)
+        self.main.route_classified_message_v10.assert_not_called()
 
 
 if __name__ == "__main__":
