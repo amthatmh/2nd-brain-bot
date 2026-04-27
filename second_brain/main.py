@@ -5311,20 +5311,20 @@ def v10_feature_flags() -> str:
 
 
 def startup_notion_health_check() -> None:
-    """Fail fast if required Notion databases are unreachable."""
+    """Fail fast for core Notion DBs, but don't block startup for optional features."""
     dbs = {
-        "NOTION_DB_ID": NOTION_DB_ID,
-        "NOTION_HABIT_DB": NOTION_HABIT_DB,
-        "NOTION_LOG_DB": NOTION_LOG_DB,
-        "NOTION_CINEMA_LOG_DB": NOTION_CINEMA_LOG_DB,
-        "NOTION_PERFORMANCES_DB": NOTION_PERFORMANCES_DB,
-        "NOTION_SPORTS_LOG_DB": NOTION_SPORTS_LOG_DB,
-        "NOTION_FAVOURITE_FILMS_DB": NOTION_FAVOURITE_FILMS_DB,
-        "NOTION_NOTES_DB": NOTION_NOTES_DB,
-        "NOTION_DIGEST_SELECTOR_DB": NOTION_DIGEST_SELECTOR_DB,
-        "NOTION_WATCHLIST_DB": NOTION_WATCHLIST_DB,
+        "NOTION_DB_ID": (NOTION_DB_ID, True),
+        "NOTION_HABIT_DB": (NOTION_HABIT_DB, True),
+        "NOTION_LOG_DB": (NOTION_LOG_DB, True),
+        "NOTION_NOTES_DB": (NOTION_NOTES_DB, True),
+        "NOTION_DIGEST_SELECTOR_DB": (NOTION_DIGEST_SELECTOR_DB, True),
+        "NOTION_CINEMA_LOG_DB": (NOTION_CINEMA_LOG_DB, False),
+        "NOTION_PERFORMANCES_DB": (NOTION_PERFORMANCES_DB, False),
+        "NOTION_SPORTS_LOG_DB": (NOTION_SPORTS_LOG_DB, False),
+        "NOTION_FAVOURITE_FILMS_DB": (NOTION_FAVOURITE_FILMS_DB, False),
+        "NOTION_WATCHLIST_DB": (NOTION_WATCHLIST_DB, False),
     }
-    for label, db_id in dbs.items():
+    for label, (db_id, required) in dbs.items():
         if not db_id:
             log.warning("startup_health_check fn=startup_notion_health_check db=%s status=skipped_empty", label)
             continue
@@ -5332,7 +5332,13 @@ def startup_notion_health_check() -> None:
             notion_call(notion.databases.retrieve, database_id=db_id)
             log.info("startup_health_check fn=startup_notion_health_check db=%s status=ok", label)
         except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"Startup health check failed for {label} ({db_id}): {exc}") from exc
+            if required:
+                raise RuntimeError(f"Startup health check failed for {label} ({db_id}): {exc}") from exc
+            log.warning(
+                "startup_health_check fn=startup_notion_health_check db=%s status=failed_optional err=%s",
+                label,
+                exc,
+            )
 
 
 def load_entertainment_schemas() -> None:
