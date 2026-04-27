@@ -15,6 +15,13 @@ class _FakeDatabases:
 
     def retrieve(self, **kwargs):
         database_id = kwargs["database_id"]
+        if database_id == "cinema_db":
+            return {
+                "properties": {
+                    "Film": {"type": "title"},
+                    "TMDB URL": {"type": "url"},
+                }
+            }
         if database_id != "fave_db":
             raise AssertionError(f"Unexpected database_id: {database_id}")
         return {
@@ -380,6 +387,7 @@ class TestCinemaSyncIntegration(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(stats["scanned"], 2)
         self.assertEqual(stats["tmdb_missing"], 2)
+        self.assertEqual(stats["failed"], 0)
         self.assertEqual(len(notion.pages.updated), 0)
 
     async def test_backfills_tmdb_when_title_property_is_name(self):

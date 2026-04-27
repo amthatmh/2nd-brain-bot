@@ -17,6 +17,6 @@ This package contains Cinema Log TMDB sync implementation and configuration.
 ## Runtime behavior
 
 - On each new cinema log created by the bot, the bot immediately attempts to resolve and write `TMDB URL`.
-- Hourly background sync scans entries with empty `TMDB URL` and non-empty title (`Film`/`Title`/`Name`).
+- Hourly background sync scans entries with empty `TMDB URL` and a non-empty `Film` title (falls back to detected Notion title property if schema differs).
 - `/sync` includes cinema sync and reports concise cinema stats.
 - `/sync cinema` runs cinema-only sync and reports: scanned, updated, skipped, failed.

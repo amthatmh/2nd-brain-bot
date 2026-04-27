@@ -70,18 +70,33 @@ def _parse_row_year(props: dict) -> int | None:
     return None
 
 
-def _build_cinema_query_filter() -> dict:
+def _resolve_cinema_title_property(notion, cinema_db_id: str) -> str:
+    """
+    Resolve the Notion title property used by Cinema Log.
+
+    We prefer `Film` when present to match the production schema.
+    """
+    schema = notion.databases.retrieve(database_id=cinema_db_id)
+    properties = schema.get("properties", {})
+    if "Film" in properties and (properties.get("Film") or {}).get("type") == "title":
+        return "Film"
+
+    for key in ("Title", "Name"):
+        if key in properties and (properties.get(key) or {}).get("type") == "title":
+            return key
+
+    for name, prop in properties.items():
+        if (prop or {}).get("type") == "title":
+            return name
+    return "Film"
+
+
+def _build_cinema_query_filter(title_property: str) -> dict:
     """Query entries that need TMDB URL backfill."""
     return {
         "and": [
             {"property": "TMDB URL", "url": {"is_empty": True}},
-            {
-                "or": [
-                    {"property": "Film", "title": {"is_not_empty": True}},
-                    {"property": "Title", "title": {"is_not_empty": True}},
-                    {"property": "Name", "title": {"is_not_empty": True}},
-                ]
-            },
+            {"property": title_property, "title": {"is_not_empty": True}},
         ]
     }
 
@@ -97,19 +112,28 @@ def _release_year(result: dict) -> int | None:
     return None
 
 
-def _result_title(result: dict) -> str:
-    return str((result or {}).get("title") or (result or {}).get("original_title") or "").strip()
+def _result_titles(result: dict) -> list[str]:
+    titles: list[str] = []
+    for key in ("title", "original_title"):
+        value = str((result or {}).get(key) or "").strip()
+        if value and value not in titles:
+            titles.append(value)
+    return titles
 
 
 def _movie_match_score(result: dict, wanted_title: str, wanted_year: int | None) -> float:
-    title = _result_title(result)
-    if not title:
+    titles = _result_titles(result)
+    if not titles:
         return -1.0
     wanted = _normalize_title(wanted_title)
-    candidate = _normalize_title(title)
-    exact = 1.0 if candidate == wanted else 0.0
-    near = SequenceMatcher(None, candidate, wanted).ratio()
-    title_score = (exact * 1000.0) + (near * 100.0)
+    best_title_score = -1.0
+    for title in titles:
+        candidate = _normalize_title(title)
+        exact = 1.0 if candidate == wanted else 0.0
+        contains = 1.0 if (wanted and (wanted in candidate or candidate in wanted)) else 0.0
+        near = SequenceMatcher(None, candidate, wanted).ratio()
+        best_title_score = max(best_title_score, (exact * 1000.0) + (contains * 200.0) + (near * 100.0))
+    title_score = best_title_score
 
     year_score = 0.0
     candidate_year = _release_year(result)
@@ -327,7 +351,8 @@ async def sync_cinema_log_to_notion(
         "added_to_fave": 0,
     }
 
-    query_filter = _build_cinema_query_filter()
+    title_property = _resolve_cinema_title_property(notion, cinema_db_id)
+    query_filter = _build_cinema_query_filter(title_property)
 
     rows: list[dict] = []
     cursor = None
@@ -445,7 +470,6 @@ async def _sync_rows(
                     stats["updated"] += 1 if "TMDB URL" in update_props else 0
                 else:
                     stats["tmdb_missing"] += 1
-                    stats["failed"] += 1
             except Exception:
                 stats["failed"] += 1
 
