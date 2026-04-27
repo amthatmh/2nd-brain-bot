@@ -1,10 +1,11 @@
-from datetime import date
 import unittest
 
 from cinema.sync import (
+    _build_tmdb_movie_url,
     _build_cinema_query_filter,
     _detect_favourite_db_fields,
     _load_existing_favourites,
+    _select_best_tmdb_movie_match,
     _normalize_title,
     _plain_text,
     _preferred_media_type,
@@ -21,25 +22,40 @@ class TestCinemaSyncHelpers(unittest.TestCase):
         prop = {"rich_text": [{"plain_text": "Dune"}]}
         self.assertEqual(_plain_text(prop), "Dune")
 
-    def test_filter_with_tmdb_key_backfills_missing_urls(self):
-        filter_obj = _build_cinema_query_filter("abc123")
-        self.assertIn("or", filter_obj)
-        self.assertEqual(len(filter_obj["or"]), 4)
-        self.assertIn({"property": "TMDB URL", "url": {"is_empty": True}}, filter_obj["or"])
-        self.assertIn({"property": "Favourite", "checkbox": {"equals": True}}, filter_obj["or"])
-
-    def test_filter_without_tmdb_key_targets_unsynced_or_stale_rows(self):
-        filter_obj = _build_cinema_query_filter("")
+    def test_filter_targets_rows_missing_tmdb_and_with_title(self):
+        filter_obj = _build_cinema_query_filter()
         self.assertEqual(
             filter_obj,
             {
-                "or": [
-                    {"property": "Last Synced", "date": {"is_empty": True}},
-                    {"property": "Last Synced", "date": {"before": date.today().isoformat()}},
-                    {"property": "Favourite", "checkbox": {"equals": True}},
+                "and": [
+                    {"property": "TMDB URL", "url": {"is_empty": True}},
+                    {
+                        "or": [
+                            {"property": "Film", "title": {"is_not_empty": True}},
+                            {"property": "Title", "title": {"is_not_empty": True}},
+                            {"property": "Name", "title": {"is_not_empty": True}},
+                        ]
+                    },
                 ]
             },
         )
+
+    def test_build_tmdb_movie_url(self):
+        self.assertEqual(_build_tmdb_movie_url(603), "https://www.themoviedb.org/movie/603")
+
+    def test_match_selection_prefers_title_and_year(self):
+        results = [
+            {"id": 1, "title": "Dune", "release_date": "1984-12-14", "popularity": 20.0, "vote_count": 1200},
+            {"id": 2, "title": "Dune: Part Two", "release_date": "2024-03-01", "popularity": 80.0, "vote_count": 8000},
+        ]
+        best = _select_best_tmdb_movie_match(results, title="Dune: Part Two", row_year=2024)
+        self.assertIsNotNone(best)
+        self.assertEqual(best["id"], 2)
+
+    def test_match_selection_returns_none_for_low_confidence(self):
+        results = [{"id": 1, "title": "Completely Different", "release_date": "2000-01-01"}]
+        best = _select_best_tmdb_movie_match(results, title="Interstellar", row_year=2014)
+        self.assertIsNone(best)
 
 
     def test_title_search_candidates_strips_common_noise(self):

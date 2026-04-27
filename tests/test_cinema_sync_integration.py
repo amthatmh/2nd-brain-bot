@@ -1,6 +1,5 @@
 import unittest
 from unittest.mock import patch
-from datetime import date
 
 from cinema.sync import sync_cinema_log_to_notion
 
@@ -110,13 +109,12 @@ class TestCinemaSyncIntegration(unittest.IsolatedAsyncioTestCase):
                 tmdb_api_key="tmdb_key",
             )
 
-        self.assertEqual(stats["new_entries"], 1)
+        self.assertEqual(stats["scanned"], 1)
         self.assertEqual(stats["tmdb_found"], 1)
         self.assertEqual(stats["tmdb_missing"], 0)
         self.assertEqual(len(notion.pages.updated), 1)
         updated_props = notion.pages.updated[0]["properties"]
         self.assertIn("TMDB URL", updated_props)
-        self.assertIn("Last Synced", updated_props)
 
     async def test_favourite_checked_creates_new_favourite_row(self):
         notion = _FakeNotion()
@@ -182,7 +180,8 @@ class TestCinemaSyncIntegration(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(stats["added_to_fave"], 0)
         self.assertEqual(len(notion.pages.created), 0)
-        self.assertEqual(len(notion.pages.updated), 1)
+        self.assertEqual(len(notion.pages.updated), 0)
+        self.assertEqual(stats["skipped"], 1)
 
     async def test_favourite_db_title_property_name_works(self):
         notion = _FakeNotion()
@@ -316,7 +315,6 @@ class TestCinemaSyncIntegration(unittest.IsolatedAsyncioTestCase):
                             "Film": {"title": [{"plain_text": "The Drama"}]},
                             "TMDB URL": {"url": "https://www.themoviedb.org/movie/111"},
                             "Favourite": {"checkbox": True},
-                            "Last Synced": {"date": {"start": date.today().isoformat()}},
                             "Date": {"date": {"start": "2026-04-30"}},
                         },
                     }
@@ -380,9 +378,9 @@ class TestCinemaSyncIntegration(unittest.IsolatedAsyncioTestCase):
                 tmdb_api_key="tmdb_key",
             )
 
-        self.assertEqual(stats["new_entries"], 2)
+        self.assertEqual(stats["scanned"], 2)
         self.assertEqual(stats["tmdb_missing"], 2)
-        self.assertEqual(len(notion.pages.updated), 2)
+        self.assertEqual(len(notion.pages.updated), 0)
 
     async def test_backfills_tmdb_when_title_property_is_name(self):
         notion = _FakeNotion()
@@ -425,7 +423,7 @@ class TestCinemaSyncIntegration(unittest.IsolatedAsyncioTestCase):
                         "id": "row_tmdb_id",
                         "properties": {
                             "Film": {"title": [{"plain_text": "Severance"}]},
-                            "Type": {"select": {"name": "Series"}},
+                            "Type": {"select": {"name": "Film"}},
                             "TMDB ID": {"rich_text": [{"plain_text": "95396"}]},
                             "TMDB URL": {"url": None},
                             "Favourite": {"checkbox": False},
@@ -449,7 +447,7 @@ class TestCinemaSyncIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stats["tmdb_missing"], 0)
         search_mock.assert_not_called()
         updated_props = notion.pages.updated[0]["properties"]
-        self.assertEqual(updated_props["TMDB URL"]["url"], "https://www.themoviedb.org/tv/95396")
+        self.assertEqual(updated_props["TMDB URL"]["url"], "https://www.themoviedb.org/movie/95396")
 
     async def test_sync_runs_without_fave_db(self):
         notion = _FakeNotion()
@@ -478,7 +476,7 @@ class TestCinemaSyncIntegration(unittest.IsolatedAsyncioTestCase):
                 tmdb_api_key="tmdb_key",
             )
 
-        self.assertEqual(stats["new_entries"], 1)
+        self.assertEqual(stats["scanned"], 1)
         self.assertEqual(stats["tmdb_found"], 1)
         self.assertEqual(stats["added_to_fave"], 0)
         self.assertEqual(len(notion.pages.created), 0)
