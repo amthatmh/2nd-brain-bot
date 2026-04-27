@@ -2384,38 +2384,73 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
         return None
 
     normalized = re.sub(r"^\s*/?log\s+", "log ", raw, flags=re.IGNORECASE)
-    m = re.match(r"^log\s+(cinema|performance|sports|sport)\s*:?\s*(.+)$", normalized, re.IGNORECASE)
+    m = re.match(r"^log\s+(cinema|movie|film|performance|sports|sport)\s*:?\s*(.+)$", normalized, re.IGNORECASE)
     if not m:
         return None
 
     raw_log_type, remainder = m.groups()
     log_type = raw_log_type.lower()
-    if log_type == "sports":
+    if log_type in ("movie", "film"):
+        log_type = "cinema"
+    elif log_type == "sports":
         log_type = "sport"
 
     rest = (remainder or "").strip()
     if not rest:
         return None
 
+    def _extract_favourite_marker(raw_text: str | None) -> tuple[str | None, bool]:
+        if not raw_text:
+            return None, False
+        cleaned = re.sub(
+            r"\bmark(?:\s+as)?\s+favou?rite\b",
+            "",
+            raw_text,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"\bfavou?rite\b", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,;-")
+        return (cleaned or None), cleaned != (raw_text or "").strip()
+
     parsed_time = None
     parsed_date = None
-
-    match_time = re.search(r"\s+at\s+([01]?\d|2[0-3]):([0-5]\d)\s*$", rest, re.IGNORECASE)
-    if match_time:
-        parsed_time = f"{int(match_time.group(1)):02d}:{match_time.group(2)}"
-        rest = rest[: match_time.start()].strip()
-
-    match_date = re.search(r"\s+on\s+(\d{4})[/-](\d{1,2})[/-](\d{1,2})\s*$", rest, re.IGNORECASE)
-    if match_date:
-        parsed_date = f"{int(match_date.group(1)):04d}-{int(match_date.group(2)):02d}-{int(match_date.group(3)):02d}"
-        rest = rest[: match_date.start()].strip()
-
     raw_title = rest
     raw_venue = None
-    title_and_venue = re.match(r"^(?P<title>.+?)\s+at\s+(?P<venue>.+)$", rest, re.IGNORECASE)
-    if title_and_venue:
-        raw_title = (title_and_venue.group("title") or "").strip()
-        raw_venue = (title_and_venue.group("venue") or "").strip()
+    extracted_notes = None
+    favourite = False
+
+    if log_type == "cinema":
+        rest_without_favourite, favourite = _extract_favourite_marker(rest)
+        rest = rest_without_favourite or rest
+
+    match_on_datetime = re.search(
+        r"\s+on\s+(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:\s+at\s+([01]?\d|2[0-3]):([0-5]\d))?",
+        rest,
+        re.IGNORECASE,
+    )
+    if match_on_datetime:
+        parsed_date = (
+            f"{int(match_on_datetime.group(1)):04d}-"
+            f"{int(match_on_datetime.group(2)):02d}-"
+            f"{int(match_on_datetime.group(3)):02d}"
+        )
+        if match_on_datetime.group(4) and match_on_datetime.group(5):
+            parsed_time = f"{int(match_on_datetime.group(4)):02d}:{match_on_datetime.group(5)}"
+        tail = rest[match_on_datetime.end():].strip()
+        if tail:
+            extracted_notes = tail
+        rest = rest[: match_on_datetime.start()].strip()
+    else:
+        match_time = re.search(r"\s+at\s+([01]?\d|2[0-3]):([0-5]\d)\s*$", rest, re.IGNORECASE)
+        if match_time:
+            parsed_time = f"{int(match_time.group(1)):02d}:{match_time.group(2)}"
+            rest = rest[: match_time.start()].strip()
+
+    if not raw_venue:
+        title_and_venue = re.match(r"^(?P<title>.+?)\s+at\s+(?P<venue>.+)$", rest, re.IGNORECASE)
+        if title_and_venue:
+            raw_title = (title_and_venue.group("title") or "").strip()
+            raw_venue = (title_and_venue.group("venue") or "").strip()
 
     title = (raw_title or "").strip().rstrip(":")
     title = re.sub(
@@ -2437,11 +2472,15 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
     venue = (raw_venue or "").strip()
     if venue:
         payload["venue"] = venue
+    if extracted_notes:
+        payload["notes"] = extracted_notes
+    if favourite:
+        payload["favourite"] = True
     if parsed_date and parsed_time:
         payload["date"] = f"{parsed_date}T{parsed_time}:00"
     elif parsed_date:
         payload["date"] = parsed_date
-    elif parsed_time:
+    elif parsed_time and "notes" not in payload:
         payload["notes"] = f"{parsed_time}"
     return payload
 
@@ -5433,7 +5472,7 @@ async def cmd_habits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/log <cinema|performance|sport> <title> at <venue> — explicit entertainment logging."""
+    """/log <cinema|movie|performance|sport> <title> at <venue> — explicit entertainment logging."""
     if update.effective_chat.id != MY_CHAT_ID:
         return
     raw = " ".join(context.args or []).strip()
@@ -5442,6 +5481,7 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
             "Usage:\n"
             "/log cinema Dune at AMC\n"
+            "/log movie Dune at AMC\n"
             "/log performance ABBA Voyage at ABBA Arena\n"
             "/log sport Cubs vs Sox at Wrigley"
         )
