@@ -37,6 +37,10 @@ def _plain_text(prop: dict) -> str:
     return "".join(chunk.get("plain_text", "") for chunk in chunks).strip()
 
 
+def _normalize_title(value: str) -> str:
+    return " ".join((value or "").casefold().split())
+
+
 def _extract_title(props: dict) -> str:
     """
     Resolve the cinema title from common Notion title property names.
@@ -57,6 +61,13 @@ def _extract_title(props: dict) -> str:
     return ""
 
 
+def _parse_row_year(props: dict) -> int | None:
+    value = (props.get("Date", {}).get("date") or {}).get("start")
+    if isinstance(value, str) and len(value) >= 4 and value[:4].isdigit():
+        return int(value[:4])
+    return None
+
+
 def _build_cinema_query_filter(tmdb_api_key: str | None) -> dict:
     """
     Build the Notion filter for cinema sync.
@@ -68,6 +79,7 @@ def _build_cinema_query_filter(tmdb_api_key: str | None) -> dict:
     base_conditions = [
         {"property": "Last Synced", "date": {"is_empty": True}},
         {"property": "Last Synced", "date": {"before": date.today().isoformat()}},
+        {"property": "Favourite", "checkbox": {"equals": True}},
     ]
     if tmdb_api_key:
         base_conditions.append({"property": "TMDB URL", "url": {"is_empty": True}})
@@ -111,7 +123,45 @@ async def _search_tmdb_url_with_client(
         return await _search_tmdb_url_with_client(title, tmdb_api_key, owned_client)
 
 
-def _load_existing_favourites(notion, fave_db_id: str | None) -> set[str]:
+def _detect_favourite_db_fields(notion, fave_db_id: str | None) -> dict[str, str | None]:
+    fields = {
+        "title_prop": "Title",
+        "year_prop": None,
+        "year_type": None,
+        "category_prop": None,
+        "category_type": None,
+    }
+    if not fave_db_id:
+        return fields
+
+    schema = notion.databases.retrieve(database_id=fave_db_id)
+    properties = schema.get("properties", {})
+    title_prop = None
+    for name, prop in properties.items():
+        if (prop or {}).get("type") == "title":
+            title_prop = name
+            break
+    if title_prop:
+        fields["title_prop"] = title_prop
+
+    year_prop = properties.get("Year", {})
+    if year_prop:
+        year_type = year_prop.get("type")
+        if year_type in {"select", "number", "rich_text", "date"}:
+            fields["year_prop"] = "Year"
+            fields["year_type"] = year_type
+
+    category_prop = properties.get("Category", {})
+    if category_prop:
+        category_type = category_prop.get("type")
+        if category_type in {"select", "multi_select"}:
+            fields["category_prop"] = "Category"
+            fields["category_type"] = category_type
+
+    return fields
+
+
+def _load_existing_favourites(notion, fave_db_id: str | None, title_prop_name: str) -> set[str]:
     """
     Build an in-memory set of favourite titles once per sync run.
 
@@ -132,9 +182,9 @@ def _load_existing_favourites(notion, fave_db_id: str | None) -> set[str]:
             query["start_cursor"] = cursor
         response = notion.databases.query(**query)
         for row in response.get("results", []):
-            title = _plain_text(row.get("properties", {}).get("Title", {}))
+            title = _plain_text(row.get("properties", {}).get(title_prop_name, {}))
             if title:
-                favourites.add(title)
+                favourites.add(_normalize_title(title))
         if not response.get("has_more"):
             break
         cursor = response.get("next_cursor")
@@ -184,7 +234,12 @@ async def sync_cinema_log_to_notion(
         cursor = response.get("next_cursor")
 
     stats["new_entries"] = len(rows)
-    existing_favourites = _load_existing_favourites(notion, fave_db_id)
+    fave_fields = _detect_favourite_db_fields(notion, fave_db_id)
+    existing_favourites = _load_existing_favourites(
+        notion,
+        fave_db_id,
+        title_prop_name=fave_fields["title_prop"] or "Title",
+    )
 
     async with httpx.AsyncClient(timeout=12) as client:
         for row in rows:
@@ -208,12 +263,41 @@ async def sync_cinema_log_to_notion(
                 else:
                     stats["tmdb_missing"] += 1
 
-            if fave_db_id and favourite and title and title not in existing_favourites:
+            normalized_title = _normalize_title(title)
+            if fave_db_id and favourite and normalized_title and normalized_title not in existing_favourites:
+                favourite_props = {
+                    fave_fields["title_prop"] or "Title": {
+                        "title": [{"text": {"content": title}}],
+                    }
+                }
+                row_year = _parse_row_year(props)
+                if row_year and fave_fields["year_prop"]:
+                    if fave_fields["year_type"] == "number":
+                        favourite_props[fave_fields["year_prop"]] = {"number": row_year}
+                    elif fave_fields["year_type"] == "select":
+                        favourite_props[fave_fields["year_prop"]] = {"select": {"name": str(row_year)}}
+                    elif fave_fields["year_type"] == "rich_text":
+                        favourite_props[fave_fields["year_prop"]] = {
+                            "rich_text": [{"text": {"content": str(row_year)}}]
+                        }
+                    elif fave_fields["year_type"] == "date":
+                        favourite_props[fave_fields["year_prop"]] = {
+                            "date": {"start": f"{row_year}-01-01"}
+                        }
+
+                if fave_fields["category_prop"]:
+                    if fave_fields["category_type"] == "select":
+                        favourite_props[fave_fields["category_prop"]] = {"select": {"name": "Film"}}
+                    elif fave_fields["category_type"] == "multi_select":
+                        favourite_props[fave_fields["category_prop"]] = {
+                            "multi_select": [{"name": "Film"}]
+                        }
+
                 notion.pages.create(
                     parent={"database_id": fave_db_id},
-                    properties={"Title": {"title": [{"text": {"content": title}}]}},
+                    properties=favourite_props,
                 )
-                existing_favourites.add(title)
+                existing_favourites.add(normalized_title)
                 stats["added_to_fave"] += 1
 
             update_props["Last Synced"] = {"date": {"start": date.today().isoformat()}}
