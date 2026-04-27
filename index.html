@@ -229,7 +229,8 @@ function render(data) {
   habits.forEach(habit => {
     const cc      = `c-${habit.color||'pink'}`;
     const icon    = habitIcon(habit.name);
-    const streak  = habit.weekStreak ?? 0;
+    const dayStreak = habit.dayStreak ?? 0;
+    const weekStreak = habit.weekStreak ?? 0;
     const isDone  = todayIndex >= 0
       ? habit.days[todayIndex] === 1
       : habit.todayDone;
@@ -245,7 +246,8 @@ function render(data) {
           <h3>${habit.name}</h3>
           <div class="line">${[habit.frequency,habit.description].filter(Boolean).join(' · ')}</div>
           <div class="streak-line">
-            <span class="streak-pill">🔥 ${streak} ${streak === 1 ? 'wk' : 'wks'} streak</span>
+            <span class="streak-pill">🔥 ${dayStreak} ${dayStreak === 1 ? 'day' : 'days'} streak</span>
+            <span class="streak-pill">📆 ${weekStreak} ${weekStreak === 1 ? 'week' : 'weeks'} on streak</span>
           </div>
         </div>
         ${isDone
