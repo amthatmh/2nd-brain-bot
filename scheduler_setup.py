@@ -32,27 +32,17 @@ def register_cinema_jobs(
     scheduler,
     bot,
     run_cinema_sync,
-    cinema_sync_hour: int,
-    cinema_sync_minute: int,
-    sync_buffer_minutes: int,
+    sync_interval_minutes: int,
     tz,
     now_fn,
 ) -> None:
     scheduler.add_job(
         run_cinema_sync,
-        "cron",
-        hour=cinema_sync_hour,
-        minute=cinema_sync_minute,
+        "interval",
+        minutes=sync_interval_minutes,
         args=[bot],
         id="cinema_sync",
-    )
-    scheduler.add_job(
-        run_cinema_sync,
-        "interval",
-        minutes=sync_buffer_minutes,
-        args=[bot],
-        id="cinema_sync_buffer",
         max_instances=1,
         coalesce=True,
-        next_run_time=now_fn(tz) + timedelta(minutes=sync_buffer_minutes),
+        next_run_time=now_fn(tz) + timedelta(minutes=sync_interval_minutes),
     )

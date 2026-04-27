@@ -58,8 +58,6 @@ from cinema.config import (
     CINEMA_DB_ID,
     FAVE_DB_ID,
     TMDB_API_KEY,
-    CINEMA_SYNC_HOUR,
-    CINEMA_SYNC_MINUTE,
     validate_config as validate_cinema_config,
 )
 from sync_telemetry import init_sync_status, utc_now_iso, format_sync_status_message
@@ -158,7 +156,6 @@ CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
 HTTP_PORT      = int(os.environ.get("PORT", "8080"))
 WEEKS_HISTORY  = int(os.environ.get("WEEKS_HISTORY", "52"))
 APP_VERSION    = os.environ.get("APP_VERSION", "v10.1.0")
-SYNC_BUFFER_MINUTES = max(1, int(os.environ.get("SYNC_BUFFER_MINUTES", "5")))
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "").strip()
 WEATHER_LOCATION = os.environ.get("WEATHER_LOCATION", "Chicago,IL").strip()
 SUNDAY_REVIEW_CARD_LIMIT = max(1, int(os.environ.get("SUNDAY_REVIEW_CARD_LIMIT", "6")))
@@ -5065,7 +5062,7 @@ async def run_asana_sync(bot) -> None:
 
 
 async def run_cinema_sync(bot) -> None:
-    """Daily sync for Cinema Log → Favourite Shows."""
+    """Background sync for Cinema Log → Favourite Shows."""
     if not CINEMA_DB_ID:
         return
 
@@ -5084,20 +5081,16 @@ async def run_cinema_sync(bot) -> None:
             stats["tmdb_missing"],
             stats["added_to_fave"],
         )
-        if stats["new_entries"] > 0:
-            await _try_send_telegram(
-                bot,
-                f"📺 Cinema Sync Report\n\n"
-                f"Entries processed: {stats['new_entries']}\n"
-                f"✅ TMDB URLs filled: {stats['tmdb_found']}\n"
-                f"⭐ Added to Favourite Shows: {stats['added_to_fave']}\n"
-                f"⚠️ TMDB not found: {stats['tmdb_missing']}",
-            )
         sync_status["cinema"]["ok"] = True
         sync_status["cinema"]["error"] = None
         sync_status["cinema"]["stats"] = stats
     except Exception as e:
         log.exception("Cinema sync failed: %s", e)
+        await _try_send_telegram(
+            bot,
+            "🚨 Cinema sync crashed.\n"
+            f"Error: {e}",
+        )
         sync_status["cinema"]["ok"] = False
         sync_status["cinema"]["error"] = str(e)
 
@@ -5474,7 +5467,7 @@ async def post_init(app: Application) -> None:
             asana_status = f"ON ({ASANA_SYNC_INTERVAL}s, mode={ASANA_SYNC_SOURCE})"
             log.info("Notion schema validation passed ✓")
 
-    # ── Cinema sync — config validation + daily schedule ──
+    # ── Cinema sync — config validation + hourly background schedule ──
     cinema_ok, cinema_problems = validate_cinema_config()
     if not cinema_ok:
         log.warning("Cinema sync disabled due to config issues:")
@@ -5485,17 +5478,12 @@ async def post_init(app: Application) -> None:
             scheduler=scheduler,
             bot=app.bot,
             run_cinema_sync=run_cinema_sync,
-            cinema_sync_hour=CINEMA_SYNC_HOUR,
-            cinema_sync_minute=CINEMA_SYNC_MINUTE,
-            sync_buffer_minutes=SYNC_BUFFER_MINUTES,
+            sync_interval_minutes=60,
             tz=TZ,
             now_fn=datetime.now,
         )
         log.info(
-            "Cinema sync jobs registered (daily %02d:%02d UTC + every %d minutes)",
-            CINEMA_SYNC_HOUR,
-            CINEMA_SYNC_MINUTE,
-            SYNC_BUFFER_MINUTES,
+            "Cinema sync jobs registered (every 60 minutes)",
         )
 
     scheduler.start()
