@@ -1987,13 +1987,13 @@ def _get_tasks_by_deadline_horizon() -> tuple[list, list, list, list]:
     """
     Returns: (overdue, today, this_week, backlog)
 
-    Overdue: deadline < date.today()
-    Today: deadline == date.today()
+    Overdue: deadline < local_today()
+    Today: deadline == local_today()
     This Week: 1 <= days_until_deadline <= 7
     Backlog: days_until_deadline > 7 OR no deadline set
     """
     tasks = get_all_active_tasks()
-    today = date.today()
+    today = local_today()
 
     overdue: list[dict] = []
     today_tasks: list[dict] = []
@@ -2157,7 +2157,7 @@ def _get_today_tasks_for_palette() -> list[dict]:
 
 def format_digest_view() -> tuple[str, InlineKeyboardMarkup]:
     """Build digest view for today + next 7 calendar days, grouped by date."""
-    today = date.today()
+    today = local_today()
     cutoff = today + timedelta(days=7)
     tasks = get_all_active_tasks()
     groups: dict[str, list[dict]] = defaultdict(list)
@@ -3240,11 +3240,12 @@ def mute_options_keyboard() -> InlineKeyboardMarkup:
 
 
 def format_reminder_snapshot(mode: str = "priority", limit: int = 8) -> str:
-    today_str = date.today().isoformat()
+    today = local_today()
+    today_str = today.isoformat()
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
     all_tasks = get_all_active_tasks()
     overdue = [t for t in all_tasks if t["deadline"] and t["deadline"] < today_str]
-    today_tasks = [t for t in all_tasks if t["auto_horizon"] == "🔴 Today" and t not in overdue]
+    today_tasks = [t for t in all_tasks if t.get("deadline") == today_str and t not in overdue]
     quick_refresh_tasks = get_quick_refresh_tasks(limit=max(limit, 10))
     open_count = len(all_tasks)
 
@@ -3258,7 +3259,7 @@ def format_reminder_snapshot(mode: str = "priority", limit: int = 8) -> str:
     lines = []
 
     if mode == "all_open":
-        five_day_cutoff = (date.today() + timedelta(days=5)).isoformat()
+        five_day_cutoff = (today + timedelta(days=5)).isoformat()
 
         def is_personal(task: dict) -> bool:
             ctx = (task.get("context") or "").lower()
