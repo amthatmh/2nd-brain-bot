@@ -279,6 +279,93 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(page_id, "perf-1")
         self.assertFalse(fav_saved)
 
+    def test_create_performance_entry_retries_without_select_fields_on_write_error(self):
+        self.main.NOTION_PERFORMANCES_DB = "performances_db"
+        self.main.entertainment_schemas["performances"] = {
+            "Name": "title",
+            "Date": "date",
+            "Venue": "select",
+            "Source": "select",
+            "Notes": "rich_text",
+        }
+        calls = {"create": 0}
+
+        def fake_notion_call(fn, **kwargs):
+            if fn == self.main.notion.pages.create:
+                calls["create"] += 1
+                props = kwargs["properties"]
+                if calls["create"] == 1:
+                    raise RuntimeError("invalid select option")
+                self.assertNotIn("Venue", props)
+                self.assertNotIn("Source", props)
+                self.assertIn("Notes", props)
+                notes_text = props["Notes"]["rich_text"][0]["text"]["content"]
+                self.assertIn("Seat D6", notes_text)
+                self.assertIn("Venue: Martin Theatre", notes_text)
+                return {"id": "perf-2"}
+            return {}
+
+        self.main.notion_call = fake_notion_call
+        page_id, fav_saved = self.main.create_entertainment_log_entry({
+            "log_type": "performance",
+            "title": "The Drama",
+            "date": "2026-04-29T20:40:00",
+            "venue": "Martin Theatre",
+            "notes": "Seat D6",
+            "favourite": False,
+        })
+        self.assertEqual(page_id, "perf-2")
+        self.assertFalse(fav_saved)
+        self.assertEqual(calls["create"], 2)
+
+    def test_suggest_known_venue_returns_best_cinema_match(self):
+        self.main.NOTION_CINEMA_LOG_DB = "cinema_db"
+        self.main.entertainment_schemas["cinema"] = {
+            "Film": "title",
+            "Venue": "select",
+            "Date": "date",
+        }
+        self.main.notion_call = MagicMock(return_value={
+            "results": [
+                {
+                    "properties": {
+                        "Film": {"title": [{"plain_text": "The Drama"}]},
+                        "Venue": {"type": "select", "select": {"name": "AMC Roosevelt Collection 16"}},
+                    }
+                }
+            ]
+        })
+        original, suggested = self.main._suggest_known_venue({
+            "log_type": "cinema",
+            "venue": "AMC Roosevelt",
+        })
+        self.assertEqual(original, "AMC Roosevelt")
+        self.assertEqual(suggested, "AMC Roosevelt Collection 16")
+
+    def test_suggest_known_venue_works_for_performance_logs(self):
+        self.main.NOTION_PERFORMANCES_DB = "performances_db"
+        self.main.entertainment_schemas["performances"] = {
+            "Name": "title",
+            "Place": "status",
+            "Date": "date",
+        }
+        self.main.notion_call = MagicMock(return_value={
+            "results": [
+                {
+                    "properties": {
+                        "Name": {"title": [{"plain_text": "The Drama"}]},
+                        "Place": {"type": "status", "status": {"name": "Martin Theatre"}},
+                    }
+                }
+            ]
+        })
+        original, suggested = self.main._suggest_known_venue({
+            "log_type": "performance",
+            "venue": "martin",
+        })
+        self.assertEqual(original, "martin")
+        self.assertEqual(suggested, "Martin Theatre")
+
     def test_known_cinema_venue_is_normalized_from_previous_rows(self):
         schema = {
             "Film": "title",
