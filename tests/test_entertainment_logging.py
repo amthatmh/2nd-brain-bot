@@ -244,6 +244,41 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(page_id, "page-1")
         self.assertFalse(fav_saved)
 
+    def test_create_performance_entry_lazy_loads_schema_when_missing(self):
+        self.main.NOTION_PERFORMANCES_DB = "performances_db"
+        self.main.entertainment_schemas.pop("performances", None)
+
+        def fake_notion_call(fn, **kwargs):
+            if fn == self.main.notion.databases.retrieve:
+                return {
+                    "properties": {
+                        "Name": {"type": "title"},
+                        "Date": {"type": "date"},
+                        "Venue": {"type": "select"},
+                        "Notes": {"type": "rich_text"},
+                    }
+                }
+            if fn == self.main.notion.pages.create:
+                props = kwargs["properties"]
+                self.assertEqual(props["Name"]["title"][0]["text"]["content"], "The Drama")
+                self.assertEqual(props["Venue"]["select"]["name"], "Martin Theatre")
+                self.assertEqual(props["Date"]["date"]["start"], "2026-04-29T20:40:00")
+                self.assertEqual(props["Notes"]["rich_text"][0]["text"]["content"], "Seat D6")
+                return {"id": "perf-1"}
+            return {}
+
+        self.main.notion_call = fake_notion_call
+        page_id, fav_saved = self.main.create_entertainment_log_entry({
+            "log_type": "performance",
+            "title": "The Drama",
+            "date": "2026-04-29T20:40:00",
+            "venue": "Martin Theatre",
+            "notes": "Seat D6",
+            "favourite": False,
+        })
+        self.assertEqual(page_id, "perf-1")
+        self.assertFalse(fav_saved)
+
     def test_known_cinema_venue_is_normalized_from_previous_rows(self):
         schema = {
             "Film": "title",

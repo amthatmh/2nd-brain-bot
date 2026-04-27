@@ -3019,6 +3019,21 @@ def _query_title_values(db_id: str, title_prop_name: str) -> list[dict]:
     return values
 
 
+def _ensure_entertainment_schema(key: str, label: str, db_id: str | None) -> dict | None:
+    schema = entertainment_schemas.get(key)
+    if schema:
+        return schema
+    if not db_id:
+        return None
+    try:
+        schema = _inspect_database_schema(db_id, label)
+    except Exception as e:
+        log.error("Failed to lazily load entertainment schema key=%s label=%s err=%s", key, label, e)
+        return None
+    entertainment_schemas[key] = schema
+    return schema
+
+
 def create_entertainment_log_entry(payload: dict) -> tuple[str, bool]:
     log_type = payload.get("log_type")
     title = (payload.get("title") or "").strip()
@@ -3031,7 +3046,7 @@ def create_entertainment_log_entry(payload: dict) -> tuple[str, bool]:
     favourite = bool(payload.get("favourite"))
 
     if log_type == "cinema":
-        schema = entertainment_schemas.get("cinema")
+        schema = _ensure_entertainment_schema("cinema", "🍿 Cinema Log", NOTION_CINEMA_LOG_DB)
         if not schema:
             raise ValueError("Cinema schema is unavailable")
         parsed_inline = _parse_cinema_inline_context(title)
@@ -3100,7 +3115,7 @@ def create_entertainment_log_entry(payload: dict) -> tuple[str, bool]:
         return page["id"], favourite
 
     if log_type == "performance":
-        schema = entertainment_schemas.get("performances")
+        schema = _ensure_entertainment_schema("performances", "🎟️ Performances Viewings", NOTION_PERFORMANCES_DB)
         if not schema:
             raise ValueError("Performances schema is unavailable")
         datetime_hint = " ".join(part for part in [title, venue, notes] if part)
@@ -3111,7 +3126,7 @@ def create_entertainment_log_entry(payload: dict) -> tuple[str, bool]:
         return page["id"], False
 
     if log_type == "sport":
-        schema = entertainment_schemas.get("sports")
+        schema = _ensure_entertainment_schema("sports", "🏅 Sports Log", NOTION_SPORTS_LOG_DB)
         if not schema:
             raise ValueError("Sports schema is unavailable")
         datetime_hint = " ".join(part for part in [title, venue, notes] if part)
