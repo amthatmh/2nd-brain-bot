@@ -38,9 +38,8 @@ NOTION_NOTES_DB = os.environ["NOTION_NOTES_DB"]
 NOTION_DIGEST_SELECTOR_DB = os.environ["NOTION_DIGEST_SELECTOR_DB"]
 
 TZ = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
-DIGEST_TIME_WEEKDAY = parse_hhmm_env("DIGEST_TIME_WEEKDAY", "8:15")
-DIGEST_TIME_WEEKEND = parse_hhmm_env("DIGEST_TIME_WEEKEND", "12:00")
 RECURRING_CHECK_TIME = parse_hhmm_env("RECURRING_CHECK_TIME", "7:00")
+SUNDAY_REVIEW_TIME = parse_hhmm_env("SUNDAY_REVIEW_TIME", "12:00")
 
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
