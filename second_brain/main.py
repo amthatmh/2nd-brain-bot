@@ -240,7 +240,13 @@ HORIZON_LABELS = {
 }
 NUMBER_EMOJIS = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
 REPEAT_DAY_TO_WEEKDAY  = {"Mon":0,"Tue":1,"Wed":2,"Thu":3,"Fri":4,"Sat":5,"Sun":6}
-REPEAT_DAY_TO_MONTHDAY = {"1st":1,"5th":5,"10th":10,"15th":15,"20th":20,"25th":25,"Last":-1}
+REPEAT_DAY_TO_MONTHDAY = {
+    **{
+        f"{d}{'th' if 10 <= d % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(d % 10, 'th')}": d
+        for d in range(1, 32)
+    },
+    "Last": -1,
+}
 _BULLET_RE = re.compile(r"^[\s]*(?:[-•*]|\d+[.):])\s+", re.MULTILINE)
 BTN_REFRESH = "📜Digest"
 BTN_ALL_OPEN = "✅To Do"
@@ -1104,8 +1110,8 @@ If TASK:
   "deadline_days": <integer or null>,
   "context": "one of: 💼 Work | 🏠 Personal | 🏃 Health | 🤝 Collab",
   "confidence": "high or low",
-  "recurring": "one of: None | 🔁 Daily | 📅 Weekly | 🗓️ Monthly",
-  "repeat_day": "Mon|Tue|Wed|Thu|Fri|Sat|Sun|1st|5th|10th|15th|20th|25th|Last or null"
+  "recurring": "one of: None | 🔁 Daily | 📅 Weekly | 🗓️ Monthly | 📆 Quarterly",
+  "repeat_day": "Mon|Tue|Wed|Thu|Fri|Sat|Sun|1st..31st|Last or null (use ordinals like 4th, 21st)"
 }}
 
 deadline_days: 0=today, 1=tomorrow, 5=this week, 20=this month, null=no urgency/low confidence"""
@@ -1220,8 +1226,8 @@ If TASK:
   "deadline_days": <integer or null>,
   "context": "one of: 💼 Work | 🏠 Personal | 🏃 Health | 🤝 Collab",
   "confidence": "high|low",
-  "recurring": "None|🔁 Daily|📅 Weekly|🗓️ Monthly",
-  "repeat_day": "Mon|Tue|Wed|Thu|Fri|Sat|Sun|1st|5th|10th|15th|20th|25th|Last or null"
+  "recurring": "None|🔁 Daily|📅 Weekly|🗓️ Monthly|📆 Quarterly",
+  "repeat_day": "Mon|Tue|Wed|Thu|Fri|Sat|Sun|1st..31st|Last or null (use ordinals like 4th, 21st)"
 }}"""
 
     resp = claude.messages.create(
@@ -1410,8 +1416,8 @@ Return ONLY valid JSON, no markdown:
   "deadline_days": <integer days from today, or null if no urgency>,
   "context": "one of exactly: 💼 Work | 🏠 Personal | 🏃 Health | 🤝 Collab",
   "confidence": "high or low",
-  "recurring": "one of exactly: None | 🔁 Daily | 📅 Weekly | 🗓️ Monthly",
-  "repeat_day": "one of: Mon|Tue|Wed|Thu|Fri|Sat|Sun|1st|5th|10th|15th|20th|25th|Last or null"
+  "recurring": "one of exactly: None | 🔁 Daily | 📅 Weekly | 🗓️ Monthly | 📆 Quarterly",
+  "repeat_day": "one of: Mon|Tue|Wed|Thu|Fri|Sat|Sun|1st..31st|Last or null (use ordinals like 4th, 21st)"
 }}
 
 deadline_days: 0=today, 1=tomorrow, 5=this week, 20=this month, null=no urgency"""
@@ -2723,6 +2729,17 @@ def recover_digest_items_from_text(text: str) -> dict[int, dict]:
 # RECURRING LOGIC
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _resolve_monthly_target_day(repeat_day: str, today: date) -> int | None:
+    if repeat_day not in REPEAT_DAY_TO_MONTHDAY:
+        return None
+    configured_day = REPEAT_DAY_TO_MONTHDAY[repeat_day]
+    month_last_day = calendar.monthrange(today.year, today.month)[1]
+    if configured_day == -1:
+        return month_last_day
+    # For days that exceed month length (e.g., 31st in April), run on the month's last day.
+    return min(configured_day, month_last_day)
+
+
 def should_spawn_today(template: dict, today: date) -> bool:
     recurring  = template["recurring"]
     repeat_day = template["repeat_day"]
@@ -2736,12 +2753,26 @@ def should_spawn_today(template: dict, today: date) -> bool:
             return False
         return today.weekday() == REPEAT_DAY_TO_WEEKDAY[repeat_day]
     if recurring == "🗓️ Monthly":
-        if not repeat_day or repeat_day not in REPEAT_DAY_TO_MONTHDAY:
+        if not repeat_day:
             return False
-        target = REPEAT_DAY_TO_MONTHDAY[repeat_day]
-        if target == -1:
-            return today.day == calendar.monthrange(today.year, today.month)[1]
-        return today.day == target
+        target_day = _resolve_monthly_target_day(repeat_day, today)
+        return target_day is not None and today.day == target_day
+    if recurring == "📆 Quarterly":
+        if not repeat_day:
+            return False
+        target_day = _resolve_monthly_target_day(repeat_day, today)
+        if target_day is None or today.day != target_day:
+            return False
+
+        anchor_raw = template.get("deadline") or last_gen
+        if not anchor_raw:
+            return today.month % 3 == 0
+        try:
+            anchor = date.fromisoformat(anchor_raw)
+        except ValueError:
+            return today.month % 3 == 0
+        months_since_anchor = (today.year - anchor.year) * 12 + (today.month - anchor.month)
+        return months_since_anchor >= 0 and months_since_anchor % 3 == 0
     return False
 
 
