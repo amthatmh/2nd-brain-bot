@@ -20,6 +20,7 @@ import subprocess
 import urllib.parse
 from datetime import date, datetime, timedelta
 from collections import defaultdict
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Callable
 
@@ -3214,16 +3215,85 @@ async def handle_entertainment_log(message, payload: dict) -> None:
     log.info("Entertainment logged type=%s title=%s page_id=%s", log_type, title, entry_id)
 
 
-def _suggest_known_cinema_venue(payload: dict) -> tuple[str | None, str | None]:
-    if (payload or {}).get("log_type") != "cinema":
-        return None, None
+def _entertainment_db_meta(log_type: str | None) -> tuple[str | None, str | None, str | None]:
+    if log_type == "cinema":
+        return "cinema", "🍿 Cinema Log", NOTION_CINEMA_LOG_DB
+    if log_type == "performance":
+        return "performances", "🎟️ Performances Viewings", NOTION_PERFORMANCES_DB
+    if log_type == "sport":
+        return "sports", "🏅 Sports Log", NOTION_SPORTS_LOG_DB
+    return None, None, None
+
+
+def _normalize_venue_text(text: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
+def _best_known_venue_match(raw_venue: str, candidates: list[str]) -> str | None:
+    incoming = _normalize_venue_text(raw_venue)
+    if not incoming:
+        return None
+    best_name = None
+    best_score = 0.0
+    for candidate in candidates:
+        candidate_norm = _normalize_venue_text(candidate)
+        if not candidate_norm:
+            continue
+        if incoming == candidate_norm:
+            return None
+        if incoming in candidate_norm or candidate_norm in incoming:
+            score = 0.95
+        else:
+            score = SequenceMatcher(None, incoming, candidate_norm).ratio()
+        if score > best_score:
+            best_score = score
+            best_name = candidate
+    if best_name and best_score >= 0.62:
+        return best_name
+    return None
+
+
+def _known_venues_for_log_type(log_type: str | None) -> list[str]:
+    schema_key, label, db_id = _entertainment_db_meta(log_type)
+    if not (schema_key and label and db_id):
+        return []
+    schema = _ensure_entertainment_schema(schema_key, label, db_id)
+    if not schema:
+        return []
+    venue_prop = _pick_exact_prop(schema, "select", ["Venue", "Place", "Location"]) \
+        or _pick_exact_prop(schema, "status", ["Venue", "Place", "Location"]) \
+        or _pick_exact_prop(schema, "rich_text", ["Venue", "Place", "Location"])
+    if not venue_prop:
+        return []
+    rows = notion_call(notion.databases.query, database_id=db_id).get("results", [])
+    seen: set[str] = set()
+    values: list[str] = []
+    for row in rows:
+        venue_obj = row.get("properties", {}).get(venue_prop, {})
+        venue_type = venue_obj.get("type")
+        name = None
+        if venue_type == "select":
+            name = (venue_obj.get("select") or {}).get("name")
+        elif venue_type == "status":
+            name = (venue_obj.get("status") or {}).get("name")
+        elif venue_type == "rich_text":
+            chunks = venue_obj.get("rich_text", [])
+            name = "".join(c.get("plain_text", "") for c in chunks).strip()
+        if not name:
+            continue
+        key = name.strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        values.append(name.strip())
+    return values
+
+
+def _suggest_known_venue(payload: dict) -> tuple[str | None, str | None]:
     raw_venue = ((payload or {}).get("venue") or "").strip()
     if not raw_venue:
         return None, None
-    schema = _ensure_entertainment_schema("cinema", "🍿 Cinema Log", NOTION_CINEMA_LOG_DB)
-    if not schema:
-        return None, None
-    suggested = _resolve_known_cinema_venue(raw_venue, schema)
+    suggested = _best_known_venue_match(raw_venue, _known_venues_for_log_type((payload or {}).get("log_type")))
     if not suggested:
         return None, None
     if suggested.strip().lower() == raw_venue.lower():
@@ -3231,9 +3301,9 @@ def _suggest_known_cinema_venue(payload: dict) -> tuple[str | None, str | None]:
     return raw_venue, suggested
 
 
-async def _maybe_prompt_explicit_cinema_venue(message, payload: dict, raw_text: str) -> bool:
+async def _maybe_prompt_explicit_venue(message, payload: dict, raw_text: str) -> bool:
     global _entertainment_counter
-    original, suggested = _suggest_known_cinema_venue(payload)
+    original, suggested = _suggest_known_venue(payload)
     if not (original and suggested):
         return False
     key = str(_entertainment_counter)
@@ -4053,7 +4123,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     explicit_entertainment = parse_explicit_entertainment_log(text)
     if explicit_entertainment:
         try:
-            prompted = await _maybe_prompt_explicit_cinema_venue(message, explicit_entertainment, text)
+            prompted = await _maybe_prompt_explicit_venue(message, explicit_entertainment, text)
             if prompted:
                 return
             await handle_entertainment_log(message, explicit_entertainment)
@@ -5582,7 +5652,7 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
     try:
-        prompted = await _maybe_prompt_explicit_cinema_venue(update.message, parsed, f"/log {raw}")
+        prompted = await _maybe_prompt_explicit_venue(update.message, parsed, f"/log {raw}")
         if prompted:
             return
         await handle_entertainment_log(update.message, parsed)

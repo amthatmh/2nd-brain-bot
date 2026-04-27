@@ -308,7 +308,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertFalse(fav_saved)
         self.assertEqual(calls["create"], 2)
 
-    def test_suggest_known_cinema_venue_returns_closest_known_match(self):
+    def test_suggest_known_venue_returns_best_cinema_match(self):
         self.main.NOTION_CINEMA_LOG_DB = "cinema_db"
         self.main.entertainment_schemas["cinema"] = {
             "Film": "title",
@@ -325,12 +325,36 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
                 }
             ]
         })
-        original, suggested = self.main._suggest_known_cinema_venue({
+        original, suggested = self.main._suggest_known_venue({
             "log_type": "cinema",
             "venue": "AMC Roosevelt",
         })
         self.assertEqual(original, "AMC Roosevelt")
         self.assertEqual(suggested, "AMC Roosevelt Collection 16")
+
+    def test_suggest_known_venue_works_for_performance_logs(self):
+        self.main.NOTION_PERFORMANCES_DB = "performances_db"
+        self.main.entertainment_schemas["performances"] = {
+            "Name": "title",
+            "Place": "status",
+            "Date": "date",
+        }
+        self.main.notion_call = MagicMock(return_value={
+            "results": [
+                {
+                    "properties": {
+                        "Name": {"title": [{"plain_text": "The Drama"}]},
+                        "Place": {"type": "status", "status": {"name": "Martin Theatre"}},
+                    }
+                }
+            ]
+        })
+        original, suggested = self.main._suggest_known_venue({
+            "log_type": "performance",
+            "venue": "martin",
+        })
+        self.assertEqual(original, "martin")
+        self.assertEqual(suggested, "Martin Theatre")
 
     def test_known_cinema_venue_is_normalized_from_previous_rows(self):
         schema = {
