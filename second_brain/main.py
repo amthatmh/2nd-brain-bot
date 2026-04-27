@@ -140,10 +140,7 @@ NOTION_DB_ID    = os.environ["NOTION_DB_ID"]
 NOTION_HABIT_DB = os.environ["NOTION_HABIT_DB"]
 NOTION_LOG_DB   = os.environ["NOTION_LOG_DB"]
 NOTION_CINEMA_LOG_DB = os.environ.get("NOTION_CINEMA_LOG_DB", os.environ.get("NOTION_CINEMA_DB", "")).strip()
-NOTION_PERFORMANCES_DB = os.environ.get(
-    "NOTION_PERFORMANCES_DB",
-    os.environ.get("NOTION_PERFORMANCE_DB", os.environ.get("NOTION_PERFORMANCE_LOG_DB", "")),
-).strip()
+NOTION_PERFORMANCE_LOG_DB = os.environ.get("NOTION_PERFORMANCE_LOG_DB", "").strip()
 NOTION_SPORTS_LOG_DB = os.environ.get("NOTION_SPORTS_LOG_DB", os.environ.get("NOTION_SPORTS_DB", "")).strip()
 NOTION_FAVE_DB = os.environ.get("NOTION_FAVE_DB", "").strip()
 NOTION_NOTES_DB = os.environ["NOTION_NOTES_DB"]    # 📒 Notes
@@ -3169,14 +3166,14 @@ def create_entertainment_log_entry(payload: dict) -> tuple[str, bool]:
         return page["id"], favourite
 
     if log_type == "performance":
-        schema = _ensure_entertainment_schema("performances", "🎟️ Performances Viewings", NOTION_PERFORMANCES_DB)
+        schema = _ensure_entertainment_schema("performances", "🎟️ Performances Viewings", NOTION_PERFORMANCE_LOG_DB)
         if not schema:
             raise ValueError("Performances schema is unavailable")
         datetime_hint = " ".join(part for part in [title, venue, notes] if part)
         when_iso = _normalize_entertainment_datetime(when_iso, datetime_hint)
         notes = _strip_datetime_from_notes(notes)
         props = _build_common_entertainment_props(schema, title=title, when_iso=when_iso, venue=venue, notes=notes)
-        page = _safe_create_entertainment_page(schema, NOTION_PERFORMANCES_DB, props)
+        page = _safe_create_entertainment_page(schema, NOTION_PERFORMANCE_LOG_DB, props)
         return page["id"], False
 
     if log_type == "sport":
@@ -3255,7 +3252,7 @@ def _entertainment_save_error_text(err: Exception, payload: dict | None = None) 
     if "Performances schema is unavailable" in text:
         return (
             "⚠️ I couldn't save that performance log because the Performances DB isn't configured.\n"
-            "Set `NOTION_PERFORMANCES_DB` (or legacy `NOTION_PERFORMANCE_DB` / `NOTION_PERFORMANCE_LOG_DB`)."
+            "Set `NOTION_PERFORMANCE_LOG_DB`."
         )
     if "Cinema schema is unavailable" in text:
         return "⚠️ I couldn't save that cinema log because `NOTION_CINEMA_LOG_DB` isn't configured."
@@ -3268,7 +3265,7 @@ def _entertainment_db_meta(log_type: str | None) -> tuple[str | None, str | None
     if log_type == "cinema":
         return "cinema", "🍿 Cinema Log", NOTION_CINEMA_LOG_DB
     if log_type == "performance":
-        return "performances", "🎟️ Performances Viewings", NOTION_PERFORMANCES_DB
+        return "performances", "🎟️ Performances Viewings", NOTION_PERFORMANCE_LOG_DB
     if log_type == "sport":
         return "sports", "🏅 Sports Log", NOTION_SPORTS_LOG_DB
     return None, None, None
@@ -5316,7 +5313,7 @@ def startup_notion_health_check() -> None:
         "NOTION_HABIT_DB": (NOTION_HABIT_DB, True),
         "NOTION_LOG_DB": (NOTION_LOG_DB, True),
         "NOTION_CINEMA_LOG_DB": (NOTION_CINEMA_LOG_DB, False),
-        "NOTION_PERFORMANCES_DB": (NOTION_PERFORMANCES_DB, False),
+        "NOTION_PERFORMANCE_LOG_DB": (NOTION_PERFORMANCE_LOG_DB, False),
         "NOTION_SPORTS_LOG_DB": (NOTION_SPORTS_LOG_DB, False),
         "NOTION_FAVE_DB": (NOTION_FAVE_DB, False),
         "NOTION_NOTES_DB": (NOTION_NOTES_DB, True),
@@ -5345,7 +5342,7 @@ def load_entertainment_schemas() -> None:
     entertainment_schemas = {}
     targets = [
         ("cinema", "🍿 Cinema Log", NOTION_CINEMA_LOG_DB),
-        ("performances", "🎟️ Performances Viewings", NOTION_PERFORMANCES_DB),
+        ("performances", "🎟️ Performances Viewings", NOTION_PERFORMANCE_LOG_DB),
         ("sports", "🏟️ Sports Log", NOTION_SPORTS_LOG_DB),
         ("favourite_films", "🎞️ Favourite Films", NOTION_FAVE_DB),
     ]
