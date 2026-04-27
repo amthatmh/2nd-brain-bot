@@ -54,6 +54,8 @@
     .iconbox{width:var(--icon);height:var(--icon);border-radius:24px;display:grid;place-items:center;font-size:2rem;border:1px solid rgba(255,255,255,.06);background:#151520;user-select:none}
     .meta h3{margin:0 0 4px;font-size:1.18rem;letter-spacing:-.025em;font-weight:700}
     .meta .line{color:var(--muted);font-size:.88rem}
+    .meta .streak-line{margin-top:6px;color:var(--text);font-size:.82rem}
+    .streak-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border-radius:999px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12)}
     .check{width:var(--check);height:var(--check);border-radius:24px;border:none;font-size:1.8rem;cursor:pointer;display:grid;place-items:center;color:#fff;transition:transform .12s ease,filter .12s ease;text-decoration:none}
     .check:hover{transform:scale(1.06);filter:brightness(1.1)}
     .check.done{background:rgba(74,222,128,.15)!important;cursor:default}
@@ -174,6 +176,23 @@ function getColor(colorClass, on) {
   return (m[colorClass]||m['c-pink'])[on?'on':'off'];
 }
 
+function getCurrentStreak(days, dates, todayDate) {
+  if (!Array.isArray(days) || !Array.isArray(dates) || !dates.length) return 0;
+  const fallbackLastDate = dates[dates.length - 1];
+  const anchorDate = todayDate || fallbackLastDate;
+  let streak = 0;
+  for (let i = dates.length - 1; i >= 0; i--) {
+    const d = dates[i];
+    if (!d || d > anchorDate) continue;
+    if (days[i] === 1) {
+      streak += 1;
+      continue;
+    }
+    break;
+  }
+  return streak;
+}
+
 async function loadData() {
   try {
     const url = `${API_URL}?t=${Date.now()}`;
@@ -227,6 +246,7 @@ function render(data) {
   habits.forEach(habit => {
     const cc      = `c-${habit.color||'pink'}`;
     const icon    = habitIcon(habit.name);
+    const streak  = getCurrentStreak(habit.days, dates, data.todayDate);
     const isDone  = todayIndex >= 0
       ? habit.days[todayIndex] === 1
       : habit.todayDone;
@@ -241,6 +261,9 @@ function render(data) {
         <div class="meta">
           <h3>${habit.name}</h3>
           <div class="line">${[habit.frequency,habit.description].filter(Boolean).join(' · ')}</div>
+          <div class="streak-line">
+            <span class="streak-pill">🔥 ${streak} ${streak === 1 ? 'day' : 'days'} streak</span>
+          </div>
         </div>
         ${isDone
           ? `<div class="check done" style="background:${checkBg}">${checkIcon}</div>`
