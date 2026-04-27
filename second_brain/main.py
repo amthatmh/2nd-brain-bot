@@ -2384,20 +2384,46 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
         return None
 
     normalized = re.sub(r"^\s*/?log\s+", "log ", raw, flags=re.IGNORECASE)
-    m = re.match(
-        r"^log\s+(cinema|performance|sport|sports)\s*:?\s*(.*?)\s*(?:\s+at\s+(.+))?$",
-        normalized,
-        re.IGNORECASE,
-    )
+    m = re.match(r"^log\s+(cinema|performance|sports|sport)\s*:?\s*(.+)$", normalized, re.IGNORECASE)
     if not m:
         return None
 
-    raw_log_type, raw_title, raw_venue = m.groups()
+    raw_log_type, remainder = m.groups()
     log_type = raw_log_type.lower()
     if log_type == "sports":
         log_type = "sport"
 
+    rest = (remainder or "").strip()
+    if not rest:
+        return None
+
+    parsed_time = None
+    parsed_date = None
+
+    match_time = re.search(r"\s+at\s+([01]?\d|2[0-3]):([0-5]\d)\s*$", rest, re.IGNORECASE)
+    if match_time:
+        parsed_time = f"{int(match_time.group(1)):02d}:{match_time.group(2)}"
+        rest = rest[: match_time.start()].strip()
+
+    match_date = re.search(r"\s+on\s+(\d{4})[/-](\d{1,2})[/-](\d{1,2})\s*$", rest, re.IGNORECASE)
+    if match_date:
+        parsed_date = f"{int(match_date.group(1)):04d}-{int(match_date.group(2)):02d}-{int(match_date.group(3)):02d}"
+        rest = rest[: match_date.start()].strip()
+
+    raw_title = rest
+    raw_venue = None
+    title_and_venue = re.match(r"^(?P<title>.+?)\s+at\s+(?P<venue>.+)$", rest, re.IGNORECASE)
+    if title_and_venue:
+        raw_title = (title_and_venue.group("title") or "").strip()
+        raw_venue = (title_and_venue.group("venue") or "").strip()
+
     title = (raw_title or "").strip().rstrip(":")
+    title = re.sub(
+        r"^(?:i\s+)?(?:watched|watch|saw|caught|went\s+to|attended)\s+",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    ).strip()
     if not title:
         return None
 
@@ -2411,6 +2437,12 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
     venue = (raw_venue or "").strip()
     if venue:
         payload["venue"] = venue
+    if parsed_date and parsed_time:
+        payload["date"] = f"{parsed_date}T{parsed_time}:00"
+    elif parsed_date:
+        payload["date"] = parsed_date
+    elif parsed_time:
+        payload["notes"] = f"{parsed_time}"
     return payload
 
 
