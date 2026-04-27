@@ -5312,16 +5312,16 @@ def v10_feature_flags() -> str:
 def startup_notion_health_check() -> None:
     """Fail fast for core Notion DBs, but don't block startup for optional features."""
     dbs = {
-        "NOTION_DB_ID": NOTION_DB_ID,
-        "NOTION_HABIT_DB": NOTION_HABIT_DB,
-        "NOTION_LOG_DB": NOTION_LOG_DB,
-        "NOTION_CINEMA_LOG_DB": NOTION_CINEMA_LOG_DB,
-        "NOTION_PERFORMANCES_DB": NOTION_PERFORMANCES_DB,
-        "NOTION_SPORTS_LOG_DB": NOTION_SPORTS_LOG_DB,
-        "NOTION_FAVE_DB": NOTION_FAVE_DB,
-        "NOTION_NOTES_DB": NOTION_NOTES_DB,
-        "NOTION_DIGEST_SELECTOR_DB": NOTION_DIGEST_SELECTOR_DB,
-        "NOTION_WATCHLIST_DB": NOTION_WATCHLIST_DB,
+        "NOTION_DB_ID": (NOTION_DB_ID, True),
+        "NOTION_HABIT_DB": (NOTION_HABIT_DB, True),
+        "NOTION_LOG_DB": (NOTION_LOG_DB, True),
+        "NOTION_CINEMA_LOG_DB": (NOTION_CINEMA_LOG_DB, False),
+        "NOTION_PERFORMANCES_DB": (NOTION_PERFORMANCES_DB, False),
+        "NOTION_SPORTS_LOG_DB": (NOTION_SPORTS_LOG_DB, False),
+        "NOTION_FAVE_DB": (NOTION_FAVE_DB, False),
+        "NOTION_NOTES_DB": (NOTION_NOTES_DB, True),
+        "NOTION_DIGEST_SELECTOR_DB": (NOTION_DIGEST_SELECTOR_DB, True),
+        "NOTION_WATCHLIST_DB": (NOTION_WATCHLIST_DB, False),
     }
     for label, (db_id, required) in dbs.items():
         if not db_id:
