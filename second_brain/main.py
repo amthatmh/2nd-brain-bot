@@ -746,13 +746,17 @@ def load_habit_cache() -> None:
             def txt(key):
                 parts = p.get(key, {}).get("rich_text", [])
                 return parts[0]["text"]["content"] if parts else None
+            parsed_frequency = extract_habit_frequency(p)
+            frequency_label = txt("Frequency Label")
+            if not frequency_label and parsed_frequency:
+                frequency_label = f"{parsed_frequency}x/week"
             habit_cache[name] = {
                 "page_id":         page["id"],
                 "name":            name,
                 "time":            sel("Time"),
                 "color":           sel("Color"),
-                "freq_per_week":   num("Frequency Per Week"),
-                "frequency_label": txt("Frequency Label"),
+                "freq_per_week":   parsed_frequency,
+                "frequency_label": frequency_label,
                 "description":     txt("Description"),
                 "sort":            num("Sort") or 99,
             }
