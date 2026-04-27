@@ -53,7 +53,7 @@ from asana_sync import (
     validate_notion_schema,
     startup_smoke_test,
 )
-from cinema.sync import sync_cinema_log_to_notion
+from cinema.sync import sync_cinema_log_to_notion, sync_single_cinema_entry
 from cinema.config import (
     CINEMA_DB_ID,
     FAVE_DB_ID,
@@ -3240,6 +3240,19 @@ async def handle_entertainment_log(message, payload: dict) -> None:
     if log_type == "sport":
         _remember_pending_sport_competition(message, entry_id)
         await message.reply_text("🏆 Logged to Sports Log. Which competition should I set for this one?")
+    elif log_type == "cinema":
+        try:
+            sync_stats = await sync_single_cinema_entry(
+                notion=notion,
+                page_id=entry_id,
+                fave_db_id=FAVE_DB_ID,
+                tmdb_api_key=TMDB_API_KEY,
+                force=False,
+            )
+            if sync_stats.get("updated", 0):
+                await message.reply_text("🔗 TMDB URL linked.")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Immediate cinema TMDB sync failed for page=%s err=%s", entry_id, exc)
     log.info("Entertainment logged type=%s title=%s page_id=%s", log_type, title, entry_id)
 
 
@@ -5058,10 +5071,10 @@ async def run_asana_sync(bot) -> None:
         sync_status["asana"]["error"] = str(e)
 
 
-async def run_cinema_sync(bot) -> None:
+async def run_cinema_sync(bot, *, force: bool = False) -> dict[str, int]:
     """Background sync for Cinema Log → Favourite Shows."""
     if not CINEMA_DB_ID:
-        return
+        return {"scanned": 0, "updated": 0, "skipped": 0, "failed": 0, "tmdb_found": 0, "tmdb_missing": 0, "added_to_fave": 0}
 
     sync_status["cinema"]["last_run"] = utc_now_iso()
     try:
@@ -5070,10 +5083,14 @@ async def run_cinema_sync(bot) -> None:
             cinema_db_id=CINEMA_DB_ID,
             fave_db_id=FAVE_DB_ID,
             tmdb_api_key=TMDB_API_KEY,
+            force=force,
         )
         log.info(
-            "Cinema sync: new=%s, tmdb_found=%s, tmdb_missing=%s, added_to_fave=%s",
-            stats["new_entries"],
+            "Cinema sync: scanned=%s, updated=%s, skipped=%s, failed=%s, tmdb_found=%s, tmdb_missing=%s, added_to_fave=%s",
+            stats["scanned"],
+            stats["updated"],
+            stats["skipped"],
+            stats["failed"],
             stats["tmdb_found"],
             stats["tmdb_missing"],
             stats["added_to_fave"],
@@ -5090,6 +5107,8 @@ async def run_cinema_sync(bot) -> None:
         )
         sync_status["cinema"]["ok"] = False
         sync_status["cinema"]["error"] = str(e)
+        return {"scanned": 0, "updated": 0, "skipped": 0, "failed": 1, "tmdb_found": 0, "tmdb_missing": 0, "added_to_fave": 0}
+    return stats
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -5596,12 +5615,21 @@ async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     """/sync — manual catch-up trigger for core sync pipelines."""
     if update.effective_chat.id != MY_CHAT_ID:
         return
-    status = await update.message.reply_text("🔄 Running full sync (Asana + Cinema + Habit cache)…")
+    args = [a.strip().lower() for a in (context.args or []) if a.strip()]
+    cinema_only = args[:1] == ["cinema"]
+    status = await update.message.reply_text(
+        "🔄 Running cinema sync…" if cinema_only else "🔄 Running full sync (Asana + Cinema + Habit cache)…"
+    )
     try:
         load_habit_cache()
-        await run_asana_sync(context.bot)
-        await run_cinema_sync(context.bot)
-        await status.edit_text("✅ Full sync finished.")
+        if not cinema_only:
+            await run_asana_sync(context.bot)
+        cinema_stats = await run_cinema_sync(context.bot)
+        await status.edit_text(
+            "✅ Sync finished.\n"
+            f"Cinema: scanned={cinema_stats['scanned']} updated={cinema_stats['updated']} "
+            f"missing={cinema_stats['tmdb_missing']} skipped={cinema_stats['skipped']} failed={cinema_stats['failed']}"
+        )
     except Exception as e:
         log.exception("Manual /sync failed: %s", e)
         await status.edit_text(f"⚠️ /sync failed: {e}")
