@@ -200,6 +200,56 @@ def _preferred_media_type(props: dict) -> str | None:
     return None
 
 
+def _tmdb_id_from_props(props: dict) -> str:
+    tmdb_prop = props.get("TMDB ID", {})
+    if not isinstance(tmdb_prop, dict):
+        return ""
+
+    rich_text = tmdb_prop.get("rich_text", [])
+    if rich_text:
+        tmdb_id = "".join(chunk.get("plain_text", "") for chunk in rich_text).strip()
+        if tmdb_id:
+            return tmdb_id
+
+    number_value = tmdb_prop.get("number")
+    if number_value is not None:
+        tmdb_id = str(int(number_value)) if isinstance(number_value, float) else str(number_value)
+        return tmdb_id.strip()
+
+    title_value = tmdb_prop.get("title", [])
+    if title_value:
+        tmdb_id = "".join(chunk.get("plain_text", "") for chunk in title_value).strip()
+        if tmdb_id:
+            return tmdb_id
+
+    return ""
+
+
+def _tmdb_media_slug_from_props(props: dict) -> str | None:
+    preferred = _preferred_media_type(props)
+    if preferred in {"movie", "tv"}:
+        return preferred
+
+    category = (props.get("Category", {}).get("select", {}) or {}).get("name", "").strip().lower()
+    if category == "film":
+        return "movie"
+    if category in {"series", "tv", "tv series"}:
+        return "tv"
+
+    categories = props.get("Category", {}).get("multi_select", []) or []
+    normalized = {
+        (item or {}).get("name", "").strip().lower()
+        for item in categories
+        if isinstance(item, dict)
+    }
+    if "film" in normalized:
+        return "movie"
+    if {"series", "tv", "tv series"} & normalized:
+        return "tv"
+
+    return None
+
+
 async def sync_cinema_log_to_notion(
     *,
     notion,
@@ -251,12 +301,17 @@ async def sync_cinema_log_to_notion(
             update_props: dict = {}
             tmdb_url = tmdb_prop
             if not tmdb_url:
-                tmdb_url = await _search_tmdb_url_with_client(
-                    title,
-                    tmdb_api_key,
-                    client,
-                    preferred_media_type=_preferred_media_type(props),
-                )
+                tmdb_id = _tmdb_id_from_props(props)
+                tmdb_media_slug = _tmdb_media_slug_from_props(props)
+                if tmdb_id and tmdb_media_slug:
+                    tmdb_url = f"https://www.themoviedb.org/{tmdb_media_slug}/{tmdb_id}"
+                else:
+                    tmdb_url = await _search_tmdb_url_with_client(
+                        title,
+                        tmdb_api_key,
+                        client,
+                        preferred_media_type=_preferred_media_type(props),
+                    )
                 if tmdb_url:
                     update_props["TMDB URL"] = {"url": tmdb_url}
                     stats["tmdb_found"] += 1
