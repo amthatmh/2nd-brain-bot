@@ -83,6 +83,40 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["title"], "Cubs vs Sox")
         self.assertEqual(parsed["venue"], "Wrigley")
 
+    def test_parse_explicit_log_command_maps_movie_keyword_to_cinema(self):
+        parsed = self.main.parse_explicit_entertainment_log("/log movie The Drama at AMC Roosevelt Collection 16")
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["type"], "entertainment_log")
+        self.assertEqual(parsed["log_type"], "cinema")
+        self.assertEqual(parsed["title"], "The Drama")
+        self.assertEqual(parsed["venue"], "AMC Roosevelt Collection 16")
+
+    def test_parse_explicit_cinema_preserves_venue_and_datetime_with_structured_tail(self):
+        parsed = self.main.parse_explicit_entertainment_log(
+            "/log cinema The Drama at AMC Roosevelt Collection 16 on 2026/04/30 at 20:40 Seat D6 Auditorium D5 Mark favourite"
+        )
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["log_type"], "cinema")
+        self.assertEqual(parsed["title"], "The Drama")
+        self.assertEqual(parsed["venue"], "AMC Roosevelt Collection 16")
+        self.assertEqual(parsed["date"], "2026-04-30T20:40:00")
+        self.assertEqual(parsed["notes"], "Seat D6 Auditorium D5")
+        self.assertTrue(parsed["favourite"])
+
+    def test_parse_explicit_performance_parses_date_time_and_tail_notes(self):
+        parsed = self.main.parse_explicit_entertainment_log(
+            "/log performance The Drama at Martin Theatre on 2026/04/29 at 20:40 Seat D6"
+        )
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["log_type"], "performance")
+        self.assertEqual(parsed["title"], "The Drama")
+        self.assertEqual(parsed["venue"], "Martin Theatre")
+        self.assertEqual(parsed["date"], "2026-04-29T20:40:00")
+        self.assertEqual(parsed["notes"], "Seat D6")
+
     def test_parse_explicit_log_command_for_sports_plural_and_action_verb(self):
         parsed = self.main.parse_explicit_entertainment_log("/log Sports watched Bears vs Arsenal at Soldier Field")
 
@@ -198,6 +232,41 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
             "favourite": False,
         })
         self.assertEqual(page_id, "page-1")
+        self.assertFalse(fav_saved)
+
+    def test_create_performance_entry_lazy_loads_schema_when_missing(self):
+        self.main.NOTION_PERFORMANCES_DB = "performances_db"
+        self.main.entertainment_schemas.pop("performances", None)
+
+        def fake_notion_call(fn, **kwargs):
+            if fn == self.main.notion.databases.retrieve:
+                return {
+                    "properties": {
+                        "Name": {"type": "title"},
+                        "Date": {"type": "date"},
+                        "Venue": {"type": "select"},
+                        "Notes": {"type": "rich_text"},
+                    }
+                }
+            if fn == self.main.notion.pages.create:
+                props = kwargs["properties"]
+                self.assertEqual(props["Name"]["title"][0]["text"]["content"], "The Drama")
+                self.assertEqual(props["Venue"]["select"]["name"], "Martin Theatre")
+                self.assertEqual(props["Date"]["date"]["start"], "2026-04-29T20:40:00")
+                self.assertEqual(props["Notes"]["rich_text"][0]["text"]["content"], "Seat D6")
+                return {"id": "perf-1"}
+            return {}
+
+        self.main.notion_call = fake_notion_call
+        page_id, fav_saved = self.main.create_entertainment_log_entry({
+            "log_type": "performance",
+            "title": "The Drama",
+            "date": "2026-04-29T20:40:00",
+            "venue": "Martin Theatre",
+            "notes": "Seat D6",
+            "favourite": False,
+        })
+        self.assertEqual(page_id, "perf-1")
         self.assertFalse(fav_saved)
 
     def test_known_cinema_venue_is_normalized_from_previous_rows(self):
