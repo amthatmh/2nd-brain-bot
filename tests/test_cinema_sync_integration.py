@@ -15,6 +15,13 @@ class _FakeDatabases:
 
     def retrieve(self, **kwargs):
         database_id = kwargs["database_id"]
+        if database_id == "cinema_db":
+            return {
+                "properties": {
+                    "Film": {"type": "title"},
+                    "TMDB URL": {"type": "url"},
+                }
+            }
         if database_id != "fave_db":
             raise AssertionError(f"Unexpected database_id: {database_id}")
         return {

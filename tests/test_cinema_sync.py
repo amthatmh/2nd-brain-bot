@@ -3,6 +3,7 @@ import unittest
 from cinema.sync import (
     _build_tmdb_movie_url,
     _build_cinema_query_filter,
+    _resolve_cinema_title_property,
     _detect_favourite_db_fields,
     _load_existing_favourites,
     _select_best_tmdb_movie_match,
@@ -23,22 +24,32 @@ class TestCinemaSyncHelpers(unittest.TestCase):
         self.assertEqual(_plain_text(prop), "Dune")
 
     def test_filter_targets_rows_missing_tmdb_and_with_title(self):
-        filter_obj = _build_cinema_query_filter()
+        filter_obj = _build_cinema_query_filter("Film")
         self.assertEqual(
             filter_obj,
             {
                 "and": [
                     {"property": "TMDB URL", "url": {"is_empty": True}},
-                    {
-                        "or": [
-                            {"property": "Film", "title": {"is_not_empty": True}},
-                            {"property": "Title", "title": {"is_not_empty": True}},
-                            {"property": "Name", "title": {"is_not_empty": True}},
-                        ]
-                    },
+                    {"property": "Film", "title": {"is_not_empty": True}},
                 ]
             },
         )
+
+    def test_resolve_title_property_prefers_film(self):
+        class _FakeDatabases:
+            def retrieve(self, **kwargs):
+                return {
+                    "properties": {
+                        "Film": {"type": "title"},
+                        "Name": {"type": "title"},
+                    }
+                }
+
+        class _FakeNotion:
+            def __init__(self):
+                self.databases = _FakeDatabases()
+
+        self.assertEqual(_resolve_cinema_title_property(_FakeNotion(), "cinema_db"), "Film")
 
     def test_build_tmdb_movie_url(self):
         self.assertEqual(_build_tmdb_movie_url(603), "https://www.themoviedb.org/movie/603")

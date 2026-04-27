@@ -70,18 +70,33 @@ def _parse_row_year(props: dict) -> int | None:
     return None
 
 
-def _build_cinema_query_filter() -> dict:
+def _resolve_cinema_title_property(notion, cinema_db_id: str) -> str:
+    """
+    Resolve the Notion title property used by Cinema Log.
+
+    We prefer `Film` when present to match the production schema.
+    """
+    schema = notion.databases.retrieve(database_id=cinema_db_id)
+    properties = schema.get("properties", {})
+    if "Film" in properties and (properties.get("Film") or {}).get("type") == "title":
+        return "Film"
+
+    for key in ("Title", "Name"):
+        if key in properties and (properties.get(key) or {}).get("type") == "title":
+            return key
+
+    for name, prop in properties.items():
+        if (prop or {}).get("type") == "title":
+            return name
+    return "Film"
+
+
+def _build_cinema_query_filter(title_property: str) -> dict:
     """Query entries that need TMDB URL backfill."""
     return {
         "and": [
             {"property": "TMDB URL", "url": {"is_empty": True}},
-            {
-                "or": [
-                    {"property": "Film", "title": {"is_not_empty": True}},
-                    {"property": "Title", "title": {"is_not_empty": True}},
-                    {"property": "Name", "title": {"is_not_empty": True}},
-                ]
-            },
+            {"property": title_property, "title": {"is_not_empty": True}},
         ]
     }
 
@@ -327,7 +342,8 @@ async def sync_cinema_log_to_notion(
         "added_to_fave": 0,
     }
 
-    query_filter = _build_cinema_query_filter()
+    title_property = _resolve_cinema_title_property(notion, cinema_db_id)
+    query_filter = _build_cinema_query_filter(title_property)
 
     rows: list[dict] = []
     cursor = None
