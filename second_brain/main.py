@@ -1821,10 +1821,10 @@ def get_habit_frequency(habit_page_id: str) -> int:
     try:
         page = notion.pages.retrieve(page_id=habit_page_id)
         properties = page.get("properties", {})
-        number_value = properties.get("Frequency", {}).get("number")
-        if number_value is None:
-            return 7
-        return int(number_value)
+        frequency = extract_habit_frequency(properties)
+        if frequency and frequency > 0:
+            return frequency
+        return 7
     except Exception as e:
         log.error("Error reading habit frequency for %s: %s", habit_page_id, e)
         return 7
@@ -5374,7 +5374,31 @@ async def habits_data_handler(request: web.Request) -> web.Response:
                 # Keep one status per week, favoring goal_met=True if duplicates exist.
                 streak_weeks_by_date[week_date] = streak_weeks_by_date.get(week_date, False) or goal_met
 
+            target = habit.get("freq_per_week")
+            if not isinstance(target, int) or target <= 0:
+                label = habit.get("frequency_label") or ""
+                match = re.search(r"\d+", label)
+                target = int(match.group(0)) if match else None
+
+            weekly_counts: dict[date, int] = {}
+            for date_str, done in zip(all_dates, days):
+                if done != 1:
+                    continue
+                try:
+                    day_date = datetime.fromisoformat(date_str).date()
+                except ValueError:
+                    continue
+                week_of = day_date - timedelta(days=day_date.weekday())
+                weekly_counts[week_of] = weekly_counts.get(week_of, 0) + 1
+
             current_monday = today - timedelta(days=today.weekday())
+            if target and target > 0:
+                # Fallback for weeks missing streak rows (e.g., scheduler did not run):
+                # infer whether weekly goal was met from logs.
+                for week_of, completed in weekly_counts.items():
+                    if week_of < current_monday and week_of not in streak_weeks_by_date:
+                        streak_weeks_by_date[week_of] = completed >= target
+
             streak_weeks = sorted(
                 ((week_date, goal_met) for week_date, goal_met in streak_weeks_by_date.items() if week_date < current_monday),
                 key=lambda item: item[0],
