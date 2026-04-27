@@ -240,6 +240,11 @@ BTN_HABITS = "🏃 Habits"
 BTN_NOTES = "📝 Notes"
 BTN_WEATHER = "🌤️ Weather"
 BTN_MUTE = "🔕 Mute"
+ENTERTAINMENT_LOG_LABELS = {
+    "cinema": "🍿 Cinema Log",
+    "performance": "🎟️ Performances Viewings",
+    "sport": "🏟️ Sports Log",
+}
 LEGACY_BTN_ALL_OPEN = "📋 All Open"
 TOPIC_OPTIONS = [
     "🎵 Acoustics", "💼 Work", "🏠 Personal",
@@ -2379,20 +2384,46 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
         return None
 
     normalized = re.sub(r"^\s*/?log\s+", "log ", raw, flags=re.IGNORECASE)
-    m = re.match(
-        r"^log\s+(cinema|performance|sport|sports)\s*:?\s*(.*?)\s*(?:\s+at\s+(.+))?$",
-        normalized,
-        re.IGNORECASE,
-    )
+    m = re.match(r"^log\s+(cinema|performance|sports|sport)\s*:?\s*(.+)$", normalized, re.IGNORECASE)
     if not m:
         return None
 
-    raw_log_type, raw_title, raw_venue = m.groups()
+    raw_log_type, remainder = m.groups()
     log_type = raw_log_type.lower()
     if log_type == "sports":
         log_type = "sport"
 
+    rest = (remainder or "").strip()
+    if not rest:
+        return None
+
+    parsed_time = None
+    parsed_date = None
+
+    match_time = re.search(r"\s+at\s+([01]?\d|2[0-3]):([0-5]\d)\s*$", rest, re.IGNORECASE)
+    if match_time:
+        parsed_time = f"{int(match_time.group(1)):02d}:{match_time.group(2)}"
+        rest = rest[: match_time.start()].strip()
+
+    match_date = re.search(r"\s+on\s+(\d{4})[/-](\d{1,2})[/-](\d{1,2})\s*$", rest, re.IGNORECASE)
+    if match_date:
+        parsed_date = f"{int(match_date.group(1)):04d}-{int(match_date.group(2)):02d}-{int(match_date.group(3)):02d}"
+        rest = rest[: match_date.start()].strip()
+
+    raw_title = rest
+    raw_venue = None
+    title_and_venue = re.match(r"^(?P<title>.+?)\s+at\s+(?P<venue>.+)$", rest, re.IGNORECASE)
+    if title_and_venue:
+        raw_title = (title_and_venue.group("title") or "").strip()
+        raw_venue = (title_and_venue.group("venue") or "").strip()
+
     title = (raw_title or "").strip().rstrip(":")
+    title = re.sub(
+        r"^(?:i\s+)?(?:watched|watch|saw|caught|went\s+to|attended)\s+",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    ).strip()
     if not title:
         return None
 
@@ -2406,6 +2437,12 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
     venue = (raw_venue or "").strip()
     if venue:
         payload["venue"] = venue
+    if parsed_date and parsed_time:
+        payload["date"] = f"{parsed_date}T{parsed_time}:00"
+    elif parsed_date:
+        payload["date"] = parsed_date
+    elif parsed_time:
+        payload["notes"] = f"{parsed_time}"
     return payload
 
 
@@ -3060,9 +3097,8 @@ async def handle_entertainment_log(message, payload: dict) -> None:
     notes = payload.get("notes")
     when_iso = payload.get("date") or date.today().isoformat()
 
-    labels = {"cinema": "🍿 Cinema", "performance": "🎟️ Performance", "sport": "🎬 Sports"}
     summary_lines = [
-        f"✅ Logged to {labels.get(log_type, 'Entertainment')}",
+        f"✅ Logged to {ENTERTAINMENT_LOG_LABELS.get(log_type, 'Entertainment')}",
         "",
         f"🎫 {title}",
         f"📅 {when_iso}",
@@ -4133,8 +4169,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         payload.setdefault("date", date.today().isoformat())
         try:
             entry_id, fav_saved = create_entertainment_log_entry(payload)
-            label_map = {"cinema": "🍿 Cinema", "performance": "🎟️ Performance", "sport": "🎬 Sports"}
-            label = label_map.get(payload.get("log_type"), "Entertainment")
+            label = ENTERTAINMENT_LOG_LABELS.get(payload.get("log_type"), "Entertainment")
             suffix = "\n🎞️ Added to Favourite Films" if fav_saved and payload.get("log_type") == "cinema" else ""
             await q.edit_message_text(
                 f"✅ Logged to {label}\n\n🎫 {payload.get('title','Untitled')}\n📅 {payload.get('date')}{suffix}\n\n_Saved to Notion_",
@@ -5051,7 +5086,7 @@ def load_entertainment_schemas() -> None:
     targets = [
         ("cinema", "🍿 Cinema Log", NOTION_CINEMA_LOG_DB),
         ("performances", "🎟️ Performances Viewings", NOTION_PERFORMANCES_DB),
-        ("sports", "🎬 Sports Log", NOTION_SPORTS_LOG_DB),
+        ("sports", "🏟️ Sports Log", NOTION_SPORTS_LOG_DB),
         ("favourite_films", "🎞️ Favourite Films", NOTION_FAVOURITE_FILMS_DB),
     ]
     for key, label, db_id in targets:
