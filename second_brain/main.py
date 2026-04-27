@@ -2384,38 +2384,73 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
         return None
 
     normalized = re.sub(r"^\s*/?log\s+", "log ", raw, flags=re.IGNORECASE)
-    m = re.match(r"^log\s+(cinema|performance|sports|sport)\s*:?\s*(.+)$", normalized, re.IGNORECASE)
+    m = re.match(r"^log\s+(cinema|movie|film|performance|sports|sport)\s*:?\s*(.+)$", normalized, re.IGNORECASE)
     if not m:
         return None
 
     raw_log_type, remainder = m.groups()
     log_type = raw_log_type.lower()
-    if log_type == "sports":
+    if log_type in ("movie", "film"):
+        log_type = "cinema"
+    elif log_type == "sports":
         log_type = "sport"
 
     rest = (remainder or "").strip()
     if not rest:
         return None
 
+    def _extract_favourite_marker(raw_text: str | None) -> tuple[str | None, bool]:
+        if not raw_text:
+            return None, False
+        cleaned = re.sub(
+            r"\bmark(?:\s+as)?\s+favou?rite\b",
+            "",
+            raw_text,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"\bfavou?rite\b", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,;-")
+        return (cleaned or None), cleaned != (raw_text or "").strip()
+
     parsed_time = None
     parsed_date = None
-
-    match_time = re.search(r"\s+at\s+([01]?\d|2[0-3]):([0-5]\d)\s*$", rest, re.IGNORECASE)
-    if match_time:
-        parsed_time = f"{int(match_time.group(1)):02d}:{match_time.group(2)}"
-        rest = rest[: match_time.start()].strip()
-
-    match_date = re.search(r"\s+on\s+(\d{4})[/-](\d{1,2})[/-](\d{1,2})\s*$", rest, re.IGNORECASE)
-    if match_date:
-        parsed_date = f"{int(match_date.group(1)):04d}-{int(match_date.group(2)):02d}-{int(match_date.group(3)):02d}"
-        rest = rest[: match_date.start()].strip()
-
     raw_title = rest
     raw_venue = None
-    title_and_venue = re.match(r"^(?P<title>.+?)\s+at\s+(?P<venue>.+)$", rest, re.IGNORECASE)
-    if title_and_venue:
-        raw_title = (title_and_venue.group("title") or "").strip()
-        raw_venue = (title_and_venue.group("venue") or "").strip()
+    extracted_notes = None
+    favourite = False
+
+    if log_type == "cinema":
+        rest_without_favourite, favourite = _extract_favourite_marker(rest)
+        rest = rest_without_favourite or rest
+
+    match_on_datetime = re.search(
+        r"\s+on\s+(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:\s+at\s+([01]?\d|2[0-3]):([0-5]\d))?",
+        rest,
+        re.IGNORECASE,
+    )
+    if match_on_datetime:
+        parsed_date = (
+            f"{int(match_on_datetime.group(1)):04d}-"
+            f"{int(match_on_datetime.group(2)):02d}-"
+            f"{int(match_on_datetime.group(3)):02d}"
+        )
+        if match_on_datetime.group(4) and match_on_datetime.group(5):
+            parsed_time = f"{int(match_on_datetime.group(4)):02d}:{match_on_datetime.group(5)}"
+        tail = rest[match_on_datetime.end():].strip()
+        if tail:
+            extracted_notes = tail
+        rest = rest[: match_on_datetime.start()].strip()
+    else:
+        match_time = re.search(r"\s+at\s+([01]?\d|2[0-3]):([0-5]\d)\s*$", rest, re.IGNORECASE)
+        if match_time:
+            parsed_time = f"{int(match_time.group(1)):02d}:{match_time.group(2)}"
+            rest = rest[: match_time.start()].strip()
+
+    if not raw_venue:
+        title_and_venue = re.match(r"^(?P<title>.+?)\s+at\s+(?P<venue>.+)$", rest, re.IGNORECASE)
+        if title_and_venue:
+            raw_title = (title_and_venue.group("title") or "").strip()
+            raw_venue = (title_and_venue.group("venue") or "").strip()
 
     title = (raw_title or "").strip().rstrip(":")
     title = re.sub(
@@ -2437,11 +2472,15 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
     venue = (raw_venue or "").strip()
     if venue:
         payload["venue"] = venue
+    if extracted_notes:
+        payload["notes"] = extracted_notes
+    if favourite:
+        payload["favourite"] = True
     if parsed_date and parsed_time:
         payload["date"] = f"{parsed_date}T{parsed_time}:00"
     elif parsed_date:
         payload["date"] = parsed_date
-    elif parsed_time:
+    elif parsed_time and "notes" not in payload:
         payload["notes"] = f"{parsed_time}"
     return payload
 
@@ -2787,6 +2826,48 @@ def _build_common_entertainment_props(
     return props
 
 
+def _safe_create_entertainment_page(schema: dict, db_id: str, props: dict) -> dict:
+    try:
+        return notion_call(notion.pages.create, parent={"database_id": db_id}, properties=props)
+    except Exception as first_error:
+        fallback_props = dict(props)
+        notes_prop = _pick_prop(schema, "rich_text", ["Notes", "Comment", "Details"])
+        fallback_notes: list[str] = []
+
+        def _extract_option_name(prop_payload: dict) -> str | None:
+            if "select" in prop_payload:
+                return (prop_payload.get("select") or {}).get("name")
+            if "status" in prop_payload:
+                return (prop_payload.get("status") or {}).get("name")
+            return None
+
+        for field in ("Venue", "Place", "Location"):
+            prop_name = _pick_exact_prop(schema, "select", [field]) or _pick_exact_prop(schema, "status", [field])
+            if prop_name and prop_name in fallback_props:
+                extracted = _extract_option_name(fallback_props[prop_name])
+                if extracted:
+                    fallback_notes.append(f"{field}: {extracted}")
+                fallback_props.pop(prop_name, None)
+
+        source_prop = _pick_exact_prop(schema, "select", ["Source"]) or _pick_exact_prop(schema, "status", ["Source"])
+        if source_prop and source_prop in fallback_props:
+            fallback_props.pop(source_prop, None)
+
+        if fallback_notes and notes_prop:
+            existing = ""
+            if notes_prop in fallback_props:
+                chunks = fallback_props[notes_prop].get("rich_text", [])
+                existing = "".join(c.get("text", {}).get("content", "") for c in chunks).strip()
+            merged = "\n".join([part for part in [existing, "\n".join(fallback_notes)] if part]).strip()
+            if merged:
+                fallback_props[notes_prop] = {"rich_text": [{"text": {"content": merged}}]}
+
+        try:
+            return notion_call(notion.pages.create, parent={"database_id": db_id}, properties=fallback_props)
+        except Exception:
+            raise first_error
+
+
 def _build_sport_competition_props(schema: dict, competition: str) -> dict:
     competition_select_prop = _pick_exact_prop(schema, "select", ["Competition", "League", "Tournament"])
     competition_status_prop = _pick_exact_prop(schema, "status", ["Competition", "League", "Tournament"])
@@ -2975,6 +3056,21 @@ def _query_title_values(db_id: str, title_prop_name: str) -> list[dict]:
     return values
 
 
+def _ensure_entertainment_schema(key: str, label: str, db_id: str | None) -> dict | None:
+    schema = entertainment_schemas.get(key)
+    if schema:
+        return schema
+    if not db_id:
+        return None
+    try:
+        schema = _inspect_database_schema(db_id, label)
+    except Exception as e:
+        log.error("Failed to lazily load entertainment schema key=%s label=%s err=%s", key, label, e)
+        return None
+    entertainment_schemas[key] = schema
+    return schema
+
+
 def create_entertainment_log_entry(payload: dict) -> tuple[str, bool]:
     log_type = payload.get("log_type")
     title = (payload.get("title") or "").strip()
@@ -2987,7 +3083,7 @@ def create_entertainment_log_entry(payload: dict) -> tuple[str, bool]:
     favourite = bool(payload.get("favourite"))
 
     if log_type == "cinema":
-        schema = entertainment_schemas.get("cinema")
+        schema = _ensure_entertainment_schema("cinema", "🍿 Cinema Log", NOTION_CINEMA_LOG_DB)
         if not schema:
             raise ValueError("Cinema schema is unavailable")
         parsed_inline = _parse_cinema_inline_context(title)
@@ -3033,7 +3129,7 @@ def create_entertainment_log_entry(payload: dict) -> tuple[str, bool]:
         favourite_prop = _pick_exact_prop(schema, "checkbox", ["Favourite", "Favorite"])
         if favourite_prop:
             props[favourite_prop] = {"checkbox": favourite}
-        page = notion_call(notion.pages.create, parent={"database_id": NOTION_CINEMA_LOG_DB}, properties=props)
+        page = _safe_create_entertainment_page(schema, NOTION_CINEMA_LOG_DB, props)
 
         if favourite and NOTION_FAVOURITE_FILMS_DB and entertainment_schemas.get("favourite_films"):
             fav_schema = entertainment_schemas["favourite_films"]
@@ -3056,25 +3152,25 @@ def create_entertainment_log_entry(payload: dict) -> tuple[str, bool]:
         return page["id"], favourite
 
     if log_type == "performance":
-        schema = entertainment_schemas.get("performances")
+        schema = _ensure_entertainment_schema("performances", "🎟️ Performances Viewings", NOTION_PERFORMANCES_DB)
         if not schema:
             raise ValueError("Performances schema is unavailable")
         datetime_hint = " ".join(part for part in [title, venue, notes] if part)
         when_iso = _normalize_entertainment_datetime(when_iso, datetime_hint)
         notes = _strip_datetime_from_notes(notes)
         props = _build_common_entertainment_props(schema, title=title, when_iso=when_iso, venue=venue, notes=notes)
-        page = notion_call(notion.pages.create, parent={"database_id": NOTION_PERFORMANCES_DB}, properties=props)
+        page = _safe_create_entertainment_page(schema, NOTION_PERFORMANCES_DB, props)
         return page["id"], False
 
     if log_type == "sport":
-        schema = entertainment_schemas.get("sports")
+        schema = _ensure_entertainment_schema("sports", "🏅 Sports Log", NOTION_SPORTS_LOG_DB)
         if not schema:
             raise ValueError("Sports schema is unavailable")
         datetime_hint = " ".join(part for part in [title, venue, notes] if part)
         when_iso = _normalize_entertainment_datetime(when_iso, datetime_hint)
         notes = _strip_datetime_from_notes(notes)
         props = _build_common_entertainment_props(schema, title=title, when_iso=when_iso, venue=venue, notes=notes)
-        page = notion_call(notion.pages.create, parent={"database_id": NOTION_SPORTS_LOG_DB}, properties=props)
+        page = _safe_create_entertainment_page(schema, NOTION_SPORTS_LOG_DB, props)
         return page["id"], False
 
     raise ValueError(f"Unknown entertainment log type: {log_type}")
@@ -3116,6 +3212,41 @@ async def handle_entertainment_log(message, payload: dict) -> None:
         _remember_pending_sport_competition(message, entry_id)
         await message.reply_text("🏆 Logged to Sports Log. Which competition should I set for this one?")
     log.info("Entertainment logged type=%s title=%s page_id=%s", log_type, title, entry_id)
+
+
+def _suggest_known_cinema_venue(payload: dict) -> tuple[str | None, str | None]:
+    if (payload or {}).get("log_type") != "cinema":
+        return None, None
+    raw_venue = ((payload or {}).get("venue") or "").strip()
+    if not raw_venue:
+        return None, None
+    schema = _ensure_entertainment_schema("cinema", "🍿 Cinema Log", NOTION_CINEMA_LOG_DB)
+    if not schema:
+        return None, None
+    suggested = _resolve_known_cinema_venue(raw_venue, schema)
+    if not suggested:
+        return None, None
+    if suggested.strip().lower() == raw_venue.lower():
+        return None, None
+    return raw_venue, suggested
+
+
+async def _maybe_prompt_explicit_cinema_venue(message, payload: dict, raw_text: str) -> bool:
+    global _entertainment_counter
+    original, suggested = _suggest_known_cinema_venue(payload)
+    if not (original and suggested):
+        return False
+    key = str(_entertainment_counter)
+    _entertainment_counter += 1
+    adjusted_payload = dict(payload)
+    adjusted_payload["venue"] = suggested
+    pending_map[key] = {"type": "entertainment_log", "payload": adjusted_payload, "raw_text": raw_text}
+    await message.reply_text(
+        f"🎬 I found a close venue match.\n\nYou wrote: *{original}*\nDid you mean: *{suggested}*?\n\nSave with suggested venue?",
+        parse_mode="Markdown",
+        reply_markup=entertainment_confirm_keyboard(key),
+    )
+    return True
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3922,6 +4053,9 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     explicit_entertainment = parse_explicit_entertainment_log(text)
     if explicit_entertainment:
         try:
+            prompted = await _maybe_prompt_explicit_cinema_venue(message, explicit_entertainment, text)
+            if prompted:
+                return
             await handle_entertainment_log(message, explicit_entertainment)
         except Exception as e:
             log.error("Explicit entertainment text save error: %s", e)
@@ -5433,7 +5567,7 @@ async def cmd_habits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/log <cinema|performance|sport> <title> at <venue> — explicit entertainment logging."""
+    """/log <cinema|movie|performance|sport> <title> at <venue> — explicit entertainment logging."""
     if update.effective_chat.id != MY_CHAT_ID:
         return
     raw = " ".join(context.args or []).strip()
@@ -5442,11 +5576,15 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
             "Usage:\n"
             "/log cinema Dune at AMC\n"
+            "/log movie Dune at AMC\n"
             "/log performance ABBA Voyage at ABBA Arena\n"
             "/log sport Cubs vs Sox at Wrigley"
         )
         return
     try:
+        prompted = await _maybe_prompt_explicit_cinema_venue(update.message, parsed, f"/log {raw}")
+        if prompted:
+            return
         await handle_entertainment_log(update.message, parsed)
     except Exception as e:
         log.error("Explicit /log save error: %s", e)
