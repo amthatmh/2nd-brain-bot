@@ -416,6 +416,41 @@ class TestCinemaSyncIntegration(unittest.IsolatedAsyncioTestCase):
         updated_props = notion.pages.updated[0]["properties"]
         self.assertEqual(updated_props["TMDB URL"]["url"], "https://www.themoviedb.org/movie/603")
 
+    async def test_builds_tmdb_url_from_tmdb_id_and_type_without_search(self):
+        notion = _FakeNotion()
+        notion.databases.cinema_pages = [
+            {
+                "results": [
+                    {
+                        "id": "row_tmdb_id",
+                        "properties": {
+                            "Film": {"title": [{"plain_text": "Severance"}]},
+                            "Type": {"select": {"name": "Series"}},
+                            "TMDB ID": {"rich_text": [{"plain_text": "95396"}]},
+                            "TMDB URL": {"url": None},
+                            "Favourite": {"checkbox": False},
+                        },
+                    }
+                ],
+                "has_more": False,
+                "next_cursor": None,
+            }
+        ]
+
+        with patch("cinema.sync._search_tmdb_url_with_client") as search_mock:
+            stats = await sync_cinema_log_to_notion(
+                notion=notion,
+                cinema_db_id="cinema_db",
+                fave_db_id="fave_db",
+                tmdb_api_key="tmdb_key",
+            )
+
+        self.assertEqual(stats["tmdb_found"], 1)
+        self.assertEqual(stats["tmdb_missing"], 0)
+        search_mock.assert_not_called()
+        updated_props = notion.pages.updated[0]["properties"]
+        self.assertEqual(updated_props["TMDB URL"]["url"], "https://www.themoviedb.org/tv/95396")
+
     async def test_sync_runs_without_fave_db(self):
         notion = _FakeNotion()
         notion.databases.cinema_pages = [
