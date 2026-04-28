@@ -271,7 +271,7 @@ def num_emoji(n: int) -> str:
 
 
 def next_weekday(weekday: int) -> date:
-    today = date.today()
+    today = local_today()
     days_ahead = (weekday - today.weekday()) % 7
     if days_ahead == 0:
         days_ahead = 7
@@ -1069,8 +1069,9 @@ def infer_batch_overrides(text: str) -> dict:
 
 def classify_message(text: str) -> dict:
     habit_names = list(habit_cache.keys())
+    today_local = local_today()
     prompt = f"""You are a personal assistant classifier for a second brain system.
-Today is {date.today().strftime("%A, %B %-d, %Y")}.
+Today is {today_local.strftime("%A, %B %-d, %Y")}.
 
 Message: "{text}"
 
@@ -1090,7 +1091,7 @@ If ENTERTAINMENT LOG:
   "log_type": "cinema|performance|sport",
   "title": "extracted name of film/show/event",
   "venue": "venue or null",
-  "date": "{date.today().isoformat()}",
+  "date": "{today_local.isoformat()}",
   "notes": "extra details or null",
   "favourite": false,
   "confidence": "high|low"
@@ -1147,8 +1148,9 @@ def classify_message_v10(text: str) -> dict:
     if notes_enabled:
         enabled_intents.append("note")
 
+    today_local = local_today()
     prompt = f"""You are a personal assistant classifier for a second brain system.
-Today is {date.today().strftime("%A, %B %-d, %Y")}.
+Today is {today_local.strftime("%A, %B %-d, %Y")}.
 
 Message: "{text}"
 
@@ -1216,7 +1218,7 @@ If ENTERTAINMENT_LOG:
   "log_type": "cinema|performance|sport",
   "title": "extracted name of film/show/event",
   "venue": "venue if mentioned, else null",
-  "date": "{date.today().isoformat()}",
+  "date": "{today_local.isoformat()}",
   "notes": "extra detail if mentioned, else null",
   "favourite": false,
   "confidence": "high|low"
@@ -1344,7 +1346,7 @@ Return ONLY valid JSON, no markdown:
 
 def save_note(title: str, url: str | None, content: str, topics: list[str], note_type: str) -> str:
     """Write a note to the 📒 Notes Notion DB. Returns page_id."""
-    today = date.today().isoformat()
+    today = local_today().isoformat()
     props: dict = {
         "Title": {"title": [{"text": {"content": title or "Untitled"}}]},
         "Type": {"select": {"name": note_type}},
@@ -1406,8 +1408,9 @@ async def handle_note_input(message, text: str) -> None:
 
 
 def classify_task(text: str) -> dict:
+    today_local = local_today()
     prompt = f"""You are a personal task classifier for a second brain system.
-Today is {date.today().strftime("%A, %B %-d, %Y")}.
+Today is {today_local.strftime("%A, %B %-d, %Y")}.
 
 Message: \"{text}\"
 
@@ -2035,7 +2038,7 @@ def is_on_pace(habit: dict) -> bool:
 def _deadline_prop(days: int | None) -> dict:
     if days is None:
         return {"date": None}
-    return {"date": {"start": (date.today() + timedelta(days=days)).isoformat()}}
+    return {"date": {"start": (local_today() + timedelta(days=days)).isoformat()}}
 
 
 def create_task(name: str, deadline_days: int | None, context: str,
@@ -2062,7 +2065,7 @@ def set_deadline_from_horizon_code(page_id: str, code: str) -> None:
     if days is None:
         notion.pages.update(page_id=page_id, properties={"Deadline": {"date": None}})
     else:
-        target = date.today() + timedelta(days=days)
+        target = local_today() + timedelta(days=days)
         notion.pages.update(page_id=page_id, properties={"Deadline": {"date": {"start": target.isoformat()}}})
 
 
@@ -2780,7 +2783,7 @@ def should_spawn_today(template: dict, today: date) -> bool:
 
 
 def spawn_recurring_instance(template: dict) -> None:
-    today = date.today()
+    today = local_today()
     notion.pages.create(
         parent={"database_id": NOTION_DB_ID},
         properties={
@@ -2795,7 +2798,7 @@ def spawn_recurring_instance(template: dict) -> None:
 
 
 def process_recurring_tasks() -> int:
-    today   = date.today()
+    today   = local_today()
     spawned = 0
     for t in get_recurring_templates():
         if should_spawn_today(t, today):
@@ -2840,7 +2843,7 @@ def _run_capture(raw_text: str, force_create: bool = False,
         if recurring == "📅 Weekly" and repeat_day in REPEAT_DAY_TO_WEEKDAY:
             if deadline_days is None:
                 target        = next_weekday(REPEAT_DAY_TO_WEEKDAY[repeat_day])
-                deadline_days = (target - date.today()).days
+                deadline_days = (target - local_today()).days
         if deadline_override is not None:
             deadline_days = deadline_override
         horizon_label = deadline_days_to_label(deadline_days)
@@ -3924,7 +3927,7 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
         if recurring == "📅 Weekly" and repeat_day in REPEAT_DAY_TO_WEEKDAY:
             if deadline_days is None:
                 target        = next_weekday(REPEAT_DAY_TO_WEEKDAY[repeat_day])
-                deadline_days = (target - date.today()).days
+                deadline_days = (target - local_today()).days
         horizon_label = deadline_days_to_label(deadline_days)
     except Exception as e:
         log.error(f"Claude error: {e}")
