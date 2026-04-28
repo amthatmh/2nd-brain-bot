@@ -63,26 +63,25 @@ log = logging.getLogger(__name__)
 
 
 def _parse_health_export_payload(body: dict) -> tuple[int, str] | None:
-    """
-    Parse Health Auto Export POST body into (steps, date_str).
-
-    Supports two payload shapes:
-    1. Standard Health Auto Export REST format (nested data array)
-    2. Simple flat format: {"steps": 1234, "date": "YYYY-MM-DD"}
-
-    Returns (steps, "YYYY-MM-DD") or None if unparseable.
-    """
-    # Shape 1: flat simple format
+    # Shape 1: flat simple format {"steps": 1234, "date": "YYYY-MM-DD"}
     if "steps" in body and "date" in body:
         try:
             steps = int(body["steps"])
-            raw_date = str(body["date"])[:10]  # Take first 10 chars = YYYY-MM-DD
+            raw_date = str(body["date"])[:10]
             return steps, raw_date
         except (ValueError, TypeError):
             pass
 
-    # Shape 2: Health Auto Export standard REST format
-    data_array = body.get("data", [])
+    # Shape 2: Health Auto Export v2 — body["data"] is a dict with "metrics" key
+    # Shape 3: Health Auto Export v1 — body["data"] is a list directly
+    data_field = body.get("data", [])
+    if isinstance(data_field, dict):
+        data_array = data_field.get("metrics", [])
+    elif isinstance(data_field, list):
+        data_array = data_field
+    else:
+        return None
+
     if not data_array:
         return None
 
@@ -94,15 +93,13 @@ def _parse_health_export_payload(body: dict) -> tuple[int, str] | None:
         if not readings:
             continue
 
-        # Sum all readings for the day (Health Auto Export may send multiple readings)
         daily_totals: dict[str, int] = {}
         for reading in readings:
             qty = reading.get("qty") or reading.get("value") or 0
             raw_date = str(reading.get("date") or reading.get("startDate") or "")
             if not raw_date:
                 continue
-            # Parse date — could be "2026-04-28 23:00:00 +0000" or "2026-04-28T23:00:00Z"
-            date_str = raw_date[:10]  # "YYYY-MM-DD" is always the first 10 chars
+            date_str = raw_date[:10]
             try:
                 daily_totals[date_str] = daily_totals.get(date_str, 0) + int(qty)
             except (ValueError, TypeError):
@@ -111,7 +108,6 @@ def _parse_health_export_payload(body: dict) -> tuple[int, str] | None:
         if not daily_totals:
             continue
 
-        # Return the date with the highest step count (most likely today's full day)
         best_date = max(daily_totals, key=lambda d: daily_totals[d])
         return daily_totals[best_date], best_date
 
