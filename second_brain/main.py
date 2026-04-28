@@ -1787,32 +1787,47 @@ async def handle_photo_followup(message, text: str) -> bool:
 
 def log_habit(habit_page_id: str, habit_name: str, source: str = "📱 Telegram") -> None:
     today = datetime.now(TZ).date().isoformat()
-    notion.pages.create(
-        parent={"database_id": NOTION_LOG_DB},
-        properties={
-            "Entry":     {"title":    [{"text": {"content": f"{habit_name} — {today}"}}]},
-            "Habit":     {"relation": [{"id": habit_page_id}]},
-            "Completed": {"checkbox": True},
-            "Date":      {"date":     {"start": today}},
-            "Source":    {"select":   {"name": source}},
-        },
-    )
+    props = {
+        "Entry":     {"title":    [{"text": {"content": f"{habit_name} — {today}"}}]},
+        "Habit":     {"relation": [{"id": habit_page_id}]},
+        "Completed": {"checkbox": True},
+        "Date":      {"date":     {"start": today}},
+        "Source":    {"select":   {"name": source}},
+    }
+    try:
+        notion.pages.create(
+            parent={"database_id": NOTION_LOG_DB},
+            properties=props,
+        )
+    except Exception as e:
+        # Some log DBs do not expose/allow Source; retry with core fields only.
+        log.warning("Habit log create retrying without Source: %s", e)
+        minimal = {k: v for k, v in props.items() if k != "Source"}
+        notion.pages.create(
+            parent={"database_id": NOTION_LOG_DB},
+            properties=minimal,
+        )
     log.info(f"Habit logged: {habit_name} on {today} via {source}")
 
 
 def already_logged_today(habit_page_id: str) -> bool:
     today = datetime.now(TZ).date().isoformat()
-    results = notion.databases.query(
-        database_id=NOTION_LOG_DB,
-        filter={
-            "and": [
-                {"property": "Habit",     "relation":  {"contains": habit_page_id}},
-                {"property": "Completed", "checkbox":  {"equals": True}},
-                {"property": "Date",      "date":      {"equals": today}},
-            ]
-        },
-    )
-    return len(results.get("results", [])) > 0
+    try:
+        results = notion.databases.query(
+            database_id=NOTION_LOG_DB,
+            filter={
+                "and": [
+                    {"property": "Habit",     "relation":  {"contains": habit_page_id}},
+                    {"property": "Completed", "checkbox":  {"equals": True}},
+                    {"property": "Date",      "date":      {"equals": today}},
+                ]
+            },
+        )
+        return len(results.get("results", [])) > 0
+    except Exception as e:
+        # Avoid blocking one-tap habit logs when the dedupe query schema drifts.
+        log.warning("already_logged_today query failed for %s: %s", habit_page_id, e)
+        return False
 
 
 def get_week_completion_count(habit_page_id: str) -> int:
