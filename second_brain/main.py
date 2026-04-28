@@ -4625,16 +4625,34 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if parts[0] in ("hl", "hc") and len(parts) == 2:
         habit_page_id = _restore_pid(parts[1])
-        habit_name    = next((n for n, h in habit_cache.items() if h["page_id"] == habit_page_id), "Unknown")
-        try:
-            if already_logged_today(habit_page_id):
+        habit_name = next((n for n, h in habit_cache.items() if h["page_id"] == habit_page_id), "Unknown")
+
+        if already_logged_today(habit_page_id):
+            try:
                 await q.edit_message_text(f"Already logged {habit_name} today! ✅")
-            else:
-                log_habit(habit_page_id, habit_name)
-                await q.edit_message_text(f"✅ {habit_name} logged!")
-                asyncio.create_task(check_and_notify_weekly_goals(q.bot, MY_CHAT_ID))
-        except Exception as e:
-            log.error(f"Habit log error: {e}"); await q.edit_message_text("⚠️ Couldn't log to Notion.")
+            except Exception as ui_error:
+                log.warning("Habit dedupe UI update failed for %s: %s", habit_name, ui_error)
+                await q.message.reply_text(f"Already logged {habit_name} today! ✅")
+            return
+
+        try:
+            log_habit(habit_page_id, habit_name)
+        except Exception as notion_error:
+            log.error("Habit log Notion error for %s: %s", habit_name, notion_error)
+            try:
+                await q.edit_message_text("⚠️ Couldn't log to Notion.")
+            except Exception as ui_error:
+                log.warning("Habit log error UI update failed for %s: %s", habit_name, ui_error)
+                await q.message.reply_text("⚠️ Couldn't log to Notion.")
+            return
+
+        try:
+            await q.edit_message_text(f"✅ {habit_name} logged!")
+        except Exception as ui_error:
+            log.warning("Habit success UI update failed for %s: %s", habit_name, ui_error)
+            await q.message.reply_text(f"✅ {habit_name} logged!")
+
+        asyncio.create_task(check_and_notify_weekly_goals(q.bot, MY_CHAT_ID))
         return
 
     if parts[0] == "hpag" and len(parts) == 3:
