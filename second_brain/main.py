@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-Second Brain — Telegram Bot (v9.3)
+Second Brain — Telegram Bot (v11.0)
 ────────────────────────────────────────────────────────────────
-All v9.2 features preserved plus:
-
-v9.3 changes:
-- Startup smoke test for Asana↔Notion integration boundary:
-  fetch sample Asana task → create Notion row → archive Notion row.
-- Deploy receipt Telegram message on boot with version, git SHA, and Asana mode.
+Housekeeping baseline release that keeps existing behavior while aligning structure:
+- Health tracking module wiring is now standardized under `second_brain.healthtrack.*`.
+- Health webhook routes and nightly steps final-stamp flow remain integrated.
+- HTTP shared utilities are centralized for consistency across route modules.
 """
 
 import asyncio
@@ -83,6 +81,7 @@ from second_brain.notion import notion_call, notion_call_async
 from second_brain.notion.habits import extract_habit_frequency
 from second_brain.state import STATE
 from second_brain.utils import ExpiringDict, reply_notion_error
+from second_brain.http_utils import cors_headers
 
 load_dotenv()
 
@@ -162,7 +161,7 @@ CLAUDE_MODEL   = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
 HTTP_PORT      = int(os.environ.get("PORT", "8080"))
 WEEKS_HISTORY  = int(os.environ.get("WEEKS_HISTORY", "52"))
-APP_VERSION    = os.environ.get("APP_VERSION", "v10.1.0")
+APP_VERSION    = os.environ.get("APP_VERSION", "v11.0.0")
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "").strip()
 WEATHER_LOCATION = os.environ.get("WEATHER_LOCATION", "Chicago,IL").strip()
 SUNDAY_REVIEW_CARD_LIMIT = max(1, int(os.environ.get("SUNDAY_REVIEW_CARD_LIMIT", "6")))
@@ -5686,24 +5685,17 @@ async def habits_data_handler(request: web.Request) -> web.Response:
         return web.Response(
             text=json.dumps(payload),
             content_type="application/json",
-            headers=_cors_headers(),
+            headers=cors_headers(),
         )
     except Exception as e:
         log.error(f"/habits-data error: {e}")
-        return web.Response(status=500, text=str(e), headers=_cors_headers())
+        return web.Response(status=500, text=str(e), headers=cors_headers())
 
-
-def _cors_headers() -> dict[str, str]:
-    return {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
-    }
 
 
 async def log_habit_http_handler(request: web.Request) -> web.Response:
     if request.method == "OPTIONS":
-        return web.Response(status=204, headers=_cors_headers())
+        return web.Response(status=204, headers=cors_headers())
 
     try:
         body = await request.json()
@@ -5713,7 +5705,7 @@ async def log_habit_http_handler(request: web.Request) -> web.Response:
                 status=400,
                 text=json.dumps({"ok": False, "error": "habitId is required"}),
                 content_type="application/json",
-                headers=_cors_headers(),
+                headers=cors_headers(),
             )
 
         matched = next((h for h in habit_cache.values() if h["page_id"] == habit_id), None)
@@ -5722,21 +5714,21 @@ async def log_habit_http_handler(request: web.Request) -> web.Response:
                 status=404,
                 text=json.dumps({"ok": False, "error": "Habit not found"}),
                 content_type="application/json",
-                headers=_cors_headers(),
+                headers=cors_headers(),
             )
 
         if already_logged_today(matched["page_id"]):
             return web.Response(
                 text=json.dumps({"ok": True, "alreadyLogged": True, "habitName": matched["name"]}),
                 content_type="application/json",
-                headers=_cors_headers(),
+                headers=cors_headers(),
             )
 
         log_habit(matched["page_id"], matched["name"], source="🌐 HabitKit")
         return web.Response(
             text=json.dumps({"ok": True, "alreadyLogged": False, "habitName": matched["name"]}),
             content_type="application/json",
-            headers=_cors_headers(),
+            headers=cors_headers(),
         )
     except Exception as e:
         log.error(f"/log-habit error: {e}")
@@ -5744,7 +5736,7 @@ async def log_habit_http_handler(request: web.Request) -> web.Response:
             status=500,
             text=json.dumps({"ok": False, "error": str(e)}),
             content_type="application/json",
-            headers=_cors_headers(),
+            headers=cors_headers(),
         )
 
 

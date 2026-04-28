@@ -1,12 +1,12 @@
-"""Tests for second_brain/health/ — steps tracking logic and payload parsing."""
+"""Tests for second_brain/healthtrack/ — steps tracking logic and payload parsing."""
 
 from __future__ import annotations
 
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from second_brain.health.routes import _parse_health_export_payload
-from second_brain.health.steps import (
+from second_brain.healthtrack.routes import _parse_health_export_payload
+from second_brain.healthtrack.steps import (
     _date_state,
     _steps_state,
     get_steps_state_summary,
@@ -113,7 +113,7 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
         notion = self._make_notion()
         tz = self._make_tz()
 
-        with patch("second_brain.health.steps._local_today", return_value="2026-04-28"):
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"):
             result = await handle_steps_sync(
                 steps=8500,
                 date_str="2026-04-28",
@@ -136,8 +136,8 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
         bot = AsyncMock()
         tz = self._make_tz()
 
-        with patch("second_brain.health.steps._local_today", return_value="2026-04-28"), \
-             patch("second_brain.health.steps._find_steps_habit_page_id", return_value="habit-pid"):
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"):
             result = await handle_steps_sync(
                 steps=10500,
                 date_str="2026-04-28",
@@ -163,8 +163,8 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
         bot = AsyncMock()
         tz = self._make_tz()
 
-        with patch("second_brain.health.steps._local_today", return_value="2026-04-28"), \
-             patch("second_brain.health.steps._find_steps_habit_page_id", return_value="habit-pid"):
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"):
             # First sync above threshold
             await handle_steps_sync(
                 steps=10200, date_str="2026-04-28", notion=notion,
@@ -189,9 +189,9 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
         bot = AsyncMock()
         tz = self._make_tz()
 
-        with patch("second_brain.health.steps._local_today", return_value="2026-04-28"), \
-             patch("second_brain.health.steps._yesterday", return_value="2026-04-27"), \
-             patch("second_brain.health.steps._find_steps_habit_page_id", return_value="habit-pid"):
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._yesterday", return_value="2026-04-27"), \
+             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"):
             result = await handle_steps_sync(
                 steps=9350,
                 date_str="2026-04-27",  # yesterday
@@ -210,8 +210,8 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
         notion = self._make_notion()
         tz = self._make_tz()
 
-        with patch("second_brain.health.steps._local_today", return_value="2026-04-28"), \
-             patch("second_brain.health.steps._yesterday", return_value="2026-04-27"):
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._yesterday", return_value="2026-04-27"):
             result = await handle_steps_sync(
                 steps=8000,
                 date_str="2026-04-25",  # 3 days ago
@@ -227,8 +227,8 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
         notion = self._make_notion(existing_page_id="existing-page-abc")
         tz = self._make_tz()
 
-        with patch("second_brain.health.steps._local_today", return_value="2026-04-28"), \
-             patch("second_brain.health.steps._find_steps_habit_page_id", return_value="habit-pid"):
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"):
             result = await handle_steps_sync(
                 steps=12000,
                 date_str="2026-04-28",
@@ -245,9 +245,9 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
         notion = self._make_notion()
         tz = self._make_tz()
 
-        with patch("second_brain.health.steps._local_today", return_value="2026-04-28"), \
-             patch("second_brain.health.steps._yesterday", return_value="2026-04-27"), \
-             patch("second_brain.health.steps._find_steps_habit_page_id", return_value="habit-pid"):
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._yesterday", return_value="2026-04-27"), \
+             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"):
             await handle_steps_sync(
                 steps=7000,
                 date_str="2026-04-27",  # yesterday, below threshold
@@ -280,9 +280,9 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
         import pytz
         tz = pytz.timezone("America/Chicago")
 
-        with patch("second_brain.health.steps._local_today", return_value="2026-04-28"), \
-             patch("second_brain.health.steps._yesterday", return_value="2026-04-27"), \
-             patch("second_brain.health.steps._find_steps_habit_page_id", return_value="habit-pid"):
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._yesterday", return_value="2026-04-27"), \
+             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"):
             results = await handle_steps_final_stamp(
                 notion=notion,
                 habit_db_id="h", log_db_id="l", habit_name="Steps",
@@ -302,8 +302,8 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
         notion.databases.query.return_value = {"results": []}
         notion.pages.create.return_value = {"id": "pid"}
 
-        with patch("second_brain.health.steps._local_today", return_value="2026-04-28"), \
-             patch("second_brain.health.steps._yesterday", return_value="2026-04-27"):
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._yesterday", return_value="2026-04-27"):
             results = await handle_steps_final_stamp(
                 notion=notion,
                 habit_db_id="h", log_db_id="l", habit_name="Steps",
