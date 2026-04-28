@@ -836,9 +836,12 @@ def load_habit_cache() -> None:
             frequency_label = txt("Frequency Label")
             if not frequency_label and parsed_frequency:
                 frequency_label = f"{parsed_frequency}x/week"
+            page_icon = page.get("icon") or {}
+            icon_emoji = page_icon.get("emoji") if isinstance(page_icon, dict) else None
             habit_cache[name] = {
                 "page_id":         page["id"],
                 "name":            name,
+                "icon":            icon_emoji,
                 "time":            sel("Time"),
                 "color":           sel("Color"),
                 "freq_per_week":   parsed_frequency,
@@ -5662,6 +5665,7 @@ async def habits_data_handler(request: web.Request) -> web.Response:
             habits_out.append({
                 "id":          habit["page_id"],
                 "name":        habit["name"],
+                "icon":        habit.get("icon"),
                 "color":       habit.get("color") or "pink",
                 "description": habit.get("description") or "",
                 "frequency":   habit.get("frequency_label") or "",
