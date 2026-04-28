@@ -76,3 +76,15 @@ def test_quarterly_last_day_rolls_to_month_end():
 
     assert main.should_spawn_today(template, date(2026, 4, 30))
     assert not main.should_spawn_today(template, date(2026, 4, 29))
+
+
+def test_next_repeat_day_date_monthly_uses_future_ordinal_day():
+    main = load_main_module()
+    target = main.next_repeat_day_date("🗓️ Monthly", "4th", date(2026, 4, 1))
+    assert target == date(2026, 4, 4)
+
+
+def test_next_repeat_day_date_monthly_rolls_to_next_month_after_day_passes():
+    main = load_main_module()
+    target = main.next_repeat_day_date("🗓️ Monthly", "4th", date(2026, 4, 5))
+    assert target == date(2026, 5, 4)
