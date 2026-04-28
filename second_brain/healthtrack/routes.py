@@ -29,8 +29,8 @@ In second_brain/main.py → start_http_server(), add:
 
 Then in post_init(), after the scheduler is started, add the nightly stamp job:
 
-    from second_brain.health.steps import handle_steps_final_stamp
-    from second_brain.health.config import STEPS_FINAL_HOUR, STEPS_FINAL_MIN, STEPS_HABIT_NAME, STEPS_THRESHOLD, STEPS_SOURCE_LABEL
+    from second_brain.healthtrack.steps import handle_steps_final_stamp
+    from second_brain.healthtrack.config import STEPS_FINAL_HOUR, STEPS_FINAL_MIN, STEPS_HABIT_NAME, STEPS_THRESHOLD, STEPS_SOURCE_LABEL
 
     scheduler.add_job(
         _run_steps_final_stamp,
@@ -50,13 +50,13 @@ from datetime import datetime, timezone
 
 from aiohttp import web
 
-from second_brain.health.config import (
+from second_brain.healthtrack.config import (
     STEPS_HABIT_NAME,
     STEPS_SOURCE_LABEL,
     STEPS_THRESHOLD,
     WEBHOOK_SECRET,
 )
-from second_brain.health.steps import handle_steps_sync, get_steps_state_summary
+from second_brain.healthtrack.steps import handle_steps_sync, get_steps_state_summary
 
 log = logging.getLogger(__name__)
 
