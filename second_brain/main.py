@@ -271,7 +271,7 @@ def num_emoji(n: int) -> str:
 
 
 def next_weekday(weekday: int) -> date:
-    today = date.today()
+    today = local_today()
     days_ahead = (weekday - today.weekday()) % 7
     if days_ahead == 0:
         days_ahead = 7
@@ -1069,8 +1069,9 @@ def infer_batch_overrides(text: str) -> dict:
 
 def classify_message(text: str) -> dict:
     habit_names = list(habit_cache.keys())
+    today_local = local_today()
     prompt = f"""You are a personal assistant classifier for a second brain system.
-Today is {date.today().strftime("%A, %B %-d, %Y")}.
+Today is {today_local.strftime("%A, %B %-d, %Y")}.
 
 Message: "{text}"
 
@@ -1090,7 +1091,7 @@ If ENTERTAINMENT LOG:
   "log_type": "cinema|performance|sport",
   "title": "extracted name of film/show/event",
   "venue": "venue or null",
-  "date": "{date.today().isoformat()}",
+  "date": "{today_local.isoformat()}",
   "notes": "extra details or null",
   "favourite": false,
   "confidence": "high|low"
@@ -1147,8 +1148,9 @@ def classify_message_v10(text: str) -> dict:
     if notes_enabled:
         enabled_intents.append("note")
 
+    today_local = local_today()
     prompt = f"""You are a personal assistant classifier for a second brain system.
-Today is {date.today().strftime("%A, %B %-d, %Y")}.
+Today is {today_local.strftime("%A, %B %-d, %Y")}.
 
 Message: "{text}"
 
@@ -1216,7 +1218,7 @@ If ENTERTAINMENT_LOG:
   "log_type": "cinema|performance|sport",
   "title": "extracted name of film/show/event",
   "venue": "venue if mentioned, else null",
-  "date": "{date.today().isoformat()}",
+  "date": "{today_local.isoformat()}",
   "notes": "extra detail if mentioned, else null",
   "favourite": false,
   "confidence": "high|low"
@@ -1344,7 +1346,7 @@ Return ONLY valid JSON, no markdown:
 
 def save_note(title: str, url: str | None, content: str, topics: list[str], note_type: str) -> str:
     """Write a note to the 📒 Notes Notion DB. Returns page_id."""
-    today = date.today().isoformat()
+    today = local_today().isoformat()
     props: dict = {
         "Title": {"title": [{"text": {"content": title or "Untitled"}}]},
         "Type": {"select": {"name": note_type}},
@@ -1406,8 +1408,9 @@ async def handle_note_input(message, text: str) -> None:
 
 
 def classify_task(text: str) -> dict:
+    today_local = local_today()
     prompt = f"""You are a personal task classifier for a second brain system.
-Today is {date.today().strftime("%A, %B %-d, %Y")}.
+Today is {today_local.strftime("%A, %B %-d, %Y")}.
 
 Message: \"{text}\"
 
@@ -1423,7 +1426,9 @@ Return ONLY valid JSON, no markdown:
   "repeat_day": "one of: Mon|Tue|Wed|Thu|Fri|Sat|Sun|1st..31st|Last or null (use ordinals like 4th, 21st)"
 }}
 
-deadline_days: 0=today, 1=tomorrow, 5=this week, 20=this month, null=no urgency"""
+deadline_days: 0=today, 1=tomorrow, 5=this week, 20=this month, null=no urgency
+If context is ambiguous between categories, set confidence to low.
+If the task is recurring and no immediate due timing is explicitly requested, use deadline_days = null."""
 
     resp = claude.messages.create(
         model=CLAUDE_MODEL,
@@ -2035,7 +2040,7 @@ def is_on_pace(habit: dict) -> bool:
 def _deadline_prop(days: int | None) -> dict:
     if days is None:
         return {"date": None}
-    return {"date": {"start": (date.today() + timedelta(days=days)).isoformat()}}
+    return {"date": {"start": (local_today() + timedelta(days=days)).isoformat()}}
 
 
 def create_task(name: str, deadline_days: int | None, context: str,
@@ -2062,7 +2067,7 @@ def set_deadline_from_horizon_code(page_id: str, code: str) -> None:
     if days is None:
         notion.pages.update(page_id=page_id, properties={"Deadline": {"date": None}})
     else:
-        target = date.today() + timedelta(days=days)
+        target = local_today() + timedelta(days=days)
         notion.pages.update(page_id=page_id, properties={"Deadline": {"date": {"start": target.isoformat()}}})
 
 
@@ -2780,7 +2785,7 @@ def should_spawn_today(template: dict, today: date) -> bool:
 
 
 def spawn_recurring_instance(template: dict) -> None:
-    today = date.today()
+    today = local_today()
     notion.pages.create(
         parent={"database_id": NOTION_DB_ID},
         properties={
@@ -2795,7 +2800,7 @@ def spawn_recurring_instance(template: dict) -> None:
 
 
 def process_recurring_tasks() -> int:
-    today   = date.today()
+    today   = local_today()
     spawned = 0
     for t in get_recurring_templates():
         if should_spawn_today(t, today):
@@ -2840,7 +2845,7 @@ def _run_capture(raw_text: str, force_create: bool = False,
         if recurring == "📅 Weekly" and repeat_day in REPEAT_DAY_TO_WEEKDAY:
             if deadline_days is None:
                 target        = next_weekday(REPEAT_DAY_TO_WEEKDAY[repeat_day])
-                deadline_days = (target - date.today()).days
+                deadline_days = (target - local_today()).days
         if deadline_override is not None:
             deadline_days = deadline_override
         horizon_label = deadline_days_to_label(deadline_days)
@@ -3810,6 +3815,15 @@ def new_task_keyboard(key: str) -> InlineKeyboardMarkup:
     ])
 
 
+def task_context_keyboard(key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Personal", callback_data=f"nc:{key}:p"),
+         InlineKeyboardButton("💼 Work", callback_data=f"nc:{key}:w")],
+        [InlineKeyboardButton("🏃 Health", callback_data=f"nc:{key}:h"),
+         InlineKeyboardButton("🤝 Collab", callback_data=f"nc:{key}:c")],
+    ])
+
+
 def habit_buttons(habits: list[dict], prefix: str, page: int = 0, page_size: int = 8) -> InlineKeyboardMarkup:
     start = max(0, page) * page_size
     end = start + page_size
@@ -3924,7 +3938,7 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
         if recurring == "📅 Weekly" and repeat_day in REPEAT_DAY_TO_WEEKDAY:
             if deadline_days is None:
                 target        = next_weekday(REPEAT_DAY_TO_WEEKDAY[repeat_day])
-                deadline_days = (target - date.today()).days
+                deadline_days = (target - local_today()).days
         horizon_label = deadline_days_to_label(deadline_days)
     except Exception as e:
         log.error(f"Claude error: {e}")
@@ -3955,11 +3969,20 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
             await thinking.edit_text("⚠️ Classified but couldn't write to Notion.")
     else:
         key = str(_pending_counter); _pending_counter += 1
-        pending_map[key] = {"name": task_name, "context": ctx, "recurring": recurring, "repeat_day": repeat_day}
+        pending_map[key] = {
+            "name": task_name,
+            "context": ctx,
+            "recurring": recurring,
+            "repeat_day": repeat_day,
+            "awaiting_context": True,
+        }
         await thinking.edit_text(
-            f"📝 *{task_name}*  {ctx}{recur_tag}\n\nWhen should this happen?",
+            (
+                f"📝 *{task_name}*{recur_tag}\n\n"
+                f"I’m not fully sure on context ({ctx}). Pick one:"
+            ),
             parse_mode="Markdown",
-            reply_markup=new_task_keyboard(key),
+            reply_markup=task_context_keyboard(key),
         )
 
 
@@ -4687,6 +4710,32 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             capture_map[q.message.message_id] = {"page_id": page_id, "name": task["name"]}
         except Exception as e:
             log.error(f"Notion error: {e}"); await q.edit_message_text("⚠️ Couldn't save to Notion.")
+        return
+
+    if parts[0] == "nc" and len(parts) == 3:
+        _, key, code = parts
+        if key not in pending_map:
+            await q.edit_message_text("⚠️ This task expired — please re-send it.")
+            return
+        context_by_code = {
+            "p": "🏠 Personal",
+            "w": "💼 Work",
+            "h": "🏃 Health",
+            "c": "🤝 Collab",
+        }
+        selected_context = context_by_code.get(code)
+        if not selected_context:
+            await q.edit_message_text("⚠️ Invalid context choice.")
+            return
+        task = pending_map[key]
+        task["context"] = selected_context
+        task.pop("awaiting_context", None)
+        recur_tag = f"\n🔁 {task.get('recurring')}" if task.get("recurring", "None") != "None" else ""
+        await q.edit_message_text(
+            f"📝 *{task.get('name', 'Untitled')}*  {selected_context}{recur_tag}\n\nWhen should this happen?",
+            parse_mode="Markdown",
+            reply_markup=new_task_keyboard(key),
+        )
         return
 
     if parts[0] == "d" and len(parts) == 2:
