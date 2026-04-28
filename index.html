@@ -20,7 +20,6 @@
       --radius-xl:28px;
       --square:17px;
       --gap:5px;
-      --icon:82px;
       --check:82px;
     }
     *{box-sizing:border-box;margin:0;padding:0}
@@ -50,8 +49,7 @@
     .panel-sub{padding:0 20px 18px;color:var(--muted);font-size:.9rem}
     .cards{display:flex;flex-direction:column;gap:16px;padding:0 14px 16px}
     .habit-card{background:var(--card);border:1px solid var(--card-border);border-radius:26px;padding:16px}
-    .habit-top{display:grid;grid-template-columns:var(--icon) 1fr var(--check);gap:16px;align-items:center;margin-bottom:14px}
-    .iconbox{width:var(--icon);height:var(--icon);border-radius:24px;display:grid;place-items:center;font-size:2rem;border:1px solid rgba(255,255,255,.06);background:#151520;user-select:none}
+    .habit-top{display:grid;grid-template-columns:1fr var(--check);gap:16px;align-items:center;margin-bottom:14px}
     .meta h3{margin:0 0 4px;font-size:1.18rem;letter-spacing:-.025em;font-weight:700}
     .meta .line{color:var(--muted);font-size:.88rem}
     .meta .streak-line{margin-top:6px;color:var(--text);font-size:.82rem}
@@ -93,10 +91,10 @@
     .error-msg{color:var(--accent);padding:20px;text-align:center;font-size:.9rem}
     @media(max-width:980px){.stats{grid-template-columns:repeat(2,1fr)}}
     @media(max-width:680px){
-      :root{--square:14px;--gap:4px;--icon:66px;--check:64px}
+      :root{--square:14px;--gap:4px;--check:64px}
       .app{padding:18px 10px 30px}.brand{font-size:1.6rem}
       .stats{grid-template-columns:repeat(2,1fr)}
-      .iconbox{border-radius:18px;font-size:1.5rem}.check{border-radius:18px;font-size:1.5rem}
+      .check{border-radius:18px;font-size:1.5rem}
     }
   </style>
 </head>
@@ -135,17 +133,6 @@ const API_BASE    = 'https://worker-production-d366.up.railway.app';
 const API_URL     = `${API_BASE}/habits-data`;
 const LOG_API_URL = `${API_BASE}/log-habit`;
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-
-const ICON_MAP = {
-  'workout':'🏋️','exercise':'🏋️','creatine':'🥛',
-  'protein':'🥤','stretch':'🧘','allergy':'💊','magnesium':'🌙',
-};
-
-function habitIcon(name) {
-  const l = name.toLowerCase();
-  for (const [k,v] of Object.entries(ICON_MAP)) if (l.includes(k)) return v;
-  return '⭐';
-}
 
 async function logHabitFromWeb(habit, triggerEl) {
   if (!habit?.id || !triggerEl) return;
@@ -236,7 +223,6 @@ function render(data) {
 
   habits.forEach(habit => {
     const cc      = `c-${habit.color||'pink'}`;
-    const icon    = habitIcon(habit.name);
     const dayStreak = habit.dayStreak ?? 0;
     const weekStreak = habit.weekStreak ?? 0;
     const isDone  = todayIndex >= 0
@@ -249,7 +235,6 @@ function render(data) {
     article.className = `habit-card ${cc}`;
     article.innerHTML = `
       <div class="habit-top">
-        <div class="iconbox">${icon}</div>
         <div class="meta">
           <h3>${habit.name}</h3>
           <div class="line">${[habit.frequency,habit.description].filter(Boolean).join(' · ')}</div>
