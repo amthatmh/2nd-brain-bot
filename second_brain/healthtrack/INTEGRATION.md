@@ -1,3 +1,5 @@
+> ✅ Applied in v11. Kept for reference only.
+
 """
 INTEGRATION PATCH — second_brain/main.py
 =========================================
@@ -10,9 +12,9 @@ CHANGE 1 — Add imports near the top of main.py
 (after the existing `from second_brain.config import FEATURES` line)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    from second_brain.health.routes import register_health_routes
-    from second_brain.health.steps import handle_steps_final_stamp
-    from second_brain.health.config import (
+    from second_brain.healthtrack.routes import register_health_routes
+    from second_brain.healthtrack.steps import handle_steps_final_stamp
+    from second_brain.healthtrack.config import (
         STEPS_FINAL_HOUR,
         STEPS_FINAL_MIN,
         STEPS_HABIT_NAME,

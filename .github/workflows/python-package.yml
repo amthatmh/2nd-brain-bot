@@ -49,5 +49,7 @@ jobs:
         NOTION_CINEMA_LOG_DB: "x"
         NOTION_NOTES_DB: "x"
         NOTION_DIGEST_SELECTOR_DB: "x"
+        HEALTH_STEPS_THRESHOLD: "10000"
+        HEALTH_HABIT_NAME: "Steps"
       run: |
         pytest tests/ -v --tb=short

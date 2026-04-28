@@ -24,7 +24,7 @@ Registration
 ────────────
 In second_brain/main.py → start_http_server(), add:
 
-    from second_brain.health.routes import register_health_routes
+    from second_brain.healthtrack.routes import register_health_routes
     register_health_routes(app, bot_ref)
 
 Then in post_init(), after the scheduler is started, add the nightly stamp job:
@@ -57,6 +57,7 @@ from second_brain.healthtrack.config import (
     WEBHOOK_SECRET,
 )
 from second_brain.healthtrack.steps import handle_steps_sync, get_steps_state_summary
+from second_brain.http_utils import cors_headers
 
 log = logging.getLogger(__name__)
 
@@ -117,13 +118,6 @@ def _parse_health_export_payload(body: dict) -> tuple[int, str] | None:
     return None
 
 
-def _cors_headers() -> dict[str, str]:
-    return {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, X-Health-Secret",
-    }
-
 
 def register_health_routes(
     app: web.Application,
@@ -152,7 +146,7 @@ def register_health_routes(
     async def steps_sync_handler(request: web.Request) -> web.Response:
         # Handle CORS preflight
         if request.method == "OPTIONS":
-            return web.Response(status=204, headers=_cors_headers())
+            return web.Response(status=204, headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"))
 
         # Optional shared secret auth
         if WEBHOOK_SECRET:
@@ -163,7 +157,7 @@ def register_health_routes(
                     status=401,
                     text=json.dumps({"ok": False, "error": "unauthorized"}),
                     content_type="application/json",
-                    headers=_cors_headers(),
+                    headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
                 )
 
         try:
@@ -173,7 +167,7 @@ def register_health_routes(
                 status=400,
                 text=json.dumps({"ok": False, "error": "invalid JSON"}),
                 content_type="application/json",
-                headers=_cors_headers(),
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
             )
 
         parsed = _parse_health_export_payload(body)
@@ -183,7 +177,7 @@ def register_health_routes(
                 status=422,
                 text=json.dumps({"ok": False, "error": "could not parse step count from payload"}),
                 content_type="application/json",
-                headers=_cors_headers(),
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
             )
 
         steps, date_str = parsed
@@ -211,7 +205,7 @@ def register_health_routes(
         return web.Response(
             text=json.dumps({"ok": True, "result": result}),
             content_type="application/json",
-            headers=_cors_headers(),
+            headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
         )
 
     async def steps_status_handler(request: web.Request) -> web.Response:
@@ -224,7 +218,7 @@ def register_health_routes(
                 "state": get_steps_state_summary(),
             }),
             content_type="application/json",
-            headers=_cors_headers(),
+            headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
         )
 
     app.router.add_post("/api/v1/steps-sync", steps_sync_handler)
