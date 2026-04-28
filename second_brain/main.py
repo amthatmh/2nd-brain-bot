@@ -278,6 +278,76 @@ def next_weekday(weekday: int) -> date:
     return today + timedelta(days=days_ahead)
 
 
+def _has_explicit_personal_or_work_context(text: str) -> bool:
+    lower = (text or "").lower()
+    return bool(re.search(r"\b(personal|work)\b|🏠|💼", lower))
+
+
+def next_repeat_day_date(
+    recurring: str,
+    repeat_day: str | None,
+    today: date | None = None,
+    *,
+    anchor: date | None = None,
+) -> date | None:
+    """Resolve the next occurrence date for weekly/monthly/quarterly repeat settings."""
+    if not repeat_day:
+        return None
+    today = today or local_today()
+
+    if recurring == "📅 Weekly" and repeat_day in REPEAT_DAY_TO_WEEKDAY:
+        weekday = REPEAT_DAY_TO_WEEKDAY[repeat_day]
+        days_ahead = (weekday - today.weekday()) % 7
+        if days_ahead == 0:
+            days_ahead = 7
+        return today + timedelta(days=days_ahead)
+
+    if recurring == "🗓️ Monthly":
+        for month_offset in (0, 1):
+            year = today.year + ((today.month - 1 + month_offset) // 12)
+            month = ((today.month - 1 + month_offset) % 12) + 1
+            month_last_day = calendar.monthrange(year, month)[1]
+            if repeat_day == "Last":
+                target_day = month_last_day
+            else:
+                day_value = REPEAT_DAY_TO_MONTHDAY.get(repeat_day)
+                if day_value is None:
+                    return None
+                target_day = min(day_value, month_last_day)
+            target = date(year, month, target_day)
+            if target >= today:
+                return target
+        return None
+
+    if recurring == "📆 Quarterly":
+        if repeat_day != "Last" and repeat_day not in REPEAT_DAY_TO_MONTHDAY:
+            return None
+        if anchor:
+            quarter_cycle = (anchor.month - 1) % 3
+        else:
+            quarter_cycle = (today.month - 1) % 3
+
+        for months_ahead in range(0, 16):
+            year = today.year + ((today.month - 1 + months_ahead) // 12)
+            month = ((today.month - 1 + months_ahead) % 12) + 1
+            if (month - 1) % 3 != quarter_cycle:
+                continue
+            month_last_day = calendar.monthrange(year, month)[1]
+            if repeat_day == "Last":
+                target_day = month_last_day
+            else:
+                day_value = REPEAT_DAY_TO_MONTHDAY.get(repeat_day)
+                if day_value is None:
+                    return None
+                target_day = min(day_value, month_last_day)
+            target = date(year, month, target_day)
+            if target >= today:
+                return target
+        return None
+
+    return None
+
+
 def _parse_time_to_minutes(time_str: str | None) -> int:
     """
     Parse "HH:MM" format to minutes since midnight.
@@ -2855,10 +2925,11 @@ def _run_capture(raw_text: str, force_create: bool = False,
         ctx           = context_override or result.get("context", "🏠 Personal")
         recurring     = result.get("recurring", "None") or "None"
         repeat_day    = result.get("repeat_day")
-        if recurring == "📅 Weekly" and repeat_day in REPEAT_DAY_TO_WEEKDAY:
-            if deadline_days is None:
-                target        = next_weekday(REPEAT_DAY_TO_WEEKDAY[repeat_day])
-                deadline_days = (target - local_today()).days
+        target_date = next_repeat_day_date(recurring, repeat_day)
+        if target_date is not None:
+            computed_days = (target_date - local_today()).days
+            if deadline_days is None or (deadline_days <= 0 and computed_days > 0):
+                deadline_days = computed_days
         if deadline_override is not None:
             deadline_days = deadline_override
         horizon_label = deadline_days_to_label(deadline_days)
@@ -3828,6 +3899,15 @@ def new_task_keyboard(key: str) -> InlineKeyboardMarkup:
     ])
 
 
+def task_context_keyboard(key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🏠 Personal", callback_data=f"ntctx:{key}:personal"),
+            InlineKeyboardButton("💼 Work", callback_data=f"ntctx:{key}:work"),
+        ],
+    ])
+
+
 def habit_buttons(habits: list[dict], prefix: str, page: int = 0, page_size: int = 8) -> InlineKeyboardMarkup:
     start = max(0, page) * page_size
     end = start + page_size
@@ -3939,14 +4019,38 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
         confidence    = result.get("confidence", "low")
         recurring     = result.get("recurring", "None") or "None"
         repeat_day    = result.get("repeat_day")
-        if recurring == "📅 Weekly" and repeat_day in REPEAT_DAY_TO_WEEKDAY:
-            if deadline_days is None:
-                target        = next_weekday(REPEAT_DAY_TO_WEEKDAY[repeat_day])
-                deadline_days = (target - local_today()).days
+        target_date = next_repeat_day_date(recurring, repeat_day)
+        if target_date is not None:
+            computed_days = (target_date - local_today()).days
+            if deadline_days is None or (deadline_days <= 0 and computed_days > 0):
+                deadline_days = computed_days
         horizon_label = deadline_days_to_label(deadline_days)
     except Exception as e:
         log.error(f"Claude error: {e}")
         await thinking.edit_text("⚠️ Couldn't classify that. Try rephrasing?")
+        return
+
+    needs_context_clarification = (
+        recurring != "None"
+        and not _has_explicit_personal_or_work_context(raw_text)
+    )
+
+    if needs_context_clarification:
+        key = str(_pending_counter); _pending_counter += 1
+        pending_map[key] = {
+            "name": task_name,
+            "context": ctx,
+            "recurring": recurring,
+            "repeat_day": repeat_day,
+            "deadline_days": deadline_days,
+            "confidence": confidence,
+        }
+        recur_tag = f"\n🔁 {recurring}" if recurring != "None" else ""
+        await thinking.edit_text(
+            f"📝 *{task_name}*{recur_tag}\n\nShould this recurring task be Personal or Work?",
+            parse_mode="Markdown",
+            reply_markup=task_context_keyboard(key),
+        )
         return
 
     if not force_create:
@@ -4696,6 +4800,59 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except Exception as e:
             log.error("Entertainment callback save error: %s", e)
             await q.edit_message_text(_entertainment_save_error_text(e, payload))
+        return
+
+    if parts[0] == "ntctx" and len(parts) == 3:
+        _, key, ctx_code = parts
+        task = pending_map.get(key)
+        if not task:
+            await q.edit_message_text("⚠️ This task expired — please re-send it.")
+            return
+
+        context_value = "🏠 Personal" if ctx_code == "personal" else "💼 Work" if ctx_code == "work" else None
+        if not context_value:
+            await q.answer("Invalid context selection.", show_alert=False)
+            return
+
+        task["context"] = context_value
+        recurring = task.get("recurring", "None")
+        recur_tag = f"\n🔁 {recurring}" if recurring != "None" else ""
+        confidence = task.get("confidence", "low")
+        deadline_days = task.get("deadline_days")
+        horizon_label = deadline_days_to_label(deadline_days)
+
+        if confidence == "high":
+            task = pending_map.pop(key)
+            dup = find_duplicate_active_task(task["name"])
+            if dup:
+                await q.edit_message_text(
+                    f"⚠️ Already on your list:\n\n📝 {dup['name']}\n🕐 {dup.get('auto_horizon','')}  {dup.get('context','')}\n\nSend `force: {task['name']}` to add anyway.",
+                    parse_mode="Markdown",
+                )
+                return
+            try:
+                page_id = create_task(
+                    task["name"],
+                    deadline_days,
+                    task["context"],
+                    recurring=task.get("recurring", "None"),
+                    repeat_day=task.get("repeat_day"),
+                )
+                await q.edit_message_text(
+                    f"✅ Captured!\n\n📝 {task['name']}\n🕐 {horizon_label}  {task['context']}{recur_tag}\n\n_Saved to Notion_",
+                    parse_mode="Markdown",
+                )
+                capture_map[q.message.message_id] = {"page_id": page_id, "name": task["name"]}
+            except Exception as e:
+                log.error(f"Notion error: {e}")
+                await q.edit_message_text("⚠️ Couldn't save to Notion.")
+            return
+
+        await q.edit_message_text(
+            f"📝 *{task.get('name','Untitled')}*  {task['context']}{recur_tag}\n\nWhen should this happen?",
+            parse_mode="Markdown",
+            reply_markup=new_task_keyboard(key),
+        )
         return
 
     if parts[0] == "nt" and len(parts) == 3:
