@@ -5321,7 +5321,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         lines.append("")
 
     if habits:
-        lines.append("🌅 *Morning habits* — tap to log:")
+        lines.append("*Habits* - tap to log:")
         lines.append("")
 
     message = "\n".join(lines).strip()
