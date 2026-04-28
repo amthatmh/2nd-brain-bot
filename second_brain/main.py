@@ -69,6 +69,15 @@ from notes_flow import (
     create_note_payload,
 )
 from second_brain.ai.classify import claude_classify
+from second_brain.healthtrack.routes import register_health_routes
+from second_brain.healthtrack.steps import handle_steps_final_stamp
+from second_brain.healthtrack.config import (
+    STEPS_FINAL_HOUR,
+    STEPS_FINAL_MIN,
+    STEPS_HABIT_NAME,
+    STEPS_THRESHOLD,
+    STEPS_SOURCE_LABEL,
+)
 from second_brain.config import FEATURES
 from second_brain.notion import notion_call, notion_call_async
 from second_brain.notion.habits import extract_habit_frequency
@@ -224,6 +233,7 @@ _digest_catchup_sent: set[str] = set()
 _digest_slot_sent_today: set[str] = set()
 notified_goals_this_week: set[str] = set()
 mute_until: datetime | None = None
+_app_bot = None  # set during post_init for health route bot access
 STATE_DIR = _resolve_state_dir()
 mute_state_file = STATE_DIR / "mute_state.json"
 current_location: str = WEATHER_LOCATION
@@ -5740,6 +5750,15 @@ async def start_http_server() -> None:
     app.router.add_post("/log-habit", log_habit_http_handler)
     app.router.add_options("/log-habit", log_habit_http_handler)
     app.router.add_get("/health", lambda r: web.Response(text="ok"))
+    register_health_routes(
+        app,
+        notion=notion,
+        habit_db_id=NOTION_HABIT_DB,
+        log_db_id=NOTION_LOG_DB,
+        tz=TZ,
+        bot_getter=lambda: _app_bot,
+        chat_id=MY_CHAT_ID,
+    )
     runner = web.AppRunner(app)
     await runner.setup()
     site   = web.TCPSite(runner, "0.0.0.0", HTTP_PORT)
@@ -5893,6 +5912,8 @@ async def post_init(app: Application) -> None:
     if OPENWEATHER_KEY and (current_lat is None or current_lon is None):
         set_location_smart(current_location)
     load_habit_cache()
+    global _app_bot
+    _app_bot = app.bot
     await start_http_server()
     scheduler = AsyncIOScheduler(timezone=TZ)
     if FEATURES.get("FEATURE_RECURRING", True):
@@ -6013,6 +6034,28 @@ async def post_init(app: Application) -> None:
         log.info(
             "Cinema sync jobs registered (every 60 minutes)",
         )
+
+    async def _run_steps_final_stamp(bot) -> None:
+        await handle_steps_final_stamp(
+            notion=notion,
+            habit_db_id=NOTION_HABIT_DB,
+            log_db_id=NOTION_LOG_DB,
+            habit_name=STEPS_HABIT_NAME,
+            threshold=STEPS_THRESHOLD,
+            source_label=STEPS_SOURCE_LABEL,
+            tz=TZ,
+            bot=bot,
+            chat_id=MY_CHAT_ID,
+        )
+
+    scheduler.add_job(
+        _run_steps_final_stamp,
+        "cron",
+        hour=STEPS_FINAL_HOUR,
+        minute=STEPS_FINAL_MIN,
+        args=[app.bot],
+        id="steps_final_stamp",
+    )
 
     scheduler.start()
     _scheduler = scheduler
