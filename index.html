@@ -141,7 +141,18 @@ const ICON_MAP = {
   'protein':'🥤','stretch':'🧘','allergy':'💊','magnesium':'🌙',
 };
 
+function extractLeadingEmoji(text) {
+  if (!text) return '';
+  const trimmed = text.trim();
+  if (!trimmed) return '';
+  const parts = trimmed.split(/\s+/);
+  const first = parts[0];
+  return /\p{Extended_Pictographic}/u.test(first) ? first : '';
+}
+
 function habitIcon(name) {
+  const titleEmoji = extractLeadingEmoji(name);
+  if (titleEmoji) return titleEmoji;
   const l = name.toLowerCase();
   for (const [k,v] of Object.entries(ICON_MAP)) if (l.includes(k)) return v;
   return '⭐';
