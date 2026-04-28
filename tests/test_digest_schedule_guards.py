@@ -84,6 +84,41 @@ class TestDigestSelectorDedupe(unittest.TestCase):
         self.assertEqual(slots[0]["time"], "08:15")
         self.assertTrue(slots[0]["is_weekday"])
 
+    def test_load_digest_slots_keeps_empty_contexts_for_habits_only_rows(self):
+        main = load_main_module()
+        rows = [
+            {
+                "properties": {
+                    "Time": {"rich_text": [{"plain_text": "07:30"}]},
+                    "Weekday/Weekend": {"select": {"name": "Weekday"}},
+                    "Habits": {"checkbox": True},
+                    "Max Items": {"number": 10},
+                    "🏠 Personal": {"checkbox": False},
+                    "💼 Work": {"checkbox": False},
+                    "🏃 Health": {"checkbox": False},
+                    "🤝 HK": {"checkbox": False},
+                }
+            }
+        ]
+        with patch.object(main, "notion_query_all", return_value=rows):
+            slots = main.load_digest_slots()
+
+        self.assertEqual(len(slots), 1)
+        self.assertEqual(slots[0]["contexts"], [])
+
+
+class TestDigestTaskFiltering(unittest.TestCase):
+    def test_filter_digest_tasks_returns_no_tasks_for_empty_context_selection(self):
+        main = load_main_module()
+        tasks = [
+            {"name": "Work task", "context": "💼 Work"},
+            {"name": "Personal task", "context": "🏠 Personal"},
+        ]
+
+        filtered = main._filter_digest_tasks(tasks, config={"contexts": [], "max_items": 10, "include_habits": True})
+
+        self.assertEqual(filtered, [])
+
 
 class TestDigestCatchupFlag(unittest.TestCase):
     def test_build_digest_schedule_does_not_queue_catchup_by_default(self):

@@ -1034,9 +1034,11 @@ def load_digest_slots() -> list[dict]:
             for prop_name, context_label in context_map.items()
             if bool(props.get(prop_name, {}).get("checkbox", False))
         ]
-        contexts = selected_contexts or None
+        # Keep an explicit empty-list when no context checkboxes are selected so
+        # a slot can intentionally send a habits-only digest without task spillover.
+        contexts = selected_contexts
 
-        if contexts is None and not include_habits:
+        if not contexts and not include_habits:
             continue
 
         slot_key = (slot_time, is_weekday)
@@ -5147,7 +5149,7 @@ async def send_digest_for_slot(bot, slot: dict) -> None:
         log.info("Skipping duplicate digest send for slot %s (%s)", slot.get("time"), "weekday" if weekday else "weekend")
         return
     config = await get_digest_config(slot["time"], slot["is_weekday"])
-    if config.get("contexts") is None and config.get("include_habits") is False:
+    if not config.get("contexts") and config.get("include_habits") is False:
         return
     await send_daily_digest(bot, include_habits=slot["include_habits"], config=config)
     _digest_slot_sent_today.add(slot_key)
