@@ -150,7 +150,9 @@ function extractLeadingEmoji(text) {
   return /\p{Extended_Pictographic}/u.test(first) ? first : '';
 }
 
-function habitIcon(name) {
+function habitIcon(habit) {
+  if (habit?.icon) return habit.icon;
+  const name = habit?.name || '';
   const titleEmoji = extractLeadingEmoji(name);
   if (titleEmoji) return titleEmoji;
   const l = name.toLowerCase();
@@ -247,7 +249,7 @@ function render(data) {
 
   habits.forEach(habit => {
     const cc      = `c-${habit.color||'pink'}`;
-    const icon    = habitIcon(habit.name);
+    const icon    = habitIcon(habit);
     const dayStreak = habit.dayStreak ?? 0;
     const weekStreak = habit.weekStreak ?? 0;
     const isDone  = todayIndex >= 0
