@@ -225,7 +225,6 @@ weather_cache: dict[str, dict] = {
     "tomorrow": {"timestamp": None, "data": None},
 }
 _digest_jobs: list = []
-_habit_jobs: list = []
 _scheduler: AsyncIOScheduler | None = None
 _digest_slots_last_load_succeeded = False
 _digest_catchup_sent: set[str] = set()
@@ -4131,7 +4130,6 @@ async def cmd_refresh(message, context: ContextTypes.DEFAULT_TYPE | None = None)
         return
     load_habit_cache()
     if _scheduler is not None:
-        register_habit_schedules(_scheduler, message.get_bot())
         build_digest_schedule(_scheduler, message.get_bot())
     await send_daily_digest(message.get_bot(), include_habits=True)
     if _scheduler is not None:
@@ -5161,6 +5159,14 @@ async def send_digest_for_slot(bot, slot: dict) -> None:
         log.info("Skipping duplicate digest send for slot %s (%s)", slot.get("time"), "weekday" if weekday else "weekend")
         return
     config = await get_digest_config(slot["time"], slot["is_weekday"])
+    log.info(
+        "Digest slot trigger fired at %s (%s) — include_habits=%s contexts=%s max_items=%s",
+        slot.get("time"),
+        "weekday" if slot.get("is_weekday") else "weekend",
+        bool(slot.get("include_habits")),
+        config.get("contexts"),
+        config.get("max_items"),
+    )
     if not config.get("contexts") and config.get("include_habits") is False:
         return
     await send_daily_digest(bot, include_habits=slot["include_habits"], config=config)
@@ -5403,35 +5409,6 @@ async def send_sunday_review(bot) -> None:
     log.info(f"Sunday review sent — {len(ordered)} items")
 
 
-async def send_habit_reminder(bot, time_str: str) -> None:
-    global last_digest_msg_id
-    if is_muted():
-        log.info("Habit reminder skipped (muted)")
-        return
-    tasks = get_today_and_overdue_tasks()
-    try:
-        weekday = datetime.now(TZ).weekday() < 5
-        config = await get_digest_config(time_str, weekday)
-    except Exception:
-        config = None
-    if config and (config.get("contexts") is not None or config.get("max_items") is not None):
-        tasks = _filter_digest_tasks(tasks, config=config)
-        if isinstance(config.get("max_items"), int):
-            tasks = tasks[:config["max_items"]]
-    habits = pending_habits_for_digest(time_str)
-    message, ordered = format_daily_digest(tasks, habits, weather_mode="current")
-    sent = await bot.send_message(
-        chat_id=MY_CHAT_ID,
-        text=message,
-        parse_mode="Markdown",
-        reply_markup=habit_buttons(habits, "hc") if habits else None,
-    )
-    if ordered:
-        digest_map[sent.message_id] = ordered
-        last_digest_msg_id = sent.message_id
-    log.info(f"Combined digest sent at {time_str} — {len(ordered)} tasks, {len(habits)} habits")
-
-
 async def send_daily_habits_list(bot) -> None:
     """Fetch all active habits for today and send as clickable buttons."""
     habits = pending_habits_for_digest()
@@ -5446,34 +5423,6 @@ async def send_daily_habits_list(bot) -> None:
         reply_markup=habit_buttons(habits, "hc"),
     )
     log.info("Habits list sent — %s available habits", len(habits))
-
-
-def register_habit_schedules(scheduler: AsyncIOScheduler, bot) -> None:
-    for job in _habit_jobs:
-        try:
-            job.remove()
-        except Exception:
-            pass
-    _habit_jobs.clear()
-
-    times_seen = set()
-    for habit in habit_cache.values():
-        time_str = habit.get("time")
-        if not time_str or time_str in times_seen:
-            continue
-        times_seen.add(time_str)
-        try:
-            h, m = map(int, time_str.split(":"))
-            job = scheduler.add_job(
-                send_habit_reminder, "cron",
-                hour=h, minute=m,
-                args=[bot, time_str],
-                id=f"habit_{time_str}",
-            )
-            _habit_jobs.append(job)
-            log.info(f"Registered habit reminder job at {time_str}")
-        except Exception as e:
-            log.error(f"Failed to register habit job for {time_str}: {e}")
 
 
 async def run_asana_sync(bot) -> None:
@@ -5916,8 +5865,6 @@ async def post_init(app: Application) -> None:
         scheduler.add_job(run_recurring_check, "cron", hour=_rc_h, minute=_rc_m, args=[app.bot])
     if FEATURES.get("FEATURE_SUNDAY_REVIEW", True):
         scheduler.add_job(send_sunday_review, "cron", day_of_week="sun", hour=_sr_h, minute=_sr_m, args=[app.bot])
-    if FEATURES.get("FEATURE_HABITS", True):
-        register_habit_schedules(scheduler, app.bot)
     build_digest_schedule(scheduler, app.bot, queue_catchup=True)
     scheduler.add_job(
         rebuild_digest_schedule_job,
