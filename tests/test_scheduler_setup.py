@@ -25,7 +25,6 @@ class TestSchedulerSetup(unittest.TestCase):
             run_recurring_check=_dummy,
             send_daily_digest=_dummy,
             send_sunday_review=_dummy,
-            register_habit_schedules=lambda s, b: s.add_job(_dummy, "habit", args=[b]),
             rc_h=7,
             rc_m=0,
             wk_h=8,
@@ -35,7 +34,6 @@ class TestSchedulerSetup(unittest.TestCase):
         )
         triggers = [c["trigger"] for c in scheduler.calls]
         self.assertIn("cron", triggers)
-        self.assertIn("habit", triggers)
         self.assertEqual(triggers.count("cron"), 4)
 
     def test_register_cinema_jobs_adds_hourly_interval(self):
