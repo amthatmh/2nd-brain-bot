@@ -5384,7 +5384,6 @@ async def send_sunday_review(bot) -> None:
     if is_muted():
         log.info("Sunday review skipped (muted)")
         return
-    await send_daily_digest(bot, include_habits=True, config=None)
     week_tasks  = query_tasks_by_auto_horizon(["🟠 This Week"])
     month_tasks = query_tasks_by_auto_horizon(["🟡 This Month"])
     header, ordered = format_sunday_intro(week_tasks, month_tasks)
