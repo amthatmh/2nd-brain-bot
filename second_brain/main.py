@@ -4456,6 +4456,7 @@ COMMAND_DISPATCH: dict[str, Callable] = {
     "/habits": cmd_habits_text,
     "🏃 habits": cmd_habits_picker,
     "💪 crossfit": cmd_crossfit,
+    "💪 CrossFit": cmd_crossfit,
     "💪crossfit": cmd_crossfit,
     "📝 notes": cmd_notes_text,
     "🌤️ weather": cmd_weather_text,
