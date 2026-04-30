@@ -146,6 +146,17 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["venue"], "Soldier Field")
         self.assertEqual(parsed["date"], "2026-02-02T21:00:00")
 
+    def test_parse_explicit_cinema_handles_relative_day_and_compact_time(self):
+        parsed = self.main.parse_explicit_entertainment_log(
+            "/log movie Mother Mary at AMC Roosevelt today at 1920"
+        )
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["log_type"], "cinema")
+        self.assertEqual(parsed["title"], "Mother Mary")
+        self.assertEqual(parsed["venue"], "AMC Roosevelt")
+        self.assertTrue(parsed["date"].endswith("T19:20:00"))
+
     def test_extract_cinema_visit_details(self):
         seat, auditorium = self.main._extract_cinema_visit_details("Seat D6, Auditorium D5, 20:40")
         self.assertEqual(seat, "D6")
