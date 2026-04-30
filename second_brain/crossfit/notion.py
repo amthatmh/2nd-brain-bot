@@ -1,6 +1,6 @@
 from __future__ import annotations
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from second_brain.notion import notion_call
 
 
@@ -8,6 +8,7 @@ def _title(props, key="Name"):
     try:return props[key]["title"][0]["plain_text"]
     except Exception:return ""
 
+# existing functions unchanged ...
 def find_movement_by_name(notion, movements_db_id: str, name: str):
     res = notion_call(notion.databases.query, database_id=movements_db_id).get("results", [])
     needle = (name or "").strip().lower()
@@ -82,3 +83,38 @@ def query_subs(notion, subs_db_id, movements_db_id, movement_name, sub_type):
         if m["page_id"] in rel and typ==sub_type:
             out.append({"name":_title(p),"alt_movement":"","difficulty":((p.get("Difficulty",{}).get("select") or {}).get("name") or ""),"equipment_needed":"","rationale":""})
     return out
+
+
+def get_progressions_for_movement(notion, progressions_db_id, movement_page_id) -> list[dict]:
+    res = notion_call(notion.databases.query, database_id=progressions_db_id, page_size=100).get("results", [])
+    out = []
+    for row in res:
+        props = row.get("properties", {})
+        rel = [x.get("id") for x in props.get("Target Movement", {}).get("relation", [])]
+        if movement_page_id not in rel:
+            continue
+        out.append({
+            "page_id": row.get("id"),
+            "name": _title(props),
+            "order": props.get("Order", {}).get("number") or 0,
+            "is_current_level": bool(props.get("Is My Current Level", {}).get("checkbox")),
+            "notes": "".join(x.get("plain_text", "") for x in props.get("Notes", {}).get("rich_text", [])),
+        })
+    return sorted(out, key=lambda x: x.get("order", 0))
+
+
+def get_movement_category(notion, movements_db_id, movement_page_id) -> str:
+    del movements_db_id
+    page = notion_call(notion.pages.retrieve, page_id=movement_page_id)
+    props = page.get("properties", {})
+    return ((props.get("Category", {}).get("select") or {}).get("name") or "")
+
+
+def set_current_level(notion, progressions_db_id, movement_page_id, new_current_page_id):
+    steps = get_progressions_for_movement(notion, progressions_db_id, movement_page_id)
+    for step in steps:
+        notion_call(
+            notion.pages.update,
+            page_id=step["page_id"],
+            properties={"Is My Current Level": {"checkbox": step["page_id"] == new_current_page_id}},
+        )
