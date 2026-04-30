@@ -41,7 +41,7 @@ TZ = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
 RECURRING_CHECK_TIME = parse_hhmm_env("RECURRING_CHECK_TIME", "7:00")
 SUNDAY_REVIEW_TIME = parse_hhmm_env("SUNDAY_REVIEW_TIME", "12:00")
 
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
 
 FEATURES = {
