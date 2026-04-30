@@ -240,6 +240,7 @@ cf_pending: dict[str, dict] = ExpiringDict(ttl_seconds=3600)
 pending_sport_competition_map: dict[int, dict] = {}
 topic_recency_map: dict[str, datetime] = {}
 _pending_counter = 0
+_cf_counter = 0
 _done_picker_counter = 0
 _todo_picker_counter = 0
 _v10_counter = 0
@@ -3841,7 +3842,7 @@ def format_sunday_intro(week_tasks: list[dict], month_tasks: list[dict]) -> tupl
 
 def quick_actions_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[BTN_REFRESH, BTN_ALL_OPEN, BTN_HABITS], [BTN_CROSSFIT, BTN_NOTES, BTN_WEATHER], [BTN_MUTE, "", ""]],
+        [[BTN_REFRESH, BTN_ALL_OPEN, BTN_HABITS], [BTN_CROSSFIT, BTN_NOTES, BTN_WEATHER]],
         resize_keyboard=True,
         one_time_keyboard=False,
         input_field_placeholder="Type a task, tap a quick action, or log a workout…",
@@ -4347,9 +4348,6 @@ async def handle_v10_callback(q, parts: list[str]) -> bool:
 
 
 async def route_classified_message_v10(message, text: str) -> None:
-    if await handle_photo_followup(message, text):
-        return
-
     thinking = await message.reply_text("🧠 Got it...")
     if NOTION_WORKOUT_LOG_DB or NOTION_WOD_LOG_DB:
         try:
@@ -4363,10 +4361,13 @@ async def route_classified_message_v10(message, text: str) -> None:
         if workout_result.get("type") in ("strength", "conditioning") and workout_result.get("confidence") == "high":
             await thinking.delete()
             if workout_result.get("type") == "strength":
-                await handle_cf_strength_flow(message, workout_result, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB}, cf_pending)
+                await handle_cf_strength_flow(message, workout_result, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_PRS_DB": NOTION_PRS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB}, cf_pending)
             else:
-                await handle_cf_wod_flow(message, workout_result, notion, {"NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB}, cf_pending)
+                await handle_cf_wod_flow(message, workout_result, notion, {"NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB}, cf_pending)
             return
+    if await handle_photo_followup(message, text):
+        await thinking.delete()
+        return
     try:
         result = classify_message_v10(text)
     except Exception as e:
@@ -4709,7 +4710,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     cf_flow_key = context.user_data.get("cf_flow_key")
     if cf_flow_key and cf_flow_key in cf_pending:
-        await handle_cf_text_reply(message, text, cf_flow_key, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_SUBS_DB": NOTION_SUBS_DB}, cf_pending)
+        await handle_cf_text_reply(message, text, cf_flow_key, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_PRS_DB": NOTION_PRS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB}, cf_pending)
         return
 
     match_force = re.match(r"force:\s*(.+)$", text, re.IGNORECASE)
@@ -4726,7 +4727,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if await handle_v10_callback(q, parts):
         return
     if parts[0] == "cf":
-        await handle_cf_callback(q, parts, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_SUBS_DB": NOTION_SUBS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS, "CLAUDE_MODEL": CLAUDE_MODEL}, cf_pending)
+        await handle_cf_callback(q, parts, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_PRS_DB": NOTION_PRS_DB, "NOTION_SUBS_DB": NOTION_SUBS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB, "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS}, cf_pending)
         if parts[1] == "upload_programme":
             context.user_data["awaiting_programme_upload"] = True
         else:
