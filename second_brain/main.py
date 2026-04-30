@@ -2705,6 +2705,20 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
         cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,;-")
         return (cleaned or None), cleaned != (raw_text or "").strip()
 
+    def _normalize_time(hour: str | None, minute: str | None, compact: str | None = None) -> str | None:
+        if hour is not None and minute is not None:
+            return f"{int(hour):02d}:{minute}"
+        if not compact:
+            return None
+        digits = compact.strip()
+        if not digits.isdigit() or len(digits) not in (3, 4):
+            return None
+        parsed_hour = int(digits[:-2])
+        parsed_minute = int(digits[-2:])
+        if 0 <= parsed_hour <= 23 and 0 <= parsed_minute <= 59:
+            return f"{parsed_hour:02d}:{parsed_minute:02d}"
+        return None
+
     parsed_time = None
     parsed_date = None
     raw_title = rest
@@ -2728,15 +2742,35 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
             f"{int(match_on_datetime.group(3)):02d}"
         )
         if match_on_datetime.group(4) and match_on_datetime.group(5):
-            parsed_time = f"{int(match_on_datetime.group(4)):02d}:{match_on_datetime.group(5)}"
+            parsed_time = _normalize_time(match_on_datetime.group(4), match_on_datetime.group(5))
         tail = rest[match_on_datetime.end():].strip()
         if tail:
             extracted_notes = tail
         rest = rest[: match_on_datetime.start()].strip()
     else:
-        match_time = re.search(r"\s+at\s+([01]?\d|2[0-3]):([0-5]\d)\s*$", rest, re.IGNORECASE)
+        match_relative_datetime = re.search(
+            r"\s+(today|tomorrow|yesterday)(?:\s+at)?\s+(?:([01]?\d|2[0-3]):([0-5]\d)|(\d{3,4}))\s*$",
+            rest,
+            re.IGNORECASE,
+        )
+        if match_relative_datetime:
+            relative_day = (match_relative_datetime.group(1) or "").lower()
+            parsed_time = _normalize_time(
+                match_relative_datetime.group(2),
+                match_relative_datetime.group(3),
+                match_relative_datetime.group(4),
+            )
+            if relative_day == "today":
+                parsed_date = date.today().isoformat()
+            elif relative_day == "tomorrow":
+                parsed_date = (date.today() + timedelta(days=1)).isoformat()
+            elif relative_day == "yesterday":
+                parsed_date = (date.today() - timedelta(days=1)).isoformat()
+            rest = rest[: match_relative_datetime.start()].strip()
+
+        match_time = re.search(r"\s+at\s+(?:([01]?\d|2[0-3]):([0-5]\d)|(\d{3,4}))\s*$", rest, re.IGNORECASE)
         if match_time:
-            parsed_time = f"{int(match_time.group(1)):02d}:{match_time.group(2)}"
+            parsed_time = _normalize_time(match_time.group(1), match_time.group(2), match_time.group(3))
             rest = rest[: match_time.start()].strip()
 
     if not raw_venue:
