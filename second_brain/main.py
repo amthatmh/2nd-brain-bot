@@ -2688,6 +2688,25 @@ def find_duplicate_active_task(name: str) -> dict | None:
 
 def parse_done_numbers_command(text: str) -> list[int] | None:
     normalized = text.strip().lower()
+
+    # Normalize keycap number emojis (e.g., "3️⃣") into plain digits so users can
+    # reply with either "complete 3" or "complete 3️⃣".
+    keycap_map = {
+        "0️⃣": "0",
+        "1️⃣": "1",
+        "2️⃣": "2",
+        "3️⃣": "3",
+        "4️⃣": "4",
+        "5️⃣": "5",
+        "6️⃣": "6",
+        "7️⃣": "7",
+        "8️⃣": "8",
+        "9️⃣": "9",
+        "🔟": "10",
+    }
+    for keycap, digit in keycap_map.items():
+        normalized = normalized.replace(keycap, digit)
+
     m = re.match(
         r"^(?:done|complete|finish|check(?:\s+off)?)\s+((?:\d+\s*(?:,|\band\b)?\s*)+)$",
         normalized, re.IGNORECASE,
