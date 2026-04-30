@@ -38,6 +38,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     BotCommand,
 )
 from telegram.ext import (
@@ -3849,6 +3850,12 @@ def quick_actions_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+async def refresh_quick_actions_keyboard(message) -> None:
+    """Force-refresh the reply keyboard to replace legacy layouts (e.g. old Mute button)."""
+    await message.reply_text("🔄 Refreshing quick actions…", reply_markup=ReplyKeyboardRemove())
+    await message.reply_text("✅ Quick actions updated.", reply_markup=quick_actions_keyboard())
+
+
 def notes_options_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -6191,8 +6198,8 @@ async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(
             "👋 *Second Brain Bot*\n\nSend me any task or habit to capture it.\nUse /done to mark completions.\nUse /r or /remind for your quick snapshot.\nUse /notes for Notes capture and /weather for forecast.",
             parse_mode="Markdown",
-            reply_markup=quick_actions_keyboard(),
         )
+        await refresh_quick_actions_keyboard(update.message)
         return
     raw     = args[0][4:].replace("_", " ").strip()
     matched = next((h for h in habit_cache.values() if raw.lower() in h["name"].lower()), None)
@@ -6208,8 +6215,8 @@ async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(
         f"✅ Logged!\n\n{name}\n📅 {datetime.now(TZ).strftime('%B %-d')}",
         parse_mode="Markdown",
-        reply_markup=quick_actions_keyboard(),
     )
+    await refresh_quick_actions_keyboard(update.message)
 
 
 async def handle_remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
