@@ -43,6 +43,15 @@ SUNDAY_REVIEW_TIME = parse_hhmm_env("SUNDAY_REVIEW_TIME", "12:00")
 
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
+CLAUDE_PARSE_MAX_TOKENS = int(os.environ.get("CLAUDE_PARSE_MAX_TOKENS", "4000"))
+
+NOTION_MOVEMENTS_DB = os.environ.get("NOTION_MOVEMENTS_DB", "")
+NOTION_CYCLES_DB = os.environ.get("NOTION_CYCLES_DB", "")
+NOTION_WORKOUT_PROGRAM_DB = os.environ.get("NOTION_WORKOUT_PROGRAM_DB", "")
+NOTION_WORKOUT_LOG_DB = os.environ.get("NOTION_WORKOUT_LOG_DB", "")
+NOTION_SUBS_DB = os.environ.get("NOTION_SUBS_DB", "")
+NOTION_PRS_DB = os.environ.get("NOTION_PRS_DB", "")
+NOTION_WOD_LOG_DB = os.environ.get("NOTION_WOD_LOG_DB", "")
 
 FEATURES = {
     "FEATURE_HABITS": _flag("FEATURE_HABITS", "1"),

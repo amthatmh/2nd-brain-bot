@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 """
-Second Brain — Telegram Bot (v11.0)
+Second Brain — Telegram Bot (v12.0)
 ────────────────────────────────────────────────────────────────
-Housekeeping baseline release that keeps existing behavior while aligning structure:
-- Health tracking module wiring is now standardized under `second_brain.healthtrack.*`.
-- Health webhook routes and nightly steps final-stamp flow remain integrated.
-- HTTP shared utilities are centralized for consistency across route modules.
+v12 — CrossFit module:
+- 💪 CrossFit ReplyKeyboard button (3×3 grid)
+- Section B strength log → Workout Log v2 + PR detection
+- Section C conditioning log → WOD Log
+- Weekly programme upload + parse (Sonnet, 4000 tokens)
+- Subs & Add-ons query
+- Readiness flow (sleep/mood/energy/soreness/stress)
+- Partner? flag auto-detected for Thu/Sat
+- Model upgraded to claude-sonnet-4-6 globally
+- CLAUDE_PARSE_MAX_TOKENS=4000 for programme parsing
+- CrossFit/Hyrox terms removed from habit classifier
+- workout_log intent priority above all others in classifier
 """
 
 import asyncio
@@ -83,6 +91,18 @@ from second_brain.state import STATE
 from second_brain.utils import ExpiringDict, reply_notion_error
 from second_brain.http_utils import cors_headers
 
+from second_brain.crossfit.classify import classify_workout_message
+from second_brain.crossfit.handlers import (
+    handle_cf_callback,
+    handle_cf_prs,
+    handle_cf_strength_flow,
+    handle_cf_subs_flow,
+    handle_cf_text_reply,
+    handle_cf_upload_programme,
+    handle_cf_wod_flow,
+)
+from second_brain.crossfit.keyboards import crossfit_submenu_keyboard
+
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
@@ -157,8 +177,16 @@ TZ           = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
 _rc_h, _rc_m = _parse_hhmm_env("RECURRING_CHECK_TIME", "7:00")
 _sr_h, _sr_m = _parse_hhmm_env("SUNDAY_REVIEW_TIME", "12:00")
 
-CLAUDE_MODEL   = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+CLAUDE_MODEL   = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
+CLAUDE_PARSE_MAX_TOKENS = int(os.environ.get("CLAUDE_PARSE_MAX_TOKENS", "4000"))
+NOTION_MOVEMENTS_DB = os.environ.get("NOTION_MOVEMENTS_DB", "")
+NOTION_CYCLES_DB = os.environ.get("NOTION_CYCLES_DB", "")
+NOTION_WORKOUT_PROGRAM_DB = os.environ.get("NOTION_WORKOUT_PROGRAM_DB", "")
+NOTION_WORKOUT_LOG_DB = os.environ.get("NOTION_WORKOUT_LOG_DB", "")
+NOTION_SUBS_DB = os.environ.get("NOTION_SUBS_DB", "")
+NOTION_PRS_DB = os.environ.get("NOTION_PRS_DB", "")
+NOTION_WOD_LOG_DB = os.environ.get("NOTION_WOD_LOG_DB", "")
 HTTP_PORT      = int(os.environ.get("PORT", "8080"))
 WEEKS_HISTORY  = int(os.environ.get("WEEKS_HISTORY", "52"))
 APP_VERSION    = os.environ.get("APP_VERSION", "v11.0.0")
@@ -208,6 +236,7 @@ pending_photo_map: dict[str, dict] = {}
 pending_tmdb_map: dict[str, list[dict]] = {}
 pending_message_map: dict[str, str] = {}
 pending_note_map: dict[str, dict] = {}
+cf_pending: dict[str, dict] = ExpiringDict(ttl_seconds=3600)
 pending_sport_competition_map: dict[int, dict] = {}
 topic_recency_map: dict[str, datetime] = {}
 _pending_counter = 0
@@ -259,6 +288,7 @@ _BULLET_RE = re.compile(r"^[\s]*(?:[-•*]|\d+[.):])\s+", re.MULTILINE)
 BTN_REFRESH = "📜Digest"
 BTN_ALL_OPEN = "✅To Do"
 BTN_HABITS = "🏃 Habits"
+BTN_CROSSFIT = "💪 CrossFit"
 BTN_NOTES = "📝 Notes"
 BTN_WEATHER = "🌤️ Weather"
 BTN_MUTE = "🔕 Mute"
@@ -1159,7 +1189,7 @@ Today is {today_local.strftime("%A, %B %-d, %Y")}.
 Message: "{text}"
 
 Active habits to detect: {habit_names}
-Workout types that count as 💪 Workout: soccer, crossfit, hyrox, rowing, snowboard, skiing, gym, run, jog, trained
+Workout types that count as 💪 Workout: soccer, snowboard, skiing, gym, run, jog, trained
 
 First determine if this is:
 A) ENTERTAINMENT LOG — user watched a film/show/game/event
@@ -1238,7 +1268,7 @@ Today is {today_local.strftime("%A, %B %-d, %Y")}.
 Message: "{text}"
 
 Active habits: {habit_names}
-Workout types that count as 💪 Workout: soccer, crossfit, hyrox, rowing, snowboard, skiing, gym, run, jog, trained
+Workout types that count as 💪 Workout: soccer, snowboard, skiing, gym, run, jog, trained
 
 Enabled intent types: {enabled_intents}
 
@@ -3811,10 +3841,10 @@ def format_sunday_intro(week_tasks: list[dict], month_tasks: list[dict]) -> tupl
 
 def quick_actions_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[BTN_REFRESH, BTN_ALL_OPEN, BTN_HABITS], [BTN_NOTES, BTN_WEATHER, BTN_MUTE]],
+        [[BTN_REFRESH, BTN_ALL_OPEN, BTN_HABITS], [BTN_CROSSFIT, BTN_NOTES, BTN_WEATHER], [BTN_MUTE, "", ""]],
         resize_keyboard=True,
         one_time_keyboard=False,
-        input_field_placeholder="Type a task, or tap a quick action…",
+        input_field_placeholder="Type a task, tap a quick action, or log a workout…",
     )
 
 
@@ -4210,6 +4240,16 @@ async def cmd_habits_picker(message, context: ContextTypes.DEFAULT_TYPE | None =
     await open_habit_picker(message)
 
 
+async def cmd_crossfit(message, context=None) -> None:
+    del context
+    if message.chat_id != MY_CHAT_ID:
+        return
+    if not (NOTION_WORKOUT_LOG_DB or NOTION_WOD_LOG_DB):
+        await message.reply_text("⚠️ CrossFit module isn't configured yet — add the workout DB env vars to Railway.", parse_mode="Markdown")
+        return
+    await message.reply_text("💪 *CrossFit*\n\nWhat would you like to do?", parse_mode="Markdown", reply_markup=crossfit_submenu_keyboard())
+
+
 async def cmd_notes_text(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
     del context
     if message.chat_id != MY_CHAT_ID:
@@ -4311,6 +4351,22 @@ async def route_classified_message_v10(message, text: str) -> None:
         return
 
     thinking = await message.reply_text("🧠 Got it...")
+    if NOTION_WORKOUT_LOG_DB or NOTION_WOD_LOG_DB:
+        try:
+            workout_result = await asyncio.get_event_loop().run_in_executor(None, lambda: classify_workout_message(text, claude, CLAUDE_MODEL, CLAUDE_MAX_TOK))
+        except Exception:
+            workout_result = {"type": "none"}
+        if workout_result.get("type") == "programme":
+            await thinking.delete()
+            await handle_cf_upload_programme(message, text, claude, notion, {"NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS, "CLAUDE_MODEL": CLAUDE_MODEL})
+            return
+        if workout_result.get("type") in ("strength", "conditioning") and workout_result.get("confidence") == "high":
+            await thinking.delete()
+            if workout_result.get("type") == "strength":
+                await handle_cf_strength_flow(message, workout_result, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB}, cf_pending)
+            else:
+                await handle_cf_wod_flow(message, workout_result, notion, {"NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB}, cf_pending)
+            return
     try:
         result = classify_message_v10(text)
     except Exception as e:
@@ -4399,6 +4455,8 @@ COMMAND_DISPATCH: dict[str, Callable] = {
     "done": cmd_done_bare,
     "/habits": cmd_habits_text,
     "🏃 habits": cmd_habits_picker,
+    "💪 crossfit": cmd_crossfit,
+    "💪crossfit": cmd_crossfit,
     "📝 notes": cmd_notes_text,
     "🌤️ weather": cmd_weather_text,
     "🔕 mute": cmd_mute_text,
@@ -4643,6 +4701,16 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             await message.reply_text(f"Couldn't find a task matching \"{match_unfocus.group(1).strip()}\".")
         return
 
+    if context.user_data.get("awaiting_programme_upload"):
+        context.user_data["awaiting_programme_upload"] = False
+        await handle_cf_upload_programme(message, text, claude, notion, {"NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS, "CLAUDE_MODEL": CLAUDE_MODEL})
+        return
+
+    cf_flow_key = context.user_data.get("cf_flow_key")
+    if cf_flow_key and cf_flow_key in cf_pending:
+        await handle_cf_text_reply(message, text, cf_flow_key, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_SUBS_DB": NOTION_SUBS_DB}, cf_pending)
+        return
+
     match_force = re.match(r"force:\s*(.+)$", text, re.IGNORECASE)
     if match_force:
         await create_or_prompt_task(message, match_force.group(1).strip(), force_create=True); return
@@ -4655,6 +4723,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await q.answer()
     parts = q.data.split(":")
     if await handle_v10_callback(q, parts):
+        return
+    if parts[0] == "cf":
+        await handle_cf_callback(q, parts, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_SUBS_DB": NOTION_SUBS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS, "CLAUDE_MODEL": CLAUDE_MODEL}, cf_pending)
+        if parts[1] == "upload_programme":
+            context.user_data["awaiting_programme_upload"] = True
+        else:
+            context.user_data["cf_flow_key"] = str(q.message.chat_id)
         return
 
     if parts[0] == "kind_task" and len(parts) == 2:
