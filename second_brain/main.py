@@ -273,6 +273,8 @@ current_lat: float | None = None
 current_lon: float | None = None
 location_state_file = STATE_DIR / "location_state.json"
 location_state_fallback_file = Path(__file__).resolve().parents[1] / ".second_brain_location_state.json"
+location_history_file = STATE_DIR / "location_history.json"
+location_history_fallback_file = Path(__file__).resolve().parents[1] / ".second_brain_location_history.json"
 entertainment_schemas: dict[str, dict] = {}
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -475,6 +477,59 @@ def _location_state_files() -> list[Path]:
     return [location_state_file, location_state_fallback_file]
 
 
+def _location_history_files() -> list[Path]:
+    """Return ordered location history paths (primary first, durable fallback second)."""
+    return [location_history_file, location_history_fallback_file]
+
+
+def save_location_history(raw_text: str) -> None:
+    """Persist recent location-related user messages for restart recovery."""
+    text = (raw_text or "").strip()
+    if not text:
+        return
+    history: list[str] = []
+    for file_path in _location_history_files():
+        try:
+            if file_path.exists():
+                payload = json.loads(file_path.read_text() or "[]")
+                if isinstance(payload, list):
+                    history = [str(item).strip() for item in payload if str(item).strip()]
+                    break
+        except Exception as e:
+            log.warning("Failed reading location history from %s: %s", file_path, e)
+    history = [item for item in history if item.lower() != text.lower()]
+    history.append(text)
+    history = history[-25:]
+    raw = json.dumps(history)
+    for file_path in _location_history_files():
+        try:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(raw)
+        except Exception as e:
+            log.error("Failed saving location history to %s: %s", file_path, e)
+
+
+def recover_location_from_history() -> bool:
+    """Recover location by replaying recent location updates/messages."""
+    history: list[str] = []
+    for file_path in _location_history_files():
+        try:
+            if not file_path.exists():
+                continue
+            payload = json.loads(file_path.read_text() or "[]")
+            if isinstance(payload, list):
+                history = [str(item).strip() for item in payload if str(item).strip()]
+                if history:
+                    break
+        except Exception as e:
+            log.warning("Failed loading location history from %s: %s", file_path, e)
+    for candidate in reversed(history):
+        if set_location_smart(candidate):
+            log.info("Recovered weather location from history: %s", current_location)
+            return True
+    return False
+
+
 def save_location_state() -> None:
     """Persist current weather location to disk."""
     payload = {"location": current_location, "lat": current_lat, "lon": current_lon}
@@ -670,6 +725,7 @@ def set_location_smart(user_text: str) -> bool:
     """Resolve user-provided location with Claude-assisted normalization."""
     for query in normalize_location_with_claude(user_text):
         if set_location(query):
+            save_location_history(user_text)
             return True
 
     # Fallback: if a ZIP code is present, try OpenWeather ZIP geocoding route.
@@ -687,7 +743,9 @@ def set_location_smart(user_text: str) -> bool:
             lat = payload.get("lat")
             lon = payload.get("lon")
             if lat is not None and lon is not None:
-                return set_location(f"{payload.get('name') or zip_value}, {payload.get('country') or 'US'}")
+                if set_location(f"{payload.get('name') or zip_value}, {payload.get('country') or 'US'}"):
+                    save_location_history(user_text)
+                    return True
         except Exception as e:
             log.warning("ZIP location fallback failed for %s: %s", zip_value, e)
     return False
@@ -6025,7 +6083,8 @@ async def post_init(app: Application) -> None:
     load_mute_state()
     load_location_state()
     if OPENWEATHER_KEY and (current_lat is None or current_lon is None):
-        set_location_smart(current_location)
+        if not set_location_smart(current_location):
+            recover_location_from_history()
     load_habit_cache()
     global _app_bot
     _app_bot = app.bot
