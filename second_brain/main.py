@@ -272,6 +272,7 @@ current_location: str = WEATHER_LOCATION
 current_lat: float | None = None
 current_lon: float | None = None
 location_state_file = STATE_DIR / "location_state.json"
+location_state_fallback_file = Path(__file__).resolve().parents[1] / ".second_brain_location_state.json"
 entertainment_schemas: dict[str, dict] = {}
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -469,13 +470,25 @@ def is_muted() -> bool:
     return True
 
 
+def _location_state_files() -> list[Path]:
+    """Return ordered location state file paths (primary first, durable fallback second)."""
+    return [location_state_file, location_state_fallback_file]
+
+
 def save_location_state() -> None:
     """Persist current weather location to disk."""
-    try:
-        payload = {"location": current_location, "lat": current_lat, "lon": current_lon}
-        location_state_file.write_text(json.dumps(payload))
-    except Exception as e:
-        log.error("Failed saving location state: %s", e)
+    payload = {"location": current_location, "lat": current_lat, "lon": current_lon}
+    raw = json.dumps(payload)
+    saved_any = False
+    for file_path in _location_state_files():
+        try:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(raw)
+            saved_any = True
+        except Exception as e:
+            log.error("Failed saving location state to %s: %s", file_path, e)
+    if not saved_any:
+        log.error("Failed saving location state to all configured paths")
 
 
 def load_location_state() -> None:
@@ -484,17 +497,22 @@ def load_location_state() -> None:
     current_location = WEATHER_LOCATION
     current_lat = None
     current_lon = None
-    try:
-        if not location_state_file.exists():
+
+    for file_path in _location_state_files():
+        try:
+            if not file_path.exists():
+                continue
+            payload = json.loads(file_path.read_text() or "{}")
+            current_location = payload.get("location") or WEATHER_LOCATION
+            lat_raw = payload.get("lat")
+            lon_raw = payload.get("lon")
+            current_lat = float(lat_raw) if lat_raw not in (None, "") else None
+            current_lon = float(lon_raw) if lon_raw not in (None, "") else None
+            if file_path != location_state_file:
+                save_location_state()
             return
-        payload = json.loads(location_state_file.read_text() or "{}")
-        current_location = payload.get("location") or WEATHER_LOCATION
-        lat_raw = payload.get("lat")
-        lon_raw = payload.get("lon")
-        current_lat = float(lat_raw) if lat_raw not in (None, "") else None
-        current_lon = float(lon_raw) if lon_raw not in (None, "") else None
-    except Exception as e:
-        log.error("Failed loading location state: %s", e)
+        except Exception as e:
+            log.error("Failed loading location state from %s: %s", file_path, e)
 
 
 def set_location(location: str) -> bool:
