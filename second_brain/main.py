@@ -137,13 +137,16 @@ def _resolve_state_dir() -> Path:
     Priority:
     1) BOT_STATE_DIR env override.
     2) /data (common mounted persistent disk path on PaaS providers).
-    3) Current working directory.
+    3) ~/.second_brain_bot (stable fallback across varying working dirs).
+    4) Current working directory.
     """
     override = os.environ.get("BOT_STATE_DIR", "").strip()
     if override:
         state_dir = Path(override).expanduser()
     elif Path("/data").exists():
         state_dir = Path("/data")
+    elif Path.home().exists():
+        state_dir = Path.home() / ".second_brain_bot"
     else:
         state_dir = Path.cwd()
 
@@ -773,7 +776,20 @@ def digest_location_label() -> str:
         city, state, country = parts[0], parts[1], parts[2]
         country_upper = country.upper()
         if country_upper in {"US", "USA", "UNITED STATES", "UNITED STATES OF AMERICA"}:
-            state_abbr = state.upper() if len(state) <= 3 else state[:2].upper()
+            us_state_map = {
+                "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR", "california": "CA",
+                "colorado": "CO", "connecticut": "CT", "delaware": "DE", "florida": "FL", "georgia": "GA",
+                "hawaii": "HI", "idaho": "ID", "illinois": "IL", "indiana": "IN", "iowa": "IA",
+                "kansas": "KS", "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
+                "massachusetts": "MA", "michigan": "MI", "minnesota": "MN", "mississippi": "MS", "missouri": "MO",
+                "montana": "MT", "nebraska": "NE", "nevada": "NV", "new hampshire": "NH", "new jersey": "NJ",
+                "new mexico": "NM", "new york": "NY", "north carolina": "NC", "north dakota": "ND", "ohio": "OH",
+                "oklahoma": "OK", "oregon": "OR", "pennsylvania": "PA", "rhode island": "RI", "south carolina": "SC",
+                "south dakota": "SD", "tennessee": "TN", "texas": "TX", "utah": "UT", "vermont": "VT",
+                "virginia": "VA", "washington": "WA", "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY",
+            }
+            state_clean = state.strip()
+            state_abbr = us_state_map.get(state_clean.lower(), state_clean.upper() if len(state_clean) <= 3 else state_clean[:2].upper())
             return f"{city}, {state_abbr}"
         return f"{city}, {country}"
     if len(parts) == 2:
