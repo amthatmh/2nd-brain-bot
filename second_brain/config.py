@@ -36,6 +36,7 @@ NOTION_HABIT_DB = os.environ["NOTION_HABIT_DB"]
 NOTION_LOG_DB = os.environ["NOTION_LOG_DB"]
 NOTION_NOTES_DB = os.environ["NOTION_NOTES_DB"]
 NOTION_DIGEST_SELECTOR_DB = os.environ["NOTION_DIGEST_SELECTOR_DB"]
+NOTION_DAILY_LOG_DB = os.environ.get("NOTION_DAILY_LOG_DB", "")
 
 TZ = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
 RECURRING_CHECK_TIME = parse_hhmm_env("RECURRING_CHECK_TIME", "7:00")
