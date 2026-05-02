@@ -1,19 +1,14 @@
 #!/usr/bin/env python3
 """
-Second Brain — Telegram Bot (v12.0)
+Second Brain — Telegram Bot (v13.0)
 ────────────────────────────────────────────────────────────────
-v12 — CrossFit module:
-- 💪 CrossFit ReplyKeyboard button (3×3 grid)
-- Section B strength log → Workout Log v2 + PR detection
-- Section C conditioning log → WOD Log
-- Weekly programme upload + parse (Sonnet, 4000 tokens)
-- Subs & Add-ons query
-- Readiness flow (sleep/mood/energy/soreness/stress)
-- Partner? flag auto-detected for Thu/Sat
-- Model upgraded to claude-sonnet-4-6 globally
-- CLAUDE_PARSE_MAX_TOKENS=4000 for programme parsing
-- CrossFit/Hyrox terms removed from habit classifier
-- workout_log intent priority above all others in classifier
+v13 changes (daily log layer added on top of v12):
+- generate_daily_log() writes end-of-day narrative to 📓 Daily Log Notion DB
+- Digest Selector Signoff checkbox routes slot to log generation, not digest
+- Slots with nothing checked are now silently skipped (no digest sent)
+- signoff: <text> command stores user note for tonight's log
+- Morning digest includes link to previous night's log
+- NOTION_DAILY_LOG_DB env var added to config
 """
 
 import asyncio
@@ -177,6 +172,7 @@ NOTION_SPORTS_LOG_DB = os.environ.get("NOTION_SPORTS_LOG_DB", os.environ.get("NO
 NOTION_FAVE_DB = os.environ.get("NOTION_FAVE_DB", "").strip()
 NOTION_NOTES_DB = os.environ["NOTION_NOTES_DB"]    # 📒 Notes
 NOTION_DIGEST_SELECTOR_DB = os.environ["NOTION_DIGEST_SELECTOR_DB"]
+NOTION_DAILY_LOG_DB = os.environ.get("NOTION_DAILY_LOG_DB", "")
 
 TZ           = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
 _rc_h, _rc_m = _parse_hhmm_env("RECURRING_CHECK_TIME", "7:00")
@@ -194,7 +190,7 @@ NOTION_PRS_DB = os.environ.get("NOTION_PRS_DB", "")
 NOTION_WOD_LOG_DB = os.environ.get("NOTION_WOD_LOG_DB", "")
 HTTP_PORT      = int(os.environ.get("PORT", "8080"))
 WEEKS_HISTORY  = int(os.environ.get("WEEKS_HISTORY", "52"))
-APP_VERSION    = os.environ.get("APP_VERSION", "v11.0.0")
+APP_VERSION    = os.environ.get("APP_VERSION", "v13.0.0")
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "").strip()
 WEATHER_LOCATION = os.environ.get("WEATHER_LOCATION", "Chicago,IL").strip()
 UV_THRESHOLD = float(os.environ.get("UV_THRESHOLD", "3"))
@@ -267,6 +263,8 @@ _digest_catchup_sent: set[str] = set()
 _digest_slot_sent_today: set[str] = set()
 notified_goals_this_week: set[str] = set()
 mute_until: datetime | None = None
+_signoff_note_today: str = ""
+_last_daily_log_url: str = ""
 _app_bot = None  # set during post_init for health route bot access
 STATE_DIR = _resolve_state_dir()
 mute_state_file = STATE_DIR / "mute_state.json"
@@ -1201,8 +1199,7 @@ def load_digest_slots() -> list[dict]:
         # a slot can intentionally send a habits-only digest without task spillover.
         contexts = selected_contexts
 
-        if not contexts and not include_habits:
-            continue
+        is_signoff = bool(props.get("Signoff", {}).get("checkbox", False))
 
         slot_key = (slot_time, is_weekday)
         if slot_key in seen_slot_keys:
@@ -1217,6 +1214,7 @@ def load_digest_slots() -> list[dict]:
                 "include_habits": include_habits,
                 "max_items": max_items,
                 "contexts": contexts,
+                "is_signoff": is_signoff,
             }
         )
 
@@ -2325,6 +2323,58 @@ def set_focus(page_id: str, focused: bool) -> None:
 
 def set_last_generated(page_id: str, d: date) -> None:
     notion.pages.update(page_id=page_id, properties={"Last Generated": {"date": {"start": d.isoformat()}}})
+
+
+def store_signoff_note(text: str) -> None:
+    global _signoff_note_today
+    _signoff_note_today = text.strip()
+    log.info("Signoff note stored: %s", text[:80])
+
+
+def get_and_clear_signoff_note() -> str:
+    global _signoff_note_today
+    note = _signoff_note_today
+    _signoff_note_today = ""
+    return note
+
+
+def _notion_markdown_to_blocks(text: str) -> list[dict]:
+    """
+    Convert a simple markdown string to Notion block objects.
+    Supports: ## headings, bullet lines starting with •, plain paragraphs.
+    Italic markers (_text_) are stripped for paragraph blocks.
+    """
+    blocks = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("## "):
+            blocks.append({
+                "object": "block",
+                "type": "heading_2",
+                "heading_2": {
+                    "rich_text": [{"type": "text", "text": {"content": line[3:]}}]
+                },
+            })
+        elif line.startswith("• "):
+            blocks.append({
+                "object": "block",
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {
+                    "rich_text": [{"type": "text", "text": {"content": line[2:]}}]
+                },
+            })
+        else:
+            content = line.strip("_")
+            blocks.append({
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [{"type": "text", "text": {"content": content}}]
+                },
+            })
+    return blocks
 
 
 def _get_prop(props: dict, key: str, kind: str):
@@ -4908,6 +4958,16 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         await handle_cf_text_reply(message, text, cf_flow_key, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_PRS_DB": NOTION_PRS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB}, cf_pending)
         return
 
+    match_signoff = re.match(r"signoff:\s*(.+)$", text, re.IGNORECASE)
+    if match_signoff:
+        note = match_signoff.group(1).strip()
+        store_signoff_note(note)
+        await message.reply_text(
+            f"📓 Signoff noted — I'll include this in tonight's log.\n\n_{note}_",
+            parse_mode="Markdown",
+        )
+        return
+
     match_force = re.match(r"force:\s*(.+)$", text, re.IGNORECASE)
     if match_force:
         await create_or_prompt_task(message, match_force.group(1).strip(), force_create=True); return
@@ -5473,7 +5533,17 @@ async def send_digest_for_slot(bot, slot: dict) -> None:
         config.get("contexts"),
         config.get("max_items"),
     )
-    if not config.get("contexts") and config.get("include_habits") is False:
+    is_signoff = slot.get("is_signoff", False)
+
+    if not config.get("contexts") and not config.get("include_habits") and not is_signoff:
+        log.info(
+            "Skipping slot %s — nothing selected (no contexts, habits, or signoff)",
+            slot.get("time"),
+        )
+        return
+
+    if is_signoff:
+        await generate_daily_log(bot)
         return
     await send_daily_digest(bot, include_habits=slot["include_habits"], config=config)
     _digest_slot_sent_today.add(slot_key)
@@ -5589,6 +5659,135 @@ async def refresh_digest_schedule_job(bot, scheduler) -> None:
     build_digest_schedule(scheduler, bot)
 
 
+async def generate_daily_log(bot) -> None:
+    """
+    Generates end-of-day narrative log and writes it to 📓 Daily Log Notion DB.
+    Triggered by a Digest Selector slot with Signoff=True (typically 23:59).
+    Runs silently — no Telegram message at generation time.
+    Link is sent next morning via send_daily_digest().
+    """
+    if not NOTION_DAILY_LOG_DB:
+        log.warning("generate_daily_log: NOTION_DAILY_LOG_DB not configured, skipping")
+        return
+
+    today = datetime.now(TZ).date()
+    today_str = today.isoformat()
+    date_label = today.strftime("%A, %B %-d, %Y")
+
+    log.info("generate_daily_log: starting for %s", today_str)
+    completed_tasks = []
+    try:
+        try:
+            completed_results = notion.databases.query(database_id=NOTION_DB_ID, filter={"and": [{"property": "Done", "checkbox": {"equals": True}}, {"property": "Last Edited Time", "date": {"equals": today_str}}]})
+            completed_tasks = [_get_prop(p["properties"], "Name", "title") or "Untitled" for p in completed_results.get("results", [])]
+        except Exception:
+            log.warning("generate_daily_log: Last Edited Time filter unsupported, using Python fallback")
+            all_done = notion.databases.query(database_id=NOTION_DB_ID, filter={"property": "Done", "checkbox": {"equals": True}})
+            for p in all_done.get("results", []):
+                if (p.get("last_edited_time") or "")[:10] == today_str:
+                    completed_tasks.append(_get_prop(p["properties"], "Name", "title") or "Untitled")
+    except Exception as e:
+        log.error("generate_daily_log: error fetching completed tasks: %s", e)
+
+    deferred_tasks = []
+    try:
+        deferred_results = notion.databases.query(database_id=NOTION_DB_ID, filter={"and": [{"property": "Done", "checkbox": {"equals": False}}, {"property": "Deadline", "date": {"equals": today_str}}]})
+        deferred_tasks = [_get_prop(p["properties"], "Name", "title") or "Untitled" for p in deferred_results.get("results", [])]
+    except Exception as e:
+        log.error("generate_daily_log: error fetching deferred tasks: %s", e)
+
+    habits_logged = []
+    try:
+        habit_log_results = notion.databases.query(database_id=NOTION_LOG_DB, filter={"and": [{"property": "Completed", "checkbox": {"equals": True}}, {"property": "Date", "date": {"equals": today_str}}]})
+        for p in habit_log_results.get("results", []):
+            entry_parts = p["properties"].get("Entry", {}).get("title", [])
+            entry_text = "".join(part.get("text", {}).get("content", "") for part in entry_parts)
+            habit_name = entry_text.split(" — ")[0].strip()
+            if habit_name:
+                habits_logged.append(habit_name)
+    except Exception as e:
+        log.error("generate_daily_log: error fetching habit logs: %s", e)
+    habits_count = len(habits_logged)
+
+    notes_captured = []
+    try:
+        if NOTION_NOTES_DB:
+            notes_results = notion.databases.query(database_id=NOTION_NOTES_DB, filter={"property": "Date Created", "date": {"equals": today_str}})
+            for p in notes_results.get("results", []):
+                title_parts = p["properties"].get("Title", {}).get("title", [])
+                title_text = "".join(part.get("text", {}).get("content", "") for part in title_parts).strip()
+                if title_text:
+                    notes_captured.append(title_text)
+    except Exception as e:
+        log.error("generate_daily_log: error fetching notes: %s", e)
+
+    signoff_note = get_and_clear_signoff_note()
+
+    def _bullet_list(items: list[str]) -> str:
+        return "\n".join(f"- {i}" for i in items) if items else "None"
+
+    prompt = f"""You are writing the end-of-day log entry for a personal second brain system.
+Today is {date_label}.
+
+Here is what happened today:
+
+TASKS COMPLETED ({len(completed_tasks)}):
+{_bullet_list(completed_tasks)}
+
+TASKS DUE TODAY BUT DEFERRED ({len(deferred_tasks)}):
+{_bullet_list(deferred_tasks)}
+
+HABITS LOGGED ({habits_count}):
+{_bullet_list(habits_logged)}
+
+NOTES CAPTURED ({len(notes_captured)}):
+{_bullet_list(notes_captured)}
+
+USER'S SIGNOFF NOTE (their own words about what they worked on today, including any Claude.ai conversations and decisions made):
+{signoff_note if signoff_note else "None provided"}
+
+Write a daily log entry in two parts. Be concise, honest, and personal.
+
+Return ONLY valid JSON, no markdown fences:
+{{
+  "summary": "1-3 line narrative, or empty string if nothing notable",
+  "key_learnings": "bullet points as single string, each starting with • on new line, or empty string"
+}}"""
+
+    summary = ""
+    key_learnings = ""
+    try:
+        resp = claude.messages.create(model=CLAUDE_MODEL, max_tokens=600, messages=[{"role": "user", "content": prompt}])
+        raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
+        result = json.loads(raw)
+        summary = (result.get("summary") or "").strip()
+        key_learnings = (result.get("key_learnings") or "").strip()
+    except Exception as e:
+        log.error("generate_daily_log: Claude call failed: %s", e)
+        key_learnings = f"Log generation failed: {e}"
+
+    page_body_parts = []
+    if summary: page_body_parts.append(f"## Summary\n\n{summary}")
+    if key_learnings: page_body_parts.append(f"## Key Learnings\n\n{key_learnings}")
+    if completed_tasks: page_body_parts.append("## Completed\n\n" + "\n".join(f"• {t}" for t in completed_tasks))
+    if deferred_tasks: page_body_parts.append("## Deferred\n\n" + "\n".join(f"• {t}" for t in deferred_tasks))
+    if signoff_note: page_body_parts.append(f"## Signoff Note\n\n_{signoff_note}_")
+    page_content = "\n\n".join(page_body_parts) if page_body_parts else "_Light day — nothing notable to log._"
+
+    props = {"Date": {"title": [{"text": {"content": date_label}}]}, "Tasks Completed": {"number": len(completed_tasks)}, "Habits Logged": {"number": habits_count}, "Generated At": {"date": {"start": datetime.now(TZ).isoformat()}}}
+    if summary: props["Summary"] = {"rich_text": [{"text": {"content": summary[:2000]}}]}
+    if key_learnings: props["Key Learnings"] = {"rich_text": [{"text": {"content": key_learnings[:2000]}}]}
+    if signoff_note: props["Signoff Note"] = {"rich_text": [{"text": {"content": signoff_note[:2000]}}]}
+
+    try:
+        page = notion.pages.create(parent={"database_id": NOTION_DAILY_LOG_DB}, properties=props, children=_notion_markdown_to_blocks(page_content))
+        global _last_daily_log_url
+        _last_daily_log_url = f"https://www.notion.so/{page['id'].replace('-', '')}"
+        log.info("generate_daily_log: written for %s — %d completed, %d deferred, %d habits", today_str, len(completed_tasks), len(deferred_tasks), habits_count)
+    except Exception as e:
+        log.error("generate_daily_log: Notion write failed: %s", e)
+
+
 async def send_daily_digest(bot, include_habits: bool = True, config: dict | None = None) -> None:
     global last_digest_msg_id
     if is_muted():
@@ -5674,6 +5873,16 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         digest_map[sent_digest.message_id] = ordered
     last_digest_msg_id = sent_digest.message_id
     log.info("Consolidated daily digest sent — %d tasks, %d habits", len(ordered), len(habits))
+
+    global _last_daily_log_url
+    if _last_daily_log_url:
+        await bot.send_message(
+            chat_id=MY_CHAT_ID,
+            text=f"📓 [Yesterday's log]({_last_daily_log_url})",
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+        )
+        _last_daily_log_url = ""
 
 
 async def send_evening_checkin(bot) -> None:
