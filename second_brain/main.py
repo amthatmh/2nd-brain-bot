@@ -108,6 +108,7 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
 log = logging.getLogger(__name__)
+JSON_STATE_FILE = "./bot_state.json"
 
 
 def _parse_hhmm_env(var_name: str, default: str) -> tuple[int, int]:
@@ -271,7 +272,7 @@ mute_state_file = STATE_DIR / "mute_state.json"
 current_location: str = WEATHER_LOCATION
 current_lat: float | None = None
 current_lon: float | None = None
-location_state_file = STATE_DIR / "location_state.json"
+location_state_file = Path(JSON_STATE_FILE)
 location_state_fallback_file = Path(__file__).resolve().parents[1] / ".second_brain_location_state.json"
 location_history_file = STATE_DIR / "location_history.json"
 location_history_fallback_file = Path(__file__).resolve().parents[1] / ".second_brain_location_history.json"
@@ -530,9 +531,9 @@ def recover_location_from_history() -> bool:
     return False
 
 
-def save_location_state() -> None:
+def save_location_state(location: str) -> None:
     """Persist current weather location to disk."""
-    payload = {"location": current_location, "lat": current_lat, "lon": current_lon}
+    payload = {"last_weather_location": location}
     raw = json.dumps(payload)
     saved_any = False
     for file_path in _location_state_files():
@@ -549,7 +550,7 @@ def save_location_state() -> None:
 def load_location_state() -> None:
     """Load weather location from disk or fallback environment defaults."""
     global current_location, current_lat, current_lon
-    current_location = WEATHER_LOCATION
+    current_location = ""
     current_lat = None
     current_lon = None
 
@@ -558,16 +559,12 @@ def load_location_state() -> None:
             if not file_path.exists():
                 continue
             payload = json.loads(file_path.read_text() or "{}")
-            current_location = payload.get("location") or WEATHER_LOCATION
-            lat_raw = payload.get("lat")
-            lon_raw = payload.get("lon")
-            current_lat = float(lat_raw) if lat_raw not in (None, "") else None
-            current_lon = float(lon_raw) if lon_raw not in (None, "") else None
+            current_location = (payload.get("last_weather_location") or "").strip()
             if file_path != location_state_file:
-                save_location_state()
+                save_location_state(current_location)
             return
         except Exception as e:
-            log.error("Failed loading location state from %s: %s", file_path, e)
+            log.warning("Failed loading location state from %s: %s", file_path, e)
 
 
 def set_location(location: str) -> bool:
@@ -600,7 +597,7 @@ def set_location(location: str) -> bool:
         weather_cache["current"] = {"timestamp": None, "data": None}
         weather_cache["today"] = {"timestamp": None, "data": None}
         weather_cache["tomorrow"] = {"timestamp": None, "data": None}
-        save_location_state()
+        save_location_state(current_location)
         return True
     except Exception as e:
         log.error("Location geocode failed for %s: %s", location, e)
@@ -4383,7 +4380,17 @@ async def cmd_weather_text(message, context: ContextTypes.DEFAULT_TYPE | None = 
     del context
     if message.chat_id != MY_CHAT_ID:
         return
-    await message.reply_text(format_weather_snapshot(), parse_mode="Markdown")
+    if not current_location:
+        await message.reply_text("📍 What location should I use for weather? (city/state/country or ZIP)")
+        return
+    await message.reply_text(await handle_weather(current_location), parse_mode="Markdown")
+
+
+async def handle_weather(location: str) -> str:
+    """Return weather output for a confirmed location."""
+    if not location:
+        return "📍 I need a location first. Send `weather: <city>` or `/location`."
+    return format_weather_snapshot()
 
 
 async def cmd_mute_text(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
@@ -4616,10 +4623,30 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         if set_location_smart(text):
             context.user_data["awaiting_location"] = False
             await message.reply_text(f"📍 Location updated to {current_location}.")
+            save_location_state(current_location)
+            await message.reply_text(await handle_weather(current_location), parse_mode="Markdown")
         else:
             await message.reply_text(
                 "Couldn't find that location. Try city/state/country or ZIP (example: Chicago IL 60605)."
             )
+        return
+
+    if lower == "weather" or lower.startswith("weather:"):
+        requested_location = ""
+        if lower.startswith("weather:"):
+            requested_location = text.split(":", 1)[1].strip()
+            if requested_location:
+                if not set_location_smart(requested_location):
+                    await message.reply_text(
+                        "Couldn't find that location. Try city/state/country or ZIP (example: Chicago IL 60605)."
+                    )
+                    return
+                save_location_state(current_location)
+        if not current_location:
+            context.user_data["awaiting_location"] = True
+            await message.reply_text("📍 What location should I use for weather? (city/state/country or ZIP)")
+            return
+        await message.reply_text(await handle_weather(current_location), parse_mode="Markdown")
         return
 
     pending_sport_competition = pending_sport_competition_map.get(update.effective_chat.id)
