@@ -829,7 +829,7 @@ def fetch_uvi_data() -> dict | None:
     if not OPENWEATHER_KEY or current_lat is None or current_lon is None:
         return None
     try:
-        resp = requests.get(
+        resp = httpx.get(
             "https://api.openweathermap.org/data/3.0/onecall",
             params={
                 "lat": current_lat,
