@@ -197,6 +197,7 @@ WEEKS_HISTORY  = int(os.environ.get("WEEKS_HISTORY", "52"))
 APP_VERSION    = os.environ.get("APP_VERSION", "v11.0.0")
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "").strip()
 WEATHER_LOCATION = os.environ.get("WEATHER_LOCATION", "Chicago,IL").strip()
+UV_THRESHOLD = float(os.environ.get("UV_THRESHOLD", "3"))
 SUNDAY_REVIEW_CARD_LIMIT = max(1, int(os.environ.get("SUNDAY_REVIEW_CARD_LIMIT", "6")))
 
 # ── Asana sync config ────────────────────────────────────────────────────────
@@ -820,6 +821,35 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
         return None
 
 
+
+
+def fetch_daily_uv_max() -> float | None:
+    """
+    Fetch today's forecasted UV index max via One Call API 3.0.
+    Returns the float UV value, or None if the fetch fails.
+    """
+    if not OPENWEATHER_KEY or current_lat is None or current_lon is None:
+        return None
+    try:
+        resp = httpx.get(
+            "https://api.openweathermap.org/data/3.0/onecall",
+            params={
+                "lat": current_lat,
+                "lon": current_lon,
+                "exclude": "current,minutely,hourly,alerts",
+                "appid": OPENWEATHER_KEY,
+            },
+            timeout=5,
+        )
+        resp.raise_for_status()
+        daily = resp.json().get("daily", [])
+        if daily:
+            return float(daily[0].get("uvi", 0))
+        return None
+    except Exception as e:
+        log.error(f"UV fetch error: {e}")
+        return None
+
 def format_weather_block(weather: dict | None, label: str = "🌤️") -> str:
     """Format weather payload into digest-friendly text."""
     def fmt_temp_pair(temp_c: float | int) -> tuple[str, str]:
@@ -1023,6 +1053,7 @@ def get_active_habits_for_trigger() -> list[dict]:
                     "time_str": time_str,
                     "frequency": frequency,
                     "completion_count": completion_count,
+                    "weather_gated": props.get("Weather Gated", {}).get("checkbox", False),
                 }
             )
         except Exception as e:
@@ -5592,7 +5623,19 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     if config and config.get("include_habits") is not None:
         habits_enabled = bool(config.get("include_habits"))
     if habits_enabled:
-        habits = pending_habits_for_digest()
+        morning_habits_all = get_habits_by_time("🌅 Morning") + get_habits_by_time("🕐 Anytime")
+        morning_habits_all = [h for h in morning_habits_all if not already_logged_today(h["page_id"]) and not is_on_pace(h)]
+        uv_max = fetch_daily_uv_max()
+        if uv_max is not None:
+            habits = [
+                h for h in morning_habits_all
+                if not h.get("weather_gated") or uv_max >= UV_THRESHOLD
+            ]
+            log.info(f"UV max today: {uv_max} — threshold: {UV_THRESHOLD}")
+        else:
+            # UV fetch failed — fail open so weather-gated habits are not silently dropped
+            habits = morning_habits_all
+            log.warning("UV fetch failed — showing all habits including weather-gated ones")
 
     if overdue:
         lines.append("🚨 *Overdue*")
