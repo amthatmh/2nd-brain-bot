@@ -821,31 +821,33 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
 
 
 
-def fetch_daily_uv_max() -> float | None:
+def fetch_uvi_data() -> dict | None:
     """
-    Fetch today's forecasted UV index max via One Call API 3.0.
-    Returns the float UV value, or None if the fetch fails.
+    Fetch current UVI and today's forecasted max UVI via One Call API 3.0.
+    Returns {"current": float, "max": float} or None if fetch fails.
     """
     if not OPENWEATHER_KEY or current_lat is None or current_lon is None:
         return None
     try:
-        resp = httpx.get(
+        resp = requests.get(
             "https://api.openweathermap.org/data/3.0/onecall",
             params={
                 "lat": current_lat,
                 "lon": current_lon,
-                "exclude": "current,minutely,hourly,alerts",
+                "exclude": "minutely,hourly,alerts",
                 "appid": OPENWEATHER_KEY,
             },
             timeout=5,
         )
         resp.raise_for_status()
-        daily = resp.json().get("daily", [])
-        if daily:
-            return float(daily[0].get("uvi", 0))
-        return None
+        data = resp.json()
+        current_uvi = float(data.get("current", {}).get("uvi", 0))
+        daily = data.get("daily", [])
+        max_uvi = float(daily[0].get("uvi", 0)) if daily else current_uvi
+        log.info(f"UVI — current: {current_uvi}, max: {max_uvi}")
+        return {"current": current_uvi, "max": max_uvi}
     except Exception as e:
-        log.error(f"UV fetch error: {e}")
+        log.error(f"UVI fetch error: {e}")
         return None
 
 def format_weather_block(weather: dict | None, label: str = "🌤️") -> str:
@@ -912,7 +914,29 @@ def format_weather_snapshot() -> str:
             lines.append("Weather is unavailable: OPENWEATHER_KEY is missing or invalid.")
         else:
             lines.append("Weather is unavailable. Verify OpenWeather location (try /location) and API key access.")
+    uvi_data = fetch_uvi_data()
+    if uvi_data:
+        current = uvi_data["current"]
+        max_uvi = uvi_data["max"]
+        uvi_line = (
+            f"☀️ UVI: {current:.1f} now {uvi_emoji(current)} · "
+            f"{max_uvi:.1f} max {uvi_emoji(max_uvi)}"
+        )
+        lines.append(uvi_line)
     return "\n".join(lines)
+
+
+def uvi_emoji(uvi: float) -> str:
+    """WHO UV index colour scale."""
+    if uvi <= 2:
+        return "🟢"
+    if uvi <= 5:
+        return "🟡"
+    if uvi <= 7:
+        return "🟠"
+    if uvi <= 10:
+        return "🔴"
+    return "🟣"
 
 
 def append_location_to_weather_block(weather_block: str, location_label: str) -> str:
@@ -5809,6 +5833,10 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
     lines = [f"☀️ *{date_str}*", ""]
     weather_block = format_weather_block(fetch_weather("today"), label="🌤️")
+    uvi_data = fetch_uvi_data()
+    if weather_block and uvi_data:
+        max_uvi = uvi_data["max"]
+        weather_block += f" · ☀️ {max_uvi:.1f} {uvi_emoji(max_uvi)}"
     location_label = digest_location_label()
     if weather_block:
         lines.append(append_location_to_weather_block(weather_block, location_label))
@@ -5824,7 +5852,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     if habits_enabled:
         morning_habits_all = get_habits_by_time("🌅 Morning") + get_habits_by_time("🕐 Anytime")
         morning_habits_all = [h for h in morning_habits_all if not already_logged_today(h["page_id"]) and not is_on_pace(h)]
-        uv_max = fetch_daily_uv_max()
+        uv_max = uvi_data["max"] if uvi_data else None
         if uv_max is not None:
             habits = [
                 h for h in morning_habits_all
