@@ -4602,6 +4602,8 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not text:
         return
     lower = text.lower().strip()
+    command_head = lower.split(maxsplit=1)[0] if lower else ""
+    command_arg_text = text[len(text.split(maxsplit=1)[0]):].strip() if text.split(maxsplit=1) else ""
 
     if context.user_data.get("awaiting_mute_days"):
         try:
@@ -4629,6 +4631,23 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             await message.reply_text(
                 "Couldn't find that location. Try city/state/country or ZIP (example: Chicago IL 60605)."
             )
+        return
+
+    if command_head.startswith("/location"):
+        requested_location = command_arg_text.strip()
+        if requested_location:
+            if set_location_smart(requested_location):
+                context.user_data["awaiting_location"] = False
+                await message.reply_text(f"📍 Location updated to {current_location}.")
+                save_location_state(current_location)
+                await message.reply_text(await handle_weather(current_location), parse_mode="Markdown")
+            else:
+                await message.reply_text(
+                    "Couldn't find that location. Try city/state/country or ZIP (example: Chicago IL 60605)."
+                )
+            return
+        context.user_data["awaiting_location"] = True
+        await message.reply_text("📍 What location should I use for weather? (city/state/country or ZIP)")
         return
 
     if lower == "weather" or lower.startswith("weather:"):
@@ -6416,8 +6435,20 @@ async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Prompt for a new weather location."""
+    """Prompt for a new weather location or parse inline /location arguments."""
     if update.effective_chat.id != MY_CHAT_ID:
+        return
+    location_text = " ".join(context.args or []).strip()
+    if location_text:
+        if set_location_smart(location_text):
+            context.user_data["awaiting_location"] = False
+            await update.message.reply_text(f"📍 Location updated to {current_location}.")
+            save_location_state(current_location)
+            await update.message.reply_text(await handle_weather(current_location), parse_mode="Markdown")
+            return
+        await update.message.reply_text(
+            "Couldn't find that location. Try city/state/country or ZIP (example: Chicago IL 60605)."
+        )
         return
     context.user_data["awaiting_location"] = True
     await update.message.reply_text("📍 What location should I use for weather? (city/state/country or ZIP)")
