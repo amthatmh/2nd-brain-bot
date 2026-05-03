@@ -6,7 +6,7 @@ import asyncio
 
 from second_brain.crossfit.classify import classify_workout_message
 from second_brain.crossfit.handlers import handle_cf_strength_flow, handle_gymnastics_level_check, parse_rounds_reps, parse_time_to_seconds
-from second_brain.crossfit.notion import get_progressions_for_movement, set_current_level
+from second_brain.crossfit.notion import get_progressions_for_movement, save_programme, set_current_level
 
 
 class _FakeClaude:
@@ -111,3 +111,25 @@ def test_handle_gymnastics_level_check_false_for_compound():
     notion = SimpleNamespace(pages=SimpleNamespace(retrieve=lambda **kwargs: {"properties": {"Category": {"select": {"name": "Compound"}}}}))
     out = asyncio.run(handle_gymnastics_level_check(_DummyMessage(), "mov1", "Back Squat", notion, {"NOTION_PROGRESSIONS_DB": "p", "NOTION_MOVEMENTS_DB": "m"}, {}, "k"))
     assert out is False
+
+
+def test_classify_programme_fast_path():
+    text = "MONDAY\nPERFORMANCE\nB. Back Squat\nC. For Time\n" * 15
+    c = _FakeClaude("{}")
+    result = classify_workout_message(text, c, "model", 1000)
+    assert result["type"] == "programme"
+    assert result["confidence"] == "high"
+
+
+def test_classify_short_text_not_fast_path():
+    c = _FakeClaude('{"type":"strength","confidence":"high","movement":"Back Squat","load_lbs":225,"load_kg":102,"sets":5,"reps":3,"is_max_attempt":false,"wod_name":null,"format":null,"duration_mins":null,"partner":false}')
+    result = classify_workout_message("back squat 225 5x3", c, "model", 1000)
+    assert result["type"] == "strength"
+
+
+def test_save_programme_flat_fallback():
+    calls = []
+    notion = SimpleNamespace(pages=SimpleNamespace(create=lambda **kwargs: calls.append(kwargs) or {"id": "parent"}))
+    parsed = {"week_label": "Week of 2026-05-04", "days": [{"day": "Monday", "section_b": None, "section_c": None}]}
+    save_programme(notion, "program", "days", "", parsed, "raw")
+    assert len(calls) >= 2

@@ -49,32 +49,37 @@ async def handle_gymnastics_level_check(message, movement_page_id, movement_name
 
 
 async def handle_cf_upload_programme(message, text, claude_client, notion, config) -> None:
-    if not config.get("NOTION_WORKOUT_PROGRAM_DB") or not config.get("NOTION_MOVEMENTS_DB"):
+    if not config.get("NOTION_WORKOUT_PROGRAM_DB"):
         await message.reply_text("⚠️ CrossFit module isn't configured yet.", parse_mode="Markdown")
         return
     thinking = await message.reply_text("🧠 Parsing your programme...", parse_mode="Markdown")
-    parsed = await asyncio.get_event_loop().run_in_executor(None, lambda: parse_programme(text, claude_client, config.get("CLAUDE_MODEL", ""), config.get("CLAUDE_PARSE_MAX_TOKENS", 4000)))
-    if "tracks" not in parsed and "days" in parsed:
-        parsed = {
-            "week_label": parsed.get("week_label"),
-            "tracks": [{"track": "Performance", "days": parsed.get("days", [])}],
-        }
-    await asyncio.get_event_loop().run_in_executor(None, lambda: save_programme(notion, config["NOTION_WORKOUT_PROGRAM_DB"], config["NOTION_MOVEMENTS_DB"], parsed, text))
-    week_label = parsed.get("week_label") or "Unknown week"
+    try:
+        parsed = await asyncio.get_event_loop().run_in_executor(None, lambda: parse_programme(text, claude_client, config.get("CLAUDE_MODEL", "claude-sonnet-4-6"), config.get("CLAUDE_PARSE_MAX_TOKENS", 4000)))
+    except Exception as e:
+        await thinking.edit_text(f"⚠️ Couldn't parse programme: {e}")
+        return
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, lambda: save_programme(notion, config["NOTION_WORKOUT_PROGRAM_DB"], config.get("NOTION_WORKOUT_DAYS_DB", ""), config.get("NOTION_MOVEMENTS_DB", ""), parsed, text))
+    except Exception as e:
+        await thinking.edit_text(f"⚠️ Parsed but couldn't save to Notion: {e}")
+        return
+    week_label = parsed.get("week_label") or "Week"
     tracks = parsed.get("tracks", [])
-    lines = [f"📋 Week of {week_label}", ""]
-    dot_map = {"Performance": "🔵", "Fitness": "🟢", "Hyrox": "🟠"}
-    for track in tracks:
-        track_name = track.get("track") or "Track"
-        days = track.get("days", [])
-        lines.append(f"{dot_map.get(track_name, '⚪')} {track_name} — {len(days)} days")
-        for day in days:
-            day_name = (day.get("day") or day.get("name") or "?")[:3].title()
-            b_block = day.get("b_block") or day.get("b") or "B. —"
-            c_block = day.get("c_block") or day.get("c") or "C. —"
-            lines.append(f"  {day_name}: {b_block} | {c_block}")
+    lines = [f"📋 *{week_label}*\n"]
+    for t in tracks:
+        track_name = t.get("track", "Unknown")
+        days = t.get("days", [])
+        emoji = {"Performance": "🔵", "Fitness": "🟢", "Hyrox": "🟠"}.get(track_name, "⚪")
+        lines.append(f"{emoji} *{track_name}* — {len(days)} days")
+        for d in days[:7]:
+            b = d.get("section_b")
+            c = d.get("section_c")
+            b_str = f"B: {b['rep_scheme'] or 'Work'}" if b else ""
+            c_str = f"C: {c['format']} ({c['time_cap_mins']}min cap)" if c and c.get("format") and c.get("time_cap_mins") else (f"C: {c['format']}" if c and c.get("format") else "")
+            day_line = " | ".join(filter(None, [b_str, c_str]))
+            lines.append(f"  {d.get('day','?')[:3]}: {day_line}")
         lines.append("")
-    lines.append(f"_Saved to Weekly Programs ({len(tracks)} track rows)_")
+    lines.append(f"_Saved — {sum(len(t.get('days', [])) for t in tracks)} day rows across {len(tracks)} tracks_")
     await thinking.edit_text("\n".join(lines), parse_mode="Markdown")
 
 
@@ -145,10 +150,12 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
     elif parts[1] == "log_wod":
         await handle_cf_wod_flow(q.message, {}, notion, config, cf_pending)
     elif parts[1] == "upload_programme":
-        await q.message.reply_text(
-            "📋 *Upload Weekly Programme*\n\nPaste the full programme text now.\n_Performance track only is fine — I'll ignore Fitness and Hyrox._",
+        await q.edit_message_text(
+            "📋 *Upload Weekly Programme*\n\nPaste the full programme text now.\n_Paste the whole thing — I'll extract Performance, Fitness and Hyrox._",
             parse_mode="Markdown",
         )
+        cf_pending["__awaiting_upload__"] = True
+        return
     elif parts[1] == "subs":
         await handle_cf_subs_flow(q.message, notion, config, cf_pending)
     elif parts[1] == "prs":
@@ -159,12 +166,12 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         state["format"] = parts[3]
         state["stage"] = "notes"
         cf_pending[key] = state
-        await q.message.reply_text("📝 Any notes about this session?\n(Reply with text, or tap Skip)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]))
+        await q.edit_message_text("📝 Any notes about this session?\n(Reply with text, or tap Skip)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]))
     elif parts[1] == "subtype" and len(parts) >= 4:
         key = parts[2]
         state = cf_pending.get(key, {})
         rows = query_subs(notion, config.get("NOTION_SUBS_DB", ""), config.get("NOTION_MOVEMENTS_DB", ""), state.get("movement", ""), parts[3])
-        await q.message.reply_text("Nothing in Subs & Recs for that movement yet." if not rows else "\n".join([f"{i+1}. {r['name']} — {r['difficulty']}" for i, r in enumerate(rows)]), parse_mode="Markdown")
+        await q.edit_message_text("Nothing in Subs & Recs for that movement yet." if not rows else "\n".join([f"{i+1}. {r['name']} — {r['difficulty']}" for i, r in enumerate(rows)]), parse_mode="Markdown")
         cf_pending.pop(key, None)
     elif parts[1] == "skip" and len(parts) == 3:
         await _finalize_flow(q.message, parts[2], notion, config, cf_pending, None)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 import json
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from second_brain.notion import notion_call
 
 
@@ -26,6 +26,27 @@ def get_or_create_movement(notion, movements_db_id: str, name: str) -> str:
     page = notion_call(notion.pages.create, parent={"database_id": movements_db_id}, properties={"Name": {"title": [{"text": {"content": name}}]}, "Category": {"select": {"name": "Compound"}}})
     return page["id"]
 
+
+
+def this_monday() -> str:
+    today = date.today()
+    return (today - timedelta(days=today.weekday())).isoformat()
+
+
+def infer_section_b_type(section_b: dict) -> str:
+    section_b = section_b or {}
+    desc = (section_b.get("description") or "")
+    if section_b.get("is_strength_test"):
+        return "Strength Test"
+    if "EMOM" in desc:
+        return "EMOM"
+    if "Every" in desc:
+        return "Intervals"
+    if "skill" in desc.lower():
+        return "Skill"
+    return "Volume"
+
+
 def get_current_week_programme(notion, program_db_id: str):
     res = notion_call(notion.databases.query, database_id=program_db_id, sorts=[{"timestamp": "created_time", "direction": "descending"}], page_size=1).get("results", [])
     if not res: return None
@@ -37,15 +58,51 @@ def get_current_week_programme(notion, program_db_id: str):
     except Exception: parsed = None
     return {"page_id": p["id"], "name": _title(props), "full_program": full_text, "week_label": _title(props), "days_parsed": parsed}
 
-def save_programme(notion, program_db_id, movements_db_id, parsed, full_text):
-    names=set()
-    for d in parsed.get("days",[]):
-        for s in ("section_b","section_c"):
-            sec=d.get(s) or {}
-            for m in sec.get("movements",[]): names.add(m)
-    rel=[{"id": get_or_create_movement(notion,movements_db_id,m)} for m in sorted(names)]
-    page=notion_call(notion.pages.create,parent={"database_id":program_db_id},properties={"Name":{"title":[{"text":{"content":parsed.get("week_label","Week")}}]},"Full Program":{"rich_text":[{"text":{"content":full_text[:1900]}}]},"Rep Scheme":{"rich_text":[{"text":{"content":parsed.get("rep_scheme_this_week") or ""}}]},"Movements":{"relation":rel}})
-    return page["id"]
+def save_programme(notion, program_db_id: str, workout_days_db_id: str, movements_db_id: str, parsed: dict, full_text: str) -> str:
+    if "tracks" not in parsed and "days" in parsed:
+        parsed = {"week_label": parsed.get("week_label"), "tracks": [{"track": "Performance", "days": parsed.get("days", [])}]}
+    week_label = parsed.get("week_label") or "Week"
+    parent = notion_call(notion.pages.create, parent={"database_id": program_db_id}, properties={"Name": {"title": [{"text": {"content": week_label}}]}, "Full Program": {"rich_text": [{"text": {"content": full_text[:1900]}}]}})
+    parent_page_id = parent["id"]
+    monday_iso = this_monday()
+
+    for track_row in parsed.get("tracks", []):
+        track = track_row.get("track") or "Performance"
+        for day_row in track_row.get("days", []):
+            day = day_row.get("day") or "Monday"
+            section_b = day_row.get("section_b") or {}
+            section_c = day_row.get("section_c") or {}
+            training_notes = day_row.get("training_notes") or ""
+            b_desc = section_b.get("description") or ""
+            c_desc = section_c.get("description") or ""
+            b_ids, c_ids = [], []
+            for m in section_b.get("movements", []) or []:
+                if movements_db_id:
+                    b_ids.append(get_or_create_movement(notion, movements_db_id, m))
+            for m in section_c.get("movements", []) or []:
+                if movements_db_id:
+                    c_ids.append(get_or_create_movement(notion, movements_db_id, m))
+            if workout_days_db_id:
+                props = {
+                    "Name": {"title": [{"text": {"content": f"{day} — {track} — {week_label}"}}]},
+                    "Day": {"select": {"name": day}},
+                    "Track": {"select": {"name": track}},
+                    "Week": {"relation": [{"id": parent_page_id}]},
+                    "Week Of": {"date": {"start": monday_iso}},
+                    "Section B": {"rich_text": [{"text": {"content": b_desc[:1900]}}]},
+                    "Section B Type": {"select": {"name": infer_section_b_type(section_b)}},
+                    "Section B Movements": {"relation": [{"id": mid} for mid in b_ids]},
+                    "Section C": {"rich_text": [{"text": {"content": c_desc[:1900]}}]},
+                    "Section C Movements": {"relation": [{"id": mid} for mid in c_ids]},
+                    "Duration Mins": {"number": section_c.get("duration_mins")},
+                    "Time Cap Mins": {"number": section_c.get("time_cap_mins")},
+                    "Is Partner": {"checkbox": bool(section_c.get("is_partner"))},
+                    "Training Notes": {"rich_text": [{"text": {"content": training_notes[:1900]}}]},
+                }
+                if section_c.get("format"):
+                    props["Section C Format"] = {"select": {"name": section_c.get("format")}}
+                notion_call(notion.pages.create, parent={"database_id": workout_days_db_id}, properties=props)
+    return parent_page_id
 
 def get_previous_best(notion, prs_db_id, movement_page_id, reps):
     res=notion_call(notion.databases.query,database_id=prs_db_id,page_size=50).get("results",[])
