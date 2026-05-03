@@ -204,9 +204,9 @@ NOTION_FAVE_DB = os.environ.get("NOTION_FAVE_DB", "").strip()
 NOTION_NOTES_DB = os.environ["NOTION_NOTES_DB"]    # 📒 Notes
 NOTION_DIGEST_SELECTOR_DB = os.environ["NOTION_DIGEST_SELECTOR_DB"]
 NOTION_DAILY_LOG_DB = os.environ.get("NOTION_DAILY_LOG_DB", "")
-NOTION_PACKING_ITEMS_DB = os.environ["NOTION_PACKING_ITEMS_DB"]
-NOTION_TRIPS_DB         = os.environ["NOTION_TRIPS_DB"]
-OPENWEATHER_KEY     = os.environ["OPENWEATHER_KEY"]
+NOTION_PACKING_ITEMS_DB = os.environ.get("NOTION_PACKING_ITEMS_DB", "")
+NOTION_TRIPS_DB         = os.environ.get("NOTION_TRIPS_DB", "")
+OPENWEATHER_KEY     = os.environ.get("OPENWEATHER_KEY", "")
 
 TZ           = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
 _rc_h, _rc_m = _parse_hhmm_env("RECURRING_CHECK_TIME", "7:00")

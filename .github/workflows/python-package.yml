@@ -49,6 +49,9 @@ jobs:
         NOTION_CINEMA_LOG_DB: "x"
         NOTION_NOTES_DB: "x"
         NOTION_DIGEST_SELECTOR_DB: "x"
+        NOTION_PACKING_ITEMS_DB: "x"
+        NOTION_TRIPS_DB: "x"
+        OPENWEATHER_KEY: "x"
         HEALTH_STEPS_THRESHOLD: "10000"
         HEALTH_HABIT_NAME: "Steps"
       run: |
