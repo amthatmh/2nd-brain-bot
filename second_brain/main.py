@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Second Brain — Telegram Bot (v13.0)
+Second Brain — Telegram Bot (v13.1)
 ────────────────────────────────────────────────────────────────
 v13 changes (daily log layer added on top of v12):
 - generate_daily_log() writes end-of-day narrative to 📓 Daily Log Notion DB
@@ -9,6 +9,15 @@ v13 changes (daily log layer added on top of v12):
 - signoff: <text> command stores user note for tonight's log
 - Morning digest includes link to previous night's log
 - NOTION_DAILY_LOG_DB env var added to config
+
+v13.1 changes:
+- Carried Forward field added to Daily Log — rolling distillation of
+  live unresolved threads written nightly by Claude
+- generate_daily_log() reads last 3 days of Carried Forward entries
+  as context before writing tonight's entry
+- Claude prompt expanded to three parts: Summary, Key Learnings,
+  Carried Forward
+- max_tokens increased to 800 to accommodate third part
 """
 
 import asyncio
@@ -190,7 +199,7 @@ NOTION_PRS_DB = os.environ.get("NOTION_PRS_DB", "")
 NOTION_WOD_LOG_DB = os.environ.get("NOTION_WOD_LOG_DB", "")
 HTTP_PORT      = int(os.environ.get("PORT", "8080"))
 WEEKS_HISTORY  = int(os.environ.get("WEEKS_HISTORY", "52"))
-APP_VERSION    = os.environ.get("APP_VERSION", "v13.0.0")
+APP_VERSION    = os.environ.get("APP_VERSION", "v13.1.0")
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "").strip()
 WEATHER_LOCATION = os.environ.get("WEATHER_LOCATION", "Chicago,IL").strip()
 UV_THRESHOLD = float(os.environ.get("UV_THRESHOLD", "3"))
@@ -2360,6 +2369,49 @@ def get_and_clear_signoff_note() -> str:
     note = _signoff_note_today
     _signoff_note_today = ""
     return note
+
+
+def get_recent_carried_forward(days: int = 3) -> list[dict]:
+    """
+    Fetch Carried Forward content from the last N Daily Log entries.
+    Returns list of dicts: {date: str, carried_forward: str}
+    Sorted oldest to newest so Claude reads them in chronological order.
+    """
+    if not NOTION_DAILY_LOG_DB:
+        return []
+    try:
+        cutoff = (datetime.now(TZ).date() - timedelta(days=days)).isoformat()
+        results = notion.databases.query(
+            database_id=NOTION_DAILY_LOG_DB,
+            filter={
+                "property": "Generated At",
+                "date": {"on_or_after": cutoff},
+            },
+            sorts=[{"property": "Generated At", "direction": "ascending"}],
+        )
+        entries = []
+        for page in results.get("results", []):
+            props = page.get("properties", {})
+
+            title_parts = props.get("Date", {}).get("title", [])
+            date_label = "".join(
+                part.get("text", {}).get("content", "") for part in title_parts
+            ).strip()
+
+            cf_parts = props.get("Carried Forward", {}).get("rich_text", [])
+            carried_forward = "".join(
+                part.get("text", {}).get("content", "") for part in cf_parts
+            ).strip()
+
+            if date_label and carried_forward:
+                entries.append({
+                    "date": date_label,
+                    "carried_forward": carried_forward,
+                })
+        return entries
+    except Exception as e:
+        log.error("get_recent_carried_forward: error: %s", e)
+        return []
 
 
 def _notion_markdown_to_blocks(text: str) -> list[dict]:
@@ -5747,13 +5799,28 @@ async def generate_daily_log(bot) -> None:
 
     signoff_note = get_and_clear_signoff_note()
 
+    # ── 6. Fetch recent Carried Forward entries (up to 3 days) ───────────
+    recent_carried_forward = get_recent_carried_forward(days=3)
+
     def _bullet_list(items: list[str]) -> str:
         return "\n".join(f"- {i}" for i in items) if items else "None"
+
+    if recent_carried_forward:
+        cf_context = "\n\n".join(
+            f"{entry['date']}:\n{entry['carried_forward']}"
+            for entry in recent_carried_forward
+        )
+        cf_section = f"""CARRIED FORWARD FROM PREVIOUS DAYS (unresolved threads, up to 3 days):
+{cf_context}
+
+"""
+    else:
+        cf_section = "CARRIED FORWARD FROM PREVIOUS DAYS:\nNone — this may be the first log entry.\n\n"
 
     prompt = f"""You are writing the end-of-day log entry for a personal second brain system.
 Today is {date_label}.
 
-Here is what happened today:
+{cf_section}Here is what happened today:
 
 TASKS COMPLETED ({len(completed_tasks)}):
 {_bullet_list(completed_tasks)}
@@ -5770,25 +5837,60 @@ NOTES CAPTURED ({len(notes_captured)}):
 USER'S SIGNOFF NOTE (their own words about what they worked on today, including any Claude.ai conversations and decisions made):
 {signoff_note if signoff_note else "None provided"}
 
-Write a daily log entry in two parts. Be concise, honest, and personal.
+Write a daily log entry in three parts. Be concise, honest, and personal.
+
+PART 1 — SUMMARY:
+1 to 3 lines maximum. Can be a single line or empty string on a light day.
+Describe the shape of the day — not a list, a narrative.
+
+PART 2 — KEY LEARNINGS:
+What actually mattered today. What was built, decided, deferred and why,
+what patterns emerged.
+If a signoff note was provided, weight it heavily — it reflects the user's
+own assessment of the day including work done outside this system.
+If carried forward threads were resolved today, note it explicitly.
+If the day was light, say so honestly in one line. Never pad.
+Maximum 5 bullet points starting with •. Can be fewer. Can be empty.
+
+PART 3 — CARRIED FORWARD:
+Distill what is still live and unresolved going into tomorrow.
+Sources to draw from:
+- Unresolved threads from previous Carried Forward entries that did not
+  resolve today
+- Deferred tasks that have appeared more than once (pattern of avoidance)
+- Ideas or decisions from today's Key Learnings that have no action yet
+- Anything from the signoff note that implies follow-up
+
+Rules:
+- Drop anything that resolved today — completed tasks, closed decisions
+- Maximum 5 bullet points starting with •
+- Can be empty if everything is resolved or the day was truly light
+- Write each point as a live thread, not a task — e.g.
+  "• Daily Log Carried Forward logic — shipped v13.1, watching for edge cases"
+  not "• Check if Carried Forward works"
 
 Return ONLY valid JSON, no markdown fences:
 {{
   "summary": "1-3 line narrative, or empty string if nothing notable",
-  "key_learnings": "bullet points as single string, each starting with • on new line, or empty string"
+  "key_learnings": "bullet points as single string, each starting with • on new line, or empty string",
+  "carried_forward": "bullet points as single string, each starting with • on new line, or empty string"
 }}"""
 
     summary = ""
     key_learnings = ""
+    carried_forward = ""
     try:
-        resp = claude.messages.create(model=CLAUDE_MODEL, max_tokens=600, messages=[{"role": "user", "content": prompt}])
+        resp = claude.messages.create(model=CLAUDE_MODEL, max_tokens=800, messages=[{"role": "user", "content": prompt}])
         raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
         result = json.loads(raw)
         summary = (result.get("summary") or "").strip()
         key_learnings = (result.get("key_learnings") or "").strip()
+        carried_forward = (result.get("carried_forward") or "").strip()
     except Exception as e:
         log.error("generate_daily_log: Claude call failed: %s", e)
+        summary = ""
         key_learnings = f"Log generation failed: {e}"
+        carried_forward = ""
 
     page_body_parts = []
     if summary: page_body_parts.append(f"## Summary\n\n{summary}")
@@ -5796,12 +5898,20 @@ Return ONLY valid JSON, no markdown fences:
     if completed_tasks: page_body_parts.append("## Completed\n\n" + "\n".join(f"• {t}" for t in completed_tasks))
     if deferred_tasks: page_body_parts.append("## Deferred\n\n" + "\n".join(f"• {t}" for t in deferred_tasks))
     if signoff_note: page_body_parts.append(f"## Signoff Note\n\n_{signoff_note}_")
+    if carried_forward:
+        page_body_parts.append(
+            f"## Carried Forward\n\n{carried_forward}"
+        )
     page_content = "\n\n".join(page_body_parts) if page_body_parts else "_Light day — nothing notable to log._"
 
     props = {"Date": {"title": [{"text": {"content": date_label}}]}, "Tasks Completed": {"number": len(completed_tasks)}, "Habits Logged": {"number": habits_count}, "Generated At": {"date": {"start": datetime.now(TZ).isoformat()}}}
     if summary: props["Summary"] = {"rich_text": [{"text": {"content": summary[:2000]}}]}
     if key_learnings: props["Key Learnings"] = {"rich_text": [{"text": {"content": key_learnings[:2000]}}]}
     if signoff_note: props["Signoff Note"] = {"rich_text": [{"text": {"content": signoff_note[:2000]}}]}
+    if carried_forward:
+        props["Carried Forward"] = {
+            "rich_text": [{"text": {"content": carried_forward[:2000]}}]
+        }
 
     try:
         page = notion.pages.create(parent={"database_id": NOTION_DAILY_LOG_DB}, properties=props, children=_notion_markdown_to_blocks(page_content))
