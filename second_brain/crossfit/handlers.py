@@ -150,10 +150,11 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
     elif parts[1] == "log_wod":
         await handle_cf_wod_flow(q.message, {}, notion, config, cf_pending)
     elif parts[1] == "upload_programme":
-        await q.edit_message_text(
-            "📋 *Upload Weekly Programme*\n\nPaste the full programme text now.\n_Paste the whole thing — I'll extract Performance, Fitness and Hyrox._",
-            parse_mode="Markdown",
-        )
+        prompt = "📋 *Upload Weekly Programme*\n\nPaste the full programme text now.\n_Paste the whole thing — I'll extract Performance, Fitness and Hyrox._"
+        try:
+            await q.edit_message_text(prompt, parse_mode="Markdown")
+        except Exception:
+            await q.message.reply_text(prompt, parse_mode="Markdown")
         cf_pending["__awaiting_upload__"] = True
         return
     elif parts[1] == "subs":
