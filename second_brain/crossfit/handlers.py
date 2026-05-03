@@ -145,7 +145,10 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
     elif parts[1] == "log_wod":
         await handle_cf_wod_flow(q.message, {}, notion, config, cf_pending)
     elif parts[1] == "upload_programme":
-        await q.edit_message_text("📋 *Upload Weekly Programme*\n\nPaste the full programme text now.\n_Performance track only is fine — I'll ignore Fitness and Hyrox._", parse_mode="Markdown")
+        await q.message.reply_text(
+            "📋 *Upload Weekly Programme*\n\nPaste the full programme text now.\n_Performance track only is fine — I'll ignore Fitness and Hyrox._",
+            parse_mode="Markdown",
+        )
     elif parts[1] == "subs":
         await handle_cf_subs_flow(q.message, notion, config, cf_pending)
     elif parts[1] == "prs":
