@@ -3115,6 +3115,42 @@ def parse_done_numbers_command(text: str) -> list[int] | None:
     return nums or None
 
 
+def parse_review_numbers_command(text: str) -> list[int] | None:
+    normalized = text.strip().lower()
+
+    # Normalize keycap number emojis (e.g., "3️⃣") into plain digits so users can
+    # reply with either "review 3" or "review 3️⃣".
+    keycap_map = {
+        "0️⃣": "0",
+        "1️⃣": "1",
+        "2️⃣": "2",
+        "3️⃣": "3",
+        "4️⃣": "4",
+        "5️⃣": "5",
+        "6️⃣": "6",
+        "7️⃣": "7",
+        "8️⃣": "8",
+        "9️⃣": "9",
+        "🔟": "10",
+    }
+    for keycap, digit in keycap_map.items():
+        normalized = normalized.replace(keycap, digit)
+
+    m = re.match(
+        r"^(?:review|reassign|horizon|check(?:\s+off)?)\s+((?:\d+\s*(?:,|\band\b)?\s*)+)$",
+        normalized, re.IGNORECASE,
+    )
+    if not m:
+        m = re.match(
+            r"^mark\s+(?:review\s+)?((?:\d+\s*(?:,|\band\b)?\s*)+)\s+review$",
+            normalized, re.IGNORECASE,
+        )
+    if not m:
+        return None
+    nums = [int(n) for n in re.findall(r"\d+", m.group(1))]
+    return nums or None
+
+
 def parse_explicit_entertainment_log(text: str) -> dict | None:
     raw = (text or "").strip()
     if not raw:
@@ -4249,7 +4285,7 @@ def format_sunday_intro(week_tasks: list[dict], month_tasks: list[dict]) -> tupl
         for t in month_tasks:
             lines.append(f"{num_emoji(n)} {t['name']}  {t['context']}")
             ordered.append(t); n += 1
-    lines.append("\n_Tap each item below to reassign its urgency 👇_")
+    lines.append("\n_Reply `review 1` or `review 1,3` to reassign urgency_")
     return "\n".join(lines), ordered
 
 
@@ -4464,6 +4500,20 @@ def done_picker_keyboard(key: str, page: int = 0, page_size: int = 5) -> InlineK
         rows.append(nav)
     rows.append([InlineKeyboardButton("✖️ Cancel", callback_data=f"dpc:{key}")])
     return InlineKeyboardMarkup(rows)
+
+
+def review_keyboard(page_id: str) -> InlineKeyboardMarkup:
+    pid = _clean_pid(page_id)
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔴 Today", callback_data=f"h:{pid}:t"),
+            InlineKeyboardButton("🟠 This Week", callback_data=f"h:{pid}:w"),
+        ],
+        [
+            InlineKeyboardButton("🟡 This Month", callback_data=f"h:{pid}:m"),
+            InlineKeyboardButton("⚪ Backburner", callback_data=f"h:{pid}:b"),
+        ],
+    ])
 
 
 def context_emoji(context: str | None) -> str:
@@ -5263,6 +5313,37 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             msg = "Marked done:\n" + "\n".join(f"✅ {n}" for n in done_names)
             await message.reply_text(msg)
         else:
+            await message.reply_text("No recent digest found. Try replying directly to a digest message.")
+        return
+
+    review_numbers = parse_review_numbers_command(text)
+    if review_numbers:
+        source_id = message.reply_to_message.message_id if message.reply_to_message else last_digest_msg_id
+        queued = 0
+
+        if source_id and source_id in digest_map:
+            items = digest_map[source_id]
+            for n in review_numbers:
+                if 1 <= n <= len(items):
+                    task = items[n - 1]
+                    await message.reply_text(
+                        f"{num_emoji(n)} {task['name']}\nChoose a new horizon:",
+                        reply_markup=review_keyboard(task["page_id"]),
+                    )
+                    queued += 1
+        elif message.reply_to_message:
+            replied_text = (message.reply_to_message.text or message.reply_to_message.caption or "").strip()
+            recovered = recover_digest_items_from_text(replied_text)
+            for n in review_numbers:
+                task = recovered.get(n)
+                if task:
+                    await message.reply_text(
+                        f"{num_emoji(n)} {task['name']}\nChoose a new horizon:",
+                        reply_markup=review_keyboard(task["page_id"]),
+                    )
+                    queued += 1
+
+        if queued == 0:
             await message.reply_text("No recent digest found. Try replying directly to a digest message.")
         return
 
@@ -6406,19 +6487,12 @@ async def send_sunday_review(bot) -> None:
     if is_muted():
         log.info("Sunday review skipped (muted)")
         return
-    week_tasks  = query_tasks_by_auto_horizon(["🟠 This Week"])
+    week_tasks = query_tasks_by_auto_horizon(["🟠 This Week"])
     month_tasks = query_tasks_by_auto_horizon(["🟡 This Month"])
     header, ordered = format_sunday_intro(week_tasks, month_tasks)
-    await bot.send_message(chat_id=MY_CHAT_ID, text=header, parse_mode="Markdown")
-    if len(ordered) > SUNDAY_REVIEW_CARD_LIMIT:
-        await bot.send_message(
-            chat_id=MY_CHAT_ID,
-            text=(
-                f"…plus *{len(ordered) - SUNDAY_REVIEW_CARD_LIMIT}* more items not expanded "
-                "to avoid flooding chat. You can still adjust their urgency in Notion."
-            ),
-            parse_mode="Markdown",
-        )
+    sent_review = await bot.send_message(chat_id=MY_CHAT_ID, text=header, parse_mode="Markdown")
+    if ordered:
+        digest_map[sent_review.message_id] = ordered
     log.info(f"Sunday review sent — {len(ordered)} items")
 
 
