@@ -5448,7 +5448,30 @@ async def execute_trip(key: str, query) -> None:
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q     = update.callback_query
     await q.answer()
+    # Callback prefix registry
+    # hc:{page_id}           — habit check-in (log habit); hl redirects here
+    # nt:{key}:{code}        — new task horizon picker
+    # ntctx:{key}:{ctx}      — new task context picker
+    # d:{page_id}            — mark task done
+    # h:{page_id}:{code}     — reassign horizon
+    # td:{key}:{idx}         — to-do picker mark done
+    # dp:{key}:{idx}         — done picker select
+    # dpp:{key}:{page}       — done picker paginate
+    # dpc:{key}              — done picker cancel
+    # el:{key}:{action}      — entertainment log confirm
+    # qp:{action}            — command palette
+    # qv:{view}              — quick horizon view
+    # mq:{action}            — mute options
+    # nq:{mode}              — notes quick capture
+    # note_topic:{key}:{ref} — note topic picker
+    # cf:{action}            — crossfit flow
+    # tw:{key}:{slug}        — trip field work picker
+    # twd/tms/tcl:{key}      — trip flow steps
+    # wl_save/wl_cancel      — wantslist confirm
+    # tmdb_pick/skip/cancel  — watchlist TMDB picker
     parts = q.data.split(":")
+    if parts[0] == "hl":
+        parts[0] = "hc"
     if await handle_v10_callback(q, parts):
         return
     if parts[0] == "tw" and len(parts) == 3:
