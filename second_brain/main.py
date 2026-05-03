@@ -4799,7 +4799,15 @@ async def route_classified_message_v10(message, text: str) -> None:
         await thinking.delete()
         return
     try:
-        result = classify_message_v10(text)
+        result = await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(None, lambda: classify_message_v10(text)),
+            timeout=18,
+        )
+    except asyncio.TimeoutError:
+        log.warning("Claude v10 classify timeout after 18s; falling back to task capture")
+        await thinking.delete()
+        await create_or_prompt_task(message, text)
+        return
     except Exception as e:
         log.error(f"Claude v10 classify error: {e}")
         await thinking.delete()
