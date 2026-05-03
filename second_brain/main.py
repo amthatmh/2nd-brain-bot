@@ -207,6 +207,7 @@ WEEKS_HISTORY  = int(os.environ.get("WEEKS_HISTORY", "52"))
 APP_VERSION    = os.environ.get("APP_VERSION", "v13.2.0")
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "").strip()
 WEATHER_LOCATION = os.environ.get("WEATHER_LOCATION", "Chicago,IL").strip()
+NOTION_ENV_DB = os.environ.get("ENV_DB_ID", "").strip()
 UV_THRESHOLD = float(os.environ.get("UV_THRESHOLD", "3"))
 SUNDAY_REVIEW_CARD_LIMIT = max(1, int(os.environ.get("SUNDAY_REVIEW_CARD_LIMIT", "6")))
 
@@ -580,6 +581,75 @@ def load_location_state() -> None:
             log.warning("Failed loading location state from %s: %s", file_path, e)
 
 
+
+
+def load_notion_env_location() -> bool:
+    """
+    Read Location row from Notion ENV DB.
+    Populates current_location, current_lat, current_lon if all three fields are set.
+    Returns True if location was successfully loaded, False otherwise.
+    """
+    global current_location, current_lat, current_lon
+    if not NOTION_ENV_DB:
+        return False
+    try:
+        results = notion.databases.query(
+            database_id=NOTION_ENV_DB,
+            filter={"property": "Name", "title": {"equals": "Location"}},
+        )
+        rows = results.get("results", [])
+        if not rows:
+            return False
+        props = rows[0]["properties"]
+
+        value_parts = props.get("Value", {}).get("rich_text", [])
+        value = value_parts[0]["text"]["content"].strip() if value_parts else ""
+
+        lat = props.get("Lat", {}).get("number")
+        lon = props.get("Lon", {}).get("number")
+
+        if value and lat is not None and lon is not None:
+            current_location = value
+            current_lat = float(lat)
+            current_lon = float(lon)
+            log.info("Location loaded from Notion ENV: %s (%.4f, %.4f)", value, lat, lon)
+            return True
+        return False
+    except Exception as e:
+        log.warning("load_notion_env_location failed: %s", e)
+        return False
+
+
+def save_notion_env_location(location: str, lat: float, lon: float) -> None:
+    """
+    Write or update the Location row in the Notion ENV DB.
+    Creates the row if it doesn't exist.
+    """
+    if not NOTION_ENV_DB:
+        return
+    try:
+        results = notion.databases.query(
+            database_id=NOTION_ENV_DB,
+            filter={"property": "Name", "title": {"equals": "Location"}},
+        )
+        rows = results.get("results", [])
+        props = {
+            "Value": {"rich_text": [{"text": {"content": location}}]},
+            "Lat": {"number": lat},
+            "Lon": {"number": lon},
+        }
+        if rows:
+            notion.pages.update(page_id=rows[0]["id"], properties=props)
+        else:
+            props["Name"] = {"title": [{"text": {"content": "Location"}}]}
+            notion.pages.create(
+                parent={"database_id": NOTION_ENV_DB},
+                properties=props,
+            )
+        log.info("Location saved to Notion ENV: %s (%.4f, %.4f)", location, lat, lon)
+    except Exception as e:
+        log.error("save_notion_env_location failed: %s", e)
+
 def set_location(location: str) -> bool:
     """Geocode a location and persist if valid."""
     global current_location, current_lat, current_lon
@@ -611,6 +681,7 @@ def set_location(location: str) -> bool:
         weather_cache["today"] = {"timestamp": None, "data": None}
         weather_cache["tomorrow"] = {"timestamp": None, "data": None}
         save_location_state(current_location)
+        save_notion_env_location(current_location, float(lat), float(lon))
         return True
     except Exception as e:
         log.error("Location geocode failed for %s: %s", location, e)
@@ -6604,10 +6675,15 @@ async def post_init(app: Application) -> None:
     except Exception as e:
         log.warning("Entertainment schema load failed at startup: %s", e)
     load_mute_state()
-    load_location_state()
-    if OPENWEATHER_KEY and (current_lat is None or current_lon is None):
-        if not set_location_smart(current_location):
-            recover_location_from_history()
+    load_location_state()  # load from local JSON cache first (fast)
+    if not load_notion_env_location():  # try Notion (authoritative)
+        # Notion had no location — geocode from env var or history
+        if OPENWEATHER_KEY and (current_lat is None or current_lon is None):
+            if not set_location_smart(current_location):
+                recover_location_from_history()
+    else:
+        # Notion loaded successfully — sync back to local JSON cache
+        save_location_state(current_location)
     load_habit_cache()
     global _app_bot
     _app_bot = app.bot
