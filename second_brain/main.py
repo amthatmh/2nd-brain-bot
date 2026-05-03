@@ -1401,7 +1401,10 @@ def looks_like_crossfit_programme(text: str) -> bool:
     day_hits = len(re.findall(r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)\b", lower))
     section_hits = len(re.findall(r"(?:^|\n)\s*[bc]\.", lower))
     workout_hits = len(re.findall(r"\b(amrap|emom|for time|rounds?|reps?|wod|snatch|clean|jerk|burpee|row|sit ups?|pushups?)\b", lower))
-    return day_hits >= 2 and (section_hits >= 2 or workout_hits >= 3)
+    # Accept both full-week uploads and single-day programme blocks.
+    if day_hits >= 2 and (section_hits >= 2 or workout_hits >= 3):
+        return True
+    return day_hits >= 1 and (section_hits >= 1 or workout_hits >= 4)
 
 
 def looks_like_task_batch(text: str) -> bool:
@@ -5171,7 +5174,29 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     if context.user_data.get("awaiting_programme_upload") or cf_pending.pop("__awaiting_upload__", False):
-        context.user_data["awaiting_programme_upload"] = False
+        buffered = (context.user_data.get("programme_upload_buffer") or "").strip()
+        merged_text = f"{buffered}
+{text}".strip() if buffered else text
+        ok = await handle_cf_upload_programme(message, merged_text, claude, notion, {
+            "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB,
+            "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB,
+            "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB,
+            "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS,
+            "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB,
+            "CLAUDE_MODEL": CLAUDE_MODEL,
+        })
+        if ok:
+            context.user_data["awaiting_programme_upload"] = False
+            context.user_data["programme_upload_buffer"] = ""
+        else:
+            context.user_data["awaiting_programme_upload"] = True
+            context.user_data["programme_upload_buffer"] = merged_text[-12000:]
+            await message.reply_text("📎 If Telegram split your programme into multiple messages, paste the next part now and I'll merge them.")
+        return
+
+    # Fallback: parse obvious weekly programmes even if transient upload state was lost
+    # (e.g., after a worker restart between callback and pasted message).
+    if looks_like_crossfit_programme(text):
         await handle_cf_upload_programme(message, text, claude, notion, {
             "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB,
             "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB,
@@ -5521,7 +5546,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if parts[0] == "cf":
-        if not (len(parts) > 1 and parts[1] == "upload_programme"):
+        if len(parts) > 1 and parts[1] == "upload_programme":
+            context.user_data["awaiting_programme_upload"] = True
+            cf_pending["__awaiting_upload__"] = True
+            await q.message.reply_text(
+                "📋 *Upload Weekly Programme*\n\nPaste the full programme text now.\n_Paste the whole thing — I'll extract Performance, Fitness and Hyrox._",
+                parse_mode="Markdown",
+            )
+            return
+        else:
             context.user_data["cf_flow_key"] = str(q.message.chat_id)
         await handle_cf_callback(q, parts, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_PRS_DB": NOTION_PRS_DB, "NOTION_SUBS_DB": NOTION_SUBS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB, "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS, "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB}, cf_pending)
         return
