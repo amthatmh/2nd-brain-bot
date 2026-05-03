@@ -5092,6 +5092,22 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
                 return
 
     # ── CrossFit programme upload — must be first before any classifier ──
+    upload_programme_aliases = {
+        "📤 upload programme",
+        "📤 upload program",
+        "upload programme",
+        "upload program",
+        "📤 upload programme...",
+        "📤 upload program...",
+    }
+    if lower in upload_programme_aliases:
+        context.user_data["awaiting_programme_upload"] = True
+        await message.reply_text(
+            "📋 *Upload Weekly Programme*\n\nPaste the full programme text now.\n_Performance track only is fine — I'll ignore Fitness and Hyrox._",
+            parse_mode="Markdown",
+        )
+        return
+
     if context.user_data.get("awaiting_programme_upload"):
         context.user_data["awaiting_programme_upload"] = False
         await handle_cf_upload_programme(message, text, claude, notion, {
