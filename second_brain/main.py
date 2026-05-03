@@ -5409,7 +5409,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 
-async def fetch_weather(city: str, departure_date: str) -> dict:
+async def fetch_trip_weather(city: str, departure_date: str) -> dict:
     url = "https://api.openweathermap.org/data/2.5/forecast"
     params = {"q": city, "appid": OPENWEATHER_KEY, "units": "metric", "cnt": 40}
     async with aiohttp.ClientSession() as session:
@@ -5434,7 +5434,7 @@ async def fetch_weather(city: str, departure_date: str) -> dict:
 async def execute_trip(key: str, query) -> None:
     global awaiting_packing_feedback
     trip = trip_map[key]
-    weather = await asyncio.gather(*[fetch_weather(c, trip['departure_date']) for c in trip['destinations']])
+    weather = await asyncio.gather(*[fetch_trip_weather(c, trip['departure_date']) for c in trip['destinations']])
     flags = sorted({f for w in weather for f in w.get('flags', [])})
     summary = " | ".join(w.get('summary', '') for w in weather)
     trip['weather_flags'] = flags
@@ -6516,6 +6516,21 @@ async def send_sunday_review(bot) -> None:
     sent_review = await bot.send_message(chat_id=MY_CHAT_ID, text=header, parse_mode="Markdown")
     if ordered:
         digest_map[sent_review.message_id] = ordered
+        limit = max(1, SUNDAY_REVIEW_CARD_LIMIT)
+        for task in ordered[:limit]:
+            context_label = task.get("context") or "No context"
+            horizon_label = task.get("auto_horizon") or "No horizon"
+            await bot.send_message(
+                chat_id=MY_CHAT_ID,
+                text=f"• *{task.get('name', 'Untitled')}*\n{context_label} · {horizon_label}",
+                parse_mode="Markdown",
+            )
+        overflow = len(ordered) - limit
+        if overflow > 0:
+            await bot.send_message(
+                chat_id=MY_CHAT_ID,
+                text=f"…and {overflow} more items not shown to avoid flooding chat.",
+            )
     log.info(f"Sunday review sent — {len(ordered)} items")
 
 
