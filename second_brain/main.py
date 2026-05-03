@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Second Brain — Telegram Bot (v13.1)
+Second Brain — Telegram Bot (v13.2)
 ────────────────────────────────────────────────────────────────
 v13 changes (daily log layer added on top of v12):
 - generate_daily_log() writes end-of-day narrative to 📓 Daily Log Notion DB
@@ -18,6 +18,11 @@ v13.1 changes:
 - Claude prompt expanded to three parts: Summary, Key Learnings,
   Carried Forward
 - max_tokens increased to 800 to accommodate third part
+
+v13.2 changes:
+- Daily Log generation is now idempotent — upsert logic updates existing
+  entry for today rather than creating duplicates
+- /testlog command removed (testing complete)
 """
 
 import asyncio
@@ -199,7 +204,7 @@ NOTION_PRS_DB = os.environ.get("NOTION_PRS_DB", "")
 NOTION_WOD_LOG_DB = os.environ.get("NOTION_WOD_LOG_DB", "")
 HTTP_PORT      = int(os.environ.get("PORT", "8080"))
 WEEKS_HISTORY  = int(os.environ.get("WEEKS_HISTORY", "52"))
-APP_VERSION    = os.environ.get("APP_VERSION", "v13.1.0")
+APP_VERSION    = os.environ.get("APP_VERSION", "v13.2.0")
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "").strip()
 WEATHER_LOCATION = os.environ.get("WEATHER_LOCATION", "Chicago,IL").strip()
 UV_THRESHOLD = float(os.environ.get("UV_THRESHOLD", "3"))
@@ -2414,6 +2419,28 @@ def get_recent_carried_forward(days: int = 3) -> list[dict]:
         return []
 
 
+
+
+def get_existing_daily_log(date_label: str) -> str | None:
+    """
+    Check if a Daily Log entry already exists for the given date label.
+    Returns the Notion page_id if found, None otherwise.
+    """
+    if not NOTION_DAILY_LOG_DB:
+        return None
+    try:
+        results = notion.databases.query(
+            database_id=NOTION_DAILY_LOG_DB,
+            filter={
+                "property": "Date",
+                "title": {"equals": date_label},
+            },
+        )
+        pages = results.get("results", [])
+        return pages[0]["id"] if pages else None
+    except Exception as e:
+        log.error("get_existing_daily_log: error querying for %s: %s", date_label, e)
+        return None
 def _notion_markdown_to_blocks(text: str) -> list[dict]:
     """
     Convert a simple markdown string to Notion block objects.
@@ -5904,20 +5931,80 @@ Return ONLY valid JSON, no markdown fences:
         )
     page_content = "\n\n".join(page_body_parts) if page_body_parts else "_Light day — nothing notable to log._"
 
-    props = {"Date": {"title": [{"text": {"content": date_label}}]}, "Tasks Completed": {"number": len(completed_tasks)}, "Habits Logged": {"number": habits_count}, "Generated At": {"date": {"start": datetime.now(TZ).isoformat()}}}
-    if summary: props["Summary"] = {"rich_text": [{"text": {"content": summary[:2000]}}]}
-    if key_learnings: props["Key Learnings"] = {"rich_text": [{"text": {"content": key_learnings[:2000]}}]}
-    if signoff_note: props["Signoff Note"] = {"rich_text": [{"text": {"content": signoff_note[:2000]}}]}
+    # ── 9. Write to Notion (upsert — update if exists, create if not) ────
+    props = {
+        "Date": {"title": [{"text": {"content": date_label}}]},
+        "Tasks Completed": {"number": len(completed_tasks)},
+        "Habits Logged": {"number": habits_count},
+        "Generated At": {
+            "date": {
+                "start": datetime.now(TZ).isoformat(),
+            }
+        },
+    }
+    if summary:
+        props["Summary"] = {"rich_text": [{"text": {"content": summary[:2000]}}]}
+    if key_learnings:
+        props["Key Learnings"] = {"rich_text": [{"text": {"content": key_learnings[:2000]}}]}
+    if signoff_note:
+        props["Signoff Note"] = {"rich_text": [{"text": {"content": signoff_note[:2000]}}]}
     if carried_forward:
         props["Carried Forward"] = {
             "rich_text": [{"text": {"content": carried_forward[:2000]}}]
         }
 
     try:
-        page = notion.pages.create(parent={"database_id": NOTION_DAILY_LOG_DB}, properties=props, children=_notion_markdown_to_blocks(page_content))
+        existing_page_id = get_existing_daily_log(date_label)
+
+        if existing_page_id:
+            # UPDATE existing entry — overwrite all fields, replace page body
+            notion.pages.update(
+                page_id=existing_page_id,
+                properties=props,
+            )
+            # Replace page body blocks by archiving existing children
+            # and appending fresh ones
+            existing_blocks = notion.blocks.children.list(
+                block_id=existing_page_id
+            ).get("results", [])
+            for block in existing_blocks:
+                try:
+                    notion.blocks.delete(block_id=block["id"])
+                except Exception as block_err:
+                    log.warning(
+                        "generate_daily_log: could not delete block %s: %s",
+                        block["id"],
+                        block_err,
+                    )
+            notion.blocks.children.append(
+                block_id=existing_page_id,
+                children=_notion_markdown_to_blocks(page_content),
+            )
+            page_id = existing_page_id
+            log.info(
+                "generate_daily_log: updated existing entry for %s", today_str
+            )
+        else:
+            # CREATE new entry
+            page = notion.pages.create(
+                parent={"database_id": NOTION_DAILY_LOG_DB},
+                properties=props,
+                children=_notion_markdown_to_blocks(page_content),
+            )
+            page_id = page["id"]
+            log.info(
+                "generate_daily_log: created new entry for %s", today_str
+            )
+
         global _last_daily_log_url
-        _last_daily_log_url = f"https://www.notion.so/{page['id'].replace('-', '')}"
-        log.info("generate_daily_log: written for %s — %d completed, %d deferred, %d habits", today_str, len(completed_tasks), len(deferred_tasks), habits_count)
+        _last_daily_log_url = f"https://www.notion.so/{page_id.replace('-', '')}"
+        log.info(
+            "generate_daily_log: complete for %s — %d completed, %d deferred, %d habits",
+            today_str,
+            len(completed_tasks),
+            len(deferred_tasks),
+            habits_count,
+        )
     except Exception as e:
         log.error("generate_daily_log: Notion write failed: %s", e)
 
@@ -6892,23 +6979,6 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         log.error("Explicit /log save error: %s", e)
         await update.message.reply_text(_entertainment_save_error_text(e, parsed))
 
-# ⚠️ REMOVE BEFORE PRODUCTION DEPLOY ⚠️
-async def cmd_testlog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/testlog — manually trigger daily log generation. REMOVE BEFORE PRODUCTION."""
-    if update.effective_chat.id != MY_CHAT_ID:
-        return
-    await update.message.reply_text("📓 Generating daily log — this may take a moment...")
-    try:
-        await generate_daily_log(update.get_bot())
-        await update.message.reply_text(
-            "✅ Daily log generated — check Notion 📓 Daily Log for the new entry."
-        )
-    except Exception as e:
-        await update.message.reply_text(
-            f"⚠️ Daily log generation failed:\n`{e}`",
-            parse_mode="Markdown",
-        )
-# ⚠️ REMOVE BEFORE PRODUCTION DEPLOY ⚠️
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -6930,8 +7000,6 @@ def main() -> None:
     app.add_handler(CommandHandler("location", cmd_location))
     app.add_handler(CommandHandler("habits", cmd_habits))
     app.add_handler(CommandHandler("log", cmd_log))
-    # ⚠️ REMOVE BEFORE PRODUCTION DEPLOY ⚠️
-    app.add_handler(CommandHandler("testlog", cmd_testlog))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message_text))
     app.add_handler(CallbackQueryHandler(handle_callback))
     log.info(f"🤖 Second Brain bot starting ({APP_VERSION})...")
