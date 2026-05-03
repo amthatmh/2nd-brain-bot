@@ -4229,7 +4229,7 @@ def format_daily_digest(
         lines.append("")
 
     if ordered:
-        lines.append("\n_Reply `done 1`, `done 1,3`, `mark 1,3 done`, or `done: task name` to mark complete_")
+        lines.append("\n_Reply `done 1`, `done 1,3`, or `done: task name` to mark complete | `cancel` to dismiss_")
     return "\n".join(lines), ordered
 
 
@@ -4371,19 +4371,48 @@ async def send_quick_reminder(message, mode: str = "priority") -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 # INLINE KEYBOARDS
 # ══════════════════════════════════════════════════════════════════════════════
-# Callback data patterns:
-# - d:pid             -> mark task done from digest/review messages
-# - dp:key:idx        -> done picker item selection
-# - dpp:key:page      -> done picker pagination
-# - dpc:key           -> done picker cancel
-# - hl:pid / hc:pid   -> habit log (morning/evening)
-# - hl_cancel / hc_cancel -> habit picker close without logging
+# ══════════════════════════════════════════════════════════════════════════════
+# CALLBACK PATTERN REGISTRY (v13.1)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# FORMAT: Callbacks use colon-separated patterns: {module}:{action}:{data}
+#
+# ACTIVE MODULES:
+# ─ d/dp     Done picker (task completion)
+# ─ h        Habits (morning/evening check-in & logging)
+# ─ (reserved: cf, n for future CrossFit & Notes modules)
+#
+# PATTERN REFERENCE:
+#
+# DONE PICKER (d/dp) — Task completion flow
+#   d:{pid}                - Mark a task done (legacy pattern, kept for stability)
+#   dp:{key}:{idx}         - Select task from done picker
+#   dpp:{key}:{page}       - Navigate done picker to page number
+#   dpc:{key}              - Close/cancel done picker
+#
+# HABITS (h) — Morning/evening habit check-in
+#   h:log:{pid}            - Log a habit to Notion (morning or evening)
+#   h:check:cancel         - Dismiss habit check-in without logging
+#   hpag:{check}:{page}    - Navigate habit paging for check-in lists
+#
+# FUTURE MODULES (to be implemented):
+#   cf:*                   - CrossFit workout logging
+#   n:*                    - Notes capture and tagging
+#   dg:*                   - Digest interactions (if needed)
+#
+# NAMING CONVENTIONS:
+# ─ Use colons (:) as separators, never underscores
+# ─ PIDs (page IDs) are always restored from clean format: _restore_pid(parts[n])
+# ─ Keys are string counters or message IDs from state maps
+# ─ Actions are descriptive: log, select, page, cancel
+#
+# ══════════════════════════════════════════════════════════════════════════════
 
 def _clean_pid(pid: str) -> str: return pid.replace("-", "")
 def _restore_pid(pid: str) -> str: return f"{pid[:8]}-{pid[8:12]}-{pid[12:16]}-{pid[16:20]}-{pid[20:]}"
 
 
-def habit_buttons(habits: list[dict], prefix: str, page: int = 0, page_size: int = 8, show_cancel: bool = False) -> InlineKeyboardMarkup:
+def habit_buttons(habits: list[dict], check_type: str, page: int = 0, page_size: int = 8) -> InlineKeyboardMarkup:
     start = max(0, page) * page_size
     end = start + page_size
     page_habits = habits[start:end]
@@ -4392,7 +4421,7 @@ def habit_buttons(habits: list[dict], prefix: str, page: int = 0, page_size: int
     row: list[InlineKeyboardButton] = []
     for habit in page_habits:
         p = _clean_pid(habit["page_id"])
-        row.append(InlineKeyboardButton(habit["name"], callback_data=f"{prefix}:{p}"))
+        row.append(InlineKeyboardButton(habit["name"], callback_data=f"h:log:{p}"))
         if len(row) == 2:
             rows.append(row)
             row = []
@@ -4402,14 +4431,13 @@ def habit_buttons(habits: list[dict], prefix: str, page: int = 0, page_size: int
     if len(habits) > page_size:
         nav: list[InlineKeyboardButton] = []
         if page > 0:
-            nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"hpag:{prefix}:{page-1}"))
+            nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"hpag:{check_type}:{page-1}"))
         if end < len(habits):
-            nav.append(InlineKeyboardButton("➡️ Next", callback_data=f"hpag:{prefix}:{page+1}"))
+            nav.append(InlineKeyboardButton("➡️ Next", callback_data=f"hpag:{check_type}:{page+1}"))
         if nav:
             rows.append(nav)
 
-    if show_cancel:
-        rows.append([InlineKeyboardButton("✖️ Cancel", callback_data=f"{prefix}_cancel")])
+    rows.append([InlineKeyboardButton("✖️ Cancel", callback_data="h:check:cancel")])
 
     return InlineKeyboardMarkup(rows)
 
@@ -4418,6 +4446,7 @@ def done_picker_keyboard(key: str, page: int = 0, page_size: int = 5) -> InlineK
     tasks  = done_picker_map.get(key, [])
     start  = page * page_size
     end    = start + page_size
+    total_pages = max(1, (len(tasks) + page_size - 1) // page_size)
     rows   = []
     for idx, task in enumerate(tasks[start:end], start=start):
         label = task["name"]
@@ -4427,6 +4456,8 @@ def done_picker_keyboard(key: str, page: int = 0, page_size: int = 5) -> InlineK
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"dpp:{key}:{page-1}"))
+    if total_pages > 1:
+        nav.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data=f"noop:{key}"))
     if end < len(tasks):
         nav.append(InlineKeyboardButton("➡️ Next", callback_data=f"dpp:{key}:{page+1}"))
     if nav:
@@ -4570,7 +4601,7 @@ async def open_habit_picker(message) -> None:
     await message.reply_text(
         "🏃 *Which habit did you complete?*",
         parse_mode="Markdown",
-        reply_markup=habit_buttons(pending_habits, "hl", show_cancel=True),
+        reply_markup=habit_buttons(pending_habits, "manual"),
     )
 
 
@@ -4817,7 +4848,7 @@ async def route_classified_message_v10(message, text: str) -> None:
         else:
             all_habits = [{"page_id": h["page_id"], "name": name} for name, h in habit_cache.items()]
             all_habits.sort(key=lambda h: h["name"].lower())
-            await thinking.edit_text("Which habit did you complete?", reply_markup=habit_buttons(all_habits, "hl", show_cancel=True))
+            await thinking.edit_text("Which habit did you complete?", reply_markup=habit_buttons(all_habits, "manual"))
         return
 
     if intent == "entertainment_log":
@@ -4946,6 +4977,14 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not text:
         return
     lower = text.lower().strip()
+
+    if lower == "cancel":
+        if message.reply_to_message and message.reply_to_message.message_id in digest_map:
+            digest_map.pop(message.reply_to_message.message_id, None)
+            await message.reply_text("✅ Dismissed")
+            return
+        await message.reply_text("Reply to a digest message with `cancel` to dismiss it.")
+        return
     command_head = lower.split(maxsplit=1)[0] if lower else ""
     command_arg_text = text[len(text.split(maxsplit=1)[0]):].strip() if text.split(maxsplit=1) else ""
 
@@ -5499,17 +5538,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
-    if parts[0] in ("hl_cancel", "hc_cancel") and len(parts) == 1:
-        await q.edit_message_text("Habit check closed.")
-        return
+    if parts[0] == "h" and len(parts) >= 2:
+        if parts[1] == "check" and len(parts) == 3 and parts[2] == "cancel":
+            await q.edit_message_text("✅ Habit check closed.")
+            return
 
-    if parts[0] in ("hl", "hc") and len(parts) == 2:
-        habit_page_id = _restore_pid(parts[1])
+        if parts[1] != "log" or len(parts) != 3:
+            return
+
+        habit_page_id = _restore_pid(parts[2])
         habit_name = next((n for n, h in habit_cache.items() if h["page_id"] == habit_page_id), "Unknown")
 
         if already_logged_today(habit_page_id):
             try:
-                await q.edit_message_text(f"Already logged {habit_name} today! ✅")
+                await q.edit_message_text(f"✅ Already logged {habit_name} today!")
             except Exception as ui_error:
                 log.warning("Habit dedupe UI update failed for %s: %s", habit_name, ui_error)
                 await q.message.reply_text(f"Already logged {habit_name} today! ✅")
@@ -5540,7 +5582,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         all_habits = get_active_habits_for_trigger()
         try:
             await q.edit_message_reply_markup(
-                reply_markup=habit_buttons(all_habits, prefix, page=int(page_str), show_cancel=True)
+                reply_markup=habit_buttons(all_habits, prefix, page=int(page_str))
             )
         except Exception as e:
             log.error(f"Habit pagination error: {e}")
@@ -5662,6 +5704,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if key not in done_picker_map:
             await q.edit_message_text("⚠️ This picker expired. Send `done` again.", parse_mode="Markdown"); return
         await q.edit_message_reply_markup(reply_markup=done_picker_keyboard(key, page=int(page_str)))
+        return
+
+    if parts[0] == "noop":
+        await q.answer()
         return
 
     if parts[0] == "dpc" and len(parts) == 2:
@@ -6315,7 +6361,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         chat_id=MY_CHAT_ID,
         text=message,
         parse_mode="Markdown",
-        reply_markup=habit_buttons(habits, "hc", show_cancel=True) if habits else None,
+        reply_markup=habit_buttons(habits, "morning") if habits else None,
     )
 
     if ordered:
@@ -6351,7 +6397,7 @@ async def send_evening_checkin(bot) -> None:
         chat_id=MY_CHAT_ID,
         text=habit_text.rstrip(),
         parse_mode="Markdown",
-        reply_markup=habit_buttons(evening_habits, "hc", show_cancel=True),
+        reply_markup=habit_buttons(evening_habits, "evening"),
     )
     log.info("Evening check-in sent — %d habits", len(evening_habits))
 
@@ -6387,7 +6433,7 @@ async def send_daily_habits_list(bot) -> None:
         chat_id=MY_CHAT_ID,
         text="🎯 *Daily habits* — tap to log:",
         parse_mode="Markdown",
-        reply_markup=habit_buttons(habits, "hc", show_cancel=True),
+        reply_markup=habit_buttons(habits, "morning"),
     )
     log.info("Habits list sent — %s available habits", len(habits))
 
@@ -7032,7 +7078,7 @@ async def handle_done_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(
             "🏃 *Which habit did you complete?*",
             parse_mode="Markdown",
-            reply_markup=habit_buttons(pending_habits, "hl", show_cancel=True),
+            reply_markup=habit_buttons(pending_habits, "manual"),
         )
     if tasks:
         global _done_picker_counter
