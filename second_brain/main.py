@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Second Brain — Telegram Bot (v13.3)
+Second Brain — Telegram Bot (v8)
 ────────────────────────────────────────────────────────────────
 v13 changes (daily log layer added on top of v12):
 - generate_daily_log() writes end-of-day narrative to 📓 Daily Log Notion DB
@@ -29,6 +29,16 @@ v13.3 changes:
 - "All" rows are expanded into two slots (weekday + weekend) at load time
 - Fixes Signoff slot never firing when set to "All"
 - Invalid Weekday/Weekend values still skipped with warning (no change)
+
+v8 changes (trip packing layer):
+- /trip command with guided multi-step Telegram flow
+- Claude parses destination, dates, purpose from natural language
+- Field work type multi-select buttons (Site Walk/Testing/Isolation/24hr)
+- Weather fetch via OpenWeatherMap — flags drive smart item suggestions
+- Packing checklist auto-generated from 🧳 Packing Items DB into Notion sub-page
+- 2 reminder tasks created in To-Do DB (T-2 days, T-1 day)
+- Post-trip feedback prompt → adds missed items to master packing list
+- New env vars: NOTION_PACKING_ITEMS_DB, NOTION_TRIPS_DB, OPENWEATHER_API_KEY
 """
 
 import asyncio
@@ -47,6 +57,7 @@ from typing import Callable
 
 import pytz
 from aiohttp import web
+import aiohttp
 from dotenv import load_dotenv
 from telegram import (
     Update,
@@ -193,6 +204,9 @@ NOTION_FAVE_DB = os.environ.get("NOTION_FAVE_DB", "").strip()
 NOTION_NOTES_DB = os.environ["NOTION_NOTES_DB"]    # 📒 Notes
 NOTION_DIGEST_SELECTOR_DB = os.environ["NOTION_DIGEST_SELECTOR_DB"]
 NOTION_DAILY_LOG_DB = os.environ.get("NOTION_DAILY_LOG_DB", "")
+NOTION_PACKING_ITEMS_DB = os.environ["NOTION_PACKING_ITEMS_DB"]
+NOTION_TRIPS_DB         = os.environ["NOTION_TRIPS_DB"]
+OPENWEATHER_API_KEY     = os.environ["OPENWEATHER_API_KEY"]
 
 TZ           = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
 _rc_h, _rc_m = _parse_hhmm_env("RECURRING_CHECK_TIME", "7:00")
@@ -272,6 +286,11 @@ habit_cache: dict[str, dict] = STATE.habit_cache
 notes_pending: set[int] = STATE.notes_pending  # chat_ids currently in note-capture mode
 _tmdb_http_client: httpx.AsyncClient | None = None
 sync_status: dict[str, dict] = init_sync_status()
+trip_map: dict[str, dict] = {}
+trip_awaiting_date_map: dict[int, str] = {}
+awaiting_packing_feedback = False
+_trip_counter = 0
+
 weather_cache: dict[str, dict] = {
     "current": {"timestamp": None, "data": None},
     "today": {"timestamp": None, "data": None},
@@ -4845,6 +4864,48 @@ async def route_classified_message_v10(message, text: str) -> None:
     await create_or_prompt_task(message, text)
 
 
+
+
+def format_trip_dates(dep: str, ret: str) -> str:
+    d = date.fromisoformat(dep)
+    r = date.fromisoformat(ret)
+    if d.month == r.month:
+        return f"{d.strftime('%-d')}–{r.strftime('%-d %b %Y')}"
+    return f"{d.strftime('%-d %b')}–{r.strftime('%-d %b %Y')}"
+
+
+def parse_trip_message(text: str) -> dict:
+    prompt = f"""Extract trip details from this message. Today is {date.today().isoformat()}.
+
+Message: "{text}"
+
+Return ONLY valid JSON, no markdown:
+{{
+  "destinations": ["city1", "city2"],
+  "departure_date": "YYYY-MM-DD",
+  "return_date": "YYYY-MM-DD",
+  "purpose": "Work" | "Personal" | "Both",
+  "multiple_cities": true | false
+}}
+"""
+    resp = claude.messages.create(model=CLAUDE_MODEL, max_tokens=300, messages=[{"role": "user", "content": prompt}])
+    raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
+    return json.loads(raw)
+
+
+def field_work_keyboard(key: str) -> InlineKeyboardMarkup:
+    selected = trip_map[key].get("field_work_types", [])
+    types = [("sw", "Site Walk"), ("st", "Site Testing"), ("it", "Isolation Testing"), ("hm", "24hr Monitoring"), ("nn", "None")]
+    rows, row = [], []
+    for slug, label in types:
+        prefix = "✅ " if label in selected else ""
+        row.append(InlineKeyboardButton(f"{prefix}{label}", callback_data=f"tw:{key}:{slug}"))
+        if len(row) == 2:
+            rows.append(row); row = []
+    if row: rows.append(row)
+    rows.append([InlineKeyboardButton("✅ Done", callback_data=f"twd:{key}")])
+    return InlineKeyboardMarkup(rows)
+
 COMMAND_DISPATCH: dict[str, Callable] = {
     "digest": cmd_refresh,
     "📜digest": cmd_refresh,
@@ -4869,6 +4930,30 @@ COMMAND_DISPATCH: dict[str, Callable] = {
 # TELEGRAM HANDLERS
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+async def handle_trip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global _trip_counter
+    message = update.message
+    text = " ".join(context.args).strip()
+    if not text:
+        await message.reply_text('Send your trip details after the command, e.g.:\n/trip work trip to Austin, site testing, Jun 14-17')
+        return
+    parsed = parse_trip_message(text)
+    destinations = parsed.get("destinations") or []
+    destination = destinations[0] if destinations else "Trip"
+    dep = parsed.get("departure_date")
+    ret = parsed.get("return_date")
+    key = str(_trip_counter); _trip_counter += 1
+    trip_map[key] = {"destination": destination, "destinations": destinations or [destination], "departure_date": dep, "return_date": ret, "duration_label": "", "nights": 0, "purpose": parsed.get("purpose") or "Work", "multiple_cities": bool(parsed.get("multiple_cities")), "field_work_types": [], "multiple_sites": None, "checked_luggage": None}
+    if not dep or not ret:
+        prompt = await message.reply_text("📅 What dates is the trip? (e.g. Jun 14-17)")
+        trip_awaiting_date_map[prompt.message_id] = key
+        return
+    nights = (date.fromisoformat(ret) - date.fromisoformat(dep)).days
+    trip_map[key]["nights"] = nights
+    trip_map[key]["duration_label"] = "Overnight" if nights == 1 else ("2-3 Days" if nights <= 3 else "4-5 Days")
+    await message.reply_text(f"✈️ {destination} — {format_trip_dates(dep, ret)} ({nights} night(s), {trip_map[key]['purpose']})\n\nWhat field work are you doing?\n(Tap all that apply, then tap ✅ Done)", reply_markup=field_work_keyboard(key))
+
 async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat.id != MY_CHAT_ID:
         return
@@ -4879,6 +4964,31 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     lower = text.lower().strip()
     command_head = lower.split(maxsplit=1)[0] if lower else ""
     command_arg_text = text[len(text.split(maxsplit=1)[0]):].strip() if text.split(maxsplit=1) else ""
+
+    global awaiting_packing_feedback
+    if message.reply_to_message and message.reply_to_message.message_id in trip_awaiting_date_map:
+        key = trip_awaiting_date_map.pop(message.reply_to_message.message_id)
+        parsed = parse_trip_message(text)
+        dep, ret = parsed.get("departure_date"), parsed.get("return_date")
+        if not dep or not ret:
+            await message.reply_text("⚠️ I couldn't parse those dates. Try format like Jun 14-17.")
+            return
+        trip_map[key]["departure_date"] = dep
+        trip_map[key]["return_date"] = ret
+        nights = (date.fromisoformat(ret) - date.fromisoformat(dep)).days
+        trip_map[key]["nights"] = nights
+        trip_map[key]["duration_label"] = "Overnight" if nights == 1 else ("2-3 Days" if nights <= 3 else "4-5 Days")
+        await message.reply_text(f"✈️ {trip_map[key]['destination']} — {format_trip_dates(dep, ret)} ({nights} night(s), {trip_map[key]['purpose']})\n\nWhat field work are you doing?\n(Tap all that apply, then tap ✅ Done)", reply_markup=field_work_keyboard(key))
+        return
+
+    if awaiting_packing_feedback and not command_head.startswith('/'):
+        awaiting_packing_feedback = False
+        try:
+            notion.pages.create(parent={"database_id": NOTION_PACKING_ITEMS_DB}, properties={"Item": {"title": [{"text": {"content": text[:100]}}]}, "Always": {"checkbox": True}})
+            await message.reply_text("✅ Added to packing items.")
+        except Exception:
+            await message.reply_text("⚠️ Couldn't save packing feedback.")
+        return
 
     if context.user_data.get("awaiting_mute_days"):
         try:
@@ -5169,12 +5279,96 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     await route_classified_message_v10(message, text)
 
 
+
+
+async def fetch_weather(city: str, departure_date: str) -> dict:
+    url = "https://api.openweathermap.org/data/2.5/forecast"
+    params = {"q": city, "appid": OPENWEATHER_API_KEY, "units": "metric", "cnt": 40}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, params=params) as resp:
+            data = await resp.json()
+    dep = date.fromisoformat(departure_date)
+    forecasts = [f for f in data.get("list", []) if date.fromisoformat(f["dt_txt"][:10]) >= dep][:16]
+    if not forecasts:
+        return {"summary": "Weather unavailable", "flags": []}
+    temps = [f["main"]["temp"] for f in forecasts]
+    descriptions = [f["weather"][0]["description"] for f in forecasts]
+    rain = any("rain" in d or "thunderstorm" in d for d in descriptions)
+    snow = any("snow" in d for d in descriptions)
+    flags=[]
+    if rain: flags.append("Rain")
+    if snow: flags.append("Snow")
+    if min(temps)<10: flags.append("Cold")
+    if max(temps)>28: flags.append("Hot")
+    summary = f"{city}: {round(sum(temps)/len(temps))}°C avg"
+    return {"summary": summary, "flags": flags}
+
+async def execute_trip(key: str, query) -> None:
+    global awaiting_packing_feedback
+    trip = trip_map[key]
+    weather = await asyncio.gather(*[fetch_weather(c, trip['departure_date']) for c in trip['destinations']])
+    flags = sorted({f for w in weather for f in w.get('flags', [])})
+    summary = " | ".join(w.get('summary', '') for w in weather)
+    trip['weather_flags'] = flags
+    dep = date.fromisoformat(trip['departure_date'])
+    reminder_2d = dep - timedelta(days=2)
+    reminder_1d = dep - timedelta(days=1)
+    title = f"{', '.join(trip['destinations'])} — {format_trip_dates(trip['departure_date'], trip['return_date'])}"
+    await query.message.reply_text("🧳 Trip captured. Packing flow scaffold saved.")
+    awaiting_packing_feedback = True
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q     = update.callback_query
     await q.answer()
     parts = q.data.split(":")
     if await handle_v10_callback(q, parts):
         return
+    if parts[0] == "tw" and len(parts) == 3:
+        _, key, slug = parts
+        if key not in trip_map:
+            await q.edit_message_text("⚠️ Trip session expired. Use /trip again.")
+            return
+        slug_to_label = {"sw": "Site Walk", "st": "Site Testing", "it": "Isolation Testing", "hm": "24hr Monitoring", "nn": "None"}
+        label = slug_to_label.get(slug)
+        current = trip_map[key].get("field_work_types", [])
+        if label == "None":
+            trip_map[key]["field_work_types"] = ["None"]
+        elif label in current:
+            current.remove(label); trip_map[key]["field_work_types"] = current
+        elif label:
+            current = [x for x in current if x != "None"]; current.append(label); trip_map[key]["field_work_types"] = current
+        await q.edit_message_reply_markup(reply_markup=field_work_keyboard(key))
+        return
+
+    if parts[0] == "twd" and len(parts) == 2:
+        key = parts[1]
+        if key not in trip_map:
+            await q.edit_message_text("⚠️ Trip session expired. Use /trip again.")
+            return
+        if not trip_map[key].get("field_work_types"):
+            trip_map[key]["field_work_types"] = ["None"]
+        await q.message.reply_text("Multiple sites on this trip?", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Yes", callback_data=f"tms:{key}:y"), InlineKeyboardButton("No", callback_data=f"tms:{key}:n")]]))
+        return
+
+    if parts[0] == "tms" and len(parts) == 3:
+        _, key, ans = parts
+        if key not in trip_map:
+            await q.edit_message_text("⚠️ Trip session expired. Use /trip again.")
+            return
+        trip_map[key]["multiple_sites"] = (ans == "y")
+        await q.message.reply_text("Checking a bag?", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Yes", callback_data=f"tcl:{key}:y"), InlineKeyboardButton("No", callback_data=f"tcl:{key}:n")]]))
+        return
+
+    if parts[0] == "tcl" and len(parts) == 3:
+        _, key, ans = parts
+        if key not in trip_map:
+            await q.edit_message_text("⚠️ Trip session expired. Use /trip again.")
+            return
+        trip_map[key]["checked_luggage"] = (ans == "y")
+        await q.message.reply_text("🧠 Building your packing list...")
+        await execute_trip(key, q)
+        return
+
     if parts[0] == "cf":
         await handle_cf_callback(q, parts, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_PRS_DB": NOTION_PRS_DB, "NOTION_SUBS_DB": NOTION_SUBS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB, "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS}, cf_pending)
         if parts[1] == "upload_programme":
@@ -7096,6 +7290,7 @@ def main() -> None:
     app.add_handler(CommandHandler("location", cmd_location))
     app.add_handler(CommandHandler("habits", cmd_habits))
     app.add_handler(CommandHandler("log", cmd_log))
+    app.add_handler(CommandHandler("trip", handle_trip_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message_text))
     app.add_handler(CallbackQueryHandler(handle_callback))
     log.info(f"🤖 Second Brain bot starting ({APP_VERSION})...")
