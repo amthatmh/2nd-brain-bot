@@ -16,7 +16,11 @@ def _plain_text_from_property(prop: dict[str, Any] | None) -> str:
         return ((prop.get("select") or {}).get("name") or "").strip()
     if prop_type == "rich_text":
         rich = prop.get("rich_text") or []
-        return (rich[0].get("plain_text") if rich else "") or ""
+        return "".join(
+            (item.get("plain_text") or (item.get("text") or {}).get("content") or "")
+            for item in rich
+            if isinstance(item, dict)
+        ).strip()
     if prop_type == "number":
         value = prop.get("number")
         if isinstance(value, (int, float)):
