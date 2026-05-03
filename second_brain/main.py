@@ -3993,8 +3993,8 @@ def create_entertainment_log_entry(payload: dict) -> tuple[str, bool]:
 def entertainment_confirm_keyboard(key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("✅ Save", callback_data=f"el:{key}:save")],
-            [InlineKeyboardButton("❌ Cancel", callback_data=f"el:{key}:cancel")],
+            [InlineKeyboardButton("✅ Yes", callback_data=f"el:{key}:yes")],
+            [InlineKeyboardButton("❌ No", callback_data=f"el:{key}:no")],
         ]
     )
 
@@ -4151,7 +4151,7 @@ async def _maybe_prompt_explicit_venue(message, payload: dict, raw_text: str) ->
     _entertainment_counter += 1
     adjusted_payload = dict(payload)
     adjusted_payload["venue"] = suggested
-    pending_map[key] = {"type": "entertainment_log", "payload": adjusted_payload, "raw_text": raw_text}
+    pending_map[key] = {"type": "entertainment_log", "payload": adjusted_payload, "original_payload": dict(payload), "raw_text": raw_text}
     await message.reply_text(
         f"🎬 I found a close venue match.\n\nYou wrote: *{original}*\nDid you mean: *{suggested}*?\n\nSave with suggested venue?",
         parse_mode="Markdown",
@@ -5543,10 +5543,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not entry or entry.get("type") != "entertainment_log":
             await q.edit_message_text("⚠️ This entertainment prompt expired — please send it again.")
             return
-        if action == "cancel":
-            await q.edit_message_text("❌ Not saved.")
-            return
         payload = dict(entry.get("payload") or {})
+        if action == "no":
+            payload = dict(entry.get("original_payload") or payload)
+        elif action in ("cancel", "save"):
+            # Backward compatibility with older inline keyboards.
+            if action == "cancel":
+                await q.edit_message_text("❌ Not saved.")
+                return
+        elif action != "yes":
+            await q.edit_message_text("⚠️ Invalid choice — please send the log again.")
+            return
         raw_text = entry.get("raw_text", "")
         if not (payload.get("title") or "").strip():
             payload["title"] = raw_text
