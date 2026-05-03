@@ -4768,7 +4768,7 @@ async def handle_v10_callback(q, parts: list[str]) -> bool:
 
 async def route_classified_message_v10(message, text: str) -> None:
     thinking = await message.reply_text("🧠 Got it...")
-    if NOTION_WORKOUT_LOG_DB or NOTION_WOD_LOG_DB:
+    if NOTION_WORKOUT_LOG_DB or NOTION_WOD_LOG_DB or NOTION_WORKOUT_PROGRAM_DB:
         try:
             workout_result = await asyncio.get_event_loop().run_in_executor(None, lambda: classify_workout_message(text, claude, CLAUDE_MODEL, CLAUDE_MAX_TOK))
         except Exception:
@@ -5080,6 +5080,18 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
                 )
                 return
 
+    # ── CrossFit programme upload — must be first before any classifier ──
+    if context.user_data.get("awaiting_programme_upload"):
+        context.user_data["awaiting_programme_upload"] = False
+        await handle_cf_upload_programme(message, text, claude, notion, {
+            "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB,
+            "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB,
+            "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS,
+            "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB,
+            "CLAUDE_MODEL": CLAUDE_MODEL,
+        })
+        return
+
     pending_custom_topic = context.user_data.get("awaiting_note_custom_topic")
     if pending_custom_topic:
         key = pending_custom_topic.get("key")
@@ -5250,11 +5262,6 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             await message.reply_text(f"⬜ Unfocused: {matched['name']} → *To Do*", parse_mode="Markdown")
         else:
             await message.reply_text(f"Couldn't find a task matching \"{match_unfocus.group(1).strip()}\".")
-        return
-
-    if context.user_data.get("awaiting_programme_upload"):
-        context.user_data["awaiting_programme_upload"] = False
-        await handle_cf_upload_programme(message, text, claude, notion, {"NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS, "CLAUDE_MODEL": CLAUDE_MODEL})
         return
 
     cf_flow_key = context.user_data.get("cf_flow_key")

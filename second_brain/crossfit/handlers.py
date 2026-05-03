@@ -54,8 +54,28 @@ async def handle_cf_upload_programme(message, text, claude_client, notion, confi
         return
     thinking = await message.reply_text("🧠 Parsing your programme...", parse_mode="Markdown")
     parsed = await asyncio.get_event_loop().run_in_executor(None, lambda: parse_programme(text, claude_client, config.get("CLAUDE_MODEL", ""), config.get("CLAUDE_PARSE_MAX_TOKENS", 4000)))
+    if "tracks" not in parsed and "days" in parsed:
+        parsed = {
+            "week_label": parsed.get("week_label"),
+            "tracks": [{"track": "Performance", "days": parsed.get("days", [])}],
+        }
     await asyncio.get_event_loop().run_in_executor(None, lambda: save_programme(notion, config["NOTION_WORKOUT_PROGRAM_DB"], config["NOTION_MOVEMENTS_DB"], parsed, text))
-    await thinking.edit_text(f"📋 Saved to Weekly Programs DB\nDays found: {len(parsed.get('days', []))}", parse_mode="Markdown")
+    week_label = parsed.get("week_label") or "Unknown week"
+    tracks = parsed.get("tracks", [])
+    lines = [f"📋 Week of {week_label}", ""]
+    dot_map = {"Performance": "🔵", "Fitness": "🟢", "Hyrox": "🟠"}
+    for track in tracks:
+        track_name = track.get("track") or "Track"
+        days = track.get("days", [])
+        lines.append(f"{dot_map.get(track_name, '⚪')} {track_name} — {len(days)} days")
+        for day in days:
+            day_name = (day.get("day") or day.get("name") or "?")[:3].title()
+            b_block = day.get("b_block") or day.get("b") or "B. —"
+            c_block = day.get("c_block") or day.get("c") or "C. —"
+            lines.append(f"  {day_name}: {b_block} | {c_block}")
+        lines.append("")
+    lines.append(f"_Saved to Weekly Programs ({len(tracks)} track rows)_")
+    await thinking.edit_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def handle_cf_strength_flow(message, workout_result, claude, notion, config, cf_pending):
