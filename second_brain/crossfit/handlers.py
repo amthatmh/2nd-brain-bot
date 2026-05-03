@@ -48,29 +48,42 @@ async def handle_gymnastics_level_check(message, movement_page_id, movement_name
     return True
 
 
-async def handle_cf_upload_programme(message, text, claude_client, notion, config) -> None:
+async def handle_cf_upload_programme(message, text, claude_client, notion, config) -> bool:
     if not config.get("NOTION_WORKOUT_PROGRAM_DB"):
         await message.reply_text("⚠️ CrossFit module isn't configured yet.", parse_mode="Markdown")
-        return
-    thinking = await message.reply_text("🧠 Parsing your programme...", parse_mode="Markdown")
+        return False
+    text_len = len(text or "")
+    thinking = await message.reply_text(f"📥 Upload received ({text_len} chars).\n🧠 Parsing your programme...")
     try:
         parsed = await asyncio.get_event_loop().run_in_executor(None, lambda: parse_programme(text, claude_client, config.get("CLAUDE_MODEL", "claude-sonnet-4-6"), config.get("CLAUDE_PARSE_MAX_TOKENS", 4000)))
     except Exception as e:
-        await thinking.edit_text(f"⚠️ Couldn't parse programme: {e}")
-        return
+        try:
+            await thinking.edit_text(f"⚠️ Couldn't parse programme: {e}")
+        except Exception:
+            await message.reply_text(f"⚠️ Couldn't parse programme: {e}")
+        return False
+    tracks = parsed.get("tracks", []) if isinstance(parsed, dict) else []
+    parsed_days = sum(len(t.get("days", []) or []) for t in tracks)
+    try:
+        await thinking.edit_text(f"✅ Parse complete: {len(tracks)} track(s), {parsed_days} day row(s).\n💾 Saving to Notion...")
+    except Exception:
+        await message.reply_text(f"✅ Parse complete: {len(tracks)} track(s), {parsed_days} day row(s).\n💾 Saving to Notion...")
     try:
         await asyncio.get_event_loop().run_in_executor(None, lambda: save_programme(notion, config["NOTION_WORKOUT_PROGRAM_DB"], config.get("NOTION_WORKOUT_DAYS_DB", ""), config.get("NOTION_MOVEMENTS_DB", ""), parsed, text))
     except Exception as e:
-        await thinking.edit_text(f"⚠️ Parsed but couldn't save to Notion: {e}")
-        return
+        try:
+            await thinking.edit_text(f"⚠️ Parsed but couldn't save to Notion: {e}")
+        except Exception:
+            await message.reply_text(f"⚠️ Parsed but couldn't save to Notion: {e}")
+        return False
     week_label = parsed.get("week_label") or "Week"
     tracks = parsed.get("tracks", [])
-    lines = [f"📋 *{week_label}*\n"]
+    lines = [f"📋 {week_label}\n"]
     for t in tracks:
         track_name = t.get("track", "Unknown")
         days = t.get("days", [])
         emoji = {"Performance": "🔵", "Fitness": "🟢", "Hyrox": "🟠"}.get(track_name, "⚪")
-        lines.append(f"{emoji} *{track_name}* — {len(days)} days")
+        lines.append(f"{emoji} {track_name} — {len(days)} days")
         for d in days[:7]:
             b = d.get("section_b")
             c = d.get("section_c")
@@ -79,8 +92,13 @@ async def handle_cf_upload_programme(message, text, claude_client, notion, confi
             day_line = " | ".join(filter(None, [b_str, c_str]))
             lines.append(f"  {d.get('day','?')[:3]}: {day_line}")
         lines.append("")
-    lines.append(f"_Saved — {sum(len(t.get('days', [])) for t in tracks)} day rows across {len(tracks)} tracks_")
-    await thinking.edit_text("\n".join(lines), parse_mode="Markdown")
+    lines.append(f"Saved — {sum(len(t.get('days', [])) for t in tracks)} day rows across {len(tracks)} tracks")
+    summary_text = "\n".join(lines)
+    try:
+        await thinking.edit_text(summary_text)
+    except Exception:
+        await message.reply_text(summary_text)
+    return True
 
 
 async def handle_cf_strength_flow(message, workout_result, claude, notion, config, cf_pending):
@@ -150,10 +168,11 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
     elif parts[1] == "log_wod":
         await handle_cf_wod_flow(q.message, {}, notion, config, cf_pending)
     elif parts[1] == "upload_programme":
-        await q.edit_message_text(
-            "📋 *Upload Weekly Programme*\n\nPaste the full programme text now.\n_Paste the whole thing — I'll extract Performance, Fitness and Hyrox._",
-            parse_mode="Markdown",
-        )
+        prompt = "📋 *Upload Weekly Programme*\n\nPaste the full programme text now.\n_Paste the whole thing — I'll extract Performance, Fitness and Hyrox._"
+        try:
+            await q.edit_message_text(prompt, parse_mode="Markdown")
+        except Exception:
+            await q.message.reply_text(prompt, parse_mode="Markdown")
         cf_pending["__awaiting_upload__"] = True
         return
     elif parts[1] == "subs":
