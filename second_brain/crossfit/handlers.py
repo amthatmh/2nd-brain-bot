@@ -48,17 +48,17 @@ async def handle_gymnastics_level_check(message, movement_page_id, movement_name
     return True
 
 
-async def handle_cf_upload_programme(message, text, claude_client, notion, config) -> None:
+async def handle_cf_upload_programme(message, text, claude_client, notion, config) -> bool:
     if not config.get("NOTION_WORKOUT_PROGRAM_DB"):
         await message.reply_text("⚠️ CrossFit module isn't configured yet.", parse_mode="Markdown")
-        return
+        return False
     text_len = len(text or "")
     thinking = await message.reply_text(f"📥 Upload received ({text_len} chars).\n🧠 Parsing your programme...", parse_mode="Markdown")
     try:
         parsed = await asyncio.get_event_loop().run_in_executor(None, lambda: parse_programme(text, claude_client, config.get("CLAUDE_MODEL", "claude-sonnet-4-6"), config.get("CLAUDE_PARSE_MAX_TOKENS", 4000)))
     except Exception as e:
         await thinking.edit_text(f"⚠️ Couldn't parse programme: {e}")
-        return
+        return False
     tracks = parsed.get("tracks", []) if isinstance(parsed, dict) else []
     parsed_days = sum(len(t.get("days", []) or []) for t in tracks)
     await thinking.edit_text(f"✅ Parse complete: {len(tracks)} track(s), {parsed_days} day row(s).\n💾 Saving to Notion...", parse_mode="Markdown")
@@ -66,7 +66,7 @@ async def handle_cf_upload_programme(message, text, claude_client, notion, confi
         await asyncio.get_event_loop().run_in_executor(None, lambda: save_programme(notion, config["NOTION_WORKOUT_PROGRAM_DB"], config.get("NOTION_WORKOUT_DAYS_DB", ""), config.get("NOTION_MOVEMENTS_DB", ""), parsed, text))
     except Exception as e:
         await thinking.edit_text(f"⚠️ Parsed but couldn't save to Notion: {e}")
-        return
+        return False
     week_label = parsed.get("week_label") or "Week"
     tracks = parsed.get("tracks", [])
     lines = [f"📋 *{week_label}*\n"]
@@ -85,6 +85,7 @@ async def handle_cf_upload_programme(message, text, claude_client, notion, confi
         lines.append("")
     lines.append(f"_Saved — {sum(len(t.get('days', [])) for t in tracks)} day rows across {len(tracks)} tracks_")
     await thinking.edit_text("\n".join(lines), parse_mode="Markdown")
+    return True
 
 
 async def handle_cf_strength_flow(message, workout_result, claude, notion, config, cf_pending):
