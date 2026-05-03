@@ -1397,7 +1397,17 @@ def split_tasks(text: str) -> list[str]:
     return [text]
 
 
+def looks_like_crossfit_programme(text: str) -> bool:
+    lower = text.lower()
+    day_hits = len(re.findall(r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)\b", lower))
+    section_hits = len(re.findall(r"(?:^|\n)\s*[bc]\.", lower))
+    workout_hits = len(re.findall(r"\b(amrap|emom|for time|rounds?|reps?|wod|snatch|clean|jerk|burpee|row|sit ups?|pushups?)\b", lower))
+    return day_hits >= 2 and (section_hits >= 2 or workout_hits >= 3)
+
+
 def looks_like_task_batch(text: str) -> bool:
+    if looks_like_crossfit_programme(text):
+        return False
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     if len(lines) <= 1:
         return False
