@@ -38,7 +38,7 @@ v8 changes (trip packing layer):
 - Packing checklist auto-generated from 🧳 Packing Items DB into Notion sub-page
 - 2 reminder tasks created in To-Do DB (T-2 days, T-1 day)
 - Post-trip feedback prompt → adds missed items to master packing list
-- New env vars: NOTION_PACKING_ITEMS_DB, NOTION_TRIPS_DB, OPENWEATHER_API_KEY
+- New env vars: NOTION_PACKING_ITEMS_DB, NOTION_TRIPS_DB, OPENWEATHER_KEY
 """
 
 import asyncio
@@ -206,7 +206,7 @@ NOTION_DIGEST_SELECTOR_DB = os.environ["NOTION_DIGEST_SELECTOR_DB"]
 NOTION_DAILY_LOG_DB = os.environ.get("NOTION_DAILY_LOG_DB", "")
 NOTION_PACKING_ITEMS_DB = os.environ["NOTION_PACKING_ITEMS_DB"]
 NOTION_TRIPS_DB         = os.environ["NOTION_TRIPS_DB"]
-OPENWEATHER_API_KEY     = os.environ["OPENWEATHER_API_KEY"]
+OPENWEATHER_KEY     = os.environ["OPENWEATHER_KEY"]
 
 TZ           = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
 _rc_h, _rc_m = _parse_hhmm_env("RECURRING_CHECK_TIME", "7:00")
@@ -5283,7 +5283,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def fetch_weather(city: str, departure_date: str) -> dict:
     url = "https://api.openweathermap.org/data/2.5/forecast"
-    params = {"q": city, "appid": OPENWEATHER_API_KEY, "units": "metric", "cnt": 40}
+    params = {"q": city, "appid": OPENWEATHER_KEY, "units": "metric", "cnt": 40}
     async with aiohttp.ClientSession() as session:
         async with session.get(url, params=params) as resp:
             data = await resp.json()
