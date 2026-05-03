@@ -5521,7 +5521,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if parts[0] == "cf":
-        if not (len(parts) > 1 and parts[1] == "upload_programme"):
+        if len(parts) > 1 and parts[1] == "upload_programme":
+            context.user_data["awaiting_programme_upload"] = True
+        else:
             context.user_data["cf_flow_key"] = str(q.message.chat_id)
         await handle_cf_callback(q, parts, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_PRS_DB": NOTION_PRS_DB, "NOTION_SUBS_DB": NOTION_SUBS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB, "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS, "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB}, cf_pending)
         return
