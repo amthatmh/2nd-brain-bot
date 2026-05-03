@@ -5182,6 +5182,19 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         })
         return
 
+    # Fallback: parse obvious weekly programmes even if transient upload state was lost
+    # (e.g., after a worker restart between callback and pasted message).
+    if looks_like_crossfit_programme(text):
+        await handle_cf_upload_programme(message, text, claude, notion, {
+            "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB,
+            "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB,
+            "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB,
+            "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS,
+            "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB,
+            "CLAUDE_MODEL": CLAUDE_MODEL,
+        })
+        return
+
     pending_custom_topic = context.user_data.get("awaiting_note_custom_topic")
     if pending_custom_topic:
         key = pending_custom_topic.get("key")
