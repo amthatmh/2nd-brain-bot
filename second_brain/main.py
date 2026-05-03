@@ -277,7 +277,6 @@ pending_note_map: dict[str, dict] = {}
 cf_pending: dict[str, dict] = ExpiringDict(ttl_seconds=3600)
 pending_sport_competition_map: dict[int, dict] = {}
 topic_recency_map: dict[str, datetime] = {}
-_pending_counter = 0
 _cf_counter = 0
 _done_picker_counter = 0
 _todo_picker_counter = 0
@@ -4372,41 +4371,19 @@ async def send_quick_reminder(message, mode: str = "priority") -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 # INLINE KEYBOARDS
 # ══════════════════════════════════════════════════════════════════════════════
+# Callback data patterns:
+# - d:pid             -> mark task done from digest/review messages
+# - dp:key:idx        -> done picker item selection
+# - dpp:key:page      -> done picker pagination
+# - dpc:key           -> done picker cancel
+# - hl:pid / hc:pid   -> habit log (morning/evening)
+# - hl_cancel / hc_cancel -> habit picker close without logging
 
 def _clean_pid(pid: str) -> str: return pid.replace("-", "")
 def _restore_pid(pid: str) -> str: return f"{pid[:8]}-{pid[8:12]}-{pid[12:16]}-{pid[16:20]}-{pid[20:]}"
 
 
-def review_keyboard(page_id: str) -> InlineKeyboardMarkup:
-    p = _clean_pid(page_id)
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔴 Today",      callback_data=f"h:{p}:t"),
-         InlineKeyboardButton("🟠 This Week",  callback_data=f"h:{p}:w")],
-        [InlineKeyboardButton("🟡 This Month", callback_data=f"h:{p}:m"),
-         InlineKeyboardButton("⚪ Backburner",  callback_data=f"h:{p}:b")],
-        [InlineKeyboardButton("✅ Done",        callback_data=f"d:{p}")],
-    ])
-
-
-def new_task_keyboard(key: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔴 Today",      callback_data=f"nt:{key}:t"),
-         InlineKeyboardButton("🟠 This Week",  callback_data=f"nt:{key}:w")],
-        [InlineKeyboardButton("🟡 This Month", callback_data=f"nt:{key}:m"),
-         InlineKeyboardButton("⚪ Backburner",  callback_data=f"nt:{key}:b")],
-    ])
-
-
-def task_context_keyboard(key: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🏠 Personal", callback_data=f"ntctx:{key}:personal"),
-            InlineKeyboardButton("💼 Work", callback_data=f"ntctx:{key}:work"),
-        ],
-    ])
-
-
-def habit_buttons(habits: list[dict], prefix: str, page: int = 0, page_size: int = 8) -> InlineKeyboardMarkup:
+def habit_buttons(habits: list[dict], prefix: str, page: int = 0, page_size: int = 8, show_cancel: bool = False) -> InlineKeyboardMarkup:
     start = max(0, page) * page_size
     end = start + page_size
     page_habits = habits[start:end]
@@ -4430,6 +4407,9 @@ def habit_buttons(habits: list[dict], prefix: str, page: int = 0, page_size: int
             nav.append(InlineKeyboardButton("➡️ Next", callback_data=f"hpag:{prefix}:{page+1}"))
         if nav:
             rows.append(nav)
+
+    if show_cancel:
+        rows.append([InlineKeyboardButton("✖️ Cancel", callback_data=f"{prefix}_cancel")])
 
     return InlineKeyboardMarkup(rows)
 
@@ -4490,7 +4470,6 @@ async def complete_task_by_page_id(message, page_id: str, name: str) -> None:
 
 
 async def create_or_prompt_task(message, raw_text: str, force_create: bool = False) -> None:
-    global _pending_counter
     task_texts = split_tasks(raw_text)
     is_multi   = len(task_texts) > 1
     thinking   = await message.reply_text(
@@ -4534,22 +4513,7 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
     )
 
     if needs_context_clarification:
-        key = str(_pending_counter); _pending_counter += 1
-        pending_map[key] = {
-            "name": task_name,
-            "context": ctx,
-            "recurring": recurring,
-            "repeat_day": repeat_day,
-            "deadline_days": deadline_days,
-            "confidence": confidence,
-        }
-        recur_tag = f"\n🔁 {recurring}" if recurring != "None" else ""
-        await thinking.edit_text(
-            f"📝 *{task_name}*{recur_tag}\n\nShould this recurring task be Personal or Work?",
-            parse_mode="Markdown",
-            reply_markup=task_context_keyboard(key),
-        )
-        return
+        ctx = "🏠 Personal"
 
     if not force_create:
         dup = find_duplicate_active_task(task_name)
@@ -4562,25 +4526,26 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
 
     recur_tag = f"\n🔁 {recurring}" if recurring != "None" else ""
 
-    if confidence == "high":
-        try:
-            page_id = create_task(task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
+    try:
+        page_id = create_task(task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
+        if confidence == "high":
             await thinking.edit_text(
                 f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}{recur_tag}\n\n_Saved to Notion_",
                 parse_mode="Markdown",
             )
-            capture_map[thinking.message_id] = {"page_id": page_id, "name": task_name}
-        except Exception as e:
-            log.error(f"Notion error: {e}")
-            await thinking.edit_text("⚠️ Classified but couldn't write to Notion.")
-    else:
-        key = str(_pending_counter); _pending_counter += 1
-        pending_map[key] = {"name": task_name, "context": ctx, "recurring": recurring, "repeat_day": repeat_day}
-        await thinking.edit_text(
-            f"📝 *{task_name}*  {ctx}{recur_tag}\n\nWhen should this happen?",
-            parse_mode="Markdown",
-            reply_markup=new_task_keyboard(key),
-        )
+        else:
+            await thinking.edit_text(
+                "📝 Task captured with default deadline, but I'm not 100% sure.\n\n"
+                "You can:\n"
+                "• Adjust the deadline in Notion\n"
+                "• Rephrase and resend for better classification\n"
+                "• Use `force: task name` to override",
+                parse_mode="Markdown",
+            )
+        capture_map[thinking.message_id] = {"page_id": page_id, "name": task_name}
+    except Exception as e:
+        log.error(f"Notion error: {e}")
+        await thinking.edit_text("⚠️ Classified but couldn't write to Notion.")
 
 
 async def open_done_picker(message) -> None:
@@ -4605,7 +4570,7 @@ async def open_habit_picker(message) -> None:
     await message.reply_text(
         "🏃 *Which habit did you complete?*",
         parse_mode="Markdown",
-        reply_markup=habit_buttons(pending_habits, "hl"),
+        reply_markup=habit_buttons(pending_habits, "hl", show_cancel=True),
     )
 
 
@@ -4852,7 +4817,7 @@ async def route_classified_message_v10(message, text: str) -> None:
         else:
             all_habits = [{"page_id": h["page_id"], "name": name} for name, h in habit_cache.items()]
             all_habits.sort(key=lambda h: h["name"].lower())
-            await thinking.edit_text("Which habit did you complete?", reply_markup=habit_buttons(all_habits, "hl"))
+            await thinking.edit_text("Which habit did you complete?", reply_markup=habit_buttons(all_habits, "hl", show_cancel=True))
         return
 
     if intent == "entertainment_log":
@@ -5534,6 +5499,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
+    if parts[0] in ("hl_cancel", "hc_cancel") and len(parts) == 1:
+        await q.edit_message_text("Habit check closed.")
+        return
+
     if parts[0] in ("hl", "hc") and len(parts) == 2:
         habit_page_id = _restore_pid(parts[1])
         habit_name = next((n for n, h in habit_cache.items() if h["page_id"] == habit_page_id), "Unknown")
@@ -5571,7 +5540,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         all_habits = get_active_habits_for_trigger()
         try:
             await q.edit_message_reply_markup(
-                reply_markup=habit_buttons(all_habits, prefix, page=int(page_str))
+                reply_markup=habit_buttons(all_habits, prefix, page=int(page_str), show_cancel=True)
             )
         except Exception as e:
             log.error(f"Habit pagination error: {e}")
@@ -5616,85 +5585,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await q.edit_message_text(_entertainment_save_error_text(e, payload))
         return
 
-    if parts[0] == "ntctx" and len(parts) == 3:
-        _, key, ctx_code = parts
-        task = pending_map.get(key)
-        if not task:
-            await q.edit_message_text("⚠️ This task expired — please re-send it.")
-            return
 
-        context_value = "🏠 Personal" if ctx_code == "personal" else "💼 Work" if ctx_code == "work" else None
-        if not context_value:
-            await q.answer("Invalid context selection.", show_alert=False)
-            return
-
-        task["context"] = context_value
-        recurring = task.get("recurring", "None")
-        recur_tag = f"\n🔁 {recurring}" if recurring != "None" else ""
-        confidence = task.get("confidence", "low")
-        deadline_days = task.get("deadline_days")
-        horizon_label = deadline_days_to_label(deadline_days)
-
-        if confidence == "high":
-            task = pending_map.pop(key)
-            dup = find_duplicate_active_task(task["name"])
-            if dup:
-                await q.edit_message_text(
-                    f"⚠️ Already on your list:\n\n📝 {dup['name']}\n🕐 {dup.get('auto_horizon','')}  {dup.get('context','')}\n\nSend `force: {task['name']}` to add anyway.",
-                    parse_mode="Markdown",
-                )
-                return
-            try:
-                page_id = create_task(
-                    task["name"],
-                    deadline_days,
-                    task["context"],
-                    recurring=task.get("recurring", "None"),
-                    repeat_day=task.get("repeat_day"),
-                )
-                await q.edit_message_text(
-                    f"✅ Captured!\n\n📝 {task['name']}\n🕐 {horizon_label}  {task['context']}{recur_tag}\n\n_Saved to Notion_",
-                    parse_mode="Markdown",
-                )
-                capture_map[q.message.message_id] = {"page_id": page_id, "name": task["name"]}
-            except Exception as e:
-                log.error(f"Notion error: {e}")
-                await q.edit_message_text("⚠️ Couldn't save to Notion.")
-            return
-
-        await q.edit_message_text(
-            f"📝 *{task.get('name','Untitled')}*  {task['context']}{recur_tag}\n\nWhen should this happen?",
-            parse_mode="Markdown",
-            reply_markup=new_task_keyboard(key),
-        )
-        return
-
-    if parts[0] == "nt" and len(parts) == 3:
-        _, key, code = parts
-        if key not in pending_map:
-            await q.edit_message_text("⚠️ This task expired — please re-send it."); return
-        task          = pending_map.pop(key)
-        horizon_label = HORIZON_LABELS.get(code, "⚪ Backburner")
-        days          = HORIZON_DEADLINE_OFFSETS.get(code)
-        recurring     = task.get("recurring", "None")
-        repeat_day    = task.get("repeat_day")
-        dup = find_duplicate_active_task(task["name"])
-        if dup:
-            await q.edit_message_text(
-                f"⚠️ Already on your list:\n\n📝 {dup['name']}\n🕐 {dup.get('auto_horizon','')}  {dup.get('context','')}\n\nSend `force: {task['name']}` to add anyway.",
-                parse_mode="Markdown",
-            ); return
-        recur_tag = f"\n🔁 {recurring}" if recurring != "None" else ""
-        try:
-            page_id = create_task(task["name"], days, task["context"], recurring=recurring, repeat_day=repeat_day)
-            await q.edit_message_text(
-                f"✅ Captured!\n\n📝 {task['name']}\n🕐 {horizon_label}  {task['context']}{recur_tag}\n\n_Saved to Notion_",
-                parse_mode="Markdown",
-            )
-            capture_map[q.message.message_id] = {"page_id": page_id, "name": task["name"]}
-        except Exception as e:
-            log.error(f"Notion error: {e}"); await q.edit_message_text("⚠️ Couldn't save to Notion.")
-        return
 
     if parts[0] == "d" and len(parts) == 2:
         page_id = _restore_pid(parts[1])
@@ -6424,7 +6315,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         chat_id=MY_CHAT_ID,
         text=message,
         parse_mode="Markdown",
-        reply_markup=habit_buttons(habits, "hc") if habits else None,
+        reply_markup=habit_buttons(habits, "hc", show_cancel=True) if habits else None,
     )
 
     if ordered:
@@ -6460,7 +6351,7 @@ async def send_evening_checkin(bot) -> None:
         chat_id=MY_CHAT_ID,
         text=habit_text.rstrip(),
         parse_mode="Markdown",
-        reply_markup=habit_buttons(evening_habits, "hc"),
+        reply_markup=habit_buttons(evening_habits, "hc", show_cancel=True),
     )
     log.info("Evening check-in sent — %d habits", len(evening_habits))
 
@@ -6473,19 +6364,11 @@ async def send_sunday_review(bot) -> None:
     month_tasks = query_tasks_by_auto_horizon(["🟡 This Month"])
     header, ordered = format_sunday_intro(week_tasks, month_tasks)
     await bot.send_message(chat_id=MY_CHAT_ID, text=header, parse_mode="Markdown")
-    review_items = ordered[:SUNDAY_REVIEW_CARD_LIMIT]
-    for n, task in enumerate(review_items, 1):
-        await bot.send_message(
-            chat_id=MY_CHAT_ID,
-            text=f"{num_emoji(n)} *{task['name']}*  {task['context']}\n_Currently: {task['auto_horizon']}_",
-            parse_mode="Markdown",
-            reply_markup=review_keyboard(task["page_id"]),
-        )
-    if len(ordered) > len(review_items):
+    if len(ordered) > SUNDAY_REVIEW_CARD_LIMIT:
         await bot.send_message(
             chat_id=MY_CHAT_ID,
             text=(
-                f"…plus *{len(ordered) - len(review_items)}* more items not expanded "
+                f"…plus *{len(ordered) - SUNDAY_REVIEW_CARD_LIMIT}* more items not expanded "
                 "to avoid flooding chat. You can still adjust their urgency in Notion."
             ),
             parse_mode="Markdown",
@@ -6504,7 +6387,7 @@ async def send_daily_habits_list(bot) -> None:
         chat_id=MY_CHAT_ID,
         text="🎯 *Daily habits* — tap to log:",
         parse_mode="Markdown",
-        reply_markup=habit_buttons(habits, "hc"),
+        reply_markup=habit_buttons(habits, "hc", show_cancel=True),
     )
     log.info("Habits list sent — %s available habits", len(habits))
 
@@ -7149,7 +7032,7 @@ async def handle_done_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(
             "🏃 *Which habit did you complete?*",
             parse_mode="Markdown",
-            reply_markup=habit_buttons(pending_habits, "hl"),
+            reply_markup=habit_buttons(pending_habits, "hl", show_cancel=True),
         )
     if tasks:
         global _done_picker_counter
