@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Second Brain — Telegram Bot (v13.2)
+Second Brain — Telegram Bot (v13.3)
 ────────────────────────────────────────────────────────────────
 v13 changes (daily log layer added on top of v12):
 - generate_daily_log() writes end-of-day narrative to 📓 Daily Log Notion DB
@@ -23,6 +23,12 @@ v13.2 changes:
 - Daily Log generation is now idempotent — upsert logic updates existing
   entry for today rather than creating duplicates
 - /testlog command removed (testing complete)
+
+v13.3 changes:
+- Digest Selector supports "All" in Weekday/Weekend column
+- "All" rows are expanded into two slots (weekday + weekend) at load time
+- Fixes Signoff slot never firing when set to "All"
+- Invalid Weekday/Weekend values still skipped with warning (no change)
 """
 
 import asyncio
@@ -204,7 +210,7 @@ NOTION_PRS_DB = os.environ.get("NOTION_PRS_DB", "")
 NOTION_WOD_LOG_DB = os.environ.get("NOTION_WOD_LOG_DB", "")
 HTTP_PORT      = int(os.environ.get("PORT", "8080"))
 WEEKS_HISTORY  = int(os.environ.get("WEEKS_HISTORY", "52"))
-APP_VERSION    = os.environ.get("APP_VERSION", "v13.2.0")
+APP_VERSION    = os.environ.get("APP_VERSION", "v13.3.0")
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "").strip()
 WEATHER_LOCATION = os.environ.get("WEATHER_LOCATION", "Chicago,IL").strip()
 NOTION_ENV_DB = os.environ.get("ENV_DB_ID", "").strip()
@@ -1287,13 +1293,23 @@ def load_digest_slots() -> list[dict]:
         ww = props.get("Weekday/Weekend", {}).get("select")
         ww_name = (ww.get("name") if ww else "").strip()
         ww_norm = ww_name.lower()
-        if ww_norm in {"weekday", "weekdays", "mon-fri"}:
-            is_weekday = True
-        elif ww_norm in {"weekend", "weekends", "sat,sun", "sat/sun"}:
-            is_weekday = False
-        else:
+        is_all = ww_norm in {"all", "every day", "daily", "always"}
+        is_weekday_val = ww_norm in {"weekday", "weekdays", "mon-fri"}
+        is_weekend_val = ww_norm in {"weekend", "weekends", "sat,sun", "sat/sun"}
+
+        if not (is_all or is_weekday_val or is_weekend_val):
             log.warning("Skipping digest selector row with invalid Weekday/Weekend=%r", ww_name)
             continue
+
+        # "All" rows are expanded into two slots: one weekday, one weekend.
+        # Build the list of (is_weekday, slot_key) pairs to append.
+        weekday_variants: list[bool] = []
+        if is_all:
+            weekday_variants = [True, False]
+        elif is_weekday_val:
+            weekday_variants = [True]
+        else:
+            weekday_variants = [False]
 
         include_habits = bool(props.get("Habits", {}).get("checkbox", False))
         max_items_raw = props.get("Max Items", {}).get("number")
@@ -1310,22 +1326,26 @@ def load_digest_slots() -> list[dict]:
 
         is_signoff = bool(props.get("Signoff", {}).get("checkbox", False))
 
-        slot_key = (slot_time, is_weekday)
-        if slot_key in seen_slot_keys:
-            log.warning("Skipping duplicate digest selector slot %s (%s)", slot_time, "weekday" if is_weekday else "weekend")
-            continue
-        seen_slot_keys.add(slot_key)
-
-        slots.append(
-            {
-                "time": slot_time,
-                "is_weekday": is_weekday,
-                "include_habits": include_habits,
-                "max_items": max_items,
-                "contexts": contexts,
-                "is_signoff": is_signoff,
-            }
-        )
+        for is_weekday in weekday_variants:
+            slot_key = (slot_time, is_weekday)
+            if slot_key in seen_slot_keys:
+                log.warning(
+                    "Skipping duplicate digest selector slot %s (%s)",
+                    slot_time,
+                    "weekday" if is_weekday else "weekend",
+                )
+                continue
+            seen_slot_keys.add(slot_key)
+            slots.append(
+                {
+                    "time": slot_time,
+                    "is_weekday": is_weekday,
+                    "include_habits": include_habits,
+                    "max_items": max_items,
+                    "contexts": contexts,
+                    "is_signoff": is_signoff,
+                }
+            )
 
     log.info("Loaded %d digest selector slot(s) from Notion", len(slots))
     return slots
