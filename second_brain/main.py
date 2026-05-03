@@ -6892,6 +6892,24 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         log.error("Explicit /log save error: %s", e)
         await update.message.reply_text(_entertainment_save_error_text(e, parsed))
 
+# ⚠️ REMOVE BEFORE PRODUCTION DEPLOY ⚠️
+async def cmd_testlog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/testlog — manually trigger daily log generation. REMOVE BEFORE PRODUCTION."""
+    if update.effective_chat.id != MY_CHAT_ID:
+        return
+    await update.message.reply_text("📓 Generating daily log — this may take a moment...")
+    try:
+        await generate_daily_log(update.get_bot())
+        await update.message.reply_text(
+            "✅ Daily log generated — check Notion 📓 Daily Log for the new entry."
+        )
+    except Exception as e:
+        await update.message.reply_text(
+            f"⚠️ Daily log generation failed:\n`{e}`",
+            parse_mode="Markdown",
+        )
+# ⚠️ REMOVE BEFORE PRODUCTION DEPLOY ⚠️
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN — after all handlers are defined
@@ -6912,6 +6930,8 @@ def main() -> None:
     app.add_handler(CommandHandler("location", cmd_location))
     app.add_handler(CommandHandler("habits", cmd_habits))
     app.add_handler(CommandHandler("log", cmd_log))
+    # ⚠️ REMOVE BEFORE PRODUCTION DEPLOY ⚠️
+    app.add_handler(CommandHandler("testlog", cmd_testlog))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message_text))
     app.add_handler(CallbackQueryHandler(handle_callback))
     log.info(f"🤖 Second Brain bot starting ({APP_VERSION})...")
