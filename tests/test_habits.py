@@ -27,6 +27,18 @@ class TestExtractHabitFrequency(unittest.TestCase):
         }
         self.assertEqual(extract_habit_frequency(props), 5)
 
+    def test_reads_frequency_from_multi_part_rich_text(self):
+        props = {
+            "Frequency Label": {
+                "type": "rich_text",
+                "rich_text": [
+                    {"plain_text": "4"},
+                    {"text": {"content": "x/week"}},
+                ],
+            },
+        }
+        self.assertEqual(extract_habit_frequency(props), 4)
+
     def test_returns_none_for_missing_frequency(self):
         props = {
             "Frequency": {"type": "select", "select": {"name": "As needed"}},
