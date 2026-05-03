@@ -47,6 +47,22 @@ def test_classify_programme_text():
     assert out["type"] == "programme"
 
 
+def test_classify_workout_message_fast_path_long_text_with_days():
+    """Long text with day headings should return programme without calling Claude."""
+    long_text = "MONDAY\nPERFORMANCE\nB. Back Squat\n" * 20
+    c = _FakeClaude('{}')
+    result = classify_workout_message(long_text, c, "model", 1000)
+    assert result["type"] == "programme"
+    assert result["confidence"] == "high"
+
+
+def test_classify_workout_message_short_text_not_programme():
+    """Short message without day headings should not fast-path to programme."""
+    c = _FakeClaude('{"type":"strength","confidence":"high","movement":"Back Squat","load_lbs":225,"load_kg":102.1,"sets":5,"reps":3,"is_max_attempt":false,"wod_name":null,"format":null,"duration_mins":null,"partner":false}')
+    result = classify_workout_message("back squat 225 5x3", c, "model", 1000)
+    assert result["type"] == "strength"
+
+
 def test_parse_rounds_reps():
     assert parse_rounds_reps("8+5") == (8, 5)
     assert parse_rounds_reps("8 rounds 5 reps") == (8, 5)
