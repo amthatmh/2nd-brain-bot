@@ -80,7 +80,7 @@ import anthropic
 import httpx
 from notion_client import Client as NotionClient
 
-from asana_sync import (
+from second_brain.asana_sync import (
     reconcile,
     AsanaSyncError,
     validate_notion_schema,
@@ -93,9 +93,10 @@ from cinema.config import (
     TMDB_API_KEY,
     validate_config as validate_cinema_config,
 )
-from sync_telemetry import init_sync_status, utc_now_iso, format_sync_status_message
-from scheduler_setup import register_cinema_jobs
-from notes_flow import (
+from second_brain.sync_telemetry import init_sync_status, utc_now_iso, format_sync_status_message
+from second_brain.scheduler_setup import register_cinema_jobs
+from second_brain.notion.notes import create_note_entry, save_note, fetch_note_topics_from_notion
+from second_brain.notes_flow import (
     split_kind_keyboard,
     ordered_topics,
     note_topics_keyboard,
@@ -455,20 +456,6 @@ def _parse_time_to_minutes(time_str: str | None) -> int:
 
 def _utc_now_iso() -> str:
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-
-
-def fetch_note_topics_from_notion() -> list[str]:
-    """Read Topic multi-select options directly from the Notion Notes DB schema."""
-    if not NOTION_NOTES_DB:
-        return []
-
-    db = notion.databases.retrieve(database_id=NOTION_NOTES_DB)
-    topic_prop = db.get("properties", {}).get("Topic", {})
-    if topic_prop.get("type") != "multi_select":
-        return []
-
-    options = topic_prop.get("multi_select", {}).get("options", [])
-    return [opt.get("name", "").strip() for opt in options if opt.get("name", "").strip()]
 
 
 def save_mute_state() -> None:
@@ -1647,7 +1634,7 @@ async def start_note_capture_flow(message, text: str) -> None:
     note_key = str(_v10_counter)
     _v10_counter += 1
     try:
-        topics = fetch_note_topics_from_notion()
+        topics = fetch_note_topics_from_notion(notion, NOTION_NOTES_DB)
     except Exception as e:
         log.error(f"Failed to read note topics from Notion schema: {e}")
         await message.reply_text("⚠️ Couldn't load note topics from Notion. Check the Topic property.")
@@ -1663,7 +1650,7 @@ async def start_note_capture_flow(message, text: str) -> None:
         return
 
     try:
-        create_note_entry(text)
+        create_note_entry(notion, NOTION_NOTES_DB, text)
         await message.reply_text("✅ Note captured!\n_Saved to Notion_", parse_mode="Markdown")
     except Exception as e:
         log.error(f"Notion note error: {e}")
@@ -1738,29 +1725,6 @@ Return ONLY valid JSON, no markdown:
         return {"title": title or url[:200], "topics": ["💡 Ideas"]}
 
 
-def save_note(title: str, url: str | None, content: str, topics: list[str], note_type: str) -> str:
-    """Write a note to the 📒 Notes Notion DB. Returns page_id."""
-    today = local_today().isoformat()
-    props: dict = {
-        "Title": {"title": [{"text": {"content": title or "Untitled"}}]},
-        "Type": {"select": {"name": note_type}},
-        "Source": {"select": {"name": "📱 Telegram"}},
-        "Date Created": {"date": {"start": today}},
-        "Processed": {"checkbox": False},
-    }
-    if url:
-        props["Link"] = {"url": url}
-    if content:
-        props["Content"] = {"rich_text": [{"text": {"content": content[:2000]}}]}
-    if topics:
-        props["Topic"] = {"multi_select": [{"name": t} for t in topics]}
-    page = notion.pages.create(
-        parent={"database_id": NOTION_NOTES_DB},
-        properties=props,
-    )
-    return page["id"]
-
-
 async def handle_note_input(message, text: str) -> None:
     """Called when user sends content in note-capture mode."""
     chat_id = message.chat_id
@@ -1789,7 +1753,7 @@ async def handle_note_input(message, text: str) -> None:
             content = text
             note_type = "📝 Quick Note"
 
-        save_note(note_title, url, content, topics, note_type)
+        save_note(notion, NOTION_NOTES_DB, note_title, url, content, topics, note_type)
         icon = "🔗" if url else "📝"
         topic_str = "  ".join(topics)
         await thinking.edit_text(
@@ -3513,67 +3477,6 @@ def format_batch_summary(results: list[dict]) -> str:
     return "\n".join(lines).strip()
 
 
-def create_note_entry(content: str, topic: str | None = None) -> str:
-    if not NOTION_NOTES_DB:
-        raise ValueError("NOTION_NOTES_DB is not configured")
-    base_props = create_note_payload(content, topic=topic)
-    db = notion.databases.retrieve(database_id=NOTION_NOTES_DB)
-    schema_props = db.get("properties", {})
-
-    def schema_type(prop_name: str) -> str | None:
-        return schema_props.get(prop_name, {}).get("type")
-
-    props: dict = {}
-
-    # Map title payload to whichever title property exists in the DB.
-    title_payload = base_props.get("Title")
-    title_prop_name = next((name for name, p in schema_props.items() if p.get("type") == "title"), None)
-    if title_payload and title_prop_name:
-        props[title_prop_name] = title_payload
-
-    if "Content" in base_props and schema_type("Content") == "rich_text":
-        props["Content"] = base_props["Content"]
-    if "Date Created" in base_props and schema_type("Date Created") == "date":
-        props["Date Created"] = base_props["Date Created"]
-    if "Processed" in base_props and schema_type("Processed") == "checkbox":
-        props["Processed"] = base_props["Processed"]
-    if "Link" in base_props and schema_type("Link") == "url":
-        props["Link"] = base_props["Link"]
-
-    if "Type" in base_props and schema_type("Type") == "select":
-        desired = base_props["Type"]["select"]["name"]
-        options = schema_props["Type"].get("select", {}).get("options", [])
-        names = {o.get("name") for o in options}
-        if desired in names:
-            props["Type"] = base_props["Type"]
-        elif options:
-            props["Type"] = {"select": {"name": options[0]["name"]}}
-
-    if "Source" in base_props and schema_type("Source") == "select":
-        desired = base_props["Source"]["select"]["name"]
-        options = schema_props["Source"].get("select", {}).get("options", [])
-        names = {o.get("name") for o in options}
-        if desired in names:
-            props["Source"] = base_props["Source"]
-        elif options:
-            props["Source"] = {"select": {"name": options[0]["name"]}}
-
-    if "Topic" in base_props and schema_type("Topic") == "multi_select":
-        desired_topics = [t.get("name") for t in base_props["Topic"].get("multi_select", []) if t.get("name")]
-        options = schema_props["Topic"].get("multi_select", {}).get("options", [])
-        names = {o.get("name") for o in options}
-        selected = [{"name": t} for t in desired_topics if t in names]
-        # Notion can create missing multi_select options on write, so include any
-        # user-provided topics that are not in the current schema yet.
-        props["Topic"] = {"multi_select": selected or [{"name": t} for t in desired_topics]}
-
-    if not props:
-        raise ValueError("Notes DB schema has no writable matching properties for note payload")
-
-    page = notion.pages.create(parent={"database_id": NOTION_NOTES_DB}, properties=props)
-    return page["id"]
-
-
 def _inspect_database_schema(db_id: str, label: str) -> dict:
     db = notion_call(notion.databases.retrieve, database_id=db_id)
     properties = db.get("properties", {})
@@ -5207,6 +5110,19 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         })
         return
 
+    # Fallback: parse obvious weekly programmes even if transient upload state was lost
+    # (e.g., after a worker restart between callback and pasted message).
+    if looks_like_crossfit_programme(text):
+        await handle_cf_upload_programme(message, text, claude, notion, {
+            "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB,
+            "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB,
+            "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB,
+            "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS,
+            "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB,
+            "CLAUDE_MODEL": CLAUDE_MODEL,
+        })
+        return
+
     pending_custom_topic = context.user_data.get("awaiting_note_custom_topic")
     if pending_custom_topic:
         key = pending_custom_topic.get("key")
@@ -5220,7 +5136,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             await message.reply_text("⚠️ Topic can't be empty — please re-send the note.")
             return
         try:
-            create_note_entry(entry["content"], custom_topic)
+            create_note_entry(notion, NOTION_NOTES_DB, entry["content"], custom_topic)
             topic_recency_map[custom_topic] = datetime.utcnow()
             await message.reply_text(
                 f"✅ Note captured!\n🏷️ {custom_topic}\n_Saved to Notion_",
@@ -5241,7 +5157,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             await message.reply_text("Please send a valid URL starting with http:// or https://.")
             return
         try:
-            create_note_entry(text)
+            create_note_entry(notion, NOTION_NOTES_DB, text)
             kind_label_map = {
                 "quick": "note",
                 "idea": "idea",
@@ -5654,7 +5570,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             except Exception:
                 selected_topic = None
         try:
-            create_note_entry(entry["content"], selected_topic)
+            create_note_entry(notion, NOTION_NOTES_DB, entry["content"], selected_topic)
             if selected_topic:
                 topic_recency_map[selected_topic] = datetime.utcnow()
             topic_line = f"\n🏷️ {selected_topic}" if selected_topic else ""
