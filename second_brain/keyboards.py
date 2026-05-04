@@ -50,7 +50,7 @@ def habit_buttons(habits: list[dict], check_type: str, page: int = 0, page_size:
 
     return InlineKeyboardMarkup(rows)
 
-def done_picker_keyboard(key: str, page: int = 0, page_size: int = 5) -> InlineKeyboardMarkup:
+def done_picker_keyboard(key: str, done_picker_map: dict[str, list[dict]], page: int = 0, page_size: int = 5) -> InlineKeyboardMarkup:
     tasks  = done_picker_map.get(key, [])
     start  = page * page_size
     end    = start + page_size
@@ -73,13 +73,13 @@ def done_picker_keyboard(key: str, page: int = 0, page_size: int = 5) -> InlineK
     rows.append([InlineKeyboardButton("✖️ Cancel", callback_data=f"dpc:{key}")])
     return InlineKeyboardMarkup(rows)
 
-def todo_picker_keyboard(key: str) -> InlineKeyboardMarkup:
+def todo_picker_keyboard(key: str, todo_picker_map: dict[str, list[dict]], context_emoji_fn) -> InlineKeyboardMarkup:
     tasks = todo_picker_map.get(key, [])
     rows: list[list[InlineKeyboardButton]] = []
     for idx, task in enumerate(tasks):
         if task.get("_done"):
             continue
-        label = f"{context_emoji(task.get('context'))} {task.get('name', 'Untitled')}"
+        label = f"{context_emoji_fn(task.get('context'))} {task.get('name', 'Untitled')}"
         rows.append([InlineKeyboardButton(label, callback_data=f"td:{key}:{idx}")])
     return InlineKeyboardMarkup(rows)
 
@@ -124,10 +124,10 @@ def wantslist_confirm_keyboard(key: str) -> InlineKeyboardMarkup:
         InlineKeyboardButton("❌ Cancel", callback_data=f"wl_cancel:{key}"),
     ]])
 
-def tmdb_candidates_keyboard(key: str, candidates: list[dict]) -> InlineKeyboardMarkup:
+def tmdb_candidates_keyboard(key: str, candidates: list[dict], notion_type_from_tmdb_fn) -> InlineKeyboardMarkup:
     rows = []
     for i, c in enumerate(candidates[:5]):
-        label = f"{c['title']} ({c['year']}) · {_notion_type_from_tmdb(c['media_type'])}"
+        label = f"{c['title']} ({c['year']}) · {notion_type_from_tmdb_fn(c['media_type'])}"
         if len(label) > 38:
             label = label[:35] + "..."
         rows.append([InlineKeyboardButton(label, callback_data=f"tmdb_pick:{key}:{i}")])
@@ -135,7 +135,7 @@ def tmdb_candidates_keyboard(key: str, candidates: list[dict]) -> InlineKeyboard
     rows.append([InlineKeyboardButton("❌ Cancel", callback_data=f"tmdb_cancel:{key}")])
     return InlineKeyboardMarkup(rows)
 
-def field_work_keyboard(key: str) -> InlineKeyboardMarkup:
+def field_work_keyboard(key: str, trip_map: dict[str, dict]) -> InlineKeyboardMarkup:
     selected = trip_map[key].get("field_work_types", [])
     types = [("sw", "Site Walk"), ("st", "Site Testing"), ("it", "Isolation Testing"), ("hm", "24hr Monitoring"), ("nn", "None")]
     rows, row = [], []
@@ -169,9 +169,9 @@ def back_to_palette_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📖 Back to Palette", callback_data="qp:back")],
     ])
 
-def quick_actions_keyboard() -> ReplyKeyboardMarkup:
+def quick_actions_keyboard(btn_refresh: str, btn_all_open: str, btn_habits: str, btn_crossfit: str, btn_notes: str, btn_weather: str) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[BTN_REFRESH, BTN_ALL_OPEN, BTN_HABITS], [BTN_CROSSFIT, BTN_NOTES, BTN_WEATHER]],
+        [[btn_refresh, btn_all_open, btn_habits], [btn_crossfit, btn_notes, btn_weather]],
         resize_keyboard=True,
         one_time_keyboard=False,
         input_field_placeholder="Type a task, tap a quick action, or log a workout…",
@@ -185,4 +185,3 @@ def horizon_view_back_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("📅 Full Sunday Review", callback_data="digest:sunday")],
         ]
     )
-

@@ -1807,7 +1807,7 @@ async def handle_watchlist_intent(message, title: str, media_type: str) -> None:
     await thinking.edit_text(
         f"📺 Found a few matches for *{title}* — which one?",
         parse_mode="Markdown",
-        reply_markup=kb.tmdb_candidates_keyboard(key, candidates),
+        reply_markup=kb.tmdb_candidates_keyboard(key, candidates, _notion_type_from_tmdb),
     )
 
 
@@ -3469,7 +3469,10 @@ def quick_actions_keyboard() -> ReplyKeyboardMarkup:
 async def refresh_quick_actions_keyboard(message) -> None:
     """Force-refresh the reply keyboard to replace legacy layouts (e.g. old Mute button)."""
     await message.reply_text("🔄 Refreshing quick actions…", reply_markup=ReplyKeyboardRemove())
-    await message.reply_text("✅ Quick actions updated.", reply_markup=kb.quick_actions_keyboard())
+    await message.reply_text(
+        "✅ Quick actions updated.",
+        reply_markup=kb.quick_actions_keyboard(BTN_REFRESH, BTN_ALL_OPEN, BTN_HABITS, BTN_CROSSFIT, BTN_NOTES, BTN_WEATHER),
+    )
 
 
 def notes_options_keyboard() -> InlineKeyboardMarkup:
@@ -3568,7 +3571,7 @@ async def send_quick_reminder(message, mode: str = "priority") -> None:
     await message.reply_text(
         fmt.format_reminder_snapshot(mode=mode),
         parse_mode="Markdown",
-        reply_markup=kb.quick_actions_keyboard(),
+        reply_markup=kb.quick_actions_keyboard(BTN_REFRESH, BTN_ALL_OPEN, BTN_HABITS, BTN_CROSSFIT, BTN_NOTES, BTN_WEATHER),
     )
 
 
@@ -4416,7 +4419,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             kind_label = kind_label_map.get(awaiting_note_capture, "note")
             await message.reply_text(
                 f"✅ {kind_label.capitalize()} saved to Notes.",
-                reply_markup=kb.quick_actions_keyboard(),
+                reply_markup=kb.quick_actions_keyboard(BTN_REFRESH, BTN_ALL_OPEN, BTN_HABITS, BTN_CROSSFIT, BTN_NOTES, BTN_WEATHER),
             )
         except Exception as e:
             log.error("fn=handle_message_text event=note_quick_save_failed err=%s", e)
