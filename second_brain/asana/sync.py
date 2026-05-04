@@ -177,6 +177,36 @@ class GidCache:
 
 # Module-level singleton — shared across all reconcile() calls in the process.
 _cache = GidCache()
+_failed_pages: dict[str, dict[str, Any]] = {}
+_failed_pages_lock = threading.Lock()
+FAILED_PAGE_RETRY_CAP_SECONDS = 300
+
+
+def _queue_failed_page(page_id: str, reason: str) -> None:
+    now = datetime.now(timezone.utc)
+    with _failed_pages_lock:
+        entry = _failed_pages.get(page_id, {"attempts": 0})
+        attempts = int(entry.get("attempts", 0)) + 1
+        delay = min(FAILED_PAGE_RETRY_CAP_SECONDS, 2 ** min(attempts, 8))
+        _failed_pages[page_id] = {
+            "attempts": attempts,
+            "next_retry_at": now + timedelta(seconds=delay),
+            "last_error": reason,
+        }
+
+
+def _should_defer_page(page_id: str) -> bool:
+    with _failed_pages_lock:
+        entry = _failed_pages.get(page_id)
+        if not entry:
+            return False
+        next_retry_at = entry.get("next_retry_at")
+        return isinstance(next_retry_at, datetime) and datetime.now(timezone.utc) < next_retry_at
+
+
+def _clear_failed_page(page_id: str) -> None:
+    with _failed_pages_lock:
+        _failed_pages.pop(page_id, None)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -603,7 +633,7 @@ def reconcile(
     if source_mode == "my_tasks" and not asana_workspace_gid:
         raise AsanaSyncError("ASANA_WORKSPACE_GID is missing for source_mode=my_tasks")
 
-    stats = {"created": 0, "a2n": 0, "n2a": 0, "deleted": 0, "skipped": 0}
+    stats = {"created": 0, "a2n": 0, "n2a": 0, "deleted": 0, "skipped": 0, "deferred_pages": 0, "failed_queue_size": 0}
 
     # ── Cache trigger 1 & 2: rebuild on startup or periodic safety net ──
     if _cache.stale():
@@ -628,6 +658,10 @@ def reconcile(
     for gid, task in asana_by_gid.items():
         page_id = _cache.get(gid)
 
+        if page_id and _should_defer_page(page_id):
+            stats["deferred_pages"] += 1
+            continue
+
         if page_id is None:
             # Genuinely new — doesn't exist in Notion. Create.
             try:
@@ -646,6 +680,7 @@ def reconcile(
             notion_page = notion.pages.retrieve(page_id=page_id)
         except Exception:
             log.exception("Failed to retrieve Notion page %s, invalidating cache entry", page_id)
+            _queue_failed_page(page_id, "retrieve_failed")
             _cache.drop(gid)
             continue
 
@@ -661,18 +696,22 @@ def reconcile(
         elif decision == "asana_to_notion":
             try:
                 notion.pages.update(page_id=page_id, properties=_asana_to_notion_update_props(task))
+                _clear_failed_page(page_id)
                 stats["a2n"] += 1
             except Exception:
                 log.exception("Failed A→N update for GID %s", gid)
+                _queue_failed_page(page_id, "a2n_update_failed")
 
         elif decision == "notion_to_asana":
             try:
                 fields = _notion_to_asana_fields(notion_page)
                 refreshed = _asana_update_task(gid, asana_token, fields)
                 _stamp_notion_after_reverse_write(page_id, refreshed.get("modified_at"), notion)
+                _clear_failed_page(page_id)
                 stats["n2a"] += 1
             except Exception:
                 log.exception("Failed N→A update for GID %s", gid)
+                _queue_failed_page(page_id, "n2a_update_failed")
 
     # ── Safety: do not archive "missing" rows automatically ──
     # In practice, feed scoping/filtering differences can make valid tasks
@@ -682,6 +721,8 @@ def reconcile(
             "archive_orphans=True requested but ignored: auto-archival is disabled for safety"
         )
 
+    with _failed_pages_lock:
+        stats["failed_queue_size"] = len(_failed_pages)
     return stats
 
 

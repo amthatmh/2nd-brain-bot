@@ -2,6 +2,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, date
 from second_brain.config import NUMBER_EMOJIS, HORIZON_LABELS, TZ
 from second_brain.notion import tasks as notion_tasks
+from second_brain import weather as wx
 
 
 def num_emoji(n: int) -> str:
@@ -90,7 +91,7 @@ def format_daily_digest(
     carryover = [t for t in tasks if t not in overdue and t not in today_now]
 
     lines, ordered, n = [f"☀️ *{date_str}*"], [], 1
-    weather_block = format_weather_block(fetch_weather(weather_mode), label="🌤️")
+    weather_block = format_weather_block(wx.fetch_weather(weather_mode), label="🌤️")
     lines.append(weather_block or weather_unavailable_digest_line())
     lines.append("")
 
@@ -289,25 +290,25 @@ def format_weather_block(weather: dict | None, label: str = "🌤️") -> str:
 
 def format_weather_snapshot() -> str:
     """Compose a compact weather summary for quick access."""
-    lines = [f"📍 *Weather for {current_location}*"]
-    current = format_weather_block(fetch_weather("current"), label="🌤️ Now")
-    today = format_weather_block(fetch_weather("today"), label="📅 Today")
-    tomorrow = format_weather_block(fetch_weather("tomorrow"), label="🌙 Tomorrow")
+    lines = [f"📍 *Weather for {wx.current_location}*"]
+    current = format_weather_block(wx.fetch_weather("current"), label="🌤️ Now")
+    today = format_weather_block(wx.fetch_weather("today"), label="📅 Today")
+    tomorrow = format_weather_block(wx.fetch_weather("tomorrow"), label="🌙 Tomorrow")
     for line in (current, today, tomorrow):
         if line:
             lines.append(line)
     if len(lines) == 1:
-        if not OPENWEATHER_KEY:
+        if not wx.OPENWEATHER_KEY:
             lines.append("Weather is unavailable: OPENWEATHER_KEY is missing or invalid.")
         else:
             lines.append("Weather is unavailable. Verify OpenWeather location (try /location) and API key access.")
-    uvi_data = fetch_uvi_data()
+    uvi_data = wx.fetch_uvi_data()
     if uvi_data:
         current = uvi_data["current"]
         max_uvi = uvi_data["max"]
         uvi_line = (
-            f"☀️ UVI: {current:.1f} now {uvi_emoji(current)} · "
-            f"{max_uvi:.1f} max {uvi_emoji(max_uvi)}"
+            f"☀️ UVI: {current:.1f} now {wx.uvi_emoji(current)} · "
+            f"{max_uvi:.1f} max {wx.uvi_emoji(max_uvi)}"
         )
         lines.append(uvi_line)
     return "\n".join(lines)
@@ -324,15 +325,15 @@ def append_location_to_weather_block(weather_block: str, location_label: str) ->
 
 def weather_unavailable_digest_line() -> str:
     """Digest fallback text when weather cannot be rendered."""
-    if current_lat is not None and current_lon is not None and current_location:
-        return f"🌤️ Weather unavailable for {current_location} — send /weather to retry or /location to update"
-    if current_location:
-        return f"🌤️ Weather unavailable. Last location: {current_location} — send /location (city/state/country or ZIP)"
+    if wx.current_lat is not None and wx.current_lon is not None and wx.current_location:
+        return f"🌤️ Weather unavailable for {wx.current_location} — send /weather to retry or /location to update"
+    if wx.current_location:
+        return f"🌤️ Weather unavailable. Last location: {wx.current_location} — send /location (city/state/country or ZIP)"
     return "🌤️ Weather unavailable — set with /location (city/state/country or ZIP)"
 
 def digest_location_label() -> str:
     """Compact location label for digest weather line (City, ST or country)."""
-    parts = [p.strip() for p in (current_location or "").split(",") if p.strip()]
+    parts = [p.strip() for p in (wx.current_location or "").split(",") if p.strip()]
     if not parts:
         return ""
     if len(parts) >= 3:
@@ -376,4 +377,3 @@ def uvi_emoji(uvi: float) -> str:
     if uvi <= 10:
         return "🔴"
     return "🟣"
-

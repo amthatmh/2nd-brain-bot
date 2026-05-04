@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from datetime import timedelta
 
-import pytz
+from zoneinfo import ZoneInfo
 
 
 def _flag(name: str, default: str = "1") -> bool:
@@ -45,7 +45,7 @@ NOTION_FAVE_DB = os.environ.get("NOTION_FAVE_DB", "").strip()
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "").strip()
 WEATHER_LOCATION = os.environ.get("WEATHER_LOCATION", "Chicago,IL").strip()
 
-TZ = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
+TZ = ZoneInfo(os.environ.get("TIMEZONE", "America/Chicago"))
 RECURRING_CHECK_TIME = parse_hhmm_env("RECURRING_CHECK_TIME", "7:00")
 SUNDAY_REVIEW_TIME = parse_hhmm_env("SUNDAY_REVIEW_TIME", "12:00")
 

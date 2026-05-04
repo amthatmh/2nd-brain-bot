@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 def init_sync_status() -> dict[str, dict]:
@@ -14,7 +14,7 @@ def init_sync_status() -> dict[str, dict]:
 
 
 def utc_now_iso() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def format_sync_block(name: str, info: dict) -> str:

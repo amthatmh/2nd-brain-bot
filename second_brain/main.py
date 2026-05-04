@@ -8,6 +8,7 @@ import re
 import logging
 import calendar
 import subprocess
+import time
 import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from collections import defaultdict
@@ -15,7 +16,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Callable
 
-import pytz
+from zoneinfo import ZoneInfo
 from aiohttp import web
 from dotenv import load_dotenv
 from telegram import (
@@ -75,11 +76,7 @@ from second_brain.healthtrack.config import (
 )
 from second_brain.config import FEATURES
 from second_brain.notion import notion_call, notion_call_async
-from second_brain.notion.habits import (
-    extract_habit_frequency,
-    check_and_notify_weekly_goals,
-    record_weekly_streaks,
-)
+from second_brain.notion import habits as notion_habits
 from second_brain.notion import tasks as notion_tasks
 from second_brain import keyboards as kb
 from second_brain import formatters as fmt
@@ -226,7 +223,7 @@ NOTION_PACKING_ITEMS_DB = os.environ.get("NOTION_PACKING_ITEMS_DB", "")
 NOTION_TRIPS_DB         = os.environ.get("NOTION_TRIPS_DB", "")
 OPENWEATHER_KEY     = os.environ.get("OPENWEATHER_KEY", "")
 
-TZ           = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
+TZ           = ZoneInfo(os.environ.get("TIMEZONE", "America/Chicago"))
 _rc_h, _rc_m = _parse_hhmm_env("RECURRING_CHECK_TIME", "7:00")
 _sr_h, _sr_m = _parse_hhmm_env("SUNDAY_REVIEW_TIME", "12:00")
 
@@ -256,6 +253,9 @@ ASANA_PROJECT_GID   = os.environ.get("ASANA_PROJECT_GID", "")
 ASANA_WORKSPACE_GID = os.environ.get("ASANA_WORKSPACE_GID", "")  # v9.2: required for my_tasks mode
 ASANA_SYNC_SOURCE   = os.environ.get("ASANA_SYNC_SOURCE", "project").strip().lower()
 ASANA_SYNC_INTERVAL = max(1, int(os.environ.get("ASANA_SYNC_EVERY_SECONDS", "15")))
+ASANA_SYNC_TIMEOUT_SECONDS = max(10, int(os.environ.get("ASANA_SYNC_TIMEOUT_SECONDS", "45")))
+ASANA_SYNC_MAX_INSTANCES = max(1, int(os.environ.get("ASANA_SYNC_MAX_INSTANCES", "1")))
+ASANA_SYNC_MISFIRE_GRACE_SECONDS = max(1, int(os.environ.get("ASANA_SYNC_MISFIRE_GRACE_SECONDS", "20")))
 ASANA_STARTUP_SMOKE = os.environ.get("ASANA_STARTUP_SMOKE", "1").strip().lower() not in {"0", "false", "no", "off"}
 ASANA_ARCHIVE_ORPHANS = os.environ.get("ASANA_ARCHIVE_ORPHANS", "0").strip().lower() in {"1", "true", "yes", "on"}
 NOTION_WATCHLIST_DB    = os.environ.get("NOTION_WATCHLIST_DB", "")
@@ -312,6 +312,12 @@ _todo_picker_counter = 0
 _v10_counter = 0
 _entertainment_counter = 0
 habit_cache: dict[str, dict] = STATE.habit_cache
+
+def _refresh_habit_cache_refs() -> None:
+    global habit_cache
+    habit_cache = notion_habits.habit_cache
+    STATE.habit_cache = habit_cache
+
 notes_pending: set[int] = STATE.notes_pending  # chat_ids currently in note-capture mode
 _tmdb_http_client: httpx.AsyncClient | None = None
 sync_status: dict[str, dict] = init_sync_status()
@@ -512,118 +518,6 @@ def is_muted() -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 # HABIT CACHE
 # ══════════════════════════════════════════════════════════════════════════════
-
-def load_habit_cache() -> None:
-    global habit_cache
-    try:
-        results = notion.databases.query(
-            database_id=NOTION_HABIT_DB,
-            filter={"property": "Active", "checkbox": {"equals": True}},
-        )
-        habit_cache = {}
-        for page in results.get("results", []):
-            p = page["properties"]
-            title_parts = p.get("Habit", {}).get("title", [])
-            name = title_parts[0]["text"]["content"] if title_parts else None
-            if not name:
-                continue
-            def sel(key):
-                s = p.get(key, {}).get("select")
-                return s["name"] if s else None
-            def num(key):
-                return p.get(key, {}).get("number")
-            def txt(key):
-                parts = p.get(key, {}).get("rich_text", [])
-                return parts[0]["text"]["content"] if parts else None
-            parsed_frequency = extract_habit_frequency(p)
-            frequency_label = txt("Frequency Label")
-            if not frequency_label and parsed_frequency:
-                frequency_label = f"{parsed_frequency}x/week"
-            page_icon = page.get("icon") or {}
-            icon_emoji = page_icon.get("emoji") if isinstance(page_icon, dict) else None
-            habit_cache[name] = {
-                "page_id":         page["id"],
-                "name":            name,
-                "icon":            icon_emoji,
-                "time":            sel("Time"),
-                "color":           sel("Color"),
-                "freq_per_week":   parsed_frequency,
-                "frequency_label": frequency_label,
-                "description":     txt("Description"),
-                "sort":            num("Sort") or 99,
-            }
-        log.info(f"Habit cache loaded: {sorted(habit_cache.keys())}")
-    except Exception as e:
-        log.error(f"Failed to load habit cache: {e}")
-
-
-def habits_by_time(time_str: str) -> list[dict]:
-    return [h for h in habit_cache.values() if h["time"] == time_str]
-
-
-def get_active_habits_for_trigger() -> list[dict]:
-    """
-    Fetch active habits sorted by clock time and filtered by weekly frequency quota.
-    """
-    try:
-        results = notion_query_all(
-            database_id=NOTION_HABIT_DB,
-            filter={"property": "Active", "checkbox": {"equals": True}},
-        )
-    except Exception as e:
-        log.error("get_active_habits_for_trigger query error: %s", e)
-        return []
-
-    habits: list[dict] = []
-    for page in results:
-        try:
-            props = page.get("properties", {})
-            title_parts = props.get("Habit", {}).get("title", [])
-            name = title_parts[0].get("plain_text") if title_parts else None
-            if not name:
-                name = "Unknown"
-
-            time_prop = props.get("Time", {})
-            time_str = ""
-            if time_prop.get("type") == "select":
-                time_str = (time_prop.get("select") or {}).get("name") or ""
-            elif time_prop.get("type") == "rich_text":
-                rich = time_prop.get("rich_text", [])
-                time_str = (rich[0].get("plain_text") if rich else "") or ""
-            time_str = time_str.strip() or "—"
-            time_minutes = _parse_time_to_minutes(time_str if time_str != "—" else None)
-
-            frequency = extract_habit_frequency(props)
-
-            completion_count = _count_habit_completions_this_week(page["id"])
-            if frequency and frequency > 0 and completion_count >= frequency:
-                continue
-
-            habits.append(
-                {
-                    "page_id": page["id"],
-                    "name": name,
-                    "time_minutes": time_minutes,
-                    "time_str": time_str,
-                    "frequency": frequency,
-                    "completion_count": completion_count,
-                    "weather_gated": props.get("Weather Gated", {}).get("checkbox", False),
-                }
-            )
-        except Exception as e:
-            log.error("get_active_habits_for_trigger parse error for %s: %s", page.get("id"), e)
-
-    habits.sort(key=lambda h: (h["time_minutes"] < 0, h["time_minutes"] if h["time_minutes"] >= 0 else 10**9, h["name"].lower()))
-    return habits
-
-
-def get_habits_by_time(time_filter: str) -> list[dict]:
-    """Legacy wrapper kept for compatibility."""
-    del time_filter
-    habits = get_active_habits_for_trigger()
-    habits = [h for h in habits if not habit_capped_this_week(h["page_id"])]
-    return habits
-
 
 def notion_query_all(database_id: str, **kwargs) -> list[dict]:
     """Return all rows from a Notion database query (handles pagination)."""
@@ -961,10 +855,10 @@ async def handle_note_input(message, text: str) -> None:
             parsed = urllib.parse.urlsplit(url)
             if not parsed.scheme or not parsed.netloc:
                 raise ValueError("invalid URL")
-            meta = await asyncio.get_event_loop().run_in_executor(
+            meta = await asyncio.get_running_loop().run_in_executor(
                 None, fetch_url_metadata, url
             )
-            classified = await asyncio.get_event_loop().run_in_executor(
+            classified = await asyncio.get_running_loop().run_in_executor(
                 None, ai_classify.classify_note,
                 claude, CLAUDE_MODEL, meta["title"], meta["description"], url, text, TOPIC_OPTIONS,
             )
@@ -1326,7 +1220,7 @@ async def handle_photo_followup(message, text: str) -> bool:
 def log_habit(habit_page_id: str, habit_name: str, source: str = "📱 Telegram") -> None:
     today = datetime.now(TZ).date().isoformat()
     props = {
-        "Entry":     {"title":    [{"text": {"content": f"{habit_name} — {today}"}}]},
+        "Entry":     {"title":    [{"text": {"content": habit_name}}]},
         "Habit":     {"relation": [{"id": habit_page_id}]},
         "Completed": {"checkbox": True},
         "Date":      {"date":     {"start": today}},
@@ -1390,7 +1284,7 @@ def get_habit_frequency(habit_page_id: str) -> int:
     try:
         page = notion.pages.retrieve(page_id=habit_page_id)
         properties = page.get("properties", {})
-        frequency = extract_habit_frequency(properties)
+        frequency = notion_habits.extract_habit_frequency(properties)
         if frequency and frequency > 0:
             return frequency
         return 7
@@ -1479,35 +1373,6 @@ def get_and_clear_signoff_note() -> str:
     note = _signoff_note_today
     _signoff_note_today = ""
     return note
-
-
-def query_tasks_by_auto_horizon(horizons: list[str]) -> list[dict]:
-    results = notion.databases.query(
-        database_id=NOTION_DB_ID,
-        filter={
-            "and": [
-                {"property": "Done", "checkbox": {"equals": False}},
-                {"or": [
-                    {"property": "Auto Horizon", "formula": {"string": {"equals": h}}}
-                    for h in horizons
-                ]},
-            ]
-        },
-    )
-    tasks = []
-    for page in results.get("results", []):
-        p = page["properties"]
-        tasks.append({
-            "page_id":      page["id"],
-            "name":         notion_tasks._get_prop(p, "Name",         "title")   or "Untitled",
-            "auto_horizon": notion_tasks._get_prop(p, "Auto Horizon", "formula") or "",
-            "context":      notion_tasks._get_prop(p, "Context",      "select")  or "",
-            "deadline":     notion_tasks._get_prop(p, "Deadline",     "date"),
-        })
-    return tasks
-
-
-
 
 
 
@@ -1738,7 +1603,11 @@ def _run_capture(raw_text: str, force_create: bool = False,
 
 
 def pending_habits_for_digest(time_str: str | None = None) -> list[dict]:
-    habits = habit_cache.values() if time_str is None else habits_by_time(time_str)
+    habits = (
+        habit_cache.values()
+        if time_str is None
+        else [h for h in habit_cache.values() if h.get("time") == time_str]
+    )
     pending: list[dict] = []
     for habit in sorted(habits, key=lambda h: h["sort"]):
         pid = habit["page_id"]
@@ -1814,6 +1683,21 @@ async def send_quick_reminder(message, mode: str = "priority") -> None:
 # NAMING CONVENTIONS:
 # ─ Use colons (:) as separators, never underscores
 # ─ PIDs (page IDs) are always restored from clean format: _restore_pid(parts[n])
+def _restore_pid(pid: str) -> str:
+    """Restore compact Notion page IDs to canonical dashed form.
+
+    Accepts either already-dashed IDs or 32-char compact IDs.
+    Falls back to the original input for unknown shapes.
+    """
+    raw = (pid or "").strip()
+    if not raw:
+        return raw
+    if "-" in raw:
+        return raw
+    if len(raw) == 32:
+        return f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:]}"
+    return raw
+
 # ─ Keys are string counters or message IDs from state maps
 # ─ Actions are descriptive: log, select, page, cancel
 #
@@ -1852,7 +1736,7 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
         overrides = infer_batch_overrides(raw_text)
         context_override = overrides.get("context")
         deadline_override = overrides.get("deadline_days")
-        loop    = asyncio.get_event_loop()
+        loop    = asyncio.get_running_loop()
         results = await asyncio.gather(*[
             loop.run_in_executor(None, _run_capture, t, force_create, context_override, deadline_override)
             for t in task_texts
@@ -1950,7 +1834,7 @@ async def cmd_refresh(message, context: ContextTypes.DEFAULT_TYPE | None = None)
     del context
     if message.chat_id != MY_CHAT_ID:
         return
-    load_habit_cache()
+    notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB); _refresh_habit_cache_refs()
     if _scheduler is not None:
         build_digest_schedule(_scheduler, message.get_bot())
     await send_daily_digest(message.get_bot(), include_habits=True)
@@ -2025,7 +1909,11 @@ async def cmd_weather_text(message, context: ContextTypes.DEFAULT_TYPE | None = 
     if not wx.current_location:
         await message.reply_text("📍 What location should I use for weather? (city/state/country or ZIP)")
         return
-    await message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
+    try:
+        await message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
+    except Exception as e:
+        log.error("Weather quick-action failed: %s", e)
+        await message.reply_text("⚠️ Weather is temporarily unavailable. Try /weather again in a moment or /location to reset.")
 
 
 async def handle_weather(location: str) -> str:
@@ -2118,7 +2006,7 @@ async def route_classified_message_v10(message, text: str) -> None:
     thinking = await message.reply_text("🧠 Got it...")
     if NOTION_WORKOUT_LOG_DB or NOTION_WOD_LOG_DB or NOTION_WORKOUT_PROGRAM_DB:
         try:
-            workout_result = await asyncio.get_event_loop().run_in_executor(None, lambda: classify_workout_message(text, claude, CLAUDE_MODEL, CLAUDE_MAX_TOK))
+            workout_result = await asyncio.get_running_loop().run_in_executor(None, lambda: classify_workout_message(text, claude, CLAUDE_MODEL, CLAUDE_MAX_TOK))
         except Exception:
             workout_result = {"type": "none"}
         if workout_result.get("type") == "programme":
@@ -2137,7 +2025,7 @@ async def route_classified_message_v10(message, text: str) -> None:
         return
     try:
         result = await asyncio.wait_for(
-            asyncio.get_event_loop().run_in_executor(None, lambda: ai_classify.classify_message(claude, CLAUDE_MODEL, text, list(habit_cache.keys()), bool(NOTION_WATCHLIST_DB), bool(NOTION_WANTSLIST_V2_DB), bool(NOTION_PHOTO_DB), bool(NOTION_NOTES_DB), local_today())),
+            asyncio.get_running_loop().run_in_executor(None, lambda: ai_classify.classify_message(claude, CLAUDE_MODEL, text, list(habit_cache.keys()), bool(NOTION_WATCHLIST_DB), bool(NOTION_WANTSLIST_V2_DB), bool(NOTION_PHOTO_DB), bool(NOTION_NOTES_DB), local_today())),
             timeout=18,
         )
     except asyncio.TimeoutError:
@@ -2279,6 +2167,8 @@ COMMAND_DISPATCH: dict[str, Callable] = {
     "📝 notes": cmd_notes_text,
     "notes": cmd_notes_text,
     "🌤️ weather": cmd_weather_text,
+    "🌤 weather": cmd_weather_text,
+    "⛅ weather": cmd_weather_text,
     "weather": cmd_weather_text,
     "🔕 mute": cmd_mute_text,
 }
@@ -2377,7 +2267,11 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             context.user_data["awaiting_location"] = False
             await message.reply_text(f"📍 Location updated to {wx.current_location}.")
             wx.save_location_state(wx.current_location)
-            await message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
+            try:
+                await message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
+            except Exception as e:
+                log.error("Weather quick-action failed: %s", e)
+                await message.reply_text("⚠️ Weather is temporarily unavailable. Try /weather again in a moment or /location to reset.")
         else:
             await message.reply_text(
                 "Couldn't find that location. Try city/state/country or ZIP (example: Chicago IL 60605)."
@@ -2391,7 +2285,11 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
                 context.user_data["awaiting_location"] = False
                 await message.reply_text(f"📍 Location updated to {wx.current_location}.")
                 wx.save_location_state(wx.current_location)
-                await message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
+                try:
+                    await message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
+                except Exception as e:
+                    log.error("Weather quick-action failed: %s", e)
+                    await message.reply_text("⚠️ Weather is temporarily unavailable. Try /weather again in a moment or /location to reset.")
             else:
                 await message.reply_text(
                     "Couldn't find that location. Try city/state/country or ZIP (example: Chicago IL 60605)."
@@ -2416,7 +2314,11 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             context.user_data["awaiting_location"] = True
             await message.reply_text("📍 What location should I use for weather? (city/state/country or ZIP)")
             return
-        await message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
+        try:
+            await message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
+        except Exception as e:
+            log.error("Weather quick-action failed: %s", e)
+            await message.reply_text("⚠️ Weather is temporarily unavailable. Try /weather again in a moment or /location to reset.")
         return
 
     pending_sport_competition = ent_log.pending_sport_competition_map.get(update.effective_chat.id)
@@ -2934,6 +2836,46 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
+    if q.data == "h:check:cancel":
+        await q.edit_message_text("✅ Habit check closed.")
+        return
+
+    if q.data.startswith("h:log:"):
+        pid_raw = q.data.removeprefix("h:log:").strip()
+        if not pid_raw:
+            await q.edit_message_text("⚠️ Habit button expired. Please open 🎯 Habits again.")
+            return
+        habit_page_id = _restore_pid(pid_raw)
+        habit_name = next((n for n, h in habit_cache.items() if h["page_id"] == habit_page_id), "Unknown")
+
+        if already_logged_today(habit_page_id):
+            try:
+                await q.edit_message_text(f"✅ Already logged {habit_name} today!")
+            except Exception as ui_error:
+                log.warning("Habit dedupe UI update failed for %s: %s", habit_name, ui_error)
+                await q.message.reply_text(f"Already logged {habit_name} today! ✅")
+            return
+
+        try:
+            log_habit(habit_page_id, habit_name)
+        except Exception as notion_error:
+            log.error("Habit log Notion error for %s: %s", habit_name, notion_error)
+            try:
+                await q.edit_message_text("⚠️ Couldn't log to Notion.")
+            except Exception as ui_error:
+                log.warning("Habit log error UI update failed for %s: %s", habit_name, ui_error)
+                await q.message.reply_text("⚠️ Couldn't log to Notion.")
+            return
+
+        try:
+            await q.edit_message_text(f"✅ {habit_name} logged!")
+        except Exception as ui_error:
+            log.warning("Habit success UI update failed for %s: %s", habit_name, ui_error)
+            await q.message.reply_text(f"✅ {habit_name} logged!")
+
+        asyncio.create_task(check_and_notify_weekly_goals(q.bot, MY_CHAT_ID))
+        return
+
     if parts[0] == "h" and len(parts) >= 2:
         if parts[1] == "check" and len(parts) == 3 and parts[2] == "cancel":
             await q.edit_message_text("✅ Habit check closed.")
@@ -2970,6 +2912,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             log.warning("Habit success UI update failed for %s: %s", habit_name, ui_error)
             await q.message.reply_text(f"✅ {habit_name} logged!")
 
+        try:
+            if q.message:
+                await open_habit_picker(q.message)
+            else:
+                await q.bot.send_message(chat_id=update.effective_chat.id, text="🏃 Which habit did you complete?", reply_markup=kb.habit_buttons([
+                    {"page_id": h["page_id"], "name": h["name"]}
+                    for h in sorted(habit_cache.values(), key=lambda x: x["sort"])
+                    if not already_logged_today(h["page_id"])
+                ], "manual"))
+        except Exception as follow_up_error:
+            log.error("Habit follow-up picker failed after logging %s: %s", habit_name, follow_up_error)
+            if q.message:
+                await q.message.reply_text("✅ Logged. Send /done to continue logging more habits.")
+            else:
+                await q.bot.send_message(chat_id=update.effective_chat.id, text="✅ Logged. Send /done to continue logging more habits.")
+
         asyncio.create_task(
             check_and_notify_weekly_goals(
                 q.bot,
@@ -2987,7 +2945,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if parts[0] == "hpag" and len(parts) == 3:
         _, prefix, page_str = parts
-        all_habits = get_active_habits_for_trigger()
+        all_habits = notion_habits.get_active_habits_for_trigger(notion_query_all=notion_query_all, notion_habit_db=NOTION_HABIT_DB, parse_time_to_minutes=_parse_time_to_minutes, count_habit_completions_this_week=_count_habit_completions_this_week)
         try:
             await q.edit_message_reply_markup(
                 reply_markup=kb.habit_buttons(all_habits, prefix, page=int(page_str))
@@ -3243,7 +3201,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def run_recurring_check(bot) -> None:
-    load_habit_cache()
+    notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB); _refresh_habit_cache_refs()
     if datetime.now(TZ).weekday() == 0:
         notified_goals_this_week.clear()
         await record_weekly_streaks(
@@ -3508,7 +3466,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     if config and config.get("include_habits") is not None:
         habits_enabled = bool(config.get("include_habits"))
     if habits_enabled:
-        morning_habits_all = get_habits_by_time("🌅 Morning") + get_habits_by_time("🕐 Anytime")
+        morning_habits_all = notion_habits.get_habits_by_time(time_filter="🌅 Morning", notion_query_all=notion_query_all, notion_habit_db=NOTION_HABIT_DB, parse_time_to_minutes=_parse_time_to_minutes, count_habit_completions_this_week=_count_habit_completions_this_week, habit_capped_this_week=habit_capped_this_week) + notion_habits.get_habits_by_time(time_filter="🕐 Anytime", notion_query_all=notion_query_all, notion_habit_db=NOTION_HABIT_DB, parse_time_to_minutes=_parse_time_to_minutes, count_habit_completions_this_week=_count_habit_completions_this_week, habit_capped_this_week=habit_capped_this_week)
         morning_habits_all = [h for h in morning_habits_all if not already_logged_today(h["page_id"]) and not is_on_pace(h)]
         uv_max = uvi_data["max"] if uvi_data else None
         if uv_max is not None:
@@ -3597,8 +3555,8 @@ async def send_sunday_review(bot) -> None:
     if is_muted():
         log.info("Sunday review skipped (muted)")
         return
-    week_tasks = query_tasks_by_auto_horizon(["🟠 This Week"])
-    month_tasks = query_tasks_by_auto_horizon(["🟡 This Month"])
+    week_tasks = notion_habits.query_tasks_by_auto_horizon(notion=notion, notion_db_id=NOTION_DB_ID, horizons=["🟠 This Week"])
+    month_tasks = notion_habits.query_tasks_by_auto_horizon(notion=notion, notion_db_id=NOTION_DB_ID, horizons=["🟡 This Month"])
     header, ordered = fmt.format_sunday_intro(week_tasks, month_tasks)
     sent_review = await bot.send_message(chat_id=MY_CHAT_ID, text=header, parse_mode="Markdown")
     if ordered:
@@ -3646,33 +3604,52 @@ async def run_asana_sync(bot) -> None:
     if not ASANA_PAT:
         return  # Sync disabled — bot still works without Asana
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     sync_status["asana"]["last_run"] = utc_now_iso()
+    started = time.monotonic()
     try:
-        stats = await loop.run_in_executor(
-            None,
-            lambda: reconcile(
-                notion=notion,
-                notion_db_id=NOTION_DB_ID,
-                asana_token=ASANA_PAT,
-                asana_project_gid=ASANA_PROJECT_GID,
-                asana_workspace_gid=ASANA_WORKSPACE_GID,   # v9.2: required for my_tasks mode
-                source_mode=ASANA_SYNC_SOURCE,
-                archive_orphans=ASANA_ARCHIVE_ORPHANS,
+        stats = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: reconcile(
+                    notion=notion,
+                    notion_db_id=NOTION_DB_ID,
+                    asana_token=ASANA_PAT,
+                    asana_project_gid=ASANA_PROJECT_GID,
+                    asana_workspace_gid=ASANA_WORKSPACE_GID,   # v9.2: required for my_tasks mode
+                    source_mode=ASANA_SYNC_SOURCE,
+                    archive_orphans=ASANA_ARCHIVE_ORPHANS,
+                ),
             ),
+            timeout=ASANA_SYNC_TIMEOUT_SECONDS,
         )
         # Only log when something happened — keeps logs readable at 15s polling
+        elapsed = round(time.monotonic() - started, 3)
         if any(v for k, v in stats.items() if k != "skipped"):
-            log.info(f"Asana sync: {stats}")
+            log.info(f"Asana sync: {stats} (elapsed={elapsed}s)")
         sync_status["asana"]["ok"] = True
         sync_status["asana"]["error"] = None
         sync_status["asana"]["stats"] = stats
+        elapsed = round(time.monotonic() - started, 3)
+        metrics = sync_status["asana"]["metrics"]
+        durations = metrics.setdefault("durations_seconds", [])
+        durations.append(elapsed)
+        if len(durations) > 100:
+            del durations[:-100]
+        metrics["last_duration_seconds"] = elapsed
+        metrics["notion_failed_queue_size"] = stats.get("failed_queue_size", 0)
+        metrics["deferred_pages"] = stats.get("deferred_pages", 0)
+    except TimeoutError:
+        log.error("Asana sync timed out after %ss", ASANA_SYNC_TIMEOUT_SECONDS)
+        sync_status["asana"]["ok"] = False
+        sync_status["asana"]["error"] = f"timeout_after_{ASANA_SYNC_TIMEOUT_SECONDS}s"
     except AsanaSyncError as e:
         log.error(f"Asana sync config error: {e}")
         sync_status["asana"]["ok"] = False
         sync_status["asana"]["error"] = str(e)
     except Exception as e:
-        log.exception(f"Asana sync failed: {e}")
+        elapsed = round(time.monotonic() - started, 3)
+        log.exception(f"Asana sync failed after {elapsed}s: {e}")
         sync_status["asana"]["ok"] = False
         sync_status["asana"]["error"] = str(e)
 
@@ -4067,12 +4044,12 @@ async def process_pending_programmes(bot) -> None:
         log.info("process_pending_programmes: processing '%s' (%d chars)", week_name, len(full_text))
 
         try:
-            parsed = await asyncio.get_event_loop().run_in_executor(
+            parsed = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: parse_programme(full_text, claude, CLAUDE_MODEL, CLAUDE_PARSE_MAX_TOKENS),
             )
 
-            days_created = await asyncio.get_event_loop().run_in_executor(
+            days_created = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: save_programme_from_notion_row(
                     notion,
@@ -4149,7 +4126,7 @@ async def post_init(app: Application) -> None:
     else:
         # Notion loaded successfully — sync back to local JSON cache
         wx.save_location_state(wx.current_location)
-    load_habit_cache()
+    notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB); _refresh_habit_cache_refs()
     global _app_bot
     _app_bot = app.bot
     await start_http_server()
@@ -4212,7 +4189,7 @@ async def post_init(app: Application) -> None:
         else:
             if ASANA_STARTUP_SMOKE:
                 try:
-                    loop = asyncio.get_event_loop()
+                    loop = asyncio.get_running_loop()
                     smoke = await loop.run_in_executor(
                         None,
                         lambda: startup_smoke_test(
@@ -4256,8 +4233,9 @@ async def post_init(app: Application) -> None:
                 seconds=ASANA_SYNC_INTERVAL,
                 args=[app.bot],
                 id="asana_sync",
-                max_instances=1,                   # Skip a tick if previous still running
+                max_instances=ASANA_SYNC_MAX_INSTANCES,
                 coalesce=True,                     # Don't backfill missed runs
+                misfire_grace_time=ASANA_SYNC_MISFIRE_GRACE_SECONDS,
                 next_run_time=datetime.now(TZ),    # Fire once immediately on startup
             )
             asana_status = f"ON ({ASANA_SYNC_INTERVAL}s, mode={ASANA_SYNC_SOURCE})"
@@ -4423,7 +4401,7 @@ async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         "🔄 Running cinema sync…" if cinema_only else "🔄 Running full sync (Asana + Cinema + Habit cache)…"
     )
     try:
-        load_habit_cache()
+        notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB); _refresh_habit_cache_refs()
         if not cinema_only:
             await run_asana_sync(context.bot)
         cinema_stats = await run_cinema_sync(context.bot)
@@ -4487,7 +4465,11 @@ async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """/weather — show current + upcoming forecast snapshot."""
     if update.effective_chat.id != MY_CHAT_ID:
         return
-    await update.message.reply_text(fmt.format_weather_snapshot(), parse_mode="Markdown")
+    try:
+        await update.message.reply_text(fmt.format_weather_snapshot(), parse_mode="Markdown")
+    except Exception as e:
+        log.error("/weather failed: %s", e)
+        await update.message.reply_text("⚠️ Weather is temporarily unavailable. Try again in a moment or send /location.")
 
 
 async def cmd_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
