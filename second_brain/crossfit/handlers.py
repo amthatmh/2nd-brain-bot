@@ -202,7 +202,16 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
     elif parts[1] == "log_wod":
         await handle_cf_wod_flow(q.message, {}, notion, config, cf_pending)
     elif parts[1] == "upload_programme":
-        prompt = "📋 *Upload Weekly Programme*\n\nPaste the full programme text now.\n_Paste the whole thing — I'll extract Performance, Fitness and Hyrox._"
+        prompt = (
+            "📋 *Upload Weekly Programme*\n\n"
+            "Paste your programme directly into Notion:\n"
+            "1. Open 📋 Weekly Programs\n"
+            "2. Create a new row\n"
+            "3. Paste the full programme text into *Full Program*\n"
+            "4. Leave Processed unchecked\n\n"
+            "_Brian II will parse it within 15 minutes and notify you here._\n\n"
+            "Fallback: you can still paste short/single-day programmes in Telegram."
+        )
         try:
             await q.edit_message_text(prompt, parse_mode="Markdown")
         except Exception:

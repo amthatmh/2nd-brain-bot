@@ -170,6 +170,107 @@ def save_programme(notion, program_db_id: str, workout_days_db_id: str, movement
     return parent_page_id
 
 
+def save_programme_from_notion_row(
+    notion,
+    parent_page_id: str,
+    workout_days_db_id: str,
+    movements_db_id: str,
+    parsed: dict,
+) -> int:
+    """
+    Like save_programme() but writes Workout Days rows linked to an
+    existing Weekly Programs page. Returns count of day rows created.
+    """
+    if "tracks" not in parsed and "days" in parsed:
+        parsed = {
+            "week_label": parsed.get("week_label"),
+            "tracks": [{"track": "Performance", "days": parsed.get("days", [])}],
+        }
+
+    week_label = parsed.get("week_label") or "Week"
+    monday_iso = this_monday()
+
+    try:
+        notion_call(
+            notion.pages.update,
+            page_id=parent_page_id,
+            properties={"Name": {"title": [{"text": {"content": week_label}}]}},
+        )
+    except Exception as e:
+        log.warning("save_programme_from_notion_row: could not update parent name: %s", e)
+
+    movement_cache: dict[str, str] = {}
+    if movements_db_id:
+        all_names: set[str] = set()
+        for track_row in parsed.get("tracks", []):
+            for day_row in track_row.get("days", []):
+                for m in (day_row.get("section_b") or {}).get("movements") or []:
+                    if m:
+                        all_names.add(m)
+                for m in (day_row.get("section_c") or {}).get("movements") or []:
+                    if m:
+                        all_names.add(m)
+        for name in all_names:
+            try:
+                movement_cache[name] = get_or_create_movement(notion, movements_db_id, name)
+            except Exception as e:
+                log.warning("save_programme_from_notion_row: movement '%s' failed: %s", name, e)
+
+    days_created = 0
+    for track_row in parsed.get("tracks", []):
+        track = track_row.get("track") or "Performance"
+        for day_row in track_row.get("days", []):
+            day = day_row.get("day") or "Monday"
+            section_b = day_row.get("section_b") or {}
+            section_c = day_row.get("section_c") or {}
+            training_notes = day_row.get("training_notes") or ""
+            b_desc = section_b.get("description") or ""
+            c_desc = section_c.get("description") or ""
+
+            b_ids = [movement_cache[m] for m in (section_b.get("movements") or []) if m and m in movement_cache]
+            c_ids = [movement_cache[m] for m in (section_c.get("movements") or []) if m and m in movement_cache]
+
+            if not workout_days_db_id:
+                continue
+
+            props: dict = {
+                "Name": {"title": [{"text": {"content": f"{day} — {track} — {week_label}"}}]},
+                "Day": {"select": {"name": day}},
+                "Track": {"select": {"name": track}},
+                "Week": {"relation": [{"id": parent_page_id}]},
+                "Week Of": {"date": {"start": monday_iso}},
+                "Is Partner": {"checkbox": bool(section_c.get("is_partner"))},
+            }
+            if b_desc:
+                props["Section B"] = {"rich_text": _rich_text_chunks(b_desc)}
+                props["Section B Type"] = {"select": {"name": infer_section_b_type(section_b)}}
+            if b_ids:
+                props["Section B Movements"] = {"relation": [{"id": mid} for mid in b_ids]}
+            if c_desc:
+                props["Section C"] = {"rich_text": _rich_text_chunks(c_desc)}
+            if section_c.get("format"):
+                props["Section C Format"] = {"select": {"name": section_c["format"]}}
+            if c_ids:
+                props["Section C Movements"] = {"relation": [{"id": mid} for mid in c_ids]}
+            if section_c.get("duration_mins") is not None:
+                props["Duration Mins"] = {"number": section_c["duration_mins"]}
+            if section_c.get("time_cap_mins") is not None:
+                props["Time Cap Mins"] = {"number": section_c["time_cap_mins"]}
+            if training_notes:
+                props["Training Notes"] = {"rich_text": _rich_text_chunks(training_notes)}
+
+            try:
+                notion_call(notion.pages.create, parent={"database_id": workout_days_db_id}, properties=props)
+                days_created += 1
+                log.info("save_programme_from_notion_row: created %s / %s", track, day)
+            except Exception as e:
+                log.error("save_programme_from_notion_row: failed %s/%s: %s", track, day, e)
+                log.error("save_programme_from_notion_row: props keys: %s", list(props.keys()))
+
+    log.info("save_programme_from_notion_row: complete — %d rows", days_created)
+    return days_created
+
+
 def validate_workout_days_db(notion, workout_days_db_id: str) -> list[str]:
     """
     Validate that the Workout Days DB is writable and has expected schema.

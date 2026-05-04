@@ -121,7 +121,7 @@ from second_brain.state import STATE
 from second_brain.utils import ExpiringDict, reply_notion_error
 from second_brain.http_utils import cors_headers
 
-from second_brain.crossfit.classify import classify_workout_message
+from second_brain.crossfit.classify import classify_workout_message, parse_programme
 from second_brain.crossfit.handlers import (
     handle_cf_callback,
     handle_cf_prs,
@@ -132,6 +132,7 @@ from second_brain.crossfit.handlers import (
     handle_cf_wod_flow,
 )
 from second_brain.crossfit.keyboards import crossfit_submenu_keyboard
+from second_brain.crossfit.notion import save_programme_from_notion_row
 
 load_dotenv()
 
@@ -6167,6 +6168,101 @@ def load_entertainment_schemas() -> None:
             log.error("Failed to inspect %s schema: %s", label, exc)
 
 
+
+async def process_pending_programmes(bot) -> None:
+    """Poll Weekly Programs DB for unprocessed rows and parse/save asynchronously."""
+    if not NOTION_WORKOUT_PROGRAM_DB:
+        return
+
+    try:
+        results = notion_call(
+            notion.databases.query,
+            database_id=NOTION_WORKOUT_PROGRAM_DB,
+            filter={
+                "and": [
+                    {"property": "Processed", "checkbox": {"equals": False}},
+                    {"property": "Full Program", "rich_text": {"is_not_empty": True}},
+                ]
+            },
+        )
+        rows = results.get("results", [])
+    except Exception as e:
+        log.error("process_pending_programmes: query failed: %s", e)
+        return
+
+    if not rows:
+        return
+
+    log.info("process_pending_programmes: found %d unprocessed row(s)", len(rows))
+
+    for row in rows:
+        page_id = row["id"]
+        props = row.get("properties", {})
+        title_parts = props.get("Name", {}).get("title", [])
+        week_name = title_parts[0].get("plain_text", "") if title_parts else "Unknown week"
+
+        rt = props.get("Full Program", {}).get("rich_text", [])
+        full_text = "".join(chunk.get("plain_text", "") for chunk in rt).strip()
+        if not full_text:
+            continue
+
+        log.info("process_pending_programmes: processing '%s' (%d chars)", week_name, len(full_text))
+
+        try:
+            parsed = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: parse_programme(full_text, claude, CLAUDE_MODEL, CLAUDE_PARSE_MAX_TOKENS),
+            )
+
+            days_created = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: save_programme_from_notion_row(
+                    notion,
+                    page_id,
+                    NOTION_WORKOUT_DAYS_DB,
+                    NOTION_MOVEMENTS_DB,
+                    parsed,
+                ),
+            )
+
+            notion_call(
+                notion.pages.update,
+                page_id=page_id,
+                properties={"Processed": {"checkbox": True}, "Parse Error": {"rich_text": []}},
+            )
+
+            tracks = parsed.get("tracks", []) if isinstance(parsed, dict) else []
+            track_names = ", ".join(t.get("track", "") for t in tracks if t.get("track"))
+            await bot.send_message(
+                chat_id=MY_CHAT_ID,
+                text=(
+                    f"📋 *{week_name}* parsed ✅\n\n"
+                    f"Tracks: {track_names or 'N/A'}\n"
+                    f"Day rows created: {days_created}\n"
+                    f"_Saved to Workout Days_"
+                ),
+                parse_mode="Markdown",
+            )
+            log.info("process_pending_programmes: completed '%s'", week_name)
+        except Exception as e:
+            log.error("process_pending_programmes: failed '%s': %s", week_name, e)
+            try:
+                notion_call(
+                    notion.pages.update,
+                    page_id=page_id,
+                    properties={"Parse Error": {"rich_text": [{"text": {"content": str(e)[:1900]}}]}},
+                )
+            except Exception as inner:
+                log.error("process_pending_programmes: could not write error to Notion: %s", inner)
+            try:
+                await bot.send_message(
+                    chat_id=MY_CHAT_ID,
+                    text=f"⚠️ Couldn't parse *{week_name}*\n\n`{str(e)[:300]}`",
+                    parse_mode="Markdown",
+                )
+            except Exception:
+                pass
+
 # ══════════════════════════════════════════════════════════════════════════════
 # STARTUP
 # ══════════════════════════════════════════════════════════════════════════════
@@ -6226,6 +6322,17 @@ async def post_init(app: Application) -> None:
         hours=1,
         args=[app.bot],
         id="weather_refresh_hourly",
+    )
+
+    scheduler.add_job(
+        process_pending_programmes,
+        "interval",
+        minutes=15,
+        args=[app.bot],
+        id="process_pending_programmes",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(TZ) + timedelta(minutes=1),
     )
 
     # ── Asana reconciler — gated by schema validation ──
