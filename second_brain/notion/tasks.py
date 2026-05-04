@@ -157,13 +157,24 @@ def get_today_and_overdue_tasks(notion: NotionClient, notion_db_id: str, limit: 
     today = local_today()
     selected = []
 
-    def context_rank(task: dict) -> tuple[int, str]:
+    def context_rank(task: dict) -> int:
         ctx = (task.get("context") or "").lower()
         if "personal" in ctx or "🏠" in ctx:
-            return (0, task.get("name", "").lower())
+            return 0
         if "work" in ctx or "💼" in ctx:
-            return (2, task.get("name", "").lower())
-        return (1, task.get("name", "").lower())
+            return 2
+        return 1
+
+    def urgency_sort_key(task: dict) -> tuple[int, int, int, str]:
+        parsed_deadline = _parse_deadline(task.get("deadline"))
+        if parsed_deadline is not None:
+            deadline_days = (parsed_deadline - today).days
+        else:
+            deadline_days = 8
+
+        horizon = task.get("auto_horizon") or ""
+        horizon_rank = 0 if horizon == "🔴 Today" else 1 if horizon == "🟠 This Week" else 2
+        return (deadline_days, horizon_rank, context_rank(task), task.get("name", "").lower())
 
     for t in tasks:
         parsed_deadline = _parse_deadline(t.get("deadline"))
@@ -176,9 +187,8 @@ def get_today_and_overdue_tasks(notion: NotionClient, notion_db_id: str, limit: 
             selected.append(t)
 
     overdue = [t for t in selected if (d := _parse_deadline(t.get("deadline"))) is not None and d < today]
-    today_only = [t for t in selected if (d := _parse_deadline(t.get("deadline"))) is not None and d == today and t not in overdue]
-    carryover = [t for t in selected if t not in overdue and t not in today_only]
-    ordered = sorted(overdue, key=context_rank) + sorted(today_only, key=context_rank) + sorted(carryover, key=context_rank)
+    non_overdue = [t for t in selected if t not in overdue]
+    ordered = sorted(overdue, key=urgency_sort_key) + sorted(non_overdue, key=urgency_sort_key)
     return ordered[:limit] if isinstance(limit, int) else ordered
 
 
