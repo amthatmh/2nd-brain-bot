@@ -145,4 +145,6 @@ Rules:
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
-    return _extract_json(resp.content[0].text)
+    result = _extract_json(resp.content[0].text)
+    result["week_label"] = f"Week of {monday}"
+    return result
