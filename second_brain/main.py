@@ -97,6 +97,18 @@ from second_brain.crossfit.handlers import (
 from second_brain.crossfit.keyboards import crossfit_submenu_keyboard
 from second_brain.crossfit.notion import save_programme_from_notion_row
 
+if not hasattr(wx, "uvi_emoji"):
+    def _wx_uvi_emoji_fallback(uvi: float) -> str:
+        if uvi >= 8:
+            return "🔴"
+        if uvi >= 6:
+            return "🟠"
+        if uvi >= 3:
+            return "🟡"
+        return "🟢"
+
+    wx.uvi_emoji = _wx_uvi_emoji_fallback
+
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
@@ -2617,7 +2629,11 @@ async def cmd_weather_text(message, context: ContextTypes.DEFAULT_TYPE | None = 
     if not wx.current_location:
         await message.reply_text("📍 What location should I use for weather? (city/state/country or ZIP)")
         return
-    await message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
+    try:
+        await message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
+    except Exception as e:
+        log.error("Weather quick-action failed: %s", e)
+        await message.reply_text("⚠️ Weather is temporarily unavailable. Try /weather again in a moment or /location to reset.")
 
 
 async def handle_weather(location: str) -> str:
@@ -2871,6 +2887,8 @@ COMMAND_DISPATCH: dict[str, Callable] = {
     "📝 notes": cmd_notes_text,
     "notes": cmd_notes_text,
     "🌤️ weather": cmd_weather_text,
+    "🌤 weather": cmd_weather_text,
+    "⛅ weather": cmd_weather_text,
     "weather": cmd_weather_text,
     "🔕 mute": cmd_mute_text,
 }
@@ -2969,7 +2987,11 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             context.user_data["awaiting_location"] = False
             await message.reply_text(f"📍 Location updated to {wx.current_location}.")
             wx.save_location_state(wx.current_location)
-            await message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
+            try:
+                await message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
+            except Exception as e:
+                log.error("Weather quick-action failed: %s", e)
+                await message.reply_text("⚠️ Weather is temporarily unavailable. Try /weather again in a moment or /location to reset.")
         else:
             await message.reply_text(
                 "Couldn't find that location. Try city/state/country or ZIP (example: Chicago IL 60605)."
@@ -2983,7 +3005,11 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
                 context.user_data["awaiting_location"] = False
                 await message.reply_text(f"📍 Location updated to {wx.current_location}.")
                 wx.save_location_state(wx.current_location)
-                await message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
+                try:
+                    await message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
+                except Exception as e:
+                    log.error("Weather quick-action failed: %s", e)
+                    await message.reply_text("⚠️ Weather is temporarily unavailable. Try /weather again in a moment or /location to reset.")
             else:
                 await message.reply_text(
                     "Couldn't find that location. Try city/state/country or ZIP (example: Chicago IL 60605)."
@@ -3008,7 +3034,11 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             context.user_data["awaiting_location"] = True
             await message.reply_text("📍 What location should I use for weather? (city/state/country or ZIP)")
             return
-        await message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
+        try:
+            await message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
+        except Exception as e:
+            log.error("Weather quick-action failed: %s", e)
+            await message.reply_text("⚠️ Weather is temporarily unavailable. Try /weather again in a moment or /location to reset.")
         return
 
     pending_sport_competition = pending_sport_competition_map.get(update.effective_chat.id)
@@ -5099,7 +5129,11 @@ async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """/weather — show current + upcoming forecast snapshot."""
     if update.effective_chat.id != MY_CHAT_ID:
         return
-    await update.message.reply_text(fmt.format_weather_snapshot(), parse_mode="Markdown")
+    try:
+        await update.message.reply_text(fmt.format_weather_snapshot(), parse_mode="Markdown")
+    except Exception as e:
+        log.error("/weather failed: %s", e)
+        await update.message.reply_text("⚠️ Weather is temporarily unavailable. Try again in a moment or send /location.")
 
 
 async def cmd_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
