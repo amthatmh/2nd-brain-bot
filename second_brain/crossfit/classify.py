@@ -3,17 +3,17 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
 
 
 def _today_str() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%d")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 def _monday_str() -> str:
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     monday = today - timedelta(days=today.weekday())
     return monday.isoformat()
 

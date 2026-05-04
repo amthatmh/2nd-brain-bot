@@ -1,45 +1,5 @@
 #!/usr/bin/env python3
-"""
-Second Brain — Telegram Bot (v8)
-────────────────────────────────────────────────────────────────
-v13 changes (daily log layer added on top of v12):
-- generate_daily_log() writes end-of-day narrative to 📓 Daily Log Notion DB
-- Digest Selector Signoff checkbox routes slot to log generation, not digest
-- Slots with nothing checked are now silently skipped (no digest sent)
-- signoff: <text> command stores user note for tonight's log
-- Morning digest includes link to previous night's log
-- NOTION_DAILY_LOG_DB env var added to config
-
-v13.1 changes:
-- Carried Forward field added to Daily Log — rolling distillation of
-  live unresolved threads written nightly by Claude
-- generate_daily_log() reads last 3 days of Carried Forward entries
-  as context before writing tonight's entry
-- Claude prompt expanded to three parts: Summary, Key Learnings,
-  Carried Forward
-- max_tokens increased to 800 to accommodate third part
-
-v13.2 changes:
-- Daily Log generation is now idempotent — upsert logic updates existing
-  entry for today rather than creating duplicates
-- /testlog command removed (testing complete)
-
-v13.3 changes:
-- Digest Selector supports "All" in Weekday/Weekend column
-- "All" rows are expanded into two slots (weekday + weekend) at load time
-- Fixes Signoff slot never firing when set to "All"
-- Invalid Weekday/Weekend values still skipped with warning (no change)
-
-v8 changes (trip packing layer):
-- /trip command with guided multi-step Telegram flow
-- Claude parses destination, dates, purpose from natural language
-- Field work type multi-select buttons (Site Walk/Testing/Isolation/24hr)
-- Weather fetch via OpenWeatherMap — flags drive smart item suggestions
-- Packing checklist auto-generated from 🧳 Packing Items DB into Notion sub-page
-- 2 reminder tasks created in To-Do DB (T-2 days, T-1 day)
-- Post-trip feedback prompt → adds missed items to master packing list
-- New env vars: NOTION_PACKING_ITEMS_DB, NOTION_TRIPS_DB, OPENWEATHER_KEY
-"""
+"""Second Brain — Telegram bot entry point and handler wiring."""
 
 import asyncio
 import os
@@ -49,7 +9,7 @@ import logging
 import calendar
 import subprocess
 import urllib.parse
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from collections import defaultdict
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -57,7 +17,6 @@ from typing import Callable
 
 import pytz
 from aiohttp import web
-import aiohttp
 from dotenv import load_dotenv
 from telegram import (
     Update,
@@ -141,7 +100,6 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
 log = logging.getLogger(__name__)
-JSON_STATE_FILE = "./bot_state.json"
 
 
 def _parse_hhmm_env(var_name: str, default: str) -> tuple[int, int]:
@@ -318,7 +276,7 @@ mute_state_file = STATE_DIR / "mute_state.json"
 current_location: str = WEATHER_LOCATION
 current_lat: float | None = None
 current_lon: float | None = None
-location_state_file = Path(JSON_STATE_FILE)
+location_state_file = STATE_DIR / "location_state.json"
 location_state_fallback_file = Path(__file__).resolve().parents[1] / ".second_brain_location_state.json"
 location_history_file = STATE_DIR / "location_history.json"
 location_history_fallback_file = Path(__file__).resolve().parents[1] / ".second_brain_location_history.json"
@@ -458,10 +416,6 @@ def _parse_time_to_minutes(time_str: str | None) -> int:
         return hour * 60 + minute
     except Exception:
         return -1
-
-
-def _utc_now_iso() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def save_mute_state() -> None:
@@ -4157,7 +4111,9 @@ COMMAND_DISPATCH: dict[str, Callable] = {
     "💪 CrossFit": cmd_crossfit,
     "💪crossfit": cmd_crossfit,
     "📝 notes": cmd_notes_text,
+    "notes": cmd_notes_text,
     "🌤️ weather": cmd_weather_text,
+    "weather": cmd_weather_text,
     "🔕 mute": cmd_mute_text,
 }
 
@@ -4279,7 +4235,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         await message.reply_text("📍 What location should I use for weather? (city/state/country or ZIP)")
         return
 
-    if lower == "weather" or lower.startswith("weather:"):
+    if lower.startswith("weather:"):
         requested_location = ""
         if lower.startswith("weather:"):
             requested_location = text.split(":", 1)[1].strip()
@@ -4389,7 +4345,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
         try:
             notion_notes.create_note_entry(notion, NOTION_NOTES_DB, entry["content"], custom_topic)
-            topic_recency_map[custom_topic] = datetime.utcnow()
+            topic_recency_map[custom_topic] = datetime.now(timezone.utc)
             await message.reply_text(
                 f"✅ Note captured!\n🏷️ {custom_topic}\n_Saved to Notion_",
                 parse_mode="Markdown",
@@ -4426,15 +4382,6 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             await reply_notion_error(message, "save note")
         finally:
             context.user_data["awaiting_note_capture"] = None
-        return
-
-    # Quick-action Notes button (ReplyKeyboard sends plain text "📝 Notes")
-    if lower in ("📝 notes", "notes"):
-        notes_pending.add(update.effective_chat.id)
-        await message.reply_text(
-            "📒 *Notes* — send me a link or type a note:",
-            parse_mode="Markdown",
-        )
         return
 
     # note: <text or url> — explicit inline command
@@ -4602,34 +4549,12 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 
-async def fetch_trip_weather(city: str, departure_date: str) -> dict:
-    url = "https://api.openweathermap.org/data/2.5/forecast"
-    params = {"q": city, "appid": OPENWEATHER_KEY, "units": "metric", "cnt": 40}
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, params=params) as resp:
-            data = await resp.json()
-    dep = date.fromisoformat(departure_date)
-    forecasts = [f for f in data.get("list", []) if date.fromisoformat(f["dt_txt"][:10]) >= dep][:16]
-    if not forecasts:
-        return {"summary": "Weather unavailable", "flags": []}
-    temps = [f["main"]["temp"] for f in forecasts]
-    descriptions = [f["weather"][0]["description"] for f in forecasts]
-    rain = any("rain" in d or "thunderstorm" in d for d in descriptions)
-    snow = any("snow" in d for d in descriptions)
-    flags=[]
-    if rain: flags.append("Rain")
-    if snow: flags.append("Snow")
-    if min(temps)<10: flags.append("Cold")
-    if max(temps)>28: flags.append("Hot")
-    summary = f"{city}: {round(sum(temps)/len(temps))}°C avg"
-    return {"summary": summary, "flags": flags}
-
 async def execute_trip(key: str, query) -> None:
     global awaiting_packing_feedback
     trip = trip_map[key]
-    weather = await asyncio.gather(*[fetch_trip_weather(c, trip['departure_date']) for c in trip['destinations']])
-    flags = sorted({f for w in weather for f in w.get('flags', [])})
-    summary = " | ".join(w.get('summary', '') for w in weather)
+    today_weather = fetch_weather("today") or {}
+    flags = []
+    summary = today_weather.get("summary", "Weather unavailable")
     trip['weather_flags'] = flags
     dep = date.fromisoformat(trip['departure_date'])
     reminder_2d = dep - timedelta(days=2)
@@ -4824,7 +4749,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         try:
             notion_notes.create_note_entry(notion, NOTION_NOTES_DB, entry["content"], selected_topic)
             if selected_topic:
-                topic_recency_map[selected_topic] = datetime.utcnow()
+                topic_recency_map[selected_topic] = datetime.now(timezone.utc)
             topic_line = f"\n🏷️ {selected_topic}" if selected_topic else ""
             await q.edit_message_text(
                 f"✅ Note captured!\n{topic_line}\n_Saved to Notion_",
