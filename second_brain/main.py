@@ -2409,11 +2409,10 @@ def is_on_pace(habit: dict) -> bool:
 # NOTION — TO-DO
 # ══════════════════════════════════════════════════════════════════════════════
 
-from second_brain.notion.tasks import _deadline_prop as _deadline_prop_impl, _parse_deadline, _get_prop, _task_sort_key, _context_label, _normalize_task_name, create_task, mark_done, set_deadline_from_horizon_code, set_focus, set_last_generated
 
 def _deadline_prop(days: int | None) -> dict:
-    _deadline_prop_impl.__globals__["local_today"] = local_today
-    return _deadline_prop_impl(days)
+    notion_tasks._deadline_prop.__globals__["local_today"] = local_today
+    return notion_tasks._deadline_prop(days)
 
 
 
@@ -2552,16 +2551,14 @@ def query_tasks_by_auto_horizon(horizons: list[str]) -> list[dict]:
         p = page["properties"]
         tasks.append({
             "page_id":      page["id"],
-            "name":         _get_prop(p, "Name",         "title")   or "Untitled",
-            "auto_horizon": _get_prop(p, "Auto Horizon", "formula") or "",
-            "context":      _get_prop(p, "Context",      "select")  or "",
-            "deadline":     _get_prop(p, "Deadline",     "date"),
+            "name":         notion_tasks._get_prop(p, "Name",         "title")   or "Untitled",
+            "auto_horizon": notion_tasks._get_prop(p, "Auto Horizon", "formula") or "",
+            "context":      notion_tasks._get_prop(p, "Context",      "select")  or "",
+            "deadline":     notion_tasks._get_prop(p, "Deadline",     "date"),
         })
     return tasks
 
 
-def get_all_active_tasks() -> list[dict]:
-    return notion_tasks.get_all_active_tasks(notion, NOTION_DB_ID)
 
 
 def _get_tasks_by_deadline_horizon() -> tuple[list, list, list, list]:
@@ -2601,7 +2598,7 @@ def format_hybrid_digest(tasks: list[dict]) -> tuple[str, list[dict]]:
     lines.append("🚨 *Overdue*")
     if overdue:
         for task in overdue:
-            lines.append(f"{num_emoji(n)} {task['name']}  {_context_label(task)}")
+            lines.append(f"{num_emoji(n)} {task['name']}  {notion_tasks._context_label(task)}")
             ordered.append(task)
             n += 1
     else:
@@ -2611,7 +2608,7 @@ def format_hybrid_digest(tasks: list[dict]) -> tuple[str, list[dict]]:
     lines.append("📌 *Due Today*")
     if today_tasks:
         for task in today_tasks:
-            lines.append(f"{num_emoji(n)} {task['name']}  {_context_label(task)}")
+            lines.append(f"{num_emoji(n)} {task['name']}  {notion_tasks._context_label(task)}")
             ordered.append(task)
             n += 1
     else:
@@ -2653,7 +2650,7 @@ def format_week_view(view_type: str) -> tuple[str, list[dict]]:
         hidden_count = len(tasks) - max_display
 
     for i, task in enumerate(shown, 1):
-        lines.append(f"{num_emoji(i)} {task['name']}  {_context_label(task)}")
+        lines.append(f"{num_emoji(i)} {task['name']}  {notion_tasks._context_label(task)}")
 
     if hidden_count:
         lines.append("")
@@ -2690,7 +2687,7 @@ def back_to_palette_keyboard() -> InlineKeyboardMarkup:
 
 def _get_today_tasks_for_palette() -> list[dict]:
     """Get today's tasks only (for To Do view)."""
-    tasks = get_today_and_overdue_tasks()
+    tasks = notion_tasks.get_today_and_overdue_tasks(notion, NOTION_DB_ID)
     today_str = local_today().isoformat()
     return [t for t in tasks if t.get("deadline") == today_str]
 
@@ -2699,13 +2696,13 @@ def format_digest_view() -> tuple[str, InlineKeyboardMarkup]:
     """Build digest view for today + next 7 calendar days, grouped by date."""
     today = local_today()
     cutoff = today + timedelta(days=7)
-    tasks = get_all_active_tasks()
+    tasks = notion_tasks.get_all_active_tasks(notion, NOTION_DB_ID)
     groups: dict[str, list[dict]] = defaultdict(list)
     beyond_count = 0
 
     for task in tasks:
         raw_deadline = task.get("deadline")
-        parsed_deadline = _parse_deadline(raw_deadline)
+        parsed_deadline = notion_tasks._parse_deadline(raw_deadline)
         if not parsed_deadline:
             continue
         if parsed_deadline < today:
@@ -2720,11 +2717,11 @@ def format_digest_view() -> tuple[str, InlineKeyboardMarkup]:
         lines.append("✅ Clear for next 7 days!")
     else:
         for d in sorted(groups.keys()):
-            day_tasks = sorted(groups[d], key=_task_sort_key)
+            day_tasks = sorted(groups[d], key=notion_tasks._task_sort_key)
             date_label = date.fromisoformat(d).strftime("%A, %B %-d")
             lines.append(f"📌 {date_label} ({len(day_tasks)})")
             for task in day_tasks:
-                lines.append(f"  • {task.get('name', 'Untitled')}  {_context_label(task)}")
+                lines.append(f"  • {task.get('name', 'Untitled')}  {notion_tasks._context_label(task)}")
             lines.append("")
         if lines[-1] == "":
             lines.pop()
@@ -2786,16 +2783,8 @@ def horizon_view_back_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def get_today_and_overdue_tasks(limit: int | None = 10) -> list[dict]:
-    return notion_tasks.get_today_and_overdue_tasks(notion, NOTION_DB_ID, limit=limit)
-
-
 def get_quick_refresh_tasks(limit: int = 10) -> list[dict]:
     return notion_tasks.get_quick_refresh_tasks(notion, NOTION_DB_ID, limit=limit)
-
-
-def get_recurring_templates() -> list[dict]:
-    return notion_tasks.get_recurring_templates(notion, NOTION_DB_ID)
 
 
 def fuzzy_match(query: str, tasks: list[dict]) -> dict | None:
@@ -2804,6 +2793,11 @@ def fuzzy_match(query: str, tasks: list[dict]) -> dict | None:
 
 def find_duplicate_active_task(name: str) -> dict | None:
     return notion_tasks.find_duplicate_active_task(notion, NOTION_DB_ID, name)
+
+
+
+
+
 
 
 def parse_done_numbers_command(text: str) -> list[int] | None:
@@ -3019,10 +3013,6 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
     return payload
 
 
-def recover_digest_items_from_text(text: str) -> dict[int, dict]:
-    return notion_tasks.recover_digest_items_from_text(notion, NOTION_DB_ID, text)
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # RECURRING LOGIC
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3036,87 +3026,6 @@ def _resolve_monthly_target_day(repeat_day: str, today: date) -> int | None:
         return month_last_day
     # For days that exceed month length (e.g., 31st in April), run on the month's last day.
     return min(configured_day, month_last_day)
-
-
-def should_spawn_today(template: dict, today: date) -> bool:
-    recurring  = template["recurring"]
-    repeat_day = template["repeat_day"]
-    last_gen   = template["last_generated"]
-    if last_gen == today.isoformat():
-        return False
-    if recurring == "🔁 Daily":
-        return True
-    if recurring == "📅 Weekly":
-        if not repeat_day or repeat_day not in REPEAT_DAY_TO_WEEKDAY:
-            return False
-        return today.weekday() == REPEAT_DAY_TO_WEEKDAY[repeat_day]
-    if recurring == "🗓️ Monthly":
-        if not repeat_day:
-            return False
-        target_day = _resolve_monthly_target_day(repeat_day, today)
-        return target_day is not None and today.day == target_day
-    if recurring == "📆 Quarterly":
-        if not repeat_day:
-            return False
-        target_day = _resolve_monthly_target_day(repeat_day, today)
-        if target_day is None or today.day != target_day:
-            return False
-
-        anchor_raw = template.get("deadline") or last_gen
-        if not anchor_raw:
-            return today.month % 3 == 0
-        try:
-            anchor = date.fromisoformat(anchor_raw)
-        except ValueError:
-            return today.month % 3 == 0
-        months_since_anchor = (today.year - anchor.year) * 12 + (today.month - anchor.month)
-        return months_since_anchor >= 0 and months_since_anchor % 3 == 0
-    return False
-
-
-def spawn_recurring_instance(template: dict) -> None:
-    today = local_today()
-    notion.pages.create(
-        parent={"database_id": NOTION_DB_ID},
-        properties={
-            "Name":     {"title":  [{"text": {"content": template["name"]}}]},
-            "Deadline": {"date":   {"start": today.isoformat()}},
-            "Context":  {"select": {"name": template["context"]}},
-            "Source":   {"select": {"name": "✏️ Manual"}},
-        },
-    )
-    set_last_generated(notion, template["page_id"], today)
-    log.info(f"Spawned recurring: {template['name']}")
-
-
-def process_recurring_tasks() -> int:
-    today   = local_today()
-    spawned = 0
-    for t in get_recurring_templates():
-        if should_spawn_today(t, today):
-            spawn_recurring_instance(t)
-            spawned += 1
-    return spawned
-
-
-def handle_done_recurring(page_id: str) -> bool:
-    result    = notion.pages.retrieve(page_id=page_id)
-    p         = result["properties"]
-    recurring = _get_prop(p, "Recurring", "select") or "None"
-    if recurring == "None":
-        return False
-    spawn_recurring_instance({
-        "page_id":        page_id,
-        "name":           _get_prop(p, "Name",           "title")   or "Untitled",
-        "auto_horizon":   _get_prop(p, "Auto Horizon",   "formula") or "🔴 Today",
-        "context":        _get_prop(p, "Context",        "select")  or "🏠 Personal",
-        "recurring":      recurring,
-        "repeat_day":     _get_prop(p, "Repeat Day",     "select"),
-        "last_generated": _get_prop(p, "Last Generated", "date"),
-        "deadline":       _get_prop(p, "Deadline",       "date"),
-    })
-    return True
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # BATCH CAPTURE
@@ -3145,12 +3054,12 @@ def _run_capture(raw_text: str, force_create: bool = False,
         return {"status": "error", "name": raw_text, "error": str(e)}
 
     if not force_create:
-        dup = find_duplicate_active_task(task_name)
+        dup = notion_tasks.find_duplicate_active_task(notion, NOTION_DB_ID, task_name)
         if dup:
             return {"status": "duplicate", "name": task_name, "duplicate": dup}
 
     try:
-        page_id = create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
+        page_id = notion_tasks.create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
         return {
             "status": "captured", "name": task_name,
             "horizon_label": horizon_label, "context": ctx,
@@ -3597,7 +3506,7 @@ def create_entertainment_log_entry(payload: dict) -> tuple[str, bool]:
             fav_title_prop = _title_prop_name(fav_schema)
             if fav_title_prop:
                 existing = _query_title_values(NOTION_FAVE_DB, fav_title_prop)
-                if not fuzzy_match(title, existing):
+                if not notion_tasks.fuzzy_match(title, existing):
                     fav_props = _build_common_entertainment_props(
                         fav_schema,
                         title=title,
@@ -3956,10 +3865,10 @@ def format_reminder_snapshot(mode: str = "priority", limit: int = 8) -> str:
     today = local_today()
     today_str = today.isoformat()
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
-    all_tasks = get_all_active_tasks()
+    all_tasks = notion_tasks.get_all_active_tasks(notion, NOTION_DB_ID)
     overdue = [t for t in all_tasks if t["deadline"] and t["deadline"] < today_str]
     today_tasks = [t for t in all_tasks if t.get("deadline") == today_str and t not in overdue]
-    quick_refresh_tasks = get_quick_refresh_tasks(limit=max(limit, 10))
+    quick_refresh_tasks = notion_tasks.get_quick_refresh_tasks(notion, NOTION_DB_ID, limit=max(limit, 10))
     open_count = len(all_tasks)
 
     if mode == "all_open":
@@ -4164,8 +4073,8 @@ def todo_picker_keyboard(key: str) -> InlineKeyboardMarkup:
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def complete_task_by_page_id(message, page_id: str, name: str) -> None:
-    mark_done(notion, page_id)
-    suffix = "\n↻ Next instance created" if handle_done_recurring(page_id) else ""
+    notion_tasks.mark_done(notion, page_id)
+    suffix = "\n↻ Next instance created" if notion_tasks.handle_done_recurring(page_id) else ""
     await message.reply_text(f"✅ Done: {name}{suffix}")
 
 
@@ -4216,7 +4125,7 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
         ctx = "🏠 Personal"
 
     if not force_create:
-        dup = find_duplicate_active_task(task_name)
+        dup = notion_tasks.find_duplicate_active_task(notion, NOTION_DB_ID, task_name)
         if dup:
             await thinking.edit_text(
                 f"⚠️ Already on your list:\n\n📝 {dup['name']}\n🕐 {dup.get('auto_horizon','')}  {dup.get('context','')}\n\nSend `force: {task_name}` to add anyway.",
@@ -4227,7 +4136,7 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
     recur_tag = f"\n🔁 {recurring}" if recurring != "None" else ""
 
     try:
-        page_id = create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
+        page_id = notion_tasks.create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
         if confidence == "high":
             await thinking.edit_text(
                 f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}{recur_tag}\n\n_Saved to Notion_",
@@ -4250,7 +4159,7 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
 
 async def open_done_picker(message) -> None:
     global _done_picker_counter
-    tasks = get_today_and_overdue_tasks()
+    tasks = notion_tasks.get_today_and_overdue_tasks(notion, NOTION_DB_ID)
     if not tasks:
         await message.reply_text("✅ Nothing open in Today or overdue right now.")
         return
@@ -4291,7 +4200,7 @@ async def cmd_todo(message, context: ContextTypes.DEFAULT_TYPE | None = None) ->
     global _todo_picker_counter
     if message.chat_id != MY_CHAT_ID:
         return
-    tasks = get_today_and_overdue_tasks()
+    tasks = notion_tasks.get_today_and_overdue_tasks(notion, NOTION_DB_ID)
     if not tasks:
         await message.reply_text("✅ Nothing open in Today or overdue right now.")
         return
@@ -4513,7 +4422,7 @@ async def route_classified_message_v10(message, text: str) -> None:
             else:
                 log_habit(habit_pid, habit_name)
                 await thinking.edit_text(f"✅ Logged!\n\n{habit_name}\n📅 {date.today().strftime('%B %-d')}")
-                asyncio.create_task(check_and_notify_weekly_goals(message.get_bot(), MY_CHAT_ID))
+                asyncio.notion_tasks.create_task(check_and_notify_weekly_goals(message.get_bot(), MY_CHAT_ID))
         else:
             all_habits = [{"page_id": h["page_id"], "name": name} for name, h in habit_cache.items()]
             all_habits.sort(key=lambda h: h["name"].lower())
@@ -4935,19 +4844,19 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
                 if 1 <= n <= len(items):
                     pid  = items[n - 1]["page_id"]
                     name = items[n - 1]["name"]
-                    mark_done(notion, pid)
-                    suffix = " ↻ next queued" if handle_done_recurring(pid) else ""
+                    notion_tasks.mark_done(notion, pid)
+                    suffix = " ↻ next queued" if notion_tasks.handle_done_recurring(pid) else ""
                     done_names.append(f"{name}{suffix}")
         elif message.reply_to_message:
             replied_text = (message.reply_to_message.text or message.reply_to_message.caption or "").strip()
-            recovered = recover_digest_items_from_text(replied_text)
+            recovered = notion_tasks.recover_digest_items_from_text(notion, NOTION_DB_ID, replied_text)
             for n in numbers:
                 task = recovered.get(n)
                 if task:
                     pid = task["page_id"]
                     name = task["name"]
-                    mark_done(notion, pid)
-                    suffix = " ↻ next queued" if handle_done_recurring(pid) else ""
+                    notion_tasks.mark_done(notion, pid)
+                    suffix = " ↻ next queued" if notion_tasks.handle_done_recurring(pid) else ""
                     done_names.append(f"{name}{suffix}")
 
         if done_names:
@@ -4974,7 +4883,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
                     queued += 1
         elif message.reply_to_message:
             replied_text = (message.reply_to_message.text or message.reply_to_message.caption or "").strip()
-            recovered = recover_digest_items_from_text(replied_text)
+            recovered = notion_tasks.recover_digest_items_from_text(notion, NOTION_DB_ID, replied_text)
             for n in review_numbers:
                 task = recovered.get(n)
                 if task:
@@ -4990,7 +4899,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     match_name = re.match(r"done:\s*(.+)$", text, re.IGNORECASE)
     if match_name:
-        matched = fuzzy_match(match_name.group(1).strip(), get_all_active_tasks())
+        matched = notion_tasks.notion_tasks.fuzzy_match(match_name.group(1).strip(), notion_tasks.get_all_active_tasks(notion, NOTION_DB_ID))
         if matched:
             await complete_task_by_page_id(message, matched["page_id"], matched["name"])
         else:
@@ -4999,7 +4908,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     match_mark_done = re.match(r"mark\s+(.+?)\s+done$", text, re.IGNORECASE)
     if match_mark_done:
-        matched = fuzzy_match(match_mark_done.group(1).strip(), get_all_active_tasks())
+        matched = notion_tasks.notion_tasks.fuzzy_match(match_mark_done.group(1).strip(), notion_tasks.get_all_active_tasks(notion, NOTION_DB_ID))
         if matched:
             await complete_task_by_page_id(message, matched["page_id"], matched["name"])
         else:
@@ -5008,9 +4917,9 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     match_focus = re.match(r"focus:\s*(.+)$", text, re.IGNORECASE)
     if match_focus:
-        matched = fuzzy_match(match_focus.group(1).strip(), get_all_active_tasks())
+        matched = notion_tasks.notion_tasks.fuzzy_match(match_focus.group(1).strip(), notion_tasks.get_all_active_tasks(notion, NOTION_DB_ID))
         if matched:
-            set_focus(notion, matched["page_id"], True)
+            notion_tasks.set_focus(notion, matched["page_id"], True)
             await message.reply_text(f"🎯 Focused: {matched['name']} → *Doing*", parse_mode="Markdown")
         else:
             await message.reply_text(f"Couldn't find a task matching \"{match_focus.group(1).strip()}\".")
@@ -5018,9 +4927,9 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     match_unfocus = re.match(r"unfocus:\s*(.+)$", text, re.IGNORECASE)
     if match_unfocus:
-        matched = fuzzy_match(match_unfocus.group(1).strip(), get_all_active_tasks())
+        matched = notion_tasks.notion_tasks.fuzzy_match(match_unfocus.group(1).strip(), notion_tasks.get_all_active_tasks(notion, NOTION_DB_ID))
         if matched:
-            set_focus(notion, matched["page_id"], False)
+            notion_tasks.set_focus(notion, matched["page_id"], False)
             await message.reply_text(f"⬜ Unfocused: {matched['name']} → *To Do*", parse_mode="Markdown")
         else:
             await message.reply_text(f"Couldn't find a task matching \"{match_unfocus.group(1).strip()}\".")
@@ -5327,7 +5236,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             log.warning("Habit success UI update failed for %s: %s", habit_name, ui_error)
             await q.message.reply_text(f"✅ {habit_name} logged!")
 
-        asyncio.create_task(check_and_notify_weekly_goals(q.bot, MY_CHAT_ID))
+        asyncio.notion_tasks.create_task(check_and_notify_weekly_goals(q.bot, MY_CHAT_ID))
         return
 
     if parts[0] == "hpag" and len(parts) == 3:
@@ -5385,8 +5294,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if parts[0] == "d" and len(parts) == 2:
         page_id = _restore_pid(parts[1])
         try:
-            mark_done(notion, page_id)
-            suffix = "\n↻ Next instance created" if handle_done_recurring(page_id) else ""
+            notion_tasks.mark_done(notion, page_id)
+            suffix = "\n↻ Next instance created" if notion_tasks.handle_done_recurring(page_id) else ""
             await q.edit_message_text(f"✅ Marked as done!{suffix}")
         except Exception as e:
             log.error(f"Notion done error: {e}"); await q.edit_message_text("⚠️ Couldn't update Notion.")
@@ -5397,7 +5306,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         page_id       = _restore_pid(pid_clean)
         horizon_label = HORIZON_LABELS.get(code, "⚪ Backburner")
         try:
-            set_deadline_from_horizon_code(notion, page_id, code)
+            notion_tasks.set_deadline_from_horizon_code(notion, page_id, code)
             await q.edit_message_text(f"Updated → {horizon_label} ✓")
         except Exception as e:
             log.error(f"Notion horizon error: {e}"); await q.edit_message_text("⚠️ Couldn't update Notion.")
@@ -5419,8 +5328,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await q.answer("Already marked done.", show_alert=False)
             return
         try:
-            mark_done(notion, task["page_id"])
-            handle_done_recurring(task["page_id"])
+            notion_tasks.mark_done(notion, task["page_id"])
+            notion_tasks.handle_done_recurring(task["page_id"])
             task["_done"] = True
         except Exception as e:
             log.error(f"To do picker error: {e}")
@@ -5445,8 +5354,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await q.edit_message_text("⚠️ This picker expired. Send `done` again.", parse_mode="Markdown"); return
         try:
             task = done_picker_map[key][int(idx_str)]
-            mark_done(notion, task["page_id"])
-            suffix = "\n↻ Next instance created" if handle_done_recurring(task["page_id"]) else ""
+            notion_tasks.mark_done(notion, task["page_id"])
+            suffix = "\n↻ Next instance created" if notion_tasks.handle_done_recurring(task["page_id"]) else ""
             await q.edit_message_text(f"✅ Done: {task['name']}{suffix}")
         except Exception as e:
             log.error(f"Done picker error: {e}"); await q.edit_message_text("⚠️ Couldn't mark that task done.")
@@ -5506,8 +5415,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             else:
                 task = tasks[idx]
                 try:
-                    mark_done(notion, task["page_id"])
-                    handle_done_recurring(task["page_id"])
+                    notion_tasks.mark_done(notion, task["page_id"])
+                    notion_tasks.handle_done_recurring(task["page_id"])
                     done_indices.add(idx)
                     context.user_data["palette_done_indices"] = done_indices
                 except Exception as e:
@@ -5568,7 +5477,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if q.data == "digest:today":
         try:
-            tasks = get_today_and_overdue_tasks()
+            tasks = notion_tasks.get_today_and_overdue_tasks(notion, NOTION_DB_ID)
             message, ordered = format_hybrid_digest(tasks)
             await q.edit_message_text(text=message, parse_mode="Markdown")
             if ordered and q.message:
@@ -5595,7 +5504,7 @@ async def run_recurring_check(bot) -> None:
     if is_muted():
         log.info("Recurring check skipped (muted)")
         return
-    spawned = process_recurring_tasks()
+    spawned = notion_tasks.process_recurring_tasks(notion, NOTION_DB_ID)
     log.info(f"Recurring check: {spawned} task(s) spawned")
 
 
@@ -5805,20 +5714,20 @@ async def generate_daily_log(bot) -> None:
     try:
         try:
             completed_results = notion.databases.query(database_id=NOTION_DB_ID, filter={"and": [{"property": "Done", "checkbox": {"equals": True}}, {"property": "Last Edited Time", "date": {"equals": today_str}}]})
-            completed_tasks = [_get_prop(p["properties"], "Name", "title") or "Untitled" for p in completed_results.get("results", [])]
+            completed_tasks = [notion_tasks._get_prop(p["properties"], "Name", "title") or "Untitled" for p in completed_results.get("results", [])]
         except Exception:
             log.warning("generate_daily_log: Last Edited Time filter unsupported, using Python fallback")
             all_done = notion.databases.query(database_id=NOTION_DB_ID, filter={"property": "Done", "checkbox": {"equals": True}})
             for p in all_done.get("results", []):
                 if (p.get("last_edited_time") or "")[:10] == today_str:
-                    completed_tasks.append(_get_prop(p["properties"], "Name", "title") or "Untitled")
+                    completed_tasks.append(notion_tasks._get_prop(p["properties"], "Name", "title") or "Untitled")
     except Exception as e:
         log.error("generate_daily_log: error fetching completed tasks: %s", e)
 
     deferred_tasks = []
     try:
         deferred_results = notion.databases.query(database_id=NOTION_DB_ID, filter={"and": [{"property": "Done", "checkbox": {"equals": False}}, {"property": "Deadline", "date": {"equals": today_str}}]})
-        deferred_tasks = [_get_prop(p["properties"], "Name", "title") or "Untitled" for p in deferred_results.get("results", [])]
+        deferred_tasks = [notion_tasks._get_prop(p["properties"], "Name", "title") or "Untitled" for p in deferred_results.get("results", [])]
     except Exception as e:
         log.error("generate_daily_log: error fetching deferred tasks: %s", e)
 
@@ -6039,15 +5948,15 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         return
     tasks = _filter_digest_tasks(get_today_and_overdue_tasks(limit=None), config=config)
     today = local_today()
-    overdue = [t for t in tasks if (d := _parse_deadline(t.get("deadline"))) is not None and d < today]
-    today_tasks = [t for t in tasks if (d := _parse_deadline(t.get("deadline"))) is not None and d == today and t not in overdue]
+    overdue = [t for t in tasks if (d := notion_tasks._parse_deadline(t.get("deadline"))) is not None and d < today]
+    today_tasks = [t for t in tasks if (d := notion_tasks._parse_deadline(t.get("deadline"))) is not None and d == today and t not in overdue]
     this_week_tasks = [t for t in tasks if t not in overdue and t not in today_tasks]
     ordered = overdue + today_tasks + this_week_tasks
     max_items = config.get("max_items") if config else None
     if isinstance(max_items, int):
         ordered = ordered[:max_items]
-        overdue = [t for t in ordered if (d := _parse_deadline(t.get("deadline"))) is not None and d < today]
-        today_tasks = [t for t in ordered if (d := _parse_deadline(t.get("deadline"))) is not None and d == today and t not in overdue]
+        overdue = [t for t in ordered if (d := notion_tasks._parse_deadline(t.get("deadline"))) is not None and d < today]
+        today_tasks = [t for t in ordered if (d := notion_tasks._parse_deadline(t.get("deadline"))) is not None and d == today and t not in overdue]
         this_week_tasks = [t for t in ordered if t not in overdue and t not in today_tasks]
 
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
@@ -6831,7 +6740,7 @@ async def handle_done_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         h for h in sorted(habit_cache.values(), key=lambda x: x["sort"])
         if not already_logged_today(h["page_id"])
     ]
-    tasks = get_today_and_overdue_tasks()
+    tasks = notion_tasks.get_today_and_overdue_tasks(notion, NOTION_DB_ID)
     if not pending_habits and not tasks:
         await update.message.reply_text("✅ Everything done for today — nothing left to log!")
         return
