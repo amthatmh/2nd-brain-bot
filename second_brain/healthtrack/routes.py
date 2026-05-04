@@ -134,7 +134,7 @@ def register_health_routes(
         notion      — NotionClient instance
         habit_db_id — NOTION_HABIT_DB env value
         log_db_id   — NOTION_LOG_DB env value
-        tz          — pytz timezone (TZ from config)
+        tz          — IANA timezone (ZoneInfo from config)
         bot_getter  — zero-arg callable returning the Telegram bot (avoids circular ref)
         chat_id     — MY_CHAT_ID to send threshold notifications
     """
