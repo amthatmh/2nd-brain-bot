@@ -65,7 +65,12 @@ class TestWeekStreakInHabitsDataHandler(unittest.IsolatedAsyncioTestCase):
             _streak_row("2026-04-13", True),
             _streak_row("2026-04-06", True),
         ]
-        with patch.object(main, "notion_query_all", side_effect=[[], streak_rows]):
+        fake_today = main.datetime(2026, 4, 27, tzinfo=main.TZ)
+        real_fromisoformat = main.datetime.fromisoformat
+        with patch.object(main, "notion_query_all", side_effect=[[], streak_rows]), \
+            patch.object(main, "datetime") as mocked_datetime:
+            mocked_datetime.now.return_value = fake_today
+            mocked_datetime.fromisoformat.side_effect = real_fromisoformat
             response = await main.habits_data_handler(MagicMock())
 
         payload = json.loads(response.text)
@@ -85,7 +90,12 @@ class TestWeekStreakInHabitsDataHandler(unittest.IsolatedAsyncioTestCase):
             _streak_row("2026-04-06", True),
             _streak_row("2026-03-30", True),
         ]
-        with patch.object(main, "notion_query_all", side_effect=[[], streak_rows]):
+        fake_today = main.datetime(2026, 4, 27, tzinfo=main.TZ)
+        real_fromisoformat = main.datetime.fromisoformat
+        with patch.object(main, "notion_query_all", side_effect=[[], streak_rows]), \
+            patch.object(main, "datetime") as mocked_datetime:
+            mocked_datetime.now.return_value = fake_today
+            mocked_datetime.fromisoformat.side_effect = real_fromisoformat
             response = await main.habits_data_handler(MagicMock())
 
         payload = json.loads(response.text)
@@ -103,7 +113,12 @@ class TestWeekStreakInHabitsDataHandler(unittest.IsolatedAsyncioTestCase):
             _streak_row("2026-04-06", True),
             _streak_row("2026-03-30", True),
         ]
-        with patch.object(main, "notion_query_all", side_effect=[[], streak_rows]):
+        fake_today = main.datetime(2026, 4, 27, tzinfo=main.TZ)
+        real_fromisoformat = main.datetime.fromisoformat
+        with patch.object(main, "notion_query_all", side_effect=[[], streak_rows]), \
+            patch.object(main, "datetime") as mocked_datetime:
+            mocked_datetime.now.return_value = fake_today
+            mocked_datetime.fromisoformat.side_effect = real_fromisoformat
             response = await main.habits_data_handler(MagicMock())
 
         payload = json.loads(response.text)
