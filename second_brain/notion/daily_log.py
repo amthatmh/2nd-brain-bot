@@ -11,6 +11,27 @@ from second_brain.notion import tasks as notion_tasks
 log = logging.getLogger(__name__)
 
 
+def _query_all(notion, database_id: str, filter_obj: dict | None = None, sorts: list[dict] | None = None) -> list[dict]:
+    results: list[dict] = []
+    cursor = None
+    while True:
+        kwargs: dict[str, Any] = {"database_id": database_id}
+        if filter_obj:
+            kwargs["filter"] = filter_obj
+        if sorts:
+            kwargs["sorts"] = sorts
+        if cursor:
+            kwargs["start_cursor"] = cursor
+        resp = notion.databases.query(**kwargs)
+        results.extend(resp.get("results", []))
+        if not resp.get("has_more"):
+            break
+        cursor = resp.get("next_cursor")
+        if not cursor:
+            break
+    return results
+
+
 def get_recent_carried_forward(notion, notion_daily_log_db: str, tz, days: int = 3) -> list[dict]:
     """
     Fetch Carried Forward content from the last N Daily Log entries.
@@ -125,6 +146,7 @@ def generate_daily_log(
     claude_model: str,
     tz,
     signoff_note: str = "",
+    claude_activity: list[str] | None = None,
 ) -> str | None:
     """
     Generates end-of-day narrative log and writes it to 📓 Daily Log Notion DB.
@@ -141,19 +163,31 @@ def generate_daily_log(
     date_label = today.strftime("%A, %B %-d, %Y")
 
     log.info("generate_daily_log: starting for %s", today_str)
-    completed_tasks = []
+    completed_tasks: list[str] = []
     try:
-        try:
-            completed_results = notion.databases.query(database_id=notion_db_id, filter={"and": [{"property": "Done", "checkbox": {"equals": True}}, {"property": "Last Edited Time", "date": {"equals": today_str}}]})
-            completed_tasks = [notion_tasks._get_prop(p["properties"], "Name", "title") or "Untitled" for p in completed_results.get("results", [])]
-        except Exception:
-            log.warning("generate_daily_log: Last Edited Time filter unsupported, using Python fallback")
-            all_done = notion.databases.query(database_id=notion_db_id, filter={"property": "Done", "checkbox": {"equals": True}})
-            for p in all_done.get("results", []):
-                if (p.get("last_edited_time") or "")[:10] == today_str:
-                    completed_tasks.append(notion_tasks._get_prop(p["properties"], "Name", "title") or "Untitled")
+        done_pages = _query_all(
+            notion,
+            notion_db_id,
+            filter_obj={
+                "and": [
+                    {"property": "Done", "checkbox": {"equals": True}},
+                    {"timestamp": "last_edited_time", "last_edited_time": {"on_or_after": today_str}},
+                ]
+            },
+        )
+        for p in done_pages:
+            if (p.get("last_edited_time") or "")[:10] != today_str:
+                continue
+            completed_tasks.append(notion_tasks._get_prop(p.get("properties", {}), "Name", "title") or "Untitled")
     except Exception as e:
-        log.error("generate_daily_log: error fetching completed tasks: %s", e)
+        log.warning("generate_daily_log: timestamp filter failed, using broad fallback: %s", e)
+        try:
+            done_pages = _query_all(notion, notion_db_id, filter_obj={"property": "Done", "checkbox": {"equals": True}})
+            for p in done_pages:
+                if (p.get("last_edited_time") or "")[:10] == today_str:
+                    completed_tasks.append(notion_tasks._get_prop(p.get("properties", {}), "Name", "title") or "Untitled")
+        except Exception as inner_e:
+            log.error("generate_daily_log: error fetching completed tasks: %s", inner_e)
 
     deferred_tasks = []
     try:
@@ -220,6 +254,9 @@ HABITS LOGGED ({habits_count}):
 
 NOTES CAPTURED ({len(notes_captured)}):
 {_bullet_list(notes_captured)}
+
+CLAUDE AGENT ACTIVITY (from today's bot interactions):
+{_bullet_list((claude_activity or [])[:30])}
 
 USER'S SIGNOFF NOTE (their own words about what they worked on today, including any Claude.ai conversations and decisions made):
 {signoff_note if signoff_note else "None provided"}
