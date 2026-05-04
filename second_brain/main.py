@@ -80,23 +80,23 @@ import anthropic
 import httpx
 from notion_client import Client as NotionClient
 
-from second_brain.asana_sync import (
+from second_brain.asana.sync import (
     reconcile,
     AsanaSyncError,
     validate_notion_schema,
     startup_smoke_test,
 )
-from cinema.sync import sync_cinema_log_to_notion, sync_single_cinema_entry
-from cinema.config import (
+from second_brain.cinema.sync import sync_cinema_log_to_notion, sync_single_cinema_entry
+from second_brain.cinema.config import (
     CINEMA_DB_ID,
     FAVE_DB_ID,
     TMDB_API_KEY,
     validate_config as validate_cinema_config,
 )
 from second_brain.sync_telemetry import init_sync_status, utc_now_iso, format_sync_status_message
-from second_brain.scheduler_setup import register_cinema_jobs
-from second_brain.notion.notes import create_note_entry, save_note, fetch_note_topics_from_notion
-from second_brain.notes_flow import (
+from second_brain.scheduler import register_cinema_jobs
+from second_brain.notion import notes as notion_notes
+from second_brain.notes.flow import (
     split_kind_keyboard,
     ordered_topics,
     note_topics_keyboard,
@@ -1635,7 +1635,7 @@ async def start_note_capture_flow(message, text: str) -> None:
     note_key = str(_v10_counter)
     _v10_counter += 1
     try:
-        topics = fetch_note_topics_from_notion(notion, NOTION_NOTES_DB)
+        topics = notion_notes.fetch_note_topics_from_notion(notion, NOTION_NOTES_DB)
     except Exception as e:
         log.error(f"Failed to read note topics from Notion schema: {e}")
         await message.reply_text("⚠️ Couldn't load note topics from Notion. Check the Topic property.")
@@ -1651,7 +1651,7 @@ async def start_note_capture_flow(message, text: str) -> None:
         return
 
     try:
-        create_note_entry(notion, NOTION_NOTES_DB, text)
+        notion_notes.create_note_entry(notion, NOTION_NOTES_DB, text)
         await message.reply_text("✅ Note captured!\n_Saved to Notion_", parse_mode="Markdown")
     except Exception as e:
         log.error(f"Notion note error: {e}")
@@ -1754,7 +1754,7 @@ async def handle_note_input(message, text: str) -> None:
             content = text
             note_type = "📝 Quick Note"
 
-        save_note(notion, NOTION_NOTES_DB, note_title, url, content, topics, note_type)
+        notion_notes.save_note(notion, NOTION_NOTES_DB, note_title, url, content, topics, note_type)
         icon = "🔗" if url else "📝"
         topic_str = "  ".join(topics)
         await thinking.edit_text(
@@ -4724,7 +4724,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             await message.reply_text("⚠️ Topic can't be empty — please re-send the note.")
             return
         try:
-            create_note_entry(notion, NOTION_NOTES_DB, entry["content"], custom_topic)
+            notion_notes.create_note_entry(notion, NOTION_NOTES_DB, entry["content"], custom_topic)
             topic_recency_map[custom_topic] = datetime.utcnow()
             await message.reply_text(
                 f"✅ Note captured!\n🏷️ {custom_topic}\n_Saved to Notion_",
@@ -4745,7 +4745,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             await message.reply_text("Please send a valid URL starting with http:// or https://.")
             return
         try:
-            create_note_entry(notion, NOTION_NOTES_DB, text)
+            notion_notes.create_note_entry(notion, NOTION_NOTES_DB, text)
             kind_label_map = {
                 "quick": "note",
                 "idea": "idea",
@@ -5158,7 +5158,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             except Exception:
                 selected_topic = None
         try:
-            create_note_entry(notion, NOTION_NOTES_DB, entry["content"], selected_topic)
+            notion_notes.create_note_entry(notion, NOTION_NOTES_DB, entry["content"], selected_topic)
             if selected_topic:
                 topic_recency_map[selected_topic] = datetime.utcnow()
             topic_line = f"\n🏷️ {selected_topic}" if selected_topic else ""

@@ -1,6 +1,6 @@
 import unittest
 
-from cinema.sync import (
+from second_brain.cinema.sync import (
     _build_tmdb_movie_url,
     _build_cinema_query_filter,
     _resolve_cinema_title_property,
