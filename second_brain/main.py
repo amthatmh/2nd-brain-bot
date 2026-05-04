@@ -3592,6 +3592,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             log.warning("Habit success UI update failed for %s: %s", habit_name, ui_error)
             await q.message.reply_text(f"✅ {habit_name} logged!")
 
+        await open_habit_picker(q.message)
+
         asyncio.create_task(
             check_and_notify_weekly_goals(
                 q.bot,
