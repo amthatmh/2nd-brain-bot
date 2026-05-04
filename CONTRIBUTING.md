@@ -4,12 +4,22 @@
 
 Use this protocol when introducing a new database integration:
 
-1. Add the env var in `second_brain/config.py` (keep existing env names unchanged).
-2. Add feature-specific Notion helpers in `second_brain/notion/<feature>.py`.
-3. Add classifier support in `second_brain/ai/classify.py` when intent detection is required.
-4. Add the database and user-flow wiring in `second_brain/main.py`.
+1. Add the env var in `second_brain/config.py`.
+2. Add Notion helpers in `second_brain/notion/<feature>.py` using dependency
+   injection — pass `notion` and `notion_db_id` as parameters, never import
+   module-level globals. See `second_brain/notion/tasks.py` as the canonical
+   reference.
+3. Add keyboard builders to `second_brain/keyboards.py` and formatters to
+   `second_brain/formatters.py` if the feature needs UI components.
+4. Add classifier support in `second_brain/ai/classify.py` if intent
+   detection is required.
+5. Wire the handler and scheduler jobs in `second_brain/main.py` — this file
+   should contain only handler registration and startup logic, no business
+   logic.
 
-Notes integration (`NOTION_NOTES_DB`) is the canonical reference flow.
+The canonical end-to-end reference flow is the Notes integration:
+`second_brain/notion/notes.py` → `second_brain/notes/flow.py` →
+`second_brain/ai/classify.py` → `second_brain/main.py`.
 
 ## Adding a new health/webhook feature
 
