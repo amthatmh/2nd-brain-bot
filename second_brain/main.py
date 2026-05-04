@@ -97,6 +97,18 @@ from second_brain.crossfit.handlers import (
 from second_brain.crossfit.keyboards import crossfit_submenu_keyboard
 from second_brain.crossfit.notion import save_programme_from_notion_row
 
+if not hasattr(wx, "uvi_emoji"):
+    def _wx_uvi_emoji_fallback(uvi: float) -> str:
+        if uvi >= 8:
+            return "🔴"
+        if uvi >= 6:
+            return "🟠"
+        if uvi >= 3:
+            return "🟡"
+        return "🟢"
+
+    wx.uvi_emoji = _wx_uvi_emoji_fallback
+
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
