@@ -42,6 +42,12 @@ NOTION_PERFORMANCE_LOG_DB = os.environ.get("NOTION_PERFORMANCE_LOG_DB", "").stri
 NOTION_SPORTS_LOG_DB = os.environ.get("NOTION_SPORTS_LOG_DB", os.environ.get("NOTION_SPORTS_DB", "")).strip()
 NOTION_FAVE_DB = os.environ.get("NOTION_FAVE_DB", "").strip()
 
+NOTION_WATCHLIST_DB = os.environ.get("NOTION_WATCHLIST_DB", "")
+NOTION_WANTSLIST_V2_DB = os.environ.get("NOTION_WANTSLIST_V2_DB", "")
+NOTION_PHOTO_DB = os.environ.get("NOTION_PHOTO_DB", "")
+TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "").strip()
+TMDB_BASE = "https://api.themoviedb.org/3"
+
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "").strip()
 WEATHER_LOCATION = os.environ.get("WEATHER_LOCATION", "Chicago,IL").strip()
 
