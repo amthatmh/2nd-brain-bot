@@ -115,6 +115,7 @@ from second_brain.healthtrack.config import (
 from second_brain.config import FEATURES
 from second_brain.notion import notion_call, notion_call_async
 from second_brain.notion.habits import extract_habit_frequency
+from second_brain.notion import tasks as notion_tasks
 from second_brain.state import STATE
 from second_brain.utils import ExpiringDict, reply_notion_error
 from second_brain.http_utils import cors_headers
@@ -2560,65 +2561,11 @@ def query_tasks_by_auto_horizon(horizons: list[str]) -> list[dict]:
 
 
 def get_all_active_tasks() -> list[dict]:
-    results = notion_query_all(
-        NOTION_DB_ID,
-        filter={"property": "Done", "checkbox": {"equals": False}},
-    )
-    return [
-        {
-            "page_id":      p["id"],
-            "name":         _get_prop(p["properties"], "Name",         "title")   or "Untitled",
-            "auto_horizon": _get_prop(p["properties"], "Auto Horizon", "formula") or "",
-            "context":      _get_prop(p["properties"], "Context",      "select")  or "",
-            "deadline":     _get_prop(p["properties"], "Deadline",     "date"),
-        }
-        for p in results
-    ]
+    return notion_tasks.get_all_active_tasks(notion, NOTION_DB_ID)
 
 
 def _get_tasks_by_deadline_horizon() -> tuple[list, list, list, list]:
-    """
-    Returns: (overdue, today, this_week, backlog)
-
-    Overdue: deadline < local_today()
-    Today: deadline == local_today()
-    This Week: 1 <= days_until_deadline <= 7
-    Backlog: days_until_deadline > 7 OR no deadline set
-    """
-    tasks = get_all_active_tasks()
-    today = local_today()
-
-    overdue: list[dict] = []
-    today_tasks: list[dict] = []
-    this_week: list[dict] = []
-    backlog: list[dict] = []
-
-    for task in tasks:
-        deadline = _parse_deadline(task.get("deadline"))
-        if deadline is None:
-            backlog.append(task)
-            continue
-
-        if deadline < today:
-            overdue.append(task)
-            continue
-
-        if deadline == today:
-            today_tasks.append(task)
-            continue
-
-        days_until = (deadline - today).days
-        if 1 <= days_until <= 7:
-            this_week.append(task)
-        else:
-            backlog.append(task)
-
-    return (
-        sorted(overdue, key=_task_sort_key),
-        sorted(today_tasks, key=_task_sort_key),
-        sorted(this_week, key=_task_sort_key),
-        sorted(backlog, key=_task_sort_key),
-    )
+    return notion_tasks._get_tasks_by_deadline_horizon(notion, NOTION_DB_ID)
 
 
 def format_hybrid_digest(tasks: list[dict]) -> tuple[str, list[dict]]:
@@ -2840,123 +2787,23 @@ def horizon_view_back_keyboard() -> InlineKeyboardMarkup:
 
 
 def get_today_and_overdue_tasks(limit: int | None = 10) -> list[dict]:
-    tasks = get_all_active_tasks()
-    today = local_today()
-    selected = []
-
-    def context_rank(task: dict) -> tuple[int, str]:
-        ctx = (task.get("context") or "").lower()
-        if "personal" in ctx or "🏠" in ctx:
-            return (0, task.get("name", "").lower())
-        if "work" in ctx or "💼" in ctx:
-            return (2, task.get("name", "").lower())
-        return (1, task.get("name", "").lower())
-
-    for t in tasks:
-        parsed_deadline = _parse_deadline(t.get("deadline"))
-        has_due_date = parsed_deadline is not None
-        is_overdue = bool(parsed_deadline and parsed_deadline < today)
-        due_within_7_days = bool(parsed_deadline and 0 <= (parsed_deadline - today).days <= 7)
-        horizon = t.get("auto_horizon") or ""
-        horizon_carry = (not has_due_date) and horizon in {"🔴 Today", "🟠 This Week"}
-        if is_overdue or due_within_7_days or horizon_carry:
-            selected.append(t)
-
-    overdue = [
-        t for t in selected
-        if (d := _parse_deadline(t.get("deadline"))) is not None and d < today
-    ]
-    today_only = [
-        t for t in selected
-        if (d := _parse_deadline(t.get("deadline"))) is not None and d == today and t not in overdue
-    ]
-    carryover = [
-        t for t in selected
-        if t not in overdue and t not in today_only
-    ]
-
-    overdue = sorted(overdue, key=context_rank)
-    today_only = sorted(today_only, key=context_rank)
-    carryover = sorted(carryover, key=context_rank)
-    ordered = overdue + today_only + carryover
-    return ordered[:limit] if isinstance(limit, int) else ordered
+    return notion_tasks.get_today_and_overdue_tasks(notion, NOTION_DB_ID, limit=limit)
 
 
 def get_quick_refresh_tasks(limit: int = 10) -> list[dict]:
-    """
-    Tasks for quick Refresh / To Do:
-    - must have a due date
-    - include overdue and next 7 days (inclusive)
-    - order Personal first, then Work, then anything else
-    """
-    tasks = get_all_active_tasks()
-    today = local_today()
-    today_str = today.isoformat()
-    cutoff_str = (today + timedelta(days=7)).isoformat()
-
-    def in_window(task: dict) -> bool:
-        deadline = task.get("deadline")
-        if not deadline:
-            return False
-        return deadline < today_str or today_str <= deadline <= cutoff_str
-
-    def context_rank(task: dict) -> int:
-        ctx = (task.get("context") or "").lower()
-        if "personal" in ctx or "🏠" in ctx:
-            return 0
-        if "work" in ctx or "💼" in ctx:
-            return 1
-        return 2
-
-    visible = [t for t in tasks if in_window(t)]
-    ordered = sorted(
-        visible,
-        key=lambda t: (context_rank(t), t.get("deadline") or "9999-12-31", t.get("name", "").lower()),
-    )
-    return ordered[:limit]
+    return notion_tasks.get_quick_refresh_tasks(notion, NOTION_DB_ID, limit=limit)
 
 
 def get_recurring_templates() -> list[dict]:
-    results = notion.databases.query(
-        database_id=NOTION_DB_ID,
-        filter={
-            "and": [
-                {"property": "Recurring", "select":   {"does_not_equal": "None"}},
-                {"property": "Done",      "checkbox": {"equals": False}},
-            ]
-        },
-    )
-    templates = []
-    for page in results.get("results", []):
-        p = page["properties"]
-        templates.append({
-            "page_id":        page["id"],
-            "name":           _get_prop(p, "Name",           "title")   or "Untitled",
-            "auto_horizon":   _get_prop(p, "Auto Horizon",   "formula") or "🔴 Today",
-            "context":        _get_prop(p, "Context",        "select")  or "🏠 Personal",
-            "recurring":      _get_prop(p, "Recurring",      "select")  or "None",
-            "repeat_day":     _get_prop(p, "Repeat Day",     "select"),
-            "last_generated": _get_prop(p, "Last Generated", "date"),
-            "deadline":       _get_prop(p, "Deadline",       "date"),
-        })
-    return templates
+    return notion_tasks.get_recurring_templates(notion, NOTION_DB_ID)
 
 
 def fuzzy_match(query: str, tasks: list[dict]) -> dict | None:
-    q = _normalize_task_name(query)
-    if not q:
-        return None
-    exact = next((t for t in tasks if _normalize_task_name(t["name"]) == q), None)
-    if exact:
-        return exact
-    return next(
-        (t for t in tasks if q in _normalize_task_name(t["name"]) or _normalize_task_name(t["name"]) in q),
-        None,
-    )
+    return notion_tasks.fuzzy_match(query, tasks)
 
 
 def find_duplicate_active_task(name: str) -> dict | None:
-    return fuzzy_match(name, get_all_active_tasks())
+    return notion_tasks.find_duplicate_active_task(notion, NOTION_DB_ID, name)
 
 
 def parse_done_numbers_command(text: str) -> list[int] | None:
@@ -3173,54 +3020,7 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
 
 
 def recover_digest_items_from_text(text: str) -> dict[int, dict]:
-    """
-    Rebuild digest numbering from a replied digest message so number-based completion
-    still works after a bot restart (when in-memory digest_map is empty).
-    """
-    if not text:
-        return {}
-
-    emoji_to_num = {emoji: i + 1 for i, emoji in enumerate(NUMBER_EMOJIS)}
-    numbered_names: dict[int, str] = {}
-
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-
-        n = None
-        remainder = ""
-
-        for emoji, value in emoji_to_num.items():
-            if line.startswith(f"{emoji} "):
-                n = value
-                remainder = line[len(emoji):].strip()
-                break
-
-        if n is None:
-            m = re.match(r"^(\d+)[\.\)]?\s+(.+)$", line)
-            if m:
-                n = int(m.group(1))
-                remainder = m.group(2).strip()
-
-        if n is None or not remainder:
-            continue
-
-        # Digest lines are formatted as "<num> <n>  <context>".
-        task_name = remainder.split("  ")[0].strip()
-        if task_name:
-            numbered_names[n] = task_name
-
-    if not numbered_names:
-        return {}
-
-    active_tasks = get_all_active_tasks()
-    recovered: dict[int, dict] = {}
-    for n, name in numbered_names.items():
-        matched = fuzzy_match(name, active_tasks)
-        if matched:
-            recovered[n] = matched
-    return recovered
+    return notion_tasks.recover_digest_items_from_text(notion, NOTION_DB_ID, text)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
