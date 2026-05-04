@@ -86,7 +86,8 @@ class TestLoadHabitCacheFrequency(unittest.TestCase):
         }
 
         main.notion.databases.query = MagicMock(return_value={"results": [fake_habit]})
-        main.load_habit_cache()
+        main.notion_habits.load_habit_cache(notion=main.notion, notion_habit_db=main.NOTION_HABIT_DB)
+        main._refresh_habit_cache_refs()
 
         cached = main.habit_cache["Protein Shake"]
         self.assertEqual(cached["freq_per_week"], 5)
