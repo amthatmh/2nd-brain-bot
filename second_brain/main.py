@@ -74,6 +74,7 @@ from second_brain.notion import habits as notion_habits
 from second_brain.notion import tasks as notion_tasks
 from second_brain import keyboards as kb
 from second_brain import formatters as fmt
+from second_brain import main_helpers as main_helpers
 from second_brain import weather as wx
 from second_brain import watchlist as wl
 from second_brain import trips as trips_mod
@@ -190,26 +191,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(
 log = logging.getLogger(__name__)
 
 
-def _parse_hhmm_env(var_name: str, default: str) -> tuple[int, int]:
-    """Parse HH:MM env var with range checks and safe fallback."""
-    raw = os.environ.get(var_name, default).strip()
-    try:
-        h_str, m_str = raw.split(":")
-        hour, minute = int(h_str), int(m_str)
-        if not (0 <= hour <= 23 and 0 <= minute <= 59):
-            raise ValueError("out of range")
-        return hour, minute
-    except Exception:
-        log.warning(
-            "Invalid %s=%r (expected HH:MM, 24h). Falling back to %s.",
-            var_name,
-            raw,
-            default,
-        )
-        h_str, m_str = default.split(":")
-        return int(h_str), int(m_str)
-
-
 def _resolve_state_dir() -> Path:
     """
     Pick a durable location for bot state files.
@@ -262,8 +243,8 @@ NOTION_TRIPS_DB         = os.environ.get("NOTION_TRIPS_DB", "")
 OPENWEATHER_KEY     = os.environ.get("OPENWEATHER_KEY", "")
 
 TZ           = ZoneInfo(os.environ.get("TIMEZONE", "America/Chicago"))
-_rc_h, _rc_m = _parse_hhmm_env("RECURRING_CHECK_TIME", "7:00")
-_sr_h, _sr_m = _parse_hhmm_env("SUNDAY_REVIEW_TIME", "12:00")
+_rc_h, _rc_m = main_helpers.parse_hhmm_env("RECURRING_CHECK_TIME", "7:00", log)
+_sr_h, _sr_m = main_helpers.parse_hhmm_env("SUNDAY_REVIEW_TIME", "12:00", log)
 
 CLAUDE_MODEL   = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
@@ -315,12 +296,16 @@ def get_current_monday() -> date:
     return today - timedelta(days=today.weekday())
 
 def format_reminder_snapshot(mode: str = "priority", limit: int = 8) -> str:
-    fmt.local_today = local_today
-    fmt.notion = notion
-    fmt.NOTION_DB_ID = NOTION_DB_ID
-    fmt.TZ = TZ
-    fmt.notion_tasks = notion_tasks
-    return fmt.format_reminder_snapshot(mode=mode, limit=limit)
+    return main_helpers.format_reminder_snapshot(
+        fmt,
+        local_today,
+        notion,
+        NOTION_DB_ID,
+        TZ,
+        notion_tasks,
+        mode=mode,
+        limit=limit,
+    )
 
 
 # ── Clients ──────────────────────────────────────────────────────────────────
@@ -488,62 +473,25 @@ def next_repeat_day_date(
     return None
 
 
-def _parse_time_to_minutes(time_str: str | None) -> int:
-    """
-    Parse "HH:MM" format to minutes since midnight.
-    Returns -1 if parse fails (will sort to end).
-    """
-    if not time_str:
-        return -1
-    try:
-        hhmm = str(time_str).strip()
-        hour_str, minute_str = hhmm.split(":")
-        hour = int(hour_str)
-        minute = int(minute_str)
-        if not (0 <= hour <= 23 and 0 <= minute <= 59):
-            return -1
-        return hour * 60 + minute
-    except Exception:
-        return -1
+_parse_time_to_minutes = main_helpers.parse_time_to_minutes
 
 
-def save_mute_state() -> None:
-    """Persist mute state to disk."""
-    try:
-        payload = {"mute_until": mute_until.isoformat() if mute_until else None}
-        mute_state_file.write_text(json.dumps(payload))
-    except Exception as e:
-        log.error("Failed saving mute state: %s", e)
-
-
-def load_mute_state() -> None:
-    """Load mute state from disk and clear expired mute windows."""
+def _load_mute_state() -> None:
     global mute_until
-    mute_until = None
-    try:
-        if not mute_state_file.exists():
-            return
-        payload = json.loads(mute_state_file.read_text() or "{}")
-        raw = payload.get("mute_until")
-        if raw:
-            parsed = datetime.fromisoformat(raw)
-            mute_until = parsed
-        if mute_until and datetime.now(TZ) >= mute_until:
-            mute_until = None
-            save_mute_state()
-    except Exception as e:
-        log.error("Failed loading mute state: %s", e)
-        mute_until = None
+    mute_until = main_helpers.load_mute_state(mute_state_file, TZ, log)
 
 
-def is_muted() -> bool:
-    """Return True if digest jobs are currently muted."""
+def _save_mute_state() -> None:
+    main_helpers.save_mute_state(mute_until, mute_state_file, log)
+
+
+def _is_muted() -> bool:
     global mute_until
-    if not mute_until:
-        return False
-    if datetime.now(TZ) >= mute_until:
+    if not main_helpers.is_muted(mute_until, TZ):
+        if mute_until is None:
+            return False
         mute_until = None
-        save_mute_state()
+        _save_mute_state()
         return False
     return True
 
@@ -1944,7 +1892,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
                 raise ValueError("days must be positive")
             global mute_until
             mute_until = datetime.now(TZ) + timedelta(days=days)
-            save_mute_state()
+            _save_mute_state()
             context.user_data["awaiting_mute_days"] = False
             await message.reply_text(
                 f"🔕 Digests paused for {days} day(s), until {mute_until.strftime('%Y-%m-%d %H:%M %Z')}."
@@ -2428,14 +2376,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if action == "unmute":
             global mute_until
             mute_until = None
-            save_mute_state()
+            _save_mute_state()
             context.user_data["awaiting_mute_days"] = False
             await q.edit_message_text("🔔 Digests resumed.")
             return
         if action in {"1", "3", "7"}:
             days = int(action)
             mute_until = datetime.now(TZ) + timedelta(days=days)
-            save_mute_state()
+            _save_mute_state()
             context.user_data["awaiting_mute_days"] = False
             await q.edit_message_text(
                 f"🔕 Digests paused for {days} day(s), until {mute_until.strftime('%Y-%m-%d %H:%M %Z')}."
@@ -2891,7 +2839,7 @@ async def run_recurring_check(bot) -> None:
             get_current_monday,
             get_habit_frequency,
         )
-    if is_muted():
+    if _is_muted():
         log.info("Recurring check skipped (muted)")
         return
     spawned = notion_tasks.process_recurring_tasks(notion, NOTION_DB_ID)
@@ -3107,7 +3055,7 @@ async def generate_daily_log(bot) -> None:
 
 async def send_daily_digest(bot, include_habits: bool = True, config: dict | None = None) -> None:
     global last_digest_msg_id
-    if is_muted():
+    if _is_muted():
         log.info("Daily digest skipped (muted)")
         return
     tasks = _filter_digest_tasks(get_today_and_overdue_tasks(limit=None), config=config)
@@ -3229,7 +3177,7 @@ async def send_evening_checkin(bot) -> None:
 
 
 async def send_sunday_review(bot) -> None:
-    if is_muted():
+    if _is_muted():
         log.info("Sunday review skipped (muted)")
         return
     week_tasks = notion_habits.query_tasks_by_auto_horizon(notion=notion, notion_db_id=NOTION_DB_ID, horizons=["🟠 This Week"])
@@ -3645,7 +3593,7 @@ def v10_feature_flags() -> str:
         f"tmdb={'ON' if TMDB_API_KEY else 'OFF (title-only)'}",
         f"notes={'ON' if NOTION_NOTES_DB else 'OFF'}",
         f"weather={'ON' if OPENWEATHER_KEY else 'OFF'}",
-        f"mute={'ON' if is_muted() else 'OFF'}",
+        f"mute={'ON' if _is_muted() else 'OFF'}",
     ]
     return "  ".join(flags)
 
@@ -3793,7 +3741,7 @@ async def post_init(app: Application) -> None:
         ent_log.load_entertainment_schemas(notion)
     except Exception as e:
         log.warning("Entertainment schema load failed at startup: %s", e)
-    load_mute_state()
+    _load_mute_state()
     wx.load_location_state()  # load from local JSON cache first (fast)
     if not wx.load_notion_env_location():  # try Notion (authoritative)
         # Notion had no location — geocode from env var or history
@@ -4113,7 +4061,7 @@ async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     global mute_until
     mute_until = None
-    save_mute_state()
+    _save_mute_state()
     context.user_data["awaiting_mute_days"] = False
     await update.message.reply_text("🔔 Digests resumed.")
 
