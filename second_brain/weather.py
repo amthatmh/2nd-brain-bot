@@ -2,11 +2,10 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
-import pytz
 
 from second_brain.config import OPENWEATHER_KEY, WEATHER_LOCATION, TZ, CLAUDE_MODEL
 
@@ -350,7 +349,7 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
             target = datetime.now(TZ).date() + timedelta(days=1 if forecast_type == "tomorrow" else 0)
             bucket = []
             for row in rows:
-                dt_utc = datetime.utcfromtimestamp(row["dt"]).replace(tzinfo=pytz.utc)
+                dt_utc = datetime.fromtimestamp(row["dt"], timezone.utc)
                 local_dt = dt_utc.astimezone(TZ)
                 if local_dt.date() == target:
                     bucket.append(row)
