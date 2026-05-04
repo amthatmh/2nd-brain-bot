@@ -4348,7 +4348,6 @@ async def run_asana_sync(bot) -> None:
         return  # Sync disabled — bot still works without Asana
 
     loop = asyncio.get_running_loop()
-    started = time.monotonic()
     sync_status["asana"]["last_run"] = utc_now_iso()
     sync_status["asana"].setdefault("metrics", {})
     try:
