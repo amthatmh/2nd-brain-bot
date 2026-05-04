@@ -81,6 +81,7 @@ from second_brain.notion import tasks as notion_tasks
 from second_brain import keyboards as kb
 from second_brain import formatters as fmt
 from second_brain import weather as wx
+from second_brain import watchlist as wl
 from second_brain.state import STATE
 from second_brain.utils import ExpiringDict, reply_notion_error
 from second_brain.http_utils import cors_headers
@@ -112,9 +113,7 @@ _strip_seat_from_notes = ent_log._strip_seat_from_notes
 _extract_cinema_visit_details = ent_log._extract_cinema_visit_details
 _entertainment_save_error_text = ent_log._entertainment_save_error_text
 _build_sport_competition_props = ent_log._build_sport_competition_props
-_resolve_known_cinema_venue = ent_log._resolve_known_cinema_venue
-_find_existing_cinema_venue = ent_log._find_existing_cinema_venue
-_suggest_known_venue = ent_log._suggest_known_venue
+_ent_log_create_entertainment_log_entry = ent_log.create_entertainment_log_entry
 
 
 def _sync_ent_log_runtime() -> None:
@@ -127,12 +126,37 @@ def _sync_ent_log_runtime() -> None:
 
 def create_entertainment_log_entry(notion, payload: dict) -> tuple[str, bool]:
     _sync_ent_log_runtime()
-    return ent_log.create_entertainment_log_entry(notion, payload)
+    return _ent_log_create_entertainment_log_entry(notion, payload)
 
 
 async def handle_entertainment_log(notion, message, payload: dict) -> None:
     _sync_ent_log_runtime()
-    return await ent_log.handle_entertainment_log(notion, message, payload)
+    entry_id, fav_saved = create_entertainment_log_entry(notion, payload)
+    title = payload.get("title", "Untitled")
+    log_type = payload.get("log_type", "cinema")
+    venue = payload.get("venue")
+    notes = payload.get("notes")
+    when_iso = payload.get("date") or date.today().isoformat()
+
+    summary_lines = [
+        f"✅ Logged to { {'cinema': 'Cinema', 'performance': 'Performance', 'sport': 'Sports'}.get(log_type, 'Entertainment') }",
+        "",
+        f"🎫 {title}",
+        f"📅 {when_iso}",
+    ]
+    if venue:
+        summary_lines.append(f"📍 {venue}")
+    if notes:
+        summary_lines.append(f"📝 {notes}")
+    if fav_saved and log_type == "cinema":
+        summary_lines.append("🎞️ Added to Favourite Films")
+    summary_lines.append("")
+    summary_lines.append("_Saved to Notion_")
+    await message.reply_text("\n".join(summary_lines), parse_mode="Markdown")
+    if log_type == "sport":
+        ent_log._remember_pending_sport_competition(message, entry_id)
+        await message.reply_text("🏆 Logged to Sports Log. Which competition should I set for this one?")
+    log.info("Entertainment logged type=%s title=%s page_id=%s", log_type, title, entry_id)
 
 
 async def _maybe_prompt_explicit_venue(notion, message, payload: dict, raw_text: str) -> bool:
@@ -145,6 +169,20 @@ def load_entertainment_schemas(notion) -> None:
     ent_log.load_entertainment_schemas(notion)
 
 
+
+def _resolve_known_cinema_venue(venue: str | None, schema: dict) -> str | None:
+    _sync_ent_log_runtime()
+    return ent_log._resolve_known_cinema_venue(notion, venue, schema)
+
+
+def _find_existing_cinema_venue(title: str, schema: dict) -> str | None:
+    _sync_ent_log_runtime()
+    return ent_log._find_existing_cinema_venue(notion, title, schema)
+
+
+def _suggest_known_venue(payload: dict) -> tuple[str | None, str | None]:
+    _sync_ent_log_runtime()
+    return ent_log._suggest_known_venue(notion, payload)
 
 load_dotenv()
 
@@ -299,9 +337,6 @@ pending_map: dict[str, dict] = ExpiringDict(ttl_seconds=3600)
 capture_map: dict[int, dict] = {}
 done_picker_map: dict[str, list[dict]] = ExpiringDict(ttl_seconds=3600)
 todo_picker_map: dict[str, list[dict]] = {}
-pending_wantslist_map: dict[str, dict] = {}
-pending_photo_map: dict[str, dict] = {}
-pending_tmdb_map: dict[str, list[dict]] = {}
 pending_message_map: dict[str, str] = {}
 pending_note_map: dict[str, dict] = {}
 cf_pending: dict[str, dict] = ExpiringDict(ttl_seconds=3600)
@@ -319,7 +354,6 @@ def _refresh_habit_cache_refs() -> None:
     STATE.habit_cache = habit_cache
 
 notes_pending: set[int] = STATE.notes_pending  # chat_ids currently in note-capture mode
-_tmdb_http_client: httpx.AsyncClient | None = None
 sync_status: dict[str, dict] = init_sync_status()
 trip_map: dict[str, dict] = {}
 trip_awaiting_date_map: dict[int, str] = {}
@@ -895,323 +929,6 @@ def deadline_days_to_label(days: int | None) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 # V10 REFERENCE DATABASE FLOWS
 # ══════════════════════════════════════════════════════════════════════════════
-
-async def tmdb_search(title: str, media_type: str = "multi") -> list[dict]:
-    if not TMDB_API_KEY:
-        return []
-    try:
-        client = _get_tmdb_http_client()
-        resp = await client.get(
-            f"{TMDB_BASE}/search/{media_type}",
-            params={"api_key": TMDB_API_KEY, "query": title, "page": 1},
-        )
-        resp.raise_for_status()
-        results = resp.json().get("results", [])[:5]
-
-        candidates: list[dict] = []
-        for r in results:
-            mtype = r.get("media_type") or media_type
-            if mtype not in ("tv", "movie"):
-                continue
-            candidate = {
-                "tmdb_id": str(r.get("id", "")),
-                "title": r.get("name") or r.get("title") or title,
-                "media_type": mtype,
-                "year": (r.get("first_air_date") or r.get("release_date") or "")[:4],
-                "seasons": None,
-                "episodes": None,
-                "runtime": None,
-            }
-            if mtype == "tv":
-                try:
-                    det = await client.get(
-                        f"{TMDB_BASE}/tv/{r['id']}",
-                        params={"api_key": TMDB_API_KEY},
-                    )
-                    det.raise_for_status()
-                    d = det.json()
-                    candidate["seasons"] = d.get("number_of_seasons")
-                    candidate["episodes"] = d.get("number_of_episodes")
-                    rt = d.get("episode_run_time") or []
-                    candidate["runtime"] = rt[0] if rt else None
-                except Exception as e:
-                    log.warning("TMDB TV detail lookup failed for id=%s: %s", r.get("id"), e)
-            candidates.append(candidate)
-        return candidates
-    except Exception as e:
-        log.warning(f"TMDB search failed for '{title}': {e}")
-        return []
-
-
-def _notion_type_from_tmdb(media_type: str) -> str:
-    return {"tv": "Series", "movie": "Film"}.get(media_type, "Series")
-
-
-def _tmdb_media_slug(media_type: str) -> str:
-    normalized = (media_type or "").strip().lower()
-    if normalized in {"film", "movie"}:
-        return "movie"
-    if normalized in {"series", "tv", "tv series", "anime", "documentary"}:
-        return "tv"
-    return ""
-
-
-def _get_tmdb_http_client() -> httpx.AsyncClient:
-    global _tmdb_http_client
-    if _tmdb_http_client is None:
-        _tmdb_http_client = httpx.AsyncClient(timeout=8.0)
-    return _tmdb_http_client
-
-
-def create_watchlist_entry(
-    title: str,
-    media_type: str = "Series",
-    tmdb_id: str = "",
-    seasons: int | None = None,
-    episodes: int | None = None,
-    runtime: int | None = None,
-) -> str:
-    tmdb_url = ""
-    tmdb_id_str = str(tmdb_id).strip() if tmdb_id is not None else ""
-    if tmdb_id_str:
-        media_slug = _tmdb_media_slug(media_type)
-        if media_slug:
-            tmdb_url = f"https://www.themoviedb.org/{media_slug}/{tmdb_id_str}"
-    props: dict = {
-        "Title": {"title": [{"text": {"content": title}}]},
-        "Type": {"select": {"name": media_type}},
-        "Status": {"select": {"name": "Queued"}},
-        "Source": {"select": {"name": "📱 Telegram"}},
-        "Added": {"date": {"start": date.today().isoformat()}},
-    }
-    if tmdb_id_str:
-        props["TMDB ID"] = {"rich_text": [{"text": {"content": tmdb_id_str}}]}
-    if tmdb_url:
-        props["TMDB URL"] = {"url": tmdb_url}
-    if seasons is not None:
-        props["Seasons"] = {"number": seasons}
-    if episodes is not None:
-        props["Episodes"] = {"number": episodes}
-    if runtime is not None:
-        props["Runtime (mins/ep)"] = {"number": runtime}
-
-    page = notion.pages.create(parent={"database_id": NOTION_WATCHLIST_DB}, properties=props)
-    return page["id"]
-
-
-def watchlist_duplicate(title: str) -> bool:
-    results = notion.databases.query(
-        database_id=NOTION_WATCHLIST_DB,
-        filter={"property": "Title", "title": {"equals": title}},
-    )
-    return len(results.get("results", [])) > 0
-
-
-def create_wantslist_entry(
-    item: str,
-    category: str = "Other",
-    priority: str = "Medium",
-    est_cost: float | None = None,
-    url: str | None = None,
-    notes: str | None = None,
-) -> str:
-    props: dict = {
-        "Item": {"title": [{"text": {"content": item}}]},
-        "Category": {"select": {"name": category}},
-        "Priority": {"select": {"name": priority}},
-        "Status": {"select": {"name": "Wanted"}},
-        "Source": {"select": {"name": "📱 Telegram"}},
-    }
-    if est_cost is not None:
-        props["Est. Cost"] = {"number": est_cost}
-    if url:
-        props["userDefined:URL"] = {"url": url}
-    if notes:
-        props["Notes"] = {"rich_text": [{"text": {"content": notes}}]}
-
-    page = notion.pages.create(parent={"database_id": NOTION_WANTSLIST_V2_DB}, properties=props)
-    return page["id"]
-
-
-def create_photo_entry(
-    subject: str,
-    location: str | None = None,
-    season: str | None = None,
-    time_of_day: str | None = None,
-    notes: str | None = None,
-) -> str:
-    props: dict = {
-        "Subject": {"title": [{"text": {"content": subject}}]},
-        "Status": {"select": {"name": "Wishlist"}},
-        "Source": {"select": {"name": "📱 Telegram"}},
-    }
-    if location:
-        props["Location"] = {"rich_text": [{"text": {"content": location}}]}
-    if season:
-        props["Season"] = {"select": {"name": season}}
-    if time_of_day:
-        props["Time of Day"] = {"select": {"name": time_of_day}}
-    if notes:
-        props["Notes"] = {"rich_text": [{"text": {"content": notes}}]}
-
-    page = notion.pages.create(parent={"database_id": NOTION_PHOTO_DB}, properties=props)
-    return page["id"]
-
-
-
-
-
-
-def _save_watchlist_from_candidate(c: dict, fallback_title: str) -> str:
-    return create_watchlist_entry(
-        title=c.get("title") or fallback_title,
-        media_type=_notion_type_from_tmdb(c.get("media_type", "tv")),
-        tmdb_id=c.get("tmdb_id", ""),
-        seasons=c.get("seasons"),
-        episodes=c.get("episodes"),
-        runtime=c.get("runtime"),
-    )
-
-
-async def handle_watchlist_intent(message, title: str, media_type: str) -> None:
-    global _v10_counter
-    if not NOTION_WATCHLIST_DB:
-        await message.reply_text("📺 Watchlist isn't configured yet — NOTION_WATCHLIST_DB missing.")
-        return
-    if watchlist_duplicate(title):
-        await message.reply_text(f"📺 *{title}* is already on your watchlist!", parse_mode="Markdown")
-        return
-
-    thinking = await message.reply_text("📺 Searching TMDB...")
-    candidates = await tmdb_search(
-        title,
-        media_type="tv" if media_type == "Series" else "movie" if media_type == "Film" else "multi",
-    )
-
-    if not candidates:
-        create_watchlist_entry(title, media_type=media_type)
-        await thinking.edit_text(
-            f"📺 Added to watchlist!\n\n*{title}* · {media_type}\n_No TMDB metadata found — saved title only_",
-            parse_mode="Markdown",
-        )
-        return
-
-    if len(candidates) == 1:
-        c = candidates[0]
-        _save_watchlist_from_candidate(c, title)
-        seasons_str = f" · {c['seasons']} seasons" if c.get("seasons") else ""
-        episodes_str = f" · {c['episodes']} eps" if c.get("episodes") else ""
-        runtime_str = f" · {c['runtime']} min/ep" if c.get("runtime") else ""
-        await thinking.edit_text(
-            f"📺 Added to watchlist!\n\n*{c['title']}* ({c['year']}) · {_notion_type_from_tmdb(c['media_type'])}"
-            f"{seasons_str}{episodes_str}{runtime_str}\n_Saved to Notion_",
-            parse_mode="Markdown",
-        )
-        return
-
-    key = str(_v10_counter)
-    _v10_counter += 1
-    pending_tmdb_map[key] = candidates
-    await thinking.edit_text(
-        f"📺 Found a few matches for *{title}* — which one?",
-        parse_mode="Markdown",
-        reply_markup=kb.tmdb_candidates_keyboard(key, candidates, _notion_type_from_tmdb),
-    )
-
-
-async def handle_wantslist_intent(message, item: str, category: str) -> None:
-    global _v10_counter
-    if not NOTION_WANTSLIST_V2_DB:
-        await message.reply_text("🎁 Wantslist isn't configured yet — NOTION_WANTSLIST_V2_DB missing.")
-        return
-    key = str(_v10_counter)
-    _v10_counter += 1
-    pending_wantslist_map[key] = {"item": item, "category": category}
-    await message.reply_text(
-        f"🎁 Save *{item}* to your Wantslist?\n_Category: {category}_",
-        parse_mode="Markdown",
-        reply_markup=kb.wantslist_confirm_keyboard(key),
-    )
-
-
-async def handle_photo_intent(message, subject: str) -> None:
-    global _v10_counter
-    if not NOTION_PHOTO_DB:
-        await message.reply_text("📷 Photo Bucketlist isn't configured yet — NOTION_PHOTO_DB missing.")
-        return
-
-    key = str(_v10_counter)
-    _v10_counter += 1
-    pending_photo_map[key] = {"subject": subject}
-    await message.reply_text(
-        f"📷 *{subject}* added to your photo bucketlist!\n\n"
-        "_Optionally reply with location and/or best season — e.g. `Kyoto, Autumn` — "
-        "or just ignore this and fill it in Notion later._\n\n"
-        f"_Reference: `photo_key:{key}`_",
-        parse_mode="Markdown",
-    )
-    page_id = create_photo_entry(subject)
-    pending_photo_map[key]["page_id"] = page_id
-
-
-def _parse_photo_followup(text: str) -> tuple[str | None, str | None, str | None]:
-    seasons = {"spring", "summer", "autumn", "fall", "winter", "any"}
-    season_map = {"fall": "Autumn"}
-    times = {"golden hour", "blue hour", "midday", "night", "any"}
-    time_labels = {
-        "golden hour": "Golden Hour",
-        "blue hour": "Blue Hour",
-        "midday": "Midday",
-        "night": "Night",
-        "any": "Any",
-    }
-    parts = [p.strip() for p in re.split(r"[,/|·]+", text) if p.strip()]
-    location, season, time_of_day = None, None, None
-    for part in parts:
-        lower = part.lower()
-        if lower in seasons:
-            season = season_map.get(lower, lower.capitalize())
-        elif lower in times:
-            time_of_day = time_labels[lower]
-        elif not location:
-            location = part
-    return location, season, time_of_day
-
-
-async def handle_photo_followup(message, text: str) -> bool:
-    key = None
-    if message.reply_to_message:
-        replied = message.reply_to_message.text or ""
-        m = re.search(r"photo_key:(\w+)", replied)
-        if m:
-            key = m.group(1)
-
-    if key and key in pending_photo_map:
-        entry = pending_photo_map[key]
-        page_id = entry.get("page_id")
-        if not page_id:
-            return False
-        location, season, time_of_day = _parse_photo_followup(text)
-        props: dict = {}
-        if location:
-            props["Location"] = {"rich_text": [{"text": {"content": location}}]}
-        if season:
-            props["Season"] = {"select": {"name": season}}
-        if time_of_day:
-            props["Time of Day"] = {"select": {"name": time_of_day}}
-        if props:
-            notion.pages.update(page_id=page_id, properties=props)
-            parts = []
-            if location:
-                parts.append(f"📍 {location}")
-            if season:
-                parts.append(f"🗓️ {season}")
-            if time_of_day:
-                parts.append(f"🕐 {time_of_day}")
-            await message.reply_text(f"📷 Updated: {' · '.join(parts)}\n_Saved to Notion_", parse_mode="Markdown")
-            del pending_photo_map[key]
-            return True
-    return False
 
 # ══════════════════════════════════════════════════════════════════════════════
 # NOTION — HABIT LOG
@@ -1937,12 +1654,12 @@ async def cmd_mute_text(message, context: ContextTypes.DEFAULT_TYPE | None = Non
 async def handle_v10_callback(q, parts: list[str]) -> bool:
     if parts[0] == "wl_save" and len(parts) == 2:
         key = parts[1]
-        if key not in pending_wantslist_map:
+        if key not in wl.pending_wantslist_map:
             await q.edit_message_text("⚠️ This confirmation expired — please re-send.")
             return True
-        item_data = pending_wantslist_map.pop(key)
+        item_data = wl.pending_wantslist_map.pop(key)
         try:
-            create_wantslist_entry(item_data["item"], category=item_data["category"])
+            wl.create_wantslist_entry(notion, item_data["item"], category=item_data["category"])
             await q.edit_message_text(
                 f"🎁 Saved!\n\n*{item_data['item']}*\n_{item_data['category']} · Wantslist_\n\n_Saved to Notion_",
                 parse_mode="Markdown",
@@ -1953,19 +1670,19 @@ async def handle_v10_callback(q, parts: list[str]) -> bool:
         return True
 
     if parts[0] == "wl_cancel" and len(parts) == 2:
-        pending_wantslist_map.pop(parts[1], None)
+        wl.pending_wantslist_map.pop(parts[1], None)
         await q.edit_message_text("🎁 Cancelled — not saved.")
         return True
 
     if parts[0] == "tmdb_pick" and len(parts) == 3:
         _, key, idx_str = parts
-        if key not in pending_tmdb_map:
+        if key not in wl.pending_tmdb_map:
             await q.edit_message_text("⚠️ This picker expired — please re-send.")
             return True
-        candidates = pending_tmdb_map.pop(key)
+        candidates = wl.pending_tmdb_map.pop(key)
         try:
             c = candidates[int(idx_str)]
-            _save_watchlist_from_candidate(c, c["title"])
+            wl._save_watchlist_from_candidate(notion, c, c["title"])
             seasons_str = f" · {c['seasons']} seasons" if c.get("seasons") else ""
             episodes_str = f" · {c['episodes']} eps" if c.get("episodes") else ""
             runtime_str = f" · {c['runtime']} min/ep" if c.get("runtime") else ""
@@ -1981,10 +1698,10 @@ async def handle_v10_callback(q, parts: list[str]) -> bool:
 
     if parts[0] == "tmdb_skip" and len(parts) == 2:
         key = parts[1]
-        candidates = pending_tmdb_map.pop(key, [])
+        candidates = wl.pending_tmdb_map.pop(key, [])
         title = candidates[0]["title"] if candidates else "Unknown"
         try:
-            create_watchlist_entry(title)
+            wl.create_watchlist_entry(notion, title)
             await q.edit_message_text(
                 f"📺 Added!\n\n*{title}*\n_Title only — no TMDB metadata_\n\n_Saved to Notion_",
                 parse_mode="Markdown",
@@ -1995,7 +1712,7 @@ async def handle_v10_callback(q, parts: list[str]) -> bool:
         return True
 
     if parts[0] == "tmdb_cancel" and len(parts) == 2:
-        pending_tmdb_map.pop(parts[1], None)
+        wl.pending_tmdb_map.pop(parts[1], None)
         await q.edit_message_text("📺 Cancelled — not saved.")
         return True
 
@@ -2020,7 +1737,7 @@ async def route_classified_message_v10(message, text: str) -> None:
             else:
                 await handle_cf_wod_flow(message, workout_result, notion, {"NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB}, cf_pending)
             return
-    if await handle_photo_followup(message, text):
+    if await wl.handle_photo_followup(notion, message, text):
         await thinking.delete()
         return
     try:
@@ -2044,17 +1761,17 @@ async def route_classified_message_v10(message, text: str) -> None:
 
     if intent == "watchlist":
         await thinking.delete()
-        await handle_watchlist_intent(message, title=result.get("title", text), media_type=result.get("media_type", "Series"))
+        await wl.handle_watchlist_intent(notion, message, title=result.get("title", text), media_type=result.get("media_type", "Series"))
         return
 
     if intent == "wantslist":
         await thinking.delete()
-        await handle_wantslist_intent(message, item=result.get("item", text), category=result.get("category", "Other"))
+        await wl.handle_wantslist_intent(message, item=result.get("item", text), category=result.get("category", "Other"))
         return
 
     if intent == "photo":
         await thinking.delete()
-        await handle_photo_intent(message, subject=result.get("subject", text))
+        await wl.handle_photo_intent(notion, message, subject=result.get("subject", text))
         return
 
     if intent == "note":
