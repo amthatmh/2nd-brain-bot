@@ -112,6 +112,9 @@ _strip_seat_from_notes = ent_log._strip_seat_from_notes
 _extract_cinema_visit_details = ent_log._extract_cinema_visit_details
 _entertainment_save_error_text = ent_log._entertainment_save_error_text
 _build_sport_competition_props = ent_log._build_sport_competition_props
+_resolve_known_cinema_venue = ent_log._resolve_known_cinema_venue
+_find_existing_cinema_venue = ent_log._find_existing_cinema_venue
+_suggest_known_venue = ent_log._suggest_known_venue
 
 
 def _sync_ent_log_runtime() -> None:
@@ -142,31 +145,6 @@ def load_entertainment_schemas(notion) -> None:
     ent_log.load_entertainment_schemas(notion)
 
 
-def _resolve_known_cinema_venue(venue: str | None, schema: dict) -> str | None:
-    _sync_ent_log_runtime()
-    return ent_log._resolve_known_cinema_venue(notion, venue, schema)
-
-
-def _find_existing_cinema_venue(title: str, schema: dict) -> str | None:
-    _sync_ent_log_runtime()
-    return ent_log._find_existing_cinema_venue(notion, title, schema)
-
-
-def _suggest_known_venue(payload: dict) -> tuple[str | None, str | None]:
-    _sync_ent_log_runtime()
-    return ent_log._suggest_known_venue(notion, payload)
-
-if not hasattr(wx, "uvi_emoji"):
-    def _wx_uvi_emoji_fallback(uvi: float) -> str:
-        if uvi >= 8:
-            return "🔴"
-        if uvi >= 6:
-            return "🟠"
-        if uvi >= 3:
-            return "🟡"
-        return "🟢"
-
-    wx.uvi_emoji = _wx_uvi_emoji_fallback
 
 load_dotenv()
 
