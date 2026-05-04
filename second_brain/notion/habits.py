@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+import logging
 from typing import Any
 import logging
 
 
 log = logging.getLogger(__name__)
+
+log = logging.getLogger(__name__)
+habit_cache: dict[str, dict[str, Any]] = {}
 
 
 def _plain_text_from_property(prop: dict[str, Any] | None) -> str:
@@ -68,145 +71,146 @@ def extract_habit_frequency(props: dict[str, Any]) -> int | None:
     return None
 
 
-def get_week_completion_count_for_week(notion, notion_log_db: str, habit_page_id: str, week_of: date) -> int:
+def load_habit_cache(*, notion: Any, notion_habit_db: str) -> None:
+    """Load active habits into module-level ``habit_cache``."""
+    global habit_cache
     try:
         results = notion.databases.query(
-            database_id=notion_log_db,
-            filter={
-                "and": [
-                    {"property": "Habit", "relation": {"contains": habit_page_id}},
-                    {"property": "Completed", "checkbox": {"equals": True}},
-                    {"property": "Date", "date": {"on_or_after": week_of.isoformat()}},
-                    {"property": "Date", "date": {"on_or_before": (week_of + timedelta(days=6)).isoformat()}},
-                ]
-            },
+            database_id=notion_habit_db,
+            filter={"property": "Active", "checkbox": {"equals": True}},
         )
-        return len(results.get("results", []))
+        habit_cache = {}
+        for page in results.get("results", []):
+            p = page["properties"]
+            title_parts = p.get("Habit", {}).get("title", [])
+            name = title_parts[0]["text"]["content"] if title_parts else None
+            if not name:
+                continue
+
+            def sel(key: str) -> str | None:
+                s = p.get(key, {}).get("select")
+                return s["name"] if s else None
+
+            def num(key: str) -> int | float | None:
+                return p.get(key, {}).get("number")
+
+            def txt(key: str) -> str | None:
+                parts = p.get(key, {}).get("rich_text", [])
+                return parts[0]["text"]["content"] if parts else None
+
+            parsed_frequency = extract_habit_frequency(p)
+            frequency_label = txt("Frequency Label")
+            if not frequency_label and parsed_frequency:
+                frequency_label = f"{parsed_frequency}x/week"
+            page_icon = page.get("icon") or {}
+            icon_emoji = page_icon.get("emoji") if isinstance(page_icon, dict) else None
+            habit_cache[name] = {
+                "page_id": page["id"],
+                "name": name,
+                "icon": icon_emoji,
+                "time": sel("Time"),
+                "color": sel("Color"),
+                "freq_per_week": parsed_frequency,
+                "frequency_label": frequency_label,
+                "description": txt("Description"),
+                "sort": num("Sort") or 99,
+            }
+        log.info("Habit cache loaded: %s", sorted(habit_cache.keys()))
     except Exception as e:
-        log.error("get_week_completion_count_for_week error for %s: %s", habit_page_id, e)
-        return 0
+        log.error("Failed to load habit cache: %s", e)
 
 
-def get_previous_streak(notion, notion_streak_db: str, habit_page_id: str, week_of: date) -> int:
-    prior_monday = week_of - timedelta(days=7)
-    try:
-        results = notion.databases.query(
-            database_id=notion_streak_db,
-            filter={
-                "and": [
-                    {"property": "Habit", "relation": {"contains": habit_page_id}},
-                    {"property": "Week Of", "date": {"equals": prior_monday.isoformat()}},
-                    {"property": "Goal Met", "checkbox": {"equals": True}},
-                ]
-            },
-        )
-        rows = results.get("results", [])
-        if rows:
-            return int(rows[0].get("properties", {}).get("Current Streak", {}).get("number") or 0)
-        return 0
-    except Exception as e:
-        log.error("get_previous_streak error for %s: %s", habit_page_id, e)
-        return 0
-
-
-def get_existing_streak_record(notion, notion_streak_db: str, habit_page_id: str, week_of: date) -> dict | None:
-    try:
-        results = notion.databases.query(
-            database_id=notion_streak_db,
-            filter={
-                "and": [
-                    {"property": "Habit", "relation": {"contains": habit_page_id}},
-                    {"property": "Week Of", "date": {"equals": week_of.isoformat()}},
-                ]
-            },
-        )
-        rows = results.get("results", [])
-        if not rows:
-            return None
-        first = rows[0]
-        return {
-            "page_id": first["id"],
-            "current_streak": first.get("properties", {}).get("Current Streak", {}).get("number") or 0,
-        }
-    except Exception as e:
-        log.error("get_existing_streak_record error for %s: %s", habit_page_id, e)
-        return None
-
-
-def write_streak_record(
-    notion,
-    notion_streak_db: str,
-    habit_page_id: str,
-    habit_name: str,
-    week_of: date,
-    completed: int,
-    target: int,
-    goal_met: bool,
-) -> None:
-    try:
-        current_streak = (get_previous_streak(notion, notion_streak_db, habit_page_id, week_of) + 1) if goal_met else 0
-        week_label = week_of.strftime("%-V")
-        name = f"{habit_name} — W{week_label} {week_of.year}"
-        props = {
-            "Name": {"title": [{"text": {"content": name}}]},
-            "Habit": {"relation": [{"id": habit_page_id}]},
-            "Week Of": {"date": {"start": week_of.isoformat()}},
-            "Target": {"number": target},
-            "Completed": {"number": completed},
-            "Goal Met": {"checkbox": goal_met},
-            "Current Streak": {"number": current_streak},
-        }
-        existing = get_existing_streak_record(notion, notion_streak_db, habit_page_id, week_of)
-        if existing:
-            notion.pages.update(page_id=existing["page_id"], properties=props)
-        else:
-            notion.pages.create(parent={"database_id": notion_streak_db}, properties=props)
-    except Exception as e:
-        log.error("write_streak_record error for %s: %s", habit_page_id, e)
-
-
-async def check_and_notify_weekly_goals(
-    bot,
-    chat_id: int,
-    notion,
-    notion_log_db: str,
+def get_active_habits_for_trigger(
+    *,
+    notion_query_all: Any,
     notion_habit_db: str,
-    habit_cache: dict[str, dict[str, Any]],
-    notified_goals_this_week: set[str],
-    get_week_completion_count,
-    get_habit_frequency,
-) -> None:
-    _ = notion, notion_log_db, notion_habit_db
-    for habit_name, habit in habit_cache.items():
-        habit_page_id = habit["page_id"]
-        if habit_page_id in notified_goals_this_week:
-            continue
-        count = get_week_completion_count(habit_page_id)
-        freq = get_habit_frequency(habit_page_id)
-        if count >= freq:
-            await bot.send_message(
-                chat_id=chat_id,
-                text=f"🎯 Weekly goal met: {habit_name} — see you next Monday!",
+    parse_time_to_minutes: Any,
+    count_habit_completions_this_week: Any,
+) -> list[dict]:
+    try:
+        results = notion_query_all(
+            database_id=notion_habit_db,
+            filter={"property": "Active", "checkbox": {"equals": True}},
+        )
+    except Exception as e:
+        log.error("get_active_habits_for_trigger query error: %s", e)
+        return []
+    habits: list[dict] = []
+    for page in results:
+        try:
+            props = page.get("properties", {})
+            title_parts = props.get("Habit", {}).get("title", [])
+            name = title_parts[0].get("plain_text") if title_parts else "Unknown"
+            time_prop = props.get("Time", {})
+            time_str = ""
+            if time_prop.get("type") == "select":
+                time_str = (time_prop.get("select") or {}).get("name") or ""
+            elif time_prop.get("type") == "rich_text":
+                rich = time_prop.get("rich_text", [])
+                time_str = (rich[0].get("plain_text") if rich else "") or ""
+            time_str = time_str.strip() or "—"
+            time_minutes = parse_time_to_minutes(time_str if time_str != "—" else None)
+            frequency = extract_habit_frequency(props)
+            completion_count = count_habit_completions_this_week(page["id"])
+            if frequency and frequency > 0 and completion_count >= frequency:
+                continue
+            habits.append(
+                {
+                    "page_id": page["id"],
+                    "name": name or "Unknown",
+                    "time_minutes": time_minutes,
+                    "time_str": time_str,
+                    "frequency": frequency,
+                    "completion_count": completion_count,
+                    "weather_gated": props.get("Weather Gated", {}).get("checkbox", False),
+                }
             )
-            notified_goals_this_week.add(habit_page_id)
+        except Exception as e:
+            log.error("get_active_habits_for_trigger parse error for %s: %s", page.get("id"), e)
+    habits.sort(key=lambda h: (h["time_minutes"] < 0, h["time_minutes"] if h["time_minutes"] >= 0 else 10**9, h["name"].lower()))
+    return habits
 
 
-async def record_weekly_streaks(
-    bot,
-    notion,
-    notion_log_db: str,
+def get_habits_by_time(
+    *,
+    time_filter: str,
+    notion_query_all: Any,
     notion_habit_db: str,
-    notion_streak_db: str,
-    habit_cache: dict[str, dict[str, Any]],
-    get_current_monday,
-    get_habit_frequency,
-) -> None:
-    _ = bot, notion_habit_db
-    last_monday = get_current_monday() - timedelta(days=7)
-    for habit_name, habit in habit_cache.items():
-        habit_page_id = habit["page_id"]
-        completed = get_week_completion_count_for_week(notion, notion_log_db, habit_page_id, last_monday)
-        target = get_habit_frequency(habit_page_id)
-        goal_met = completed >= target
-        write_streak_record(notion, notion_streak_db, habit_page_id, habit_name, last_monday, completed, target, goal_met)
-    log.info("Streak records written for %s habits — week of %s", len(habit_cache), last_monday)
+    parse_time_to_minutes: Any,
+    count_habit_completions_this_week: Any,
+    habit_capped_this_week: Any,
+) -> list[dict]:
+    del time_filter
+    habits = get_active_habits_for_trigger(
+        notion_query_all=notion_query_all,
+        notion_habit_db=notion_habit_db,
+        parse_time_to_minutes=parse_time_to_minutes,
+        count_habit_completions_this_week=count_habit_completions_this_week,
+    )
+    return [h for h in habits if not habit_capped_this_week(h["page_id"])]
+
+
+def query_tasks_by_auto_horizon(*, notion: Any, notion_db_id: str, horizons: list[str]) -> list[dict]:
+    from second_brain.notion import tasks as notion_tasks
+    results = notion.databases.query(
+        database_id=notion_db_id,
+        filter={
+            "and": [
+                {"property": "Done", "checkbox": {"equals": False}},
+                {"or": [{"property": "Auto Horizon", "formula": {"string": {"equals": h}}} for h in horizons]},
+            ]
+        },
+    )
+    tasks = []
+    for page in results.get("results", []):
+        p = page["properties"]
+        tasks.append(
+            {
+                "page_id": page["id"],
+                "name": notion_tasks._get_prop(p, "Name", "title") or "Untitled",
+                "auto_horizon": notion_tasks._get_prop(p, "Auto Horizon", "formula") or "",
+                "context": notion_tasks._get_prop(p, "Context", "select") or "",
+                "deadline": notion_tasks._get_prop(p, "Deadline", "date"),
+            }
+        )
+    return tasks
