@@ -3592,7 +3592,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             log.warning("Habit success UI update failed for %s: %s", habit_name, ui_error)
             await q.message.reply_text(f"✅ {habit_name} logged!")
 
-        await open_habit_picker(q.message)
+        try:
+            if q.message:
+                await open_habit_picker(q.message)
+            else:
+                await q.bot.send_message(chat_id=update.effective_chat.id, text="🏃 Which habit did you complete?", reply_markup=kb.habit_buttons([
+                    {"page_id": h["page_id"], "name": h["name"]}
+                    for h in sorted(habit_cache.values(), key=lambda x: x["sort"])
+                    if not already_logged_today(h["page_id"])
+                ], "manual"))
+        except Exception as follow_up_error:
+            log.error("Habit follow-up picker failed after logging %s: %s", habit_name, follow_up_error)
+            if q.message:
+                await q.message.reply_text("✅ Logged. Send /done to continue logging more habits.")
+            else:
+                await q.bot.send_message(chat_id=update.effective_chat.id, text="✅ Logged. Send /done to continue logging more habits.")
 
         asyncio.create_task(
             check_and_notify_weekly_goals(
