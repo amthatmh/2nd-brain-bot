@@ -2422,6 +2422,21 @@ async def send_quick_reminder(message, mode: str = "priority") -> None:
 # NAMING CONVENTIONS:
 # ─ Use colons (:) as separators, never underscores
 # ─ PIDs (page IDs) are always restored from clean format: _restore_pid(parts[n])
+def _restore_pid(pid: str) -> str:
+    """Restore compact Notion page IDs to canonical dashed form.
+
+    Accepts either already-dashed IDs or 32-char compact IDs.
+    Falls back to the original input for unknown shapes.
+    """
+    raw = (pid or "").strip()
+    if not raw:
+        return raw
+    if "-" in raw:
+        return raw
+    if len(raw) == 32:
+        return f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:]}"
+    return raw
+
 # ─ Keys are string counters or message IDs from state maps
 # ─ Actions are descriptive: log, select, page, cancel
 #
