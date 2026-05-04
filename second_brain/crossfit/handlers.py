@@ -81,8 +81,13 @@ async def handle_cf_upload_programme(message, text, claude_client, notion, confi
             ),
         )
     except Exception as e:
+        err_str = str(e)
+        if "max_tokens" in err_str.lower() or "JSONDecodeError" in type(e).__name__:
+            msg = "⚠️ Programme too large to parse in one go. Try pasting one track at a time (e.g. just the Performance section)."
+        else:
+            msg = f"⚠️ Couldn't parse programme: {e}"
         log.error("handle_cf_upload_programme: parse_programme failed: %s", e)
-        await _edit_or_reply(f"⚠️ Couldn't parse programme: {e}")
+        await _edit_or_reply(msg)
         return False
 
     tracks = parsed.get("tracks", []) if isinstance(parsed, dict) else []
