@@ -82,6 +82,7 @@ from second_brain import keyboards as kb
 from second_brain import formatters as fmt
 from second_brain import weather as wx
 from second_brain import watchlist as wl
+from second_brain import trips as trips_mod
 from second_brain.state import STATE
 from second_brain.utils import ExpiringDict, reply_notion_error
 from second_brain.http_utils import cors_headers
@@ -1839,32 +1840,6 @@ async def route_classified_message_v10(message, text: str) -> None:
 
 
 
-def format_trip_dates(dep: str, ret: str) -> str:
-    d = date.fromisoformat(dep)
-    r = date.fromisoformat(ret)
-    if d.month == r.month:
-        return f"{d.strftime('%-d')}–{r.strftime('%-d %b %Y')}"
-    return f"{d.strftime('%-d %b')}–{r.strftime('%-d %b %Y')}"
-
-
-def parse_trip_message(text: str) -> dict:
-    prompt = f"""Extract trip details from this message. Today is {date.today().isoformat()}.
-
-Message: "{text}"
-
-Return ONLY valid JSON, no markdown:
-{{
-  "destinations": ["city1", "city2"],
-  "departure_date": "YYYY-MM-DD",
-  "return_date": "YYYY-MM-DD",
-  "purpose": "Work" | "Personal" | "Both",
-  "multiple_cities": true | false
-}}
-"""
-    resp = claude.messages.create(model=CLAUDE_MODEL, max_tokens=300, messages=[{"role": "user", "content": prompt}])
-    raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
-    return json.loads(raw)
-
 
 
 COMMAND_DISPATCH: dict[str, Callable] = {
@@ -1903,7 +1878,7 @@ async def handle_trip_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not text:
         await message.reply_text('Send your trip details after the command, e.g.:\n/trip work trip to Austin, site testing, Jun 14-17')
         return
-    parsed = parse_trip_message(text)
+    parsed = trips_mod.parse_trip_message(text, claude)
     destinations = parsed.get("destinations") or []
     destination = destinations[0] if destinations else "Trip"
     dep = parsed.get("departure_date")
@@ -1917,7 +1892,7 @@ async def handle_trip_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     nights = (date.fromisoformat(ret) - date.fromisoformat(dep)).days
     trip_map[key]["nights"] = nights
     trip_map[key]["duration_label"] = "Overnight" if nights == 1 else ("2-3 Days" if nights <= 3 else "4-5 Days")
-    await message.reply_text(f"✈️ {destination} — {format_trip_dates(dep, ret)} ({nights} night(s), {trip_map[key]['purpose']})\n\nWhat field work are you doing?\n(Tap all that apply, then tap ✅ Done)", reply_markup=field_work_keyboard(key))
+    await message.reply_text(f"✈️ {destination} — {trips_mod.format_trip_dates(dep, ret)} ({nights} night(s), {trip_map[key]['purpose']})\n\nWhat field work are you doing?\n(Tap all that apply, then tap ✅ Done)", reply_markup=field_work_keyboard(key))
 
 async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat.id != MY_CHAT_ID:
@@ -1941,7 +1916,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     global awaiting_packing_feedback
     if message.reply_to_message and message.reply_to_message.message_id in trip_awaiting_date_map:
         key = trip_awaiting_date_map.pop(message.reply_to_message.message_id)
-        parsed = parse_trip_message(text)
+        parsed = trips_mod.parse_trip_message(text, claude)
         dep, ret = parsed.get("departure_date"), parsed.get("return_date")
         if not dep or not ret:
             await message.reply_text("⚠️ I couldn't parse those dates. Try format like Jun 14-17.")
@@ -1951,7 +1926,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         nights = (date.fromisoformat(ret) - date.fromisoformat(dep)).days
         trip_map[key]["nights"] = nights
         trip_map[key]["duration_label"] = "Overnight" if nights == 1 else ("2-3 Days" if nights <= 3 else "4-5 Days")
-        await message.reply_text(f"✈️ {trip_map[key]['destination']} — {format_trip_dates(dep, ret)} ({nights} night(s), {trip_map[key]['purpose']})\n\nWhat field work are you doing?\n(Tap all that apply, then tap ✅ Done)", reply_markup=field_work_keyboard(key))
+        await message.reply_text(f"✈️ {trip_map[key]['destination']} — {trips_mod.format_trip_dates(dep, ret)} ({nights} night(s), {trip_map[key]['purpose']})\n\nWhat field work are you doing?\n(Tap all that apply, then tap ✅ Done)", reply_markup=field_work_keyboard(key))
         return
 
     if awaiting_packing_feedback and not command_head.startswith('/'):
@@ -2334,20 +2309,6 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 
-async def execute_trip(key: str, query) -> None:
-    global awaiting_packing_feedback
-    trip = trip_map[key]
-    today_weather = wx.fetch_weather("today") or {}
-    flags = []
-    summary = today_weather.get("summary", "Weather unavailable")
-    trip['weather_flags'] = flags
-    dep = date.fromisoformat(trip['departure_date'])
-    reminder_2d = dep - timedelta(days=2)
-    reminder_1d = dep - timedelta(days=1)
-    title = f"{', '.join(trip['destinations'])} — {format_trip_dates(trip['departure_date'], trip['return_date'])}"
-    await query.message.reply_text("🧳 Trip captured. Packing flow scaffold saved.")
-    awaiting_packing_feedback = True
-
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q     = update.callback_query
     await q.answer()
@@ -2420,7 +2381,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         trip_map[key]["checked_luggage"] = (ans == "y")
         await q.message.reply_text("🧠 Building your packing list...")
-        await execute_trip(key, q)
+        await trips_mod.execute_trip(key, q, notion=notion, claude=claude, trip_map=trip_map, set_awaiting_packing_feedback=lambda value: globals().__setitem__("awaiting_packing_feedback", value), fetch_weather=wx.fetch_weather)
         return
 
     if parts[0] == "cf":
