@@ -4349,7 +4349,7 @@ async def run_asana_sync(bot) -> None:
 
     loop = asyncio.get_running_loop()
     sync_status["asana"]["last_run"] = utc_now_iso()
-    sync_status["asana"].setdefault("metrics", {})
+    started = time.monotonic()
     try:
         stats = await asyncio.wait_for(
             loop.run_in_executor(
@@ -4367,8 +4367,9 @@ async def run_asana_sync(bot) -> None:
             timeout=ASANA_SYNC_TIMEOUT_SECONDS,
         )
         # Only log when something happened — keeps logs readable at 15s polling
+        elapsed = round(time.monotonic() - started, 3)
         if any(v for k, v in stats.items() if k != "skipped"):
-            log.info(f"Asana sync: {stats}")
+            log.info(f"Asana sync: {stats} (elapsed={elapsed}s)")
         sync_status["asana"]["ok"] = True
         sync_status["asana"]["error"] = None
         sync_status["asana"]["stats"] = stats
@@ -4390,7 +4391,8 @@ async def run_asana_sync(bot) -> None:
         sync_status["asana"]["ok"] = False
         sync_status["asana"]["error"] = str(e)
     except Exception as e:
-        log.exception(f"Asana sync failed: {e}")
+        elapsed = round(time.monotonic() - started, 3)
+        log.exception(f"Asana sync failed after {elapsed}s: {e}")
         sync_status["asana"]["ok"] = False
         sync_status["asana"]["error"] = str(e)
 
