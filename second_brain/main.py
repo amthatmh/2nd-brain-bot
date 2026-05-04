@@ -8,6 +8,7 @@ import re
 import logging
 import calendar
 import subprocess
+import time
 import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from collections import defaultdict
@@ -216,6 +217,9 @@ ASANA_PROJECT_GID   = os.environ.get("ASANA_PROJECT_GID", "")
 ASANA_WORKSPACE_GID = os.environ.get("ASANA_WORKSPACE_GID", "")  # v9.2: required for my_tasks mode
 ASANA_SYNC_SOURCE   = os.environ.get("ASANA_SYNC_SOURCE", "project").strip().lower()
 ASANA_SYNC_INTERVAL = max(1, int(os.environ.get("ASANA_SYNC_EVERY_SECONDS", "15")))
+ASANA_SYNC_TIMEOUT_SECONDS = max(10, int(os.environ.get("ASANA_SYNC_TIMEOUT_SECONDS", "45")))
+ASANA_SYNC_MAX_INSTANCES = max(1, int(os.environ.get("ASANA_SYNC_MAX_INSTANCES", "1")))
+ASANA_SYNC_MISFIRE_GRACE_SECONDS = max(1, int(os.environ.get("ASANA_SYNC_MISFIRE_GRACE_SECONDS", "20")))
 ASANA_STARTUP_SMOKE = os.environ.get("ASANA_STARTUP_SMOKE", "1").strip().lower() not in {"0", "false", "no", "off"}
 ASANA_ARCHIVE_ORPHANS = os.environ.get("ASANA_ARCHIVE_ORPHANS", "0").strip().lower() in {"1", "true", "yes", "on"}
 NOTION_WATCHLIST_DB    = os.environ.get("NOTION_WATCHLIST_DB", "")
@@ -1182,7 +1186,7 @@ async def handle_photo_followup(message, text: str) -> bool:
 def log_habit(habit_page_id: str, habit_name: str, source: str = "📱 Telegram") -> None:
     today = datetime.now(TZ).date().isoformat()
     props = {
-        "Entry":     {"title":    [{"text": {"content": f"{habit_name} — {today}"}}]},
+        "Entry":     {"title":    [{"text": {"content": habit_name}}]},
         "Habit":     {"relation": [{"id": habit_page_id}]},
         "Completed": {"checkbox": True},
         "Date":      {"date":     {"start": today}},
@@ -4347,17 +4351,20 @@ async def run_asana_sync(bot) -> None:
     sync_status["asana"]["last_run"] = utc_now_iso()
     started = time.monotonic()
     try:
-        stats = await loop.run_in_executor(
-            None,
-            lambda: reconcile(
-                notion=notion,
-                notion_db_id=NOTION_DB_ID,
-                asana_token=ASANA_PAT,
-                asana_project_gid=ASANA_PROJECT_GID,
-                asana_workspace_gid=ASANA_WORKSPACE_GID,   # v9.2: required for my_tasks mode
-                source_mode=ASANA_SYNC_SOURCE,
-                archive_orphans=ASANA_ARCHIVE_ORPHANS,
+        stats = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: reconcile(
+                    notion=notion,
+                    notion_db_id=NOTION_DB_ID,
+                    asana_token=ASANA_PAT,
+                    asana_project_gid=ASANA_PROJECT_GID,
+                    asana_workspace_gid=ASANA_WORKSPACE_GID,   # v9.2: required for my_tasks mode
+                    source_mode=ASANA_SYNC_SOURCE,
+                    archive_orphans=ASANA_ARCHIVE_ORPHANS,
+                ),
             ),
+            timeout=ASANA_SYNC_TIMEOUT_SECONDS,
         )
         # Only log when something happened — keeps logs readable at 15s polling
         elapsed = round(time.monotonic() - started, 3)
@@ -4366,6 +4373,19 @@ async def run_asana_sync(bot) -> None:
         sync_status["asana"]["ok"] = True
         sync_status["asana"]["error"] = None
         sync_status["asana"]["stats"] = stats
+        elapsed = round(time.monotonic() - started, 3)
+        metrics = sync_status["asana"]["metrics"]
+        durations = metrics.setdefault("durations_seconds", [])
+        durations.append(elapsed)
+        if len(durations) > 100:
+            del durations[:-100]
+        metrics["last_duration_seconds"] = elapsed
+        metrics["notion_failed_queue_size"] = stats.get("failed_queue_size", 0)
+        metrics["deferred_pages"] = stats.get("deferred_pages", 0)
+    except TimeoutError:
+        log.error("Asana sync timed out after %ss", ASANA_SYNC_TIMEOUT_SECONDS)
+        sync_status["asana"]["ok"] = False
+        sync_status["asana"]["error"] = f"timeout_after_{ASANA_SYNC_TIMEOUT_SECONDS}s"
     except AsanaSyncError as e:
         log.error(f"Asana sync config error: {e}")
         sync_status["asana"]["ok"] = False
@@ -4976,8 +4996,9 @@ async def post_init(app: Application) -> None:
                 seconds=ASANA_SYNC_INTERVAL,
                 args=[app.bot],
                 id="asana_sync",
-                max_instances=1,                   # Skip a tick if previous still running
+                max_instances=ASANA_SYNC_MAX_INSTANCES,
                 coalesce=True,                     # Don't backfill missed runs
+                misfire_grace_time=ASANA_SYNC_MISFIRE_GRACE_SECONDS,
                 next_run_time=datetime.now(TZ),    # Fire once immediately on startup
             )
             asana_status = f"ON ({ASANA_SYNC_INTERVAL}s, mode={ASANA_SYNC_SOURCE})"
