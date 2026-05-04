@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime
 
-from notes_flow import (
+from second_brain.notes.flow import (
     create_note_payload,
     note_topics_keyboard,
     ordered_topics,
