@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
+from typing import Any
 
 from second_brain.notes_flow import create_note_payload
 
@@ -24,7 +26,7 @@ def fetch_note_topics_from_notion(notion, notion_notes_db: str) -> list[str]:
 def save_note(notion, notion_notes_db: str, title: str, url: str | None, content: str, topics: list[str], note_type: str) -> str:
     """Write a note to the 📒 Notes Notion DB. Returns page_id."""
     today = date.today().isoformat()
-    props: dict = {
+    props: dict[str, Any] = {
         "Title": {"title": [{"text": {"content": title or "Untitled"}}]},
         "Type": {"select": {"name": note_type}},
         "Source": {"select": {"name": "📱 Telegram"}},
@@ -54,7 +56,7 @@ def create_note_entry(notion, notion_notes_db: str, content: str, topic: str | N
     def schema_type(prop_name: str) -> str | None:
         return schema_props.get(prop_name, {}).get("type")
 
-    props: dict = {}
+    props: dict[str, Any] = {}
 
     # Map title payload to whichever title property exists in the DB.
     title_payload = base_props.get("Title")

@@ -80,29 +80,31 @@ import anthropic
 import httpx
 from notion_client import Client as NotionClient
 
-from second_brain.asana_sync import (
+from second_brain.asana.sync import (
     reconcile,
     AsanaSyncError,
     validate_notion_schema,
     startup_smoke_test,
 )
-from cinema.sync import sync_cinema_log_to_notion, sync_single_cinema_entry
-from cinema.config import (
+from second_brain.cinema.sync import sync_cinema_log_to_notion, sync_single_cinema_entry
+from second_brain.cinema.config import (
     CINEMA_DB_ID,
     FAVE_DB_ID,
     TMDB_API_KEY,
     validate_config as validate_cinema_config,
 )
 from second_brain.sync_telemetry import init_sync_status, utc_now_iso, format_sync_status_message
-from second_brain.scheduler_setup import register_cinema_jobs
-from second_brain.notion.notes import create_note_entry, save_note, fetch_note_topics_from_notion
-from second_brain.notes_flow import (
+from second_brain.scheduler import register_cinema_jobs
+from second_brain.notion import notes as notion_notes
+from second_brain.notion import daily_log as notion_daily_log
+from second_brain.notes.flow import (
     split_kind_keyboard,
     ordered_topics,
     note_topics_keyboard,
     create_note_payload,
 )
 from second_brain.ai.classify import claude_classify
+from second_brain.ai import classify as ai_classify
 from second_brain.healthtrack.routes import register_health_routes
 from second_brain.healthtrack.steps import handle_steps_final_stamp
 from second_brain.healthtrack.config import (
@@ -1449,183 +1451,6 @@ def infer_batch_overrides(text: str) -> dict:
 # CLAUDE CLASSIFICATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-def classify_message(text: str) -> dict:
-    habit_names = list(habit_cache.keys())
-    today_local = local_today()
-    prompt = f"""You are a personal assistant classifier for a second brain system.
-Today is {today_local.strftime("%A, %B %-d, %Y")}.
-
-Message: "{text}"
-
-Active habits to detect: {habit_names}
-Workout types that count as 💪 Workout: soccer, snowboard, skiing, gym, run, jog, trained
-
-First determine if this is:
-A) ENTERTAINMENT LOG — user watched a film/show/game/event
-B) HABIT LOG — person saying they completed something NOW
-C) TASK — something to be done in the future
-
-Return ONLY valid JSON, no markdown:
-
-If ENTERTAINMENT LOG:
-{{
-  "type": "entertainment_log",
-  "log_type": "cinema|performance|sport",
-  "title": "extracted name of film/show/event",
-  "venue": "venue or null",
-  "date": "{today_local.isoformat()}",
-  "notes": "extra details or null",
-  "favourite": false,
-  "confidence": "high|low"
-}}
-
-Use these examples:
-- "watched [film]", "saw [film]", "caught [film]" => cinema
-- "went to [show/concert/play/performance]", "saw [performer] live" => performance
-- "watched [team] game", "went to [sport] game", "[team] vs [team]" => sport
-
-If title is ambiguous or confidence is low, set "confidence" to "low".
-
-If HABIT:
-{{"type": "habit", "habit_name": "exact name from {habit_names} or null", "confidence": "high or low"}}
-
-If TASK:
-{{
-  "type": "task",
-  "task_name": "clean concise action",
-  "deadline_days": <integer or null>,
-  "context": "one of: 💼 Work | 🏠 Personal | 🏃 Health | 🤝 Collab",
-  "confidence": "high or low",
-  "recurring": "one of: None | 🔁 Daily | 📅 Weekly | 🗓️ Monthly | 📆 Quarterly",
-  "repeat_day": "Mon|Tue|Wed|Thu|Fri|Sat|Sun|1st..31st|Last or null (use ordinals like 4th, 21st)"
-}}
-
-deadline_days: 0=today, 1=tomorrow, 5=this week, 20=this month, null=no urgency/low confidence"""
-
-    resp = claude.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=CLAUDE_MAX_TOK,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
-    return json.loads(raw)
-
-
-def classify_message_v10(text: str) -> dict:
-    """Classifier with watchlist/wantslist/photo intents in addition to habit/task."""
-    habit_names = list(habit_cache.keys())
-
-    watchlist_enabled = bool(NOTION_WATCHLIST_DB)
-    wantslist_enabled = bool(NOTION_WANTSLIST_V2_DB)
-    photo_enabled = bool(NOTION_PHOTO_DB)
-    notes_enabled = bool(NOTION_NOTES_DB)
-
-    enabled_intents = ["habit", "entertainment_log", "task"]
-    if watchlist_enabled:
-        enabled_intents.append("watchlist")
-    if wantslist_enabled:
-        enabled_intents.append("wantslist")
-    if photo_enabled:
-        enabled_intents.append("photo")
-    if notes_enabled:
-        enabled_intents.append("note")
-
-    today_local = local_today()
-    prompt = f"""You are a personal assistant classifier for a second brain system.
-Today is {today_local.strftime("%A, %B %-d, %Y")}.
-
-Message: "{text}"
-
-Active habits: {habit_names}
-Workout types that count as 💪 Workout: soccer, snowboard, skiing, gym, run, jog, trained
-
-Enabled intent types: {enabled_intents}
-
-Classify this message into EXACTLY ONE intent. Rules:
-
-WATCHLIST — user wants to watch a TV series, film, anime, or documentary in the future.
-  Signals: "want to watch", "add to watchlist", "watch:", "should watch", title + "is good", "put X on my list"
-  media_type: one of Series | Film | Anime | Documentary
-
-WANTSLIST — user wants to buy or acquire a physical product/item.
-  Signals: "want to buy", "want to get", "need a", "looking for", product names (gadgets, clothes, furniture, gear)
-  category: one of Tech | Home | Clothes | Health | Other
-
-PHOTO — user wants to capture a photography scene/subject/location.
-  Signals: "want to shoot", "want to photograph", "photo spot", "add to bucketlist", photography subjects
-
-NOTE — user wants to save information/reference/thought without an action.
-  Signals: "note:", "idea:", "code:", "remember this", summaries, ideas, code snippets, links/articles to keep, journaling.
-  Should NOT be used for actionable commitments with due timing (those are TASKs).
-
-HABIT — user saying they completed a recurring habit RIGHT NOW.
-  Signals: "did", "took", "went to", "had", "completed" + habit name
-
-ENTERTAINMENT_LOG — user logged media/event they watched or attended.
-  Signals:
-  - Cinema: "watched [film]", "saw [film]", "caught [film]"
-  - Performance: "went to [show/concert/play/performance]", "saw [performer] live"
-  - Sport: "watched [team] game", "went to [sport] game", "[team] vs [team]"
-
-TASK — something to be done in the future (default if nothing else matches).
-
-If confidence is low on watchlist/wantslist/photo, return task instead.
-"Watch:" prefix = always watchlist, high confidence.
-"want:" prefix = always wantslist, high confidence.
-"photo:" prefix = always photo, high confidence.
-"note:" prefix = always note, high confidence.
-"idea:" prefix = always note, high confidence.
-"code:" prefix = always note, high confidence.
-
-Return ONLY valid JSON, no markdown:
-
-If WATCHLIST:
-{{"type": "watchlist", "title": "clean title only, no year", "media_type": "Series|Film|Anime|Documentary", "confidence": "high|low"}}
-
-If WANTSLIST:
-{{"type": "wantslist", "item": "clean item name", "category": "Tech|Home|Clothes|Health|Other", "confidence": "high|low"}}
-
-If PHOTO:
-{{"type": "photo", "subject": "clean scene/subject description", "confidence": "high|low"}}
-
-If NOTE:
-{{"type": "note", "content": "clean note content", "confidence": "high|low"}}
-
-If HABIT:
-{{"type": "habit", "habit_name": "exact name from {habit_names} or null", "confidence": "high|low"}}
-
-If ENTERTAINMENT_LOG:
-{{
-  "type": "entertainment_log",
-  "log_type": "cinema|performance|sport",
-  "title": "extracted name of film/show/event",
-  "venue": "venue if mentioned, else null",
-  "date": "{today_local.isoformat()}",
-  "notes": "extra detail if mentioned, else null",
-  "favourite": false,
-  "confidence": "high|low"
-}}
-
-If TASK:
-{{
-  "type": "task",
-  "task_name": "clean concise action",
-  "deadline_days": <integer or null>,
-  "context": "one of: 💼 Work | 🏠 Personal | 🏃 Health | 🤝 Collab",
-  "confidence": "high|low",
-  "recurring": "None|🔁 Daily|📅 Weekly|🗓️ Monthly|📆 Quarterly",
-  "repeat_day": "Mon|Tue|Wed|Thu|Fri|Sat|Sun|1st..31st|Last or null (use ordinals like 4th, 21st)"
-}}"""
-
-    resp = claude.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=250,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
-    return json.loads(raw)
-
-
 async def start_note_capture_flow(message, text: str) -> None:
     if not NOTION_NOTES_DB:
         await create_or_prompt_task(message, text)
@@ -1635,7 +1460,7 @@ async def start_note_capture_flow(message, text: str) -> None:
     note_key = str(_v10_counter)
     _v10_counter += 1
     try:
-        topics = fetch_note_topics_from_notion(notion, NOTION_NOTES_DB)
+        topics = notion_notes.fetch_note_topics_from_notion(notion, NOTION_NOTES_DB)
     except Exception as e:
         log.error(f"Failed to read note topics from Notion schema: {e}")
         await message.reply_text("⚠️ Couldn't load note topics from Notion. Check the Topic property.")
@@ -1651,7 +1476,7 @@ async def start_note_capture_flow(message, text: str) -> None:
         return
 
     try:
-        create_note_entry(notion, NOTION_NOTES_DB, text)
+        notion_notes.create_note_entry(notion, NOTION_NOTES_DB, text)
         await message.reply_text("✅ Note captured!\n_Saved to Notion_", parse_mode="Markdown")
     except Exception as e:
         log.error(f"Notion note error: {e}")
@@ -1693,39 +1518,6 @@ def fetch_url_metadata(url: str) -> dict:
     return {"title": title, "description": description}
 
 
-def classify_note(title: str, description: str, url: str, raw_text: str) -> dict:
-    """Ask Claude to pick Topic tags and a clean title. Returns {title, topics}."""
-    context = title or description or raw_text or url
-    prompt = f"""You are classifying a saved note/link for a second brain system.
-
-Note context: "{context}"
-URL: {url}
-
-Available topics: {TOPIC_OPTIONS}
-
-Return ONLY valid JSON, no markdown:
-{{
-  "title": "short descriptive title (max 80 chars, use the page title if good)",
-  "topics": ["pick 1-2 most relevant topics from the list above"]
-}}"""
-    try:
-        resp = claude.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=150,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
-        result = json.loads(raw)
-        valid_topics = [t for t in result.get("topics", []) if t in TOPIC_OPTIONS]
-        return {
-            "title": result.get("title", title or url)[:200],
-            "topics": valid_topics or ["💡 Ideas"],
-        }
-    except Exception as e:
-        log.error(f"classify_note error: {e}")
-        return {"title": title or url[:200], "topics": ["💡 Ideas"]}
-
-
 async def handle_note_input(message, text: str) -> None:
     """Called when user sends content in note-capture mode."""
     chat_id = message.chat_id
@@ -1741,8 +1533,8 @@ async def handle_note_input(message, text: str) -> None:
                 None, fetch_url_metadata, url
             )
             classified = await asyncio.get_event_loop().run_in_executor(
-                None, classify_note,
-                meta["title"], meta["description"], url, text,
+                None, ai_classify.classify_note,
+                claude, CLAUDE_MODEL, meta["title"], meta["description"], url, text, TOPIC_OPTIONS,
             )
             note_title = classified["title"]
             topics = classified["topics"]
@@ -1754,7 +1546,7 @@ async def handle_note_input(message, text: str) -> None:
             content = text
             note_type = "📝 Quick Note"
 
-        save_note(notion, NOTION_NOTES_DB, note_title, url, content, topics, note_type)
+        notion_notes.save_note(notion, NOTION_NOTES_DB, note_title, url, content, topics, note_type)
         icon = "🔗" if url else "📝"
         topic_str = "  ".join(topics)
         await thinking.edit_text(
@@ -1764,36 +1556,6 @@ async def handle_note_input(message, text: str) -> None:
     except Exception as e:
         log.error(f"save_note error: {e}")
         await thinking.edit_text(f"⚠️ Couldn't save note to Notion.\n_{e}_", parse_mode="Markdown")
-
-
-def classify_task(text: str) -> dict:
-    today_local = local_today()
-    prompt = f"""You are a personal task classifier for a second brain system.
-Today is {today_local.strftime("%A, %B %-d, %Y")}.
-
-Message: \"{text}\"
-
-Extract the ACTUAL TASK — the thing the person needs to DO.
-
-Return ONLY valid JSON, no markdown:
-{{
-  "task_name": "clean concise action",
-  "deadline_days": <integer days from today, or null if no urgency>,
-  "context": "one of exactly: 💼 Work | 🏠 Personal | 🏃 Health | 🤝 Collab",
-  "confidence": "high or low",
-  "recurring": "one of exactly: None | 🔁 Daily | 📅 Weekly | 🗓️ Monthly | 📆 Quarterly",
-  "repeat_day": "one of: Mon|Tue|Wed|Thu|Fri|Sat|Sun|1st..31st|Last or null (use ordinals like 4th, 21st)"
-}}
-
-deadline_days: 0=today, 1=tomorrow, 5=this week, 20=this month, null=no urgency"""
-
-    resp = claude.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=200,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
-    return json.loads(raw)
 
 
 def deadline_days_to_label(days: int | None) -> str:
@@ -2424,110 +2186,6 @@ def get_and_clear_signoff_note() -> str:
     return note
 
 
-def get_recent_carried_forward(days: int = 3) -> list[dict]:
-    """
-    Fetch Carried Forward content from the last N Daily Log entries.
-    Returns list of dicts: {date: str, carried_forward: str}
-    Sorted oldest to newest so Claude reads them in chronological order.
-    """
-    if not NOTION_DAILY_LOG_DB:
-        return []
-    try:
-        cutoff = (datetime.now(TZ).date() - timedelta(days=days)).isoformat()
-        results = notion.databases.query(
-            database_id=NOTION_DAILY_LOG_DB,
-            filter={
-                "property": "Generated At",
-                "date": {"on_or_after": cutoff},
-            },
-            sorts=[{"property": "Generated At", "direction": "ascending"}],
-        )
-        entries = []
-        for page in results.get("results", []):
-            props = page.get("properties", {})
-
-            title_parts = props.get("Date", {}).get("title", [])
-            date_label = "".join(
-                part.get("text", {}).get("content", "") for part in title_parts
-            ).strip()
-
-            cf_parts = props.get("Carried Forward", {}).get("rich_text", [])
-            carried_forward = "".join(
-                part.get("text", {}).get("content", "") for part in cf_parts
-            ).strip()
-
-            if date_label and carried_forward:
-                entries.append({
-                    "date": date_label,
-                    "carried_forward": carried_forward,
-                })
-        return entries
-    except Exception as e:
-        log.error("get_recent_carried_forward: error: %s", e)
-        return []
-
-
-
-
-def get_existing_daily_log(date_label: str) -> str | None:
-    """
-    Check if a Daily Log entry already exists for the given date label.
-    Returns the Notion page_id if found, None otherwise.
-    """
-    if not NOTION_DAILY_LOG_DB:
-        return None
-    try:
-        results = notion.databases.query(
-            database_id=NOTION_DAILY_LOG_DB,
-            filter={
-                "property": "Date",
-                "title": {"equals": date_label},
-            },
-        )
-        pages = results.get("results", [])
-        return pages[0]["id"] if pages else None
-    except Exception as e:
-        log.error("get_existing_daily_log: error querying for %s: %s", date_label, e)
-        return None
-def _notion_markdown_to_blocks(text: str) -> list[dict]:
-    """
-    Convert a simple markdown string to Notion block objects.
-    Supports: ## headings, bullet lines starting with •, plain paragraphs.
-    Italic markers (_text_) are stripped for paragraph blocks.
-    """
-    blocks = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        if line.startswith("## "):
-            blocks.append({
-                "object": "block",
-                "type": "heading_2",
-                "heading_2": {
-                    "rich_text": [{"type": "text", "text": {"content": line[3:]}}]
-                },
-            })
-        elif line.startswith("• "):
-            blocks.append({
-                "object": "block",
-                "type": "bulleted_list_item",
-                "bulleted_list_item": {
-                    "rich_text": [{"type": "text", "text": {"content": line[2:]}}]
-                },
-            })
-        else:
-            content = line.strip("_")
-            blocks.append({
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{"type": "text", "text": {"content": content}}]
-                },
-            })
-    return blocks
-
-
 def query_tasks_by_auto_horizon(horizons: list[str]) -> list[dict]:
     results = notion.databases.query(
         database_id=NOTION_DB_ID,
@@ -3014,8 +2672,8 @@ def _run_capture(raw_text: str, force_create: bool = False,
                  context_override: str | None = None,
                  deadline_override: int | None = None) -> dict:
     try:
-        result        = classify_task(raw_text)
-        task_name     = result.get("task_name", raw_text)
+        result        = ai_classify.classify_message(claude, CLAUDE_MODEL, raw_text, list(habit_cache.keys()), bool(NOTION_WATCHLIST_DB), bool(NOTION_WANTSLIST_V2_DB), bool(NOTION_PHOTO_DB), bool(NOTION_NOTES_DB), local_today())
+        task_name     = result.get("task_name") or raw_text
         deadline_days = result.get("deadline_days")
         ctx           = context_override or result.get("context", "🏠 Personal")
         recurring     = result.get("recurring", "None") or "None"
@@ -4077,8 +3735,8 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
         return
 
     try:
-        result        = classify_task(raw_text)
-        task_name     = result.get("task_name", raw_text)
+        result        = ai_classify.classify_message(claude, CLAUDE_MODEL, raw_text, list(habit_cache.keys()), bool(NOTION_WATCHLIST_DB), bool(NOTION_WANTSLIST_V2_DB), bool(NOTION_PHOTO_DB), bool(NOTION_NOTES_DB), local_today())
+        task_name     = result.get("task_name") or raw_text
         deadline_days = result.get("deadline_days")
         ctx           = result.get("context", "🏠 Personal")
         confidence    = result.get("confidence", "low")
@@ -4353,7 +4011,7 @@ async def route_classified_message_v10(message, text: str) -> None:
         return
     try:
         result = await asyncio.wait_for(
-            asyncio.get_event_loop().run_in_executor(None, lambda: classify_message_v10(text)),
+            asyncio.get_event_loop().run_in_executor(None, lambda: ai_classify.classify_message(claude, CLAUDE_MODEL, text, list(habit_cache.keys()), bool(NOTION_WATCHLIST_DB), bool(NOTION_WANTSLIST_V2_DB), bool(NOTION_PHOTO_DB), bool(NOTION_NOTES_DB), local_today())),
             timeout=18,
         )
     except asyncio.TimeoutError:
@@ -4724,7 +4382,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             await message.reply_text("⚠️ Topic can't be empty — please re-send the note.")
             return
         try:
-            create_note_entry(notion, NOTION_NOTES_DB, entry["content"], custom_topic)
+            notion_notes.create_note_entry(notion, NOTION_NOTES_DB, entry["content"], custom_topic)
             topic_recency_map[custom_topic] = datetime.utcnow()
             await message.reply_text(
                 f"✅ Note captured!\n🏷️ {custom_topic}\n_Saved to Notion_",
@@ -4745,7 +4403,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             await message.reply_text("Please send a valid URL starting with http:// or https://.")
             return
         try:
-            create_note_entry(notion, NOTION_NOTES_DB, text)
+            notion_notes.create_note_entry(notion, NOTION_NOTES_DB, text)
             kind_label_map = {
                 "quick": "note",
                 "idea": "idea",
@@ -5158,7 +4816,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             except Exception:
                 selected_topic = None
         try:
-            create_note_entry(notion, NOTION_NOTES_DB, entry["content"], selected_topic)
+            notion_notes.create_note_entry(notion, NOTION_NOTES_DB, entry["content"], selected_topic)
             if selected_topic:
                 topic_recency_map[selected_topic] = datetime.utcnow()
             topic_line = f"\n🏷️ {selected_topic}" if selected_topic else ""
@@ -5680,244 +5338,18 @@ async def generate_daily_log(bot) -> None:
     Runs silently — no Telegram message at generation time.
     Link is sent next morning via send_daily_digest().
     """
-    if not NOTION_DAILY_LOG_DB:
-        log.warning("generate_daily_log: NOTION_DAILY_LOG_DB not configured, skipping")
-        return
-
-    today = datetime.now(TZ).date()
-    today_str = today.isoformat()
-    date_label = today.strftime("%A, %B %-d, %Y")
-
-    log.info("generate_daily_log: starting for %s", today_str)
-    completed_tasks = []
-    try:
-        try:
-            completed_results = notion.databases.query(database_id=NOTION_DB_ID, filter={"and": [{"property": "Done", "checkbox": {"equals": True}}, {"property": "Last Edited Time", "date": {"equals": today_str}}]})
-            completed_tasks = [notion_tasks._get_prop(p["properties"], "Name", "title") or "Untitled" for p in completed_results.get("results", [])]
-        except Exception:
-            log.warning("generate_daily_log: Last Edited Time filter unsupported, using Python fallback")
-            all_done = notion.databases.query(database_id=NOTION_DB_ID, filter={"property": "Done", "checkbox": {"equals": True}})
-            for p in all_done.get("results", []):
-                if (p.get("last_edited_time") or "")[:10] == today_str:
-                    completed_tasks.append(notion_tasks._get_prop(p["properties"], "Name", "title") or "Untitled")
-    except Exception as e:
-        log.error("generate_daily_log: error fetching completed tasks: %s", e)
-
-    deferred_tasks = []
-    try:
-        deferred_results = notion.databases.query(database_id=NOTION_DB_ID, filter={"and": [{"property": "Done", "checkbox": {"equals": False}}, {"property": "Deadline", "date": {"equals": today_str}}]})
-        deferred_tasks = [notion_tasks._get_prop(p["properties"], "Name", "title") or "Untitled" for p in deferred_results.get("results", [])]
-    except Exception as e:
-        log.error("generate_daily_log: error fetching deferred tasks: %s", e)
-
-    habits_logged = []
-    try:
-        habit_log_results = notion.databases.query(database_id=NOTION_LOG_DB, filter={"and": [{"property": "Completed", "checkbox": {"equals": True}}, {"property": "Date", "date": {"equals": today_str}}]})
-        for p in habit_log_results.get("results", []):
-            entry_parts = p["properties"].get("Entry", {}).get("title", [])
-            entry_text = "".join(part.get("text", {}).get("content", "") for part in entry_parts)
-            habit_name = entry_text.split(" — ")[0].strip()
-            if habit_name:
-                habits_logged.append(habit_name)
-    except Exception as e:
-        log.error("generate_daily_log: error fetching habit logs: %s", e)
-    habits_count = len(habits_logged)
-
-    notes_captured = []
-    try:
-        if NOTION_NOTES_DB:
-            notes_results = notion.databases.query(database_id=NOTION_NOTES_DB, filter={"property": "Date Created", "date": {"equals": today_str}})
-            for p in notes_results.get("results", []):
-                title_parts = p["properties"].get("Title", {}).get("title", [])
-                title_text = "".join(part.get("text", {}).get("content", "") for part in title_parts).strip()
-                if title_text:
-                    notes_captured.append(title_text)
-    except Exception as e:
-        log.error("generate_daily_log: error fetching notes: %s", e)
-
-    signoff_note = get_and_clear_signoff_note()
-
-    # ── 6. Fetch recent Carried Forward entries (up to 3 days) ───────────
-    recent_carried_forward = get_recent_carried_forward(days=3)
-
-    def _bullet_list(items: list[str]) -> str:
-        return "\n".join(f"- {i}" for i in items) if items else "None"
-
-    if recent_carried_forward:
-        cf_context = "\n\n".join(
-            f"{entry['date']}:\n{entry['carried_forward']}"
-            for entry in recent_carried_forward
-        )
-        cf_section = f"""CARRIED FORWARD FROM PREVIOUS DAYS (unresolved threads, up to 3 days):
-{cf_context}
-
-"""
-    else:
-        cf_section = "CARRIED FORWARD FROM PREVIOUS DAYS:\nNone — this may be the first log entry.\n\n"
-
-    prompt = f"""You are writing the end-of-day log entry for a personal second brain system.
-Today is {date_label}.
-
-{cf_section}Here is what happened today:
-
-TASKS COMPLETED ({len(completed_tasks)}):
-{_bullet_list(completed_tasks)}
-
-TASKS DUE TODAY BUT DEFERRED ({len(deferred_tasks)}):
-{_bullet_list(deferred_tasks)}
-
-HABITS LOGGED ({habits_count}):
-{_bullet_list(habits_logged)}
-
-NOTES CAPTURED ({len(notes_captured)}):
-{_bullet_list(notes_captured)}
-
-USER'S SIGNOFF NOTE (their own words about what they worked on today, including any Claude.ai conversations and decisions made):
-{signoff_note if signoff_note else "None provided"}
-
-Write a daily log entry in three parts. Be concise, honest, and personal.
-
-PART 1 — SUMMARY:
-1 to 3 lines maximum. Can be a single line or empty string on a light day.
-Describe the shape of the day — not a list, a narrative.
-
-PART 2 — KEY LEARNINGS:
-What actually mattered today. What was built, decided, deferred and why,
-what patterns emerged.
-If a signoff note was provided, weight it heavily — it reflects the user's
-own assessment of the day including work done outside this system.
-If carried forward threads were resolved today, note it explicitly.
-If the day was light, say so honestly in one line. Never pad.
-Maximum 5 bullet points starting with •. Can be fewer. Can be empty.
-
-PART 3 — CARRIED FORWARD:
-Distill what is still live and unresolved going into tomorrow.
-Sources to draw from:
-- Unresolved threads from previous Carried Forward entries that did not
-  resolve today
-- Deferred tasks that have appeared more than once (pattern of avoidance)
-- Ideas or decisions from today's Key Learnings that have no action yet
-- Anything from the signoff note that implies follow-up
-
-Rules:
-- Drop anything that resolved today — completed tasks, closed decisions
-- Maximum 5 bullet points starting with •
-- Can be empty if everything is resolved or the day was truly light
-- Write each point as a live thread, not a task — e.g.
-  "• Daily Log Carried Forward logic — shipped v13.1, watching for edge cases"
-  not "• Check if Carried Forward works"
-
-Return ONLY valid JSON, no markdown fences:
-{{
-  "summary": "1-3 line narrative, or empty string if nothing notable",
-  "key_learnings": "bullet points as single string, each starting with • on new line, or empty string",
-  "carried_forward": "bullet points as single string, each starting with • on new line, or empty string"
-}}"""
-
-    summary = ""
-    key_learnings = ""
-    carried_forward = ""
-    try:
-        resp = claude.messages.create(model=CLAUDE_MODEL, max_tokens=800, messages=[{"role": "user", "content": prompt}])
-        raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
-        result = json.loads(raw)
-        summary = (result.get("summary") or "").strip()
-        key_learnings = (result.get("key_learnings") or "").strip()
-        carried_forward = (result.get("carried_forward") or "").strip()
-    except Exception as e:
-        log.error("generate_daily_log: Claude call failed: %s", e)
-        summary = ""
-        key_learnings = f"Log generation failed: {e}"
-        carried_forward = ""
-
-    page_body_parts = []
-    if summary: page_body_parts.append(f"## Summary\n\n{summary}")
-    if key_learnings: page_body_parts.append(f"## Key Learnings\n\n{key_learnings}")
-    if completed_tasks: page_body_parts.append("## Completed\n\n" + "\n".join(f"• {t}" for t in completed_tasks))
-    if deferred_tasks: page_body_parts.append("## Deferred\n\n" + "\n".join(f"• {t}" for t in deferred_tasks))
-    if signoff_note: page_body_parts.append(f"## Signoff Note\n\n_{signoff_note}_")
-    if carried_forward:
-        page_body_parts.append(
-            f"## Carried Forward\n\n{carried_forward}"
-        )
-    page_content = "\n\n".join(page_body_parts) if page_body_parts else "_Light day — nothing notable to log._"
-
-    # ── 9. Write to Notion (upsert — update if exists, create if not) ────
-    props = {
-        "Date": {"title": [{"text": {"content": date_label}}]},
-        "Tasks Completed": {"number": len(completed_tasks)},
-        "Habits Logged": {"number": habits_count},
-        "Generated At": {
-            "date": {
-                "start": datetime.now(TZ).isoformat(),
-            }
-        },
-    }
-    if summary:
-        props["Summary"] = {"rich_text": [{"text": {"content": summary[:2000]}}]}
-    if key_learnings:
-        props["Key Learnings"] = {"rich_text": [{"text": {"content": key_learnings[:2000]}}]}
-    if signoff_note:
-        props["Signoff Note"] = {"rich_text": [{"text": {"content": signoff_note[:2000]}}]}
-    if carried_forward:
-        props["Carried Forward"] = {
-            "rich_text": [{"text": {"content": carried_forward[:2000]}}]
-        }
-
-    try:
-        existing_page_id = get_existing_daily_log(date_label)
-
-        if existing_page_id:
-            # UPDATE existing entry — overwrite all fields, replace page body
-            notion.pages.update(
-                page_id=existing_page_id,
-                properties=props,
-            )
-            # Replace page body blocks by archiving existing children
-            # and appending fresh ones
-            existing_blocks = notion.blocks.children.list(
-                block_id=existing_page_id
-            ).get("results", [])
-            for block in existing_blocks:
-                try:
-                    notion.blocks.delete(block_id=block["id"])
-                except Exception as block_err:
-                    log.warning(
-                        "generate_daily_log: could not delete block %s: %s",
-                        block["id"],
-                        block_err,
-                    )
-            notion.blocks.children.append(
-                block_id=existing_page_id,
-                children=_notion_markdown_to_blocks(page_content),
-            )
-            page_id = existing_page_id
-            log.info(
-                "generate_daily_log: updated existing entry for %s", today_str
-            )
-        else:
-            # CREATE new entry
-            page = notion.pages.create(
-                parent={"database_id": NOTION_DAILY_LOG_DB},
-                properties=props,
-                children=_notion_markdown_to_blocks(page_content),
-            )
-            page_id = page["id"]
-            log.info(
-                "generate_daily_log: created new entry for %s", today_str
-            )
-
-        global _last_daily_log_url
-        _last_daily_log_url = f"https://www.notion.so/{page_id.replace('-', '')}"
-        log.info(
-            "generate_daily_log: complete for %s — %d completed, %d deferred, %d habits",
-            today_str,
-            len(completed_tasks),
-            len(deferred_tasks),
-            habits_count,
-        )
-    except Exception as e:
-        log.error("generate_daily_log: Notion write failed: %s", e)
+    global _last_daily_log_url
+    _last_daily_log_url = notion_daily_log.generate_daily_log(
+        notion=notion,
+        notion_daily_log_db=NOTION_DAILY_LOG_DB,
+        notion_db_id=NOTION_DB_ID,
+        notion_log_db=NOTION_LOG_DB,
+        notion_notes_db=NOTION_NOTES_DB,
+        claude=claude,
+        claude_model=CLAUDE_MODEL,
+        tz=TZ,
+        signoff_note=get_and_clear_signoff_note(),
+    )
 
 
 async def send_daily_digest(bot, include_habits: bool = True, config: dict | None = None) -> None:

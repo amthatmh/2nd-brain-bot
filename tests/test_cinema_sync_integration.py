@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from cinema.sync import sync_cinema_log_to_notion
+from second_brain.cinema.sync import sync_cinema_log_to_notion
 
 
 class _FakeDatabases:
@@ -108,7 +108,7 @@ class TestCinemaSyncIntegration(unittest.IsolatedAsyncioTestCase):
             }
         ]
 
-        with patch("cinema.sync._search_tmdb_url_with_client", return_value="https://www.themoviedb.org/movie/157336"):
+        with patch("second_brain.cinema.sync._search_tmdb_url_with_client", return_value="https://www.themoviedb.org/movie/157336"):
             stats = await sync_cinema_log_to_notion(
                 notion=notion,
                 cinema_db_id="cinema_db",
@@ -377,7 +377,7 @@ class TestCinemaSyncIntegration(unittest.IsolatedAsyncioTestCase):
             },
         ]
 
-        with patch("cinema.sync._search_tmdb_url_with_client", return_value=None):
+        with patch("second_brain.cinema.sync._search_tmdb_url_with_client", return_value=None):
             stats = await sync_cinema_log_to_notion(
                 notion=notion,
                 cinema_db_id="cinema_db",
@@ -409,7 +409,7 @@ class TestCinemaSyncIntegration(unittest.IsolatedAsyncioTestCase):
             }
         ]
 
-        with patch("cinema.sync._search_tmdb_url_with_client", return_value="https://www.themoviedb.org/movie/603"):
+        with patch("second_brain.cinema.sync._search_tmdb_url_with_client", return_value="https://www.themoviedb.org/movie/603"):
             stats = await sync_cinema_log_to_notion(
                 notion=notion,
                 cinema_db_id="cinema_db",
@@ -443,7 +443,7 @@ class TestCinemaSyncIntegration(unittest.IsolatedAsyncioTestCase):
             }
         ]
 
-        with patch("cinema.sync._search_tmdb_url_with_client") as search_mock:
+        with patch("second_brain.cinema.sync._search_tmdb_url_with_client") as search_mock:
             stats = await sync_cinema_log_to_notion(
                 notion=notion,
                 cinema_db_id="cinema_db",
@@ -476,7 +476,7 @@ class TestCinemaSyncIntegration(unittest.IsolatedAsyncioTestCase):
             }
         ]
 
-        with patch("cinema.sync._search_tmdb_url_with_client", return_value="https://www.themoviedb.org/movie/27205"):
+        with patch("second_brain.cinema.sync._search_tmdb_url_with_client", return_value="https://www.themoviedb.org/movie/27205"):
             stats = await sync_cinema_log_to_notion(
                 notion=notion,
                 cinema_db_id="cinema_db",
