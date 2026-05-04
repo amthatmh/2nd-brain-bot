@@ -13,6 +13,9 @@ log = logging.getLogger(__name__)
 log = logging.getLogger(__name__)
 habit_cache: dict[str, dict[str, Any]] = {}
 
+log = logging.getLogger(__name__)
+habit_cache: dict[str, dict[str, Any]] = {}
+
 
 def _plain_text_from_property(prop: dict[str, Any] | None) -> str:
     """Extract readable text from a Notion property payload."""
@@ -180,14 +183,17 @@ def get_habits_by_time(
     count_habit_completions_this_week: Any,
     habit_capped_this_week: Any,
 ) -> list[dict]:
-    del time_filter
     habits = get_active_habits_for_trigger(
         notion_query_all=notion_query_all,
         notion_habit_db=notion_habit_db,
         parse_time_to_minutes=parse_time_to_minutes,
         count_habit_completions_this_week=count_habit_completions_this_week,
     )
-    return [h for h in habits if not habit_capped_this_week(h["page_id"])]
+    return [
+        h
+        for h in habits
+        if h.get("time_str") == time_filter and not habit_capped_this_week(h["page_id"])
+    ]
 
 
 def query_tasks_by_auto_horizon(*, notion: Any, notion_db_id: str, horizons: list[str]) -> list[dict]:

@@ -2342,7 +2342,11 @@ async def _maybe_prompt_explicit_venue(message, payload: dict, raw_text: str) ->
 # ══════════════════════════════════════════════════════════════════════════════
 
 def pending_habits_for_digest(time_str: str | None = None) -> list[dict]:
-    habits = habit_cache.values() if time_str is None else habits_by_time(time_str)
+    habits = (
+        habit_cache.values()
+        if time_str is None
+        else [h for h in habit_cache.values() if h.get("time") == time_str]
+    )
     pending: list[dict] = []
     for habit in sorted(habits, key=lambda h: h["sort"]):
         pid = habit["page_id"]
