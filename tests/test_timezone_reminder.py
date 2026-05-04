@@ -41,7 +41,7 @@ def test_reminder_snapshot_uses_deadline_for_today_count():
     ]
 
     with patch.object(main, "local_today", return_value=date(2026, 4, 26)), \
-        patch.object(main, "get_all_active_tasks", return_value=tasks), \
+        patch("second_brain.notion.tasks.get_all_active_tasks", return_value=tasks), \
         patch.object(main, "get_quick_refresh_tasks", return_value=tasks):
         snapshot = main.format_reminder_snapshot(mode="priority", limit=8)
 
