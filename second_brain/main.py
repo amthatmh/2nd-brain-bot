@@ -79,6 +79,7 @@ from second_brain.notion.habits import extract_habit_frequency
 from second_brain.notion import tasks as notion_tasks
 from second_brain import keyboards as kb
 from second_brain import formatters as fmt
+from second_brain import weather as wx
 from second_brain.state import STATE
 from second_brain.utils import ExpiringDict, reply_notion_error
 from second_brain.http_utils import cors_headers
@@ -235,6 +236,9 @@ def format_reminder_snapshot(mode: str = "priority", limit: int = 8) -> str:
 # ── Clients ──────────────────────────────────────────────────────────────────
 notion = NotionClient(auth=NOTION_TOKEN)
 claude = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+wx.notion = notion
+wx.NOTION_ENV_DB = NOTION_ENV_DB
+wx.current_location = WEATHER_LOCATION
 
 # ── In-memory state ──────────────────────────────────────────────────────────
 digest_map: dict[int, list[dict]] = {}
@@ -265,11 +269,6 @@ trip_awaiting_date_map: dict[int, str] = {}
 awaiting_packing_feedback = False
 _trip_counter = 0
 
-weather_cache: dict[str, dict] = {
-    "current": {"timestamp": None, "data": None},
-    "today": {"timestamp": None, "data": None},
-    "tomorrow": {"timestamp": None, "data": None},
-}
 _digest_jobs: list = []
 _scheduler: AsyncIOScheduler | None = None
 _digest_slots_last_load_succeeded = False
@@ -282,13 +281,6 @@ _last_daily_log_url: str = ""
 _app_bot = None  # set during post_init for health route bot access
 STATE_DIR = _resolve_state_dir()
 mute_state_file = STATE_DIR / "mute_state.json"
-current_location: str = WEATHER_LOCATION
-current_lat: float | None = None
-current_lon: float | None = None
-location_state_file = STATE_DIR / "location_state.json"
-location_state_fallback_file = Path(__file__).resolve().parents[1] / ".second_brain_location_state.json"
-location_history_file = STATE_DIR / "location_history.json"
-location_history_fallback_file = Path(__file__).resolve().parents[1] / ".second_brain_location_history.json"
 entertainment_schemas: dict[str, dict] = {}
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -465,478 +457,6 @@ def is_muted() -> bool:
         return False
     return True
 
-
-def _location_state_files() -> list[Path]:
-    """Return ordered location state file paths (primary first, durable fallback second)."""
-    return [location_state_file, location_state_fallback_file]
-
-
-def _location_history_files() -> list[Path]:
-    """Return ordered location history paths (primary first, durable fallback second)."""
-    return [location_history_file, location_history_fallback_file]
-
-
-def save_location_history(raw_text: str) -> None:
-    """Persist recent location-related user messages for restart recovery."""
-    text = (raw_text or "").strip()
-    if not text:
-        return
-    history: list[str] = []
-    for file_path in _location_history_files():
-        try:
-            if file_path.exists():
-                payload = json.loads(file_path.read_text() or "[]")
-                if isinstance(payload, list):
-                    history = [str(item).strip() for item in payload if str(item).strip()]
-                    break
-        except Exception as e:
-            log.warning("Failed reading location history from %s: %s", file_path, e)
-    history = [item for item in history if item.lower() != text.lower()]
-    history.append(text)
-    history = history[-25:]
-    raw = json.dumps(history)
-    for file_path in _location_history_files():
-        try:
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(raw)
-        except Exception as e:
-            log.error("Failed saving location history to %s: %s", file_path, e)
-
-
-def recover_location_from_history() -> bool:
-    """Recover location by replaying recent location updates/messages."""
-    history: list[str] = []
-    for file_path in _location_history_files():
-        try:
-            if not file_path.exists():
-                continue
-            payload = json.loads(file_path.read_text() or "[]")
-            if isinstance(payload, list):
-                history = [str(item).strip() for item in payload if str(item).strip()]
-                if history:
-                    break
-        except Exception as e:
-            log.warning("Failed loading location history from %s: %s", file_path, e)
-    for candidate in reversed(history):
-        if set_location_smart(candidate):
-            log.info("Recovered weather location from history: %s", current_location)
-            return True
-    return False
-
-
-def save_location_state(location: str) -> None:
-    """Persist current weather location to disk."""
-    payload = {"last_weather_location": location}
-    raw = json.dumps(payload)
-    saved_any = False
-    for file_path in _location_state_files():
-        try:
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(raw)
-            saved_any = True
-        except Exception as e:
-            log.error("Failed saving location state to %s: %s", file_path, e)
-    if not saved_any:
-        log.error("Failed saving location state to all configured paths")
-
-
-def load_location_state() -> None:
-    """Load weather location from disk or fallback environment defaults."""
-    global current_location, current_lat, current_lon
-    current_location = ""
-    current_lat = None
-    current_lon = None
-
-    for file_path in _location_state_files():
-        try:
-            if not file_path.exists():
-                continue
-            payload = json.loads(file_path.read_text() or "{}")
-            current_location = (payload.get("last_weather_location") or "").strip()
-            if file_path != location_state_file:
-                save_location_state(current_location)
-            return
-        except Exception as e:
-            log.warning("Failed loading location state from %s: %s", file_path, e)
-
-
-
-
-def load_notion_env_location() -> bool:
-    """
-    Read Location row from Notion ENV DB.
-    Populates current_location, current_lat, current_lon if all three fields are set.
-    Returns True if location was successfully loaded, False otherwise.
-    """
-    global current_location, current_lat, current_lon
-    if not NOTION_ENV_DB:
-        return False
-    try:
-        results = notion.databases.query(
-            database_id=NOTION_ENV_DB,
-            filter={"property": "Name", "title": {"equals": "Location"}},
-        )
-        rows = results.get("results", [])
-        if not rows:
-            return False
-        props = rows[0]["properties"]
-
-        value_parts = props.get("Value", {}).get("rich_text", [])
-        value = value_parts[0]["text"]["content"].strip() if value_parts else ""
-
-        lat = props.get("Lat", {}).get("number")
-        lon = props.get("Lon", {}).get("number")
-
-        if value and lat is not None and lon is not None:
-            current_location = value
-            current_lat = float(lat)
-            current_lon = float(lon)
-            log.info("Location loaded from Notion ENV: %s (%.4f, %.4f)", value, lat, lon)
-            return True
-        return False
-    except Exception as e:
-        log.warning("load_notion_env_location failed: %s", e)
-        return False
-
-
-def save_notion_env_location(location: str, lat: float, lon: float) -> None:
-    """
-    Write or update the Location row in the Notion ENV DB.
-    Creates the row if it doesn't exist.
-    """
-    if not NOTION_ENV_DB:
-        return
-    try:
-        results = notion.databases.query(
-            database_id=NOTION_ENV_DB,
-            filter={"property": "Name", "title": {"equals": "Location"}},
-        )
-        rows = results.get("results", [])
-        props = {
-            "Value": {"rich_text": [{"text": {"content": location}}]},
-            "Lat": {"number": lat},
-            "Lon": {"number": lon},
-        }
-        if rows:
-            notion.pages.update(page_id=rows[0]["id"], properties=props)
-        else:
-            props["Name"] = {"title": [{"text": {"content": "Location"}}]}
-            notion.pages.create(
-                parent={"database_id": NOTION_ENV_DB},
-                properties=props,
-            )
-        log.info("Location saved to Notion ENV: %s (%.4f, %.4f)", location, lat, lon)
-    except Exception as e:
-        log.error("save_notion_env_location failed: %s", e)
-
-def set_location(location: str) -> bool:
-    """Geocode a location and persist if valid."""
-    global current_location, current_lat, current_lon
-    if not OPENWEATHER_KEY:
-        return False
-    try:
-        resp = httpx.get(
-            "https://api.openweathermap.org/geo/1.0/direct",
-            params={"q": location, "limit": 1, "appid": OPENWEATHER_KEY},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        rows = resp.json()
-        if not rows:
-            return False
-        row = rows[0]
-        lat = row.get("lat")
-        lon = row.get("lon")
-        if lat is None or lon is None:
-            return False
-        display_name = row.get("name") or location
-        state = row.get("state")
-        country = row.get("country")
-        pretty = ", ".join([p for p in [display_name, state, country] if p])
-        current_location = pretty
-        current_lat = float(lat)
-        current_lon = float(lon)
-        weather_cache["current"] = {"timestamp": None, "data": None}
-        weather_cache["today"] = {"timestamp": None, "data": None}
-        weather_cache["tomorrow"] = {"timestamp": None, "data": None}
-        save_location_state(current_location)
-        save_notion_env_location(current_location, float(lat), float(lon))
-        return True
-    except Exception as e:
-        log.error("Location geocode failed for %s: %s", location, e)
-        return False
-
-
-def _location_candidates(text: str) -> list[str]:
-    """Generate high-probability OpenWeather geocode query variants."""
-    cleaned = (text or "").strip()
-    if not cleaned:
-        return []
-
-    candidates: list[str] = [cleaned]
-    normalized = re.sub(r"\s+", " ", cleaned)
-    if normalized != cleaned:
-        candidates.append(normalized)
-
-    # Extract likely location phrase from conversational weather commands.
-    phrase_patterns = [
-        r"(?:weather|forecast)\s+(?:for|in|at)\s+(.+)$",
-        r"(?:set|use|change|update)\s+(?:my\s+)?location\s+(?:to|as)\s+(.+)$",
-        r"(?:i(?:'| a)?m|im)\s+in\s+(.+)$",
-        r"(?:for|in|at)\s+(.+)$",
-    ]
-    for pattern in phrase_patterns:
-        m = re.search(pattern, normalized, flags=re.IGNORECASE)
-        if m:
-            fragment = m.group(1).strip(" .!?")
-            if fragment:
-                candidates.append(fragment)
-
-    slash_fixed = re.sub(r"\s*/\s*", ", ", normalized)
-    if slash_fixed != normalized:
-        candidates.append(slash_fixed)
-
-    comma_spaced = re.sub(r"\s*,\s*", ", ", slash_fixed)
-    if comma_spaced != slash_fixed:
-        candidates.append(comma_spaced)
-
-    no_zip = re.sub(r"\b\d{5}(?:-\d{4})?\b", "", comma_spaced).strip(" ,")
-    if no_zip and no_zip != comma_spaced:
-        candidates.append(no_zip)
-    # Keep just ZIP if user provides extra words around it.
-    zip_match = re.search(r"\b\d{5}(?:-\d{4})?\b", comma_spaced)
-    if zip_match:
-        candidates.append(zip_match.group(0))
-
-    state_map = {
-        "illinois": "IL", "california": "CA", "new york": "NY", "texas": "TX",
-        "florida": "FL", "washington": "WA", "massachusetts": "MA", "georgia": "GA",
-        "colorado": "CO", "arizona": "AZ",
-    }
-    lowered = no_zip.lower()
-    for full, abbr in state_map.items():
-        if full in lowered:
-            candidates.append(re.sub(rf"\b{re.escape(full)}\b", abbr, no_zip, flags=re.IGNORECASE))
-
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for c in candidates:
-        key = c.strip().lower()
-        if key and key not in seen:
-            seen.add(key)
-            deduped.append(c.strip())
-    return deduped
-
-
-def normalize_location_with_claude(text: str) -> list[str]:
-    """Ask Claude for structured location parse and return query candidates."""
-    prompt = f"""Extract a weather location query from user input.
-Input: "{text}"
-
-Return ONLY valid JSON:
-{{
-  "city": "city name or null",
-  "state_code": "2-letter US state code or null",
-  "country_code": "2-letter country code or null",
-  "postal_code": "postal/zip code or null",
-  "normalized_query": "best query for OpenWeather geocoding, e.g. Chicago, IL, US",
-  "alternates": ["up to 3 alternate queries"]
-}}"""
-    try:
-        resp = claude.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=180,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
-        payload = json.loads(raw)
-        candidates = []
-        normalized = (payload.get("normalized_query") or "").strip()
-        if normalized:
-            candidates.append(normalized)
-        alt = payload.get("alternates") or []
-        if isinstance(alt, list):
-            candidates.extend(str(a).strip() for a in alt if str(a).strip())
-        city = (payload.get("city") or "").strip()
-        state_code = (payload.get("state_code") or "").strip().upper()
-        country_code = (payload.get("country_code") or "").strip().upper()
-        if city:
-            if state_code and country_code:
-                candidates.append(f"{city}, {state_code}, {country_code}")
-            if state_code:
-                candidates.append(f"{city}, {state_code}")
-            if country_code:
-                candidates.append(f"{city}, {country_code}")
-            candidates.append(city)
-        merged: list[str] = []
-        seen: set[str] = set()
-        for c in candidates + _location_candidates(text):
-            key = c.strip().lower()
-            if key and key not in seen:
-                seen.add(key)
-                merged.append(c.strip())
-        return merged
-    except Exception as e:
-        log.warning("Claude location normalization failed for %r: %s", text, e)
-        return _location_candidates(text)
-
-
-def set_location_smart(user_text: str) -> bool:
-    """Resolve user-provided location with Claude-assisted normalization."""
-    for query in normalize_location_with_claude(user_text):
-        if set_location(query):
-            save_location_history(user_text)
-            return True
-
-    # Fallback: if a ZIP code is present, try OpenWeather ZIP geocoding route.
-    zip_match = re.search(r"\b\d{5}(?:-\d{4})?\b", user_text or "")
-    if zip_match and OPENWEATHER_KEY:
-        zip_value = zip_match.group(0)
-        try:
-            resp = httpx.get(
-                "https://api.openweathermap.org/geo/1.0/zip",
-                params={"zip": zip_value, "appid": OPENWEATHER_KEY},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            payload = resp.json()
-            lat = payload.get("lat")
-            lon = payload.get("lon")
-            if lat is not None and lon is not None:
-                if set_location(f"{payload.get('name') or zip_value}, {payload.get('country') or 'US'}"):
-                    save_location_history(user_text)
-                    return True
-        except Exception as e:
-            log.warning("ZIP location fallback failed for %s: %s", zip_value, e)
-    return False
-
-
-def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -> dict | None:
-    """
-    Fetch current/today/tomorrow weather from OpenWeatherMap.
-    Returns normalized weather dict or None if weather is unavailable.
-    """
-    if forecast_type not in {"current", "today", "tomorrow"}:
-        return None
-    if not OPENWEATHER_KEY:
-        return None
-
-    cache_entry = weather_cache.get(forecast_type, {"timestamp": None, "data": None})
-    now = datetime.now(TZ)
-    ttl = timedelta(hours=24 if forecast_type == "tomorrow" else 3)
-    if not force_refresh and cache_entry.get("timestamp") and cache_entry.get("data"):
-        if now - cache_entry["timestamp"] <= ttl:
-            return cache_entry["data"]
-
-    try:
-        if current_lat is None or current_lon is None:
-            if not set_location_smart(current_location):
-                return None
-
-        if forecast_type == "current":
-            resp = httpx.get(
-                "https://api.openweathermap.org/data/2.5/weather",
-                params={"lat": current_lat, "lon": current_lon, "appid": OPENWEATHER_KEY, "units": "metric"},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            result = {
-                "temp": round(data.get("main", {}).get("temp", 0)),
-                "feels_like": round(data.get("main", {}).get("feels_like", 0)),
-                "condition": (data.get("weather") or [{}])[0].get("main", "Unknown"),
-                "precip_chance": int(round((data.get("pop") or 0) * 100)),
-            }
-        else:
-            resp = httpx.get(
-                "https://api.openweathermap.org/data/2.5/forecast",
-                params={"lat": current_lat, "lon": current_lon, "appid": OPENWEATHER_KEY, "units": "metric"},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            rows = resp.json().get("list", [])
-            target = (datetime.now(TZ).date() + timedelta(days=1 if forecast_type == "tomorrow" else 0))
-            bucket = []
-            for row in rows:
-                dt_utc = datetime.utcfromtimestamp(row["dt"]).replace(tzinfo=pytz.utc)
-                local_dt = dt_utc.astimezone(TZ)
-                if local_dt.date() == target:
-                    bucket.append(row)
-            if not bucket:
-                return None
-            highs = [r.get("main", {}).get("temp_max", 0) for r in bucket]
-            lows = [r.get("main", {}).get("temp_min", 0) for r in bucket]
-            pops = [r.get("pop", 0) for r in bucket]
-            conds = [(r.get("weather") or [{}])[0].get("main", "Unknown") for r in bucket]
-            mode_condition = max(set(conds), key=conds.count)
-            result = {
-                "temp_high": round(max(highs)),
-                "temp_low": round(min(lows)),
-                "condition": mode_condition,
-                "precip_chance": int(round(max(pops) * 100)),
-            }
-
-        weather_cache[forecast_type] = {"timestamp": now, "data": result}
-        return result
-    except Exception as e:
-        log.error("Weather fetch failed (%s): %s", forecast_type, e)
-        return None
-
-
-
-
-def fetch_uvi_data() -> dict | None:
-    """
-    Fetch current UVI and today's forecasted max UVI via One Call API 3.0.
-    Returns {"current": float, "max": float} or None if fetch fails.
-    """
-    if not OPENWEATHER_KEY or current_lat is None or current_lon is None:
-        return None
-    try:
-        resp = httpx.get(
-            "https://api.openweathermap.org/data/3.0/onecall",
-            params={
-                "lat": current_lat,
-                "lon": current_lon,
-                "exclude": "minutely,hourly,alerts",
-                "appid": OPENWEATHER_KEY,
-            },
-            timeout=5,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        current_uvi = float(data.get("current", {}).get("uvi", 0))
-        daily = data.get("daily", [])
-        max_uvi = float(daily[0].get("uvi", 0)) if daily else current_uvi
-        log.info(f"UVI — current: {current_uvi}, max: {max_uvi}")
-        return {"current": current_uvi, "max": max_uvi}
-    except Exception as e:
-        log.error(f"UVI fetch error: {e}")
-        return None
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-async def fetch_weather_cache(bot) -> None:
-    """Scheduled prefetch a few minutes before digest sends."""
-    _ = bot
-    if not OPENWEATHER_KEY:
-        return
-    fetch_weather("current", force_refresh=True)
-    fetch_weather("today", force_refresh=True)
-    fetch_weather("tomorrow", force_refresh=True)
-    log.debug("Weather cache refreshed")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3351,10 +2871,10 @@ async def cmd_weather_text(message, context: ContextTypes.DEFAULT_TYPE | None = 
     del context
     if message.chat_id != MY_CHAT_ID:
         return
-    if not current_location:
+    if not wx.current_location:
         await message.reply_text("📍 What location should I use for weather? (city/state/country or ZIP)")
         return
-    await message.reply_text(await handle_weather(current_location), parse_mode="Markdown")
+    await message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
 
 
 async def handle_weather(location: str) -> str:
@@ -3690,11 +3210,11 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     if context.user_data.get("awaiting_location"):
-        if set_location_smart(text):
+        if wx.set_location_smart(text, claude):
             context.user_data["awaiting_location"] = False
-            await message.reply_text(f"📍 Location updated to {current_location}.")
-            save_location_state(current_location)
-            await message.reply_text(await handle_weather(current_location), parse_mode="Markdown")
+            await message.reply_text(f"📍 Location updated to {wx.current_location}.")
+            wx.save_location_state(wx.current_location)
+            await message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
         else:
             await message.reply_text(
                 "Couldn't find that location. Try city/state/country or ZIP (example: Chicago IL 60605)."
@@ -3704,11 +3224,11 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if command_head.startswith("/location"):
         requested_location = command_arg_text.strip()
         if requested_location:
-            if set_location_smart(requested_location):
+            if wx.set_location_smart(requested_location, claude):
                 context.user_data["awaiting_location"] = False
-                await message.reply_text(f"📍 Location updated to {current_location}.")
-                save_location_state(current_location)
-                await message.reply_text(await handle_weather(current_location), parse_mode="Markdown")
+                await message.reply_text(f"📍 Location updated to {wx.current_location}.")
+                wx.save_location_state(wx.current_location)
+                await message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
             else:
                 await message.reply_text(
                     "Couldn't find that location. Try city/state/country or ZIP (example: Chicago IL 60605)."
@@ -3723,17 +3243,17 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         if lower.startswith("weather:"):
             requested_location = text.split(":", 1)[1].strip()
             if requested_location:
-                if not set_location_smart(requested_location):
+                if not wx.set_location_smart(requested_location, claude):
                     await message.reply_text(
                         "Couldn't find that location. Try city/state/country or ZIP (example: Chicago IL 60605)."
                     )
                     return
-                save_location_state(current_location)
-        if not current_location:
+                wx.save_location_state(wx.current_location)
+        if not wx.current_location:
             context.user_data["awaiting_location"] = True
             await message.reply_text("📍 What location should I use for weather? (city/state/country or ZIP)")
             return
-        await message.reply_text(await handle_weather(current_location), parse_mode="Markdown")
+        await message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
         return
 
     pending_sport_competition = pending_sport_competition_map.get(update.effective_chat.id)
@@ -4035,7 +3555,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def execute_trip(key: str, query) -> None:
     global awaiting_packing_feedback
     trip = trip_map[key]
-    today_weather = fetch_weather("today") or {}
+    today_weather = wx.fetch_weather("today") or {}
     flags = []
     summary = today_weather.get("summary", "Weather unavailable")
     trip['weather_flags'] = flags
@@ -4786,8 +4306,8 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
 
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
     lines = [f"☀️ *{date_str}*", ""]
-    weather_block = fmt.format_weather_block(fetch_weather("today"), label="🌤️")
-    uvi_data = fetch_uvi_data()
+    weather_block = fmt.format_weather_block(wx.fetch_weather("today"), label="🌤️")
+    uvi_data = wx.fetch_uvi_data()
     if weather_block and uvi_data:
         max_uvi = uvi_data["max"]
         weather_block += f" · ☀️ {max_uvi:.1f} {fmt.uvi_emoji(max_uvi)}"
@@ -5456,15 +4976,15 @@ async def post_init(app: Application) -> None:
     except Exception as e:
         log.warning("Entertainment schema load failed at startup: %s", e)
     load_mute_state()
-    load_location_state()  # load from local JSON cache first (fast)
-    if not load_notion_env_location():  # try Notion (authoritative)
+    wx.load_location_state()  # load from local JSON cache first (fast)
+    if not wx.load_notion_env_location():  # try Notion (authoritative)
         # Notion had no location — geocode from env var or history
-        if OPENWEATHER_KEY and (current_lat is None or current_lon is None):
-            if not set_location_smart(current_location):
-                recover_location_from_history()
+        if OPENWEATHER_KEY and (wx.current_lat is None or wx.current_lon is None):
+            if not wx.set_location_smart(wx.current_location, claude):
+                wx.recover_location_from_history(claude)
     else:
         # Notion loaded successfully — sync back to local JSON cache
-        save_location_state(current_location)
+        wx.save_location_state(wx.current_location)
     load_habit_cache()
     global _app_bot
     _app_bot = app.bot
@@ -5491,7 +5011,7 @@ async def post_init(app: Application) -> None:
         id="digest_schedule_refresh",
     )
     scheduler.add_job(
-        fetch_weather_cache,
+        wx.fetch_weather_cache,
         "interval",
         hours=1,
         args=[app.bot],
@@ -5785,11 +5305,11 @@ async def cmd_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     location_text = " ".join(context.args or []).strip()
     if location_text:
-        if set_location_smart(location_text):
+        if wx.set_location_smart(location_text, claude):
             context.user_data["awaiting_location"] = False
-            await update.message.reply_text(f"📍 Location updated to {current_location}.")
-            save_location_state(current_location)
-            await update.message.reply_text(await handle_weather(current_location), parse_mode="Markdown")
+            await update.message.reply_text(f"📍 Location updated to {wx.current_location}.")
+            wx.save_location_state(wx.current_location)
+            await update.message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
             return
         await update.message.reply_text(
             "Couldn't find that location. Try city/state/country or ZIP (example: Chicago IL 60605)."
