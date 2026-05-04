@@ -146,3 +146,32 @@ class TestDigestCatchupFlag(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestManualDigestConfig(unittest.TestCase):
+    def test_manual_digest_config_uses_latest_non_signoff_slot(self):
+        main = load_main_module()
+        now = main.datetime.now(main.TZ).replace(hour=18, minute=45)
+        slots = [
+            {"time": "08:15", "is_weekday": True, "include_habits": False, "contexts": ["💼 Work"], "max_items": 10, "is_signoff": False},
+            {"time": "16:30", "is_weekday": True, "include_habits": True, "contexts": ["🏠 Personal"], "max_items": 5, "is_signoff": False},
+            {"time": "23:59", "is_weekday": True, "include_habits": False, "contexts": [], "max_items": None, "is_signoff": True},
+        ]
+
+        config = main._manual_digest_config_now(slots, now_dt=now)
+
+        self.assertIsNotNone(config)
+        self.assertTrue(config["include_habits"])
+        self.assertEqual(config["contexts"], ["🏠 Personal"])
+        self.assertEqual(config["max_items"], 5)
+
+    def test_manual_digest_config_ignores_signoff_only_slots(self):
+        main = load_main_module()
+        now = main.datetime.now(main.TZ).replace(hour=23, minute=59)
+        slots = [
+            {"time": "23:59", "is_weekday": True, "include_habits": False, "contexts": [], "max_items": None, "is_signoff": True},
+        ]
+
+        config = main._manual_digest_config_now(slots, now_dt=now)
+
+        self.assertIsNone(config)
