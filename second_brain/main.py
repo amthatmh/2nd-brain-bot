@@ -104,6 +104,7 @@ from second_brain.notes.flow import (
     create_note_payload,
 )
 from second_brain.ai.classify import claude_classify
+from second_brain.ai import classify as ai_classify
 from second_brain.healthtrack.routes import register_health_routes
 from second_brain.healthtrack.steps import handle_steps_final_stamp
 from second_brain.healthtrack.config import (
@@ -1451,183 +1452,6 @@ def infer_batch_overrides(text: str) -> dict:
 # CLAUDE CLASSIFICATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-def classify_message(text: str) -> dict:
-    habit_names = list(habit_cache.keys())
-    today_local = local_today()
-    prompt = f"""You are a personal assistant classifier for a second brain system.
-Today is {today_local.strftime("%A, %B %-d, %Y")}.
-
-Message: "{text}"
-
-Active habits to detect: {habit_names}
-Workout types that count as 💪 Workout: soccer, snowboard, skiing, gym, run, jog, trained
-
-First determine if this is:
-A) ENTERTAINMENT LOG — user watched a film/show/game/event
-B) HABIT LOG — person saying they completed something NOW
-C) TASK — something to be done in the future
-
-Return ONLY valid JSON, no markdown:
-
-If ENTERTAINMENT LOG:
-{{
-  "type": "entertainment_log",
-  "log_type": "cinema|performance|sport",
-  "title": "extracted name of film/show/event",
-  "venue": "venue or null",
-  "date": "{today_local.isoformat()}",
-  "notes": "extra details or null",
-  "favourite": false,
-  "confidence": "high|low"
-}}
-
-Use these examples:
-- "watched [film]", "saw [film]", "caught [film]" => cinema
-- "went to [show/concert/play/performance]", "saw [performer] live" => performance
-- "watched [team] game", "went to [sport] game", "[team] vs [team]" => sport
-
-If title is ambiguous or confidence is low, set "confidence" to "low".
-
-If HABIT:
-{{"type": "habit", "habit_name": "exact name from {habit_names} or null", "confidence": "high or low"}}
-
-If TASK:
-{{
-  "type": "task",
-  "task_name": "clean concise action",
-  "deadline_days": <integer or null>,
-  "context": "one of: 💼 Work | 🏠 Personal | 🏃 Health | 🤝 Collab",
-  "confidence": "high or low",
-  "recurring": "one of: None | 🔁 Daily | 📅 Weekly | 🗓️ Monthly | 📆 Quarterly",
-  "repeat_day": "Mon|Tue|Wed|Thu|Fri|Sat|Sun|1st..31st|Last or null (use ordinals like 4th, 21st)"
-}}
-
-deadline_days: 0=today, 1=tomorrow, 5=this week, 20=this month, null=no urgency/low confidence"""
-
-    resp = claude.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=CLAUDE_MAX_TOK,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
-    return json.loads(raw)
-
-
-def classify_message_v10(text: str) -> dict:
-    """Classifier with watchlist/wantslist/photo intents in addition to habit/task."""
-    habit_names = list(habit_cache.keys())
-
-    watchlist_enabled = bool(NOTION_WATCHLIST_DB)
-    wantslist_enabled = bool(NOTION_WANTSLIST_V2_DB)
-    photo_enabled = bool(NOTION_PHOTO_DB)
-    notes_enabled = bool(NOTION_NOTES_DB)
-
-    enabled_intents = ["habit", "entertainment_log", "task"]
-    if watchlist_enabled:
-        enabled_intents.append("watchlist")
-    if wantslist_enabled:
-        enabled_intents.append("wantslist")
-    if photo_enabled:
-        enabled_intents.append("photo")
-    if notes_enabled:
-        enabled_intents.append("note")
-
-    today_local = local_today()
-    prompt = f"""You are a personal assistant classifier for a second brain system.
-Today is {today_local.strftime("%A, %B %-d, %Y")}.
-
-Message: "{text}"
-
-Active habits: {habit_names}
-Workout types that count as 💪 Workout: soccer, snowboard, skiing, gym, run, jog, trained
-
-Enabled intent types: {enabled_intents}
-
-Classify this message into EXACTLY ONE intent. Rules:
-
-WATCHLIST — user wants to watch a TV series, film, anime, or documentary in the future.
-  Signals: "want to watch", "add to watchlist", "watch:", "should watch", title + "is good", "put X on my list"
-  media_type: one of Series | Film | Anime | Documentary
-
-WANTSLIST — user wants to buy or acquire a physical product/item.
-  Signals: "want to buy", "want to get", "need a", "looking for", product names (gadgets, clothes, furniture, gear)
-  category: one of Tech | Home | Clothes | Health | Other
-
-PHOTO — user wants to capture a photography scene/subject/location.
-  Signals: "want to shoot", "want to photograph", "photo spot", "add to bucketlist", photography subjects
-
-NOTE — user wants to save information/reference/thought without an action.
-  Signals: "note:", "idea:", "code:", "remember this", summaries, ideas, code snippets, links/articles to keep, journaling.
-  Should NOT be used for actionable commitments with due timing (those are TASKs).
-
-HABIT — user saying they completed a recurring habit RIGHT NOW.
-  Signals: "did", "took", "went to", "had", "completed" + habit name
-
-ENTERTAINMENT_LOG — user logged media/event they watched or attended.
-  Signals:
-  - Cinema: "watched [film]", "saw [film]", "caught [film]"
-  - Performance: "went to [show/concert/play/performance]", "saw [performer] live"
-  - Sport: "watched [team] game", "went to [sport] game", "[team] vs [team]"
-
-TASK — something to be done in the future (default if nothing else matches).
-
-If confidence is low on watchlist/wantslist/photo, return task instead.
-"Watch:" prefix = always watchlist, high confidence.
-"want:" prefix = always wantslist, high confidence.
-"photo:" prefix = always photo, high confidence.
-"note:" prefix = always note, high confidence.
-"idea:" prefix = always note, high confidence.
-"code:" prefix = always note, high confidence.
-
-Return ONLY valid JSON, no markdown:
-
-If WATCHLIST:
-{{"type": "watchlist", "title": "clean title only, no year", "media_type": "Series|Film|Anime|Documentary", "confidence": "high|low"}}
-
-If WANTSLIST:
-{{"type": "wantslist", "item": "clean item name", "category": "Tech|Home|Clothes|Health|Other", "confidence": "high|low"}}
-
-If PHOTO:
-{{"type": "photo", "subject": "clean scene/subject description", "confidence": "high|low"}}
-
-If NOTE:
-{{"type": "note", "content": "clean note content", "confidence": "high|low"}}
-
-If HABIT:
-{{"type": "habit", "habit_name": "exact name from {habit_names} or null", "confidence": "high|low"}}
-
-If ENTERTAINMENT_LOG:
-{{
-  "type": "entertainment_log",
-  "log_type": "cinema|performance|sport",
-  "title": "extracted name of film/show/event",
-  "venue": "venue if mentioned, else null",
-  "date": "{today_local.isoformat()}",
-  "notes": "extra detail if mentioned, else null",
-  "favourite": false,
-  "confidence": "high|low"
-}}
-
-If TASK:
-{{
-  "type": "task",
-  "task_name": "clean concise action",
-  "deadline_days": <integer or null>,
-  "context": "one of: 💼 Work | 🏠 Personal | 🏃 Health | 🤝 Collab",
-  "confidence": "high|low",
-  "recurring": "None|🔁 Daily|📅 Weekly|🗓️ Monthly|📆 Quarterly",
-  "repeat_day": "Mon|Tue|Wed|Thu|Fri|Sat|Sun|1st..31st|Last or null (use ordinals like 4th, 21st)"
-}}"""
-
-    resp = claude.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=250,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
-    return json.loads(raw)
-
-
 async def start_note_capture_flow(message, text: str) -> None:
     if not NOTION_NOTES_DB:
         await create_or_prompt_task(message, text)
@@ -1695,39 +1519,6 @@ def fetch_url_metadata(url: str) -> dict:
     return {"title": title, "description": description}
 
 
-def classify_note(title: str, description: str, url: str, raw_text: str) -> dict:
-    """Ask Claude to pick Topic tags and a clean title. Returns {title, topics}."""
-    context = title or description or raw_text or url
-    prompt = f"""You are classifying a saved note/link for a second brain system.
-
-Note context: "{context}"
-URL: {url}
-
-Available topics: {TOPIC_OPTIONS}
-
-Return ONLY valid JSON, no markdown:
-{{
-  "title": "short descriptive title (max 80 chars, use the page title if good)",
-  "topics": ["pick 1-2 most relevant topics from the list above"]
-}}"""
-    try:
-        resp = claude.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=150,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
-        result = json.loads(raw)
-        valid_topics = [t for t in result.get("topics", []) if t in TOPIC_OPTIONS]
-        return {
-            "title": result.get("title", title or url)[:200],
-            "topics": valid_topics or ["💡 Ideas"],
-        }
-    except Exception as e:
-        log.error(f"classify_note error: {e}")
-        return {"title": title or url[:200], "topics": ["💡 Ideas"]}
-
-
 async def handle_note_input(message, text: str) -> None:
     """Called when user sends content in note-capture mode."""
     chat_id = message.chat_id
@@ -1743,8 +1534,8 @@ async def handle_note_input(message, text: str) -> None:
                 None, fetch_url_metadata, url
             )
             classified = await asyncio.get_event_loop().run_in_executor(
-                None, classify_note,
-                meta["title"], meta["description"], url, text,
+                None, ai_classify.classify_note,
+                claude, CLAUDE_MODEL, meta["title"], meta["description"], url, text, TOPIC_OPTIONS,
             )
             note_title = classified["title"]
             topics = classified["topics"]
@@ -1766,36 +1557,6 @@ async def handle_note_input(message, text: str) -> None:
     except Exception as e:
         log.error(f"save_note error: {e}")
         await thinking.edit_text(f"⚠️ Couldn't save note to Notion.\n_{e}_", parse_mode="Markdown")
-
-
-def classify_task(text: str) -> dict:
-    today_local = local_today()
-    prompt = f"""You are a personal task classifier for a second brain system.
-Today is {today_local.strftime("%A, %B %-d, %Y")}.
-
-Message: \"{text}\"
-
-Extract the ACTUAL TASK — the thing the person needs to DO.
-
-Return ONLY valid JSON, no markdown:
-{{
-  "task_name": "clean concise action",
-  "deadline_days": <integer days from today, or null if no urgency>,
-  "context": "one of exactly: 💼 Work | 🏠 Personal | 🏃 Health | 🤝 Collab",
-  "confidence": "high or low",
-  "recurring": "one of exactly: None | 🔁 Daily | 📅 Weekly | 🗓️ Monthly | 📆 Quarterly",
-  "repeat_day": "one of: Mon|Tue|Wed|Thu|Fri|Sat|Sun|1st..31st|Last or null (use ordinals like 4th, 21st)"
-}}
-
-deadline_days: 0=today, 1=tomorrow, 5=this week, 20=this month, null=no urgency"""
-
-    resp = claude.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=200,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
-    return json.loads(raw)
 
 
 def deadline_days_to_label(days: int | None) -> str:
@@ -2912,8 +2673,8 @@ def _run_capture(raw_text: str, force_create: bool = False,
                  context_override: str | None = None,
                  deadline_override: int | None = None) -> dict:
     try:
-        result        = classify_task(raw_text)
-        task_name     = result.get("task_name", raw_text)
+        result        = ai_classify.classify_message(claude, CLAUDE_MODEL, raw_text, list(habit_cache.keys()), bool(NOTION_WATCHLIST_DB), bool(NOTION_WANTSLIST_V2_DB), bool(NOTION_PHOTO_DB), bool(NOTION_NOTES_DB), local_today())
+        task_name     = result.get("task_name") or raw_text
         deadline_days = result.get("deadline_days")
         ctx           = context_override or result.get("context", "🏠 Personal")
         recurring     = result.get("recurring", "None") or "None"
@@ -3975,8 +3736,8 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
         return
 
     try:
-        result        = classify_task(raw_text)
-        task_name     = result.get("task_name", raw_text)
+        result        = ai_classify.classify_message(claude, CLAUDE_MODEL, raw_text, list(habit_cache.keys()), bool(NOTION_WATCHLIST_DB), bool(NOTION_WANTSLIST_V2_DB), bool(NOTION_PHOTO_DB), bool(NOTION_NOTES_DB), local_today())
+        task_name     = result.get("task_name") or raw_text
         deadline_days = result.get("deadline_days")
         ctx           = result.get("context", "🏠 Personal")
         confidence    = result.get("confidence", "low")
@@ -4251,7 +4012,7 @@ async def route_classified_message_v10(message, text: str) -> None:
         return
     try:
         result = await asyncio.wait_for(
-            asyncio.get_event_loop().run_in_executor(None, lambda: classify_message_v10(text)),
+            asyncio.get_event_loop().run_in_executor(None, lambda: ai_classify.classify_message(claude, CLAUDE_MODEL, text, list(habit_cache.keys()), bool(NOTION_WATCHLIST_DB), bool(NOTION_WANTSLIST_V2_DB), bool(NOTION_PHOTO_DB), bool(NOTION_NOTES_DB), local_today())),
             timeout=18,
         )
     except asyncio.TimeoutError:
