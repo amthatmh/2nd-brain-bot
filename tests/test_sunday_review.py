@@ -39,7 +39,7 @@ class TestSundayReviewFloodProtection(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(main, "is_muted", return_value=False), \
             patch.object(main, "send_daily_digest", AsyncMock()), \
-            patch.object(main, "query_tasks_by_auto_horizon", side_effect=[tasks, []]), \
+            patch.object(main.notion_habits, "query_tasks_by_auto_horizon", side_effect=[tasks, []]), \
             patch.object(main, "SUNDAY_REVIEW_CARD_LIMIT", 3):
             await main.send_sunday_review(bot)
 
