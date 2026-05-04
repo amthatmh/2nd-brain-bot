@@ -4784,7 +4784,8 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if lower in upload_programme_aliases:
         context.user_data["awaiting_programme_upload"] = True
         await message.reply_text(
-            "📋 *Upload Weekly Programme*\n\nPaste the full programme text now.\n_Performance track only is fine — I'll ignore Fitness and Hyrox._",
+            "📋 *Upload Weekly Programme*\n\nPaste the full programme text now.\n"
+                    "_Paste the whole thing — I'll extract Performance, Fitness and Hyrox._",
             parse_mode="Markdown",
         )
         return

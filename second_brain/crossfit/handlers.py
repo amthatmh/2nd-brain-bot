@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from .classify import parse_programme
 from .keyboards import level_confirm_keyboard, my_level_keyboard, sub_type_keyboard, wod_format_keyboard
 from .notion import create_strength_log, create_wod_log, get_movement_category, get_or_create_movement, get_progressions_for_movement, query_subs, save_programme, set_current_level
+
+
+log = logging.getLogger(__name__)
 
 
 def _restore_pid(pid: str) -> str:
@@ -50,54 +54,84 @@ async def handle_gymnastics_level_check(message, movement_page_id, movement_name
 
 async def handle_cf_upload_programme(message, text, claude_client, notion, config) -> bool:
     if not config.get("NOTION_WORKOUT_PROGRAM_DB"):
-        await message.reply_text("⚠️ CrossFit module isn't configured yet.", parse_mode="Markdown")
+        await message.reply_text("⚠️ CrossFit module isn't configured yet.")
         return False
+
     text_len = len(text or "")
     thinking = await message.reply_text(f"📥 Upload received ({text_len} chars).\n🧠 Parsing your programme...")
-    try:
-        parsed = await asyncio.get_event_loop().run_in_executor(None, lambda: parse_programme(text, claude_client, config.get("CLAUDE_MODEL", "claude-sonnet-4-6"), config.get("CLAUDE_PARSE_MAX_TOKENS", 4000)))
-    except Exception as e:
+
+    async def _edit_or_reply(msg: str) -> None:
+        """Edit thinking message, falling back to a new reply if edit fails."""
         try:
-            await thinking.edit_text(f"⚠️ Couldn't parse programme: {e}")
+            await thinking.edit_text(msg)
         except Exception:
-            await message.reply_text(f"⚠️ Couldn't parse programme: {e}")
+            try:
+                await message.reply_text(msg)
+            except Exception as inner:
+                log.error("handle_cf_upload_programme: could not send status: %s", inner)
+
+    try:
+        parsed = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: parse_programme(
+                text,
+                claude_client,
+                config.get("CLAUDE_MODEL", "claude-sonnet-4-6"),
+                config.get("CLAUDE_PARSE_MAX_TOKENS", 4000),
+            ),
+        )
+    except Exception as e:
+        err_str = str(e)
+        if "max_tokens" in err_str.lower() or "JSONDecodeError" in type(e).__name__:
+            msg = "⚠️ Programme too large to parse in one go. Try pasting one track at a time (e.g. just the Performance section)."
+        else:
+            msg = f"⚠️ Couldn't parse programme: {e}"
+        log.error("handle_cf_upload_programme: parse_programme failed: %s", e)
+        await _edit_or_reply(msg)
         return False
+
     tracks = parsed.get("tracks", []) if isinstance(parsed, dict) else []
     parsed_days = sum(len(t.get("days", []) or []) for t in tracks)
+    await _edit_or_reply(f"✅ Parsed: {len(tracks)} track(s), {parsed_days} day(s).\n💾 Saving to Notion...")
+
     try:
-        await thinking.edit_text(f"✅ Parse complete: {len(tracks)} track(s), {parsed_days} day row(s).\n💾 Saving to Notion...")
-    except Exception:
-        await message.reply_text(f"✅ Parse complete: {len(tracks)} track(s), {parsed_days} day row(s).\n💾 Saving to Notion...")
-    try:
-        await asyncio.get_event_loop().run_in_executor(None, lambda: save_programme(notion, config["NOTION_WORKOUT_PROGRAM_DB"], config.get("NOTION_WORKOUT_DAYS_DB", ""), config.get("NOTION_MOVEMENTS_DB", ""), parsed, text))
+        await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: save_programme(
+                notion,
+                config["NOTION_WORKOUT_PROGRAM_DB"],
+                config.get("NOTION_WORKOUT_DAYS_DB", ""),
+                config.get("NOTION_MOVEMENTS_DB", ""),
+                parsed,
+                text,
+            ),
+        )
     except Exception as e:
-        try:
-            await thinking.edit_text(f"⚠️ Parsed but couldn't save to Notion: {e}")
-        except Exception:
-            await message.reply_text(f"⚠️ Parsed but couldn't save to Notion: {e}")
+        log.error("handle_cf_upload_programme: save_programme failed: %s", e)
+        await _edit_or_reply(f"⚠️ Parsed OK but couldn't save to Notion: {e}")
         return False
+
     week_label = parsed.get("week_label") or "Week"
-    tracks = parsed.get("tracks", [])
-    lines = [f"📋 {week_label}\n"]
+    lines = [f"📋 *{week_label}*\n"]
     for t in tracks:
         track_name = t.get("track", "Unknown")
         days = t.get("days", [])
         emoji = {"Performance": "🔵", "Fitness": "🟢", "Hyrox": "🟠"}.get(track_name, "⚪")
-        lines.append(f"{emoji} {track_name} — {len(days)} days")
+        lines.append(f"{emoji} *{track_name}* — {len(days)} days")
         for d in days[:7]:
-            b = d.get("section_b")
-            c = d.get("section_c")
-            b_str = f"B: {b['rep_scheme'] or 'Work'}" if b else ""
-            c_str = f"C: {c['format']} ({c['time_cap_mins']}min cap)" if c and c.get("format") and c.get("time_cap_mins") else (f"C: {c['format']}" if c and c.get("format") else "")
+            b = d.get("section_b") or {}
+            c = d.get("section_c") or {}
+            b_str = f"B: {b.get('rep_scheme') or 'Work'}" if b else ""
+            c_fmt = c.get("format", "")
+            c_cap = f" ({c['time_cap_mins']}min cap)" if c.get("time_cap_mins") else ""
+            c_str = f"C: {c_fmt}{c_cap}" if c_fmt else ""
             day_line = " | ".join(filter(None, [b_str, c_str]))
-            lines.append(f"  {d.get('day','?')[:3]}: {day_line}")
+            lines.append(f"  {d.get('day', '?')[:3]}: {day_line}")
         lines.append("")
-    lines.append(f"Saved — {sum(len(t.get('days', [])) for t in tracks)} day rows across {len(tracks)} tracks")
-    summary_text = "\n".join(lines)
-    try:
-        await thinking.edit_text(summary_text)
-    except Exception:
-        await message.reply_text(summary_text)
+    total_days = sum(len(t.get("days", [])) for t in tracks)
+    lines.append(f"_Saved — {total_days} day rows across {len(tracks)} tracks_")
+
+    await _edit_or_reply("\n".join(lines))
     return True
 
 
