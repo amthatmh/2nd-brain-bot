@@ -8,8 +8,7 @@ def _clean_pid(pid: str) -> str:
 def crossfit_submenu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Log Strength (B)", callback_data="cf:log_strength"), InlineKeyboardButton("🏋️ Log WOD (C)", callback_data="cf:log_wod")],
-        [InlineKeyboardButton("📤 Upload Programme", callback_data="cf:upload_programme"), InlineKeyboardButton("🔍 Sub / Add-on", callback_data="cf:subs")],
-        [InlineKeyboardButton("🏆 My PRs", callback_data="cf:prs")],
+        [InlineKeyboardButton("🏆 My PRs", callback_data="cf:prs"), InlineKeyboardButton("🔍 Sub / Add-on", callback_data="cf:subs")],
     ])
 
 
