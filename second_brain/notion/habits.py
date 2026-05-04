@@ -5,6 +5,13 @@ from __future__ import annotations
 import re
 import logging
 from typing import Any
+import logging
+
+
+log = logging.getLogger(__name__)
+
+log = logging.getLogger(__name__)
+habit_cache: dict[str, dict[str, Any]] = {}
 
 log = logging.getLogger(__name__)
 habit_cache: dict[str, dict[str, Any]] = {}
