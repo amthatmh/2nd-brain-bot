@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import datetime, timedelta
+
+log = logging.getLogger(__name__)
 
 
 def _today_str() -> str:
@@ -16,8 +19,41 @@ def _monday_str() -> str:
 
 
 def _extract_json(raw: str) -> dict:
+    """Parse JSON from Claude response, with truncation recovery."""
     text = re.sub(r"```(?:json)?|```", "", raw).strip()
-    return json.loads(text)
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    try:
+        last_complete = text.rfind('}\n    ]')
+        if last_complete == -1:
+            last_complete = text.rfind('},\n      {')
+        if last_complete == -1:
+            last_complete = text.rfind('"}')
+
+        if last_complete > 0:
+            truncated = text[:last_complete + 2]
+            open_braces = truncated.count('{') - truncated.count('}')
+            open_brackets = truncated.count('[') - truncated.count(']')
+            truncated += '}' * max(0, open_braces)
+            truncated += ']' * max(0, open_brackets)
+            try:
+                result = json.loads(truncated)
+                log.warning("_extract_json: recovered partial JSON (%d chars truncated)", len(text) - len(truncated))
+                return result
+            except json.JSONDecodeError:
+                pass
+    except Exception:
+        pass
+
+    raise json.JSONDecodeError(
+        f"Could not parse JSON response (length={len(text)}). This likely means max_tokens is too low — increase CLAUDE_PARSE_MAX_TOKENS.",
+        text,
+        0,
+    )
 
 
 DAY_NAMES = [
@@ -66,50 +102,47 @@ Return ONLY valid JSON with fields exactly as requested.'''
 
 
 def parse_programme(text: str, claude_client, model: str, max_tokens: int) -> dict:
-    schema = {
-        "week_label": "Week of 2026-05-05",
-        "tracks": [{
-            "track": "Performance",
-            "days": [{
-                "day": "Monday",
-                "section_b": {
-                    "description": "full text",
-                    "movements": ["Back Squat"],
-                    "is_strength_test": True,
-                    "rep_scheme": "1RM"
-                },
-                "section_c": {
-                    "description": "full text",
-                    "format": "For Time",
-                    "duration_mins": None,
-                    "time_cap_mins": 15,
-                    "movements": ["Deadlift", "Power Clean", "Squat Clean"],
-                    "is_partner": False,
-                    "wod_name": None
-                },
-                "training_notes": "optional coaching notes text"
-            }]
-        }]
-    }
-    prompt = f"""You are parsing a CrossFit gym's weekly programme for a tracking bot.
-Today is {_today_str()}. Week starts: {_monday_str()}.
+    today = _today_str()
+    monday = _monday_str()
 
-Programme text:
+    prompt = f"""You are parsing a CrossFit gym's weekly programme.
+Today: {today}. Week starts: {monday}.
+
+Programme:
 ---
 {text}
 ---
 
-Extract ALL tracks present (Performance, Fitness, Hyrox). Never discard a track.
-For each track, extract every day that has a Section B or Section C.
+Extract ALL tracks (Performance, Fitness, Hyrox). For each track, each day with Section B or C.
 
-Section B = strength/skill block (lifts, EMOM with load, max effort)
-Section C = conditioning/metcon (For Time, AMRAP, chipper, partner WOD)
-Training notes = coaching cues after the workout description
+Return ONLY valid JSON:
+{{
+  "week_label": "Week of {monday}",
+  "tracks": [
+    {{
+      "track": "Performance",
+      "days": [
+        {{
+          "day": "Monday",
+          "section_b": {{"description": "...", "movements": ["..."], "is_strength_test": true/false, "rep_scheme": "..."}},
+          "section_c": {{"description": "...", "format": "For Time|AMRAP|EMOM|Chipper|Intervals|Partner AMRAP", "duration_mins": null, "time_cap_mins": 15, "movements": ["..."], "is_partner": false, "wod_name": null}},
+          "training_notes": "..."
+        }}
+      ]
+    }}
+  ]
+}}
 
-Return ONLY valid JSON matching this schema exactly. No markdown, no explanation.
-Use null for missing fields. Omit tracks not present in the text.
-
-{json.dumps(schema)}
+Rules:
+- section_b or section_c can be null if not present for that day
+- Omit tracks not in the programme
+- Use null for unknown/missing number fields
+- Thursday and Saturday are often partner WODs (is_partner: true)
+- Keep descriptions concise — movement names + rep counts only, skip coaching notes
 """
-    resp = claude_client.messages.create(model=model, max_tokens=max_tokens, messages=[{"role": "user", "content": prompt}])
+    resp = claude_client.messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=[{"role": "user", "content": prompt}],
+    )
     return _extract_json(resp.content[0].text)
