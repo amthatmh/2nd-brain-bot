@@ -12,7 +12,6 @@ import time
 import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from collections import defaultdict
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Callable
 
@@ -23,7 +22,6 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
     BotCommand,
 )
@@ -37,7 +35,6 @@ from telegram.ext import (
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import anthropic
-import httpx
 from notion_client import Client as NotionClient
 
 from second_brain.asana.sync import (
@@ -46,7 +43,7 @@ from second_brain.asana.sync import (
     validate_notion_schema,
     startup_smoke_test,
 )
-from second_brain.cinema.sync import sync_cinema_log_to_notion, sync_single_cinema_entry
+from second_brain.cinema.sync import sync_cinema_log_to_notion
 from second_brain.cinema.config import (
     CINEMA_DB_ID,
     FAVE_DB_ID,
@@ -58,12 +55,9 @@ from second_brain.scheduler import register_cinema_jobs
 from second_brain.notion import notes as notion_notes
 from second_brain.notion import daily_log as notion_daily_log
 from second_brain.notes.flow import (
-    split_kind_keyboard,
     ordered_topics,
     note_topics_keyboard,
-    create_note_payload,
 )
-from second_brain.ai.classify import claude_classify
 from second_brain.ai import classify as ai_classify
 from second_brain.healthtrack.routes import register_health_routes
 from second_brain.healthtrack.steps import handle_steps_final_stamp
@@ -75,7 +69,7 @@ from second_brain.healthtrack.config import (
     STEPS_SOURCE_LABEL,
 )
 from second_brain.config import FEATURES
-from second_brain.notion import notion_call, notion_call_async
+from second_brain.notion import notion_call
 from second_brain.notion import habits as notion_habits
 from second_brain.notion import tasks as notion_tasks
 from second_brain import keyboards as kb
@@ -90,9 +84,7 @@ from second_brain.http_utils import cors_headers
 from second_brain.crossfit.classify import classify_workout_message, parse_programme
 from second_brain.crossfit.handlers import (
     handle_cf_callback,
-    handle_cf_prs,
     handle_cf_strength_flow,
-    handle_cf_subs_flow,
     handle_cf_text_reply,
     handle_cf_upload_programme,
     handle_cf_wod_flow,
@@ -173,17 +165,24 @@ def load_entertainment_schemas(notion) -> None:
 
 def _resolve_known_cinema_venue(venue: str | None, schema: dict) -> str | None:
     _sync_ent_log_runtime()
-    return ent_log._resolve_known_cinema_venue(notion, venue, schema)
+    resolver = ent_log._resolve_known_cinema_venue
+    resolved = resolver(notion, venue, schema)
+    return resolved
 
 
 def _find_existing_cinema_venue(title: str, schema: dict) -> str | None:
     _sync_ent_log_runtime()
-    return ent_log._find_existing_cinema_venue(notion, title, schema)
+    finder = ent_log._find_existing_cinema_venue
+    match = finder(notion, title, schema)
+    return match
 
 
 def _suggest_known_venue(payload: dict) -> tuple[str | None, str | None]:
     _sync_ent_log_runtime()
-    return ent_log._suggest_known_venue(notion, payload)
+    suggester = ent_log._suggest_known_venue
+    suggestion = suggester(notion, payload)
+    return suggestion
+
 
 load_dotenv()
 
