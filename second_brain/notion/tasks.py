@@ -3,6 +3,8 @@
 import re
 from datetime import date, datetime, timedelta
 
+from notion_client import Client as NotionClient
+
 from second_brain.config import HORIZON_DEADLINE_OFFSETS, TZ
 
 
@@ -67,3 +69,39 @@ def _normalize_task_name(text: str) -> str:
     if s.endswith("s") and len(s) > 4:
         s = s[:-1]
     return s
+
+def create_task(notion: NotionClient, notion_db_id: str, name: str, deadline_days: int | None, context: str,
+                recurring: str = "None", repeat_day: str | None = None) -> str:
+    props = {
+        "Name":      {"title":  [{"text": {"content": name}}]},
+        "Deadline":  _deadline_prop(deadline_days),
+        "Context":   {"select": {"name": context}},
+        "Source":    {"select": {"name": "📱 Telegram"}},
+        "Recurring": {"select": {"name": recurring}},
+    }
+    if repeat_day:
+        props["Repeat Day"] = {"select": {"name": repeat_day}}
+    page = notion.pages.create(parent={"database_id": notion_db_id}, properties=props)
+    return page["id"]
+
+
+def mark_done(notion: NotionClient, page_id: str) -> None:
+    notion.pages.update(page_id=page_id, properties={"Done": {"checkbox": True}})
+
+
+def set_deadline_from_horizon_code(notion: NotionClient, page_id: str, code: str) -> None:
+    days = HORIZON_DEADLINE_OFFSETS.get(code)
+    if days is None:
+        notion.pages.update(page_id=page_id, properties={"Deadline": {"date": None}})
+    else:
+        target = local_today() + timedelta(days=days)
+        notion.pages.update(page_id=page_id, properties={"Deadline": {"date": {"start": target.isoformat()}}})
+
+
+def set_focus(notion: NotionClient, page_id: str, focused: bool) -> None:
+    notion.pages.update(page_id=page_id, properties={"Focus": {"checkbox": focused}})
+
+
+def set_last_generated(notion: NotionClient, page_id: str, d: date) -> None:
+    notion.pages.update(page_id=page_id, properties={"Last Generated": {"date": {"start": d.isoformat()}}})
+
