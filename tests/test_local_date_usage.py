@@ -31,9 +31,9 @@ def load_main_module():
 def test_deadline_prop_uses_local_today_for_offsets():
     main = load_main_module()
 
-    with patch.object(main, "local_today", return_value=date(2026, 4, 27)):
-        assert main._deadline_prop(0) == {"date": {"start": "2026-04-27"}}
-        assert main._deadline_prop(1) == {"date": {"start": "2026-04-28"}}
+    with patch("second_brain.notion.tasks.local_today", return_value=date(2026, 4, 27)):
+        assert main.notion_tasks._deadline_prop(0) == {"date": {"start": "2026-04-27"}}
+        assert main.notion_tasks._deadline_prop(1) == {"date": {"start": "2026-04-28"}}
 
 
 def test_next_weekday_is_calculated_from_local_today():
