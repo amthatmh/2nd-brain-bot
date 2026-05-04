@@ -104,9 +104,9 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
         return notion
 
     def _make_tz(self, today="2026-04-28"):
-        import pytz
+        from zoneinfo import ZoneInfo
         from unittest.mock import patch
-        tz = pytz.timezone("America/Chicago")
+        tz = ZoneInfo("America/Chicago")
         return tz
 
     async def test_sub_threshold_intraday_skips_notion_write(self):
@@ -277,8 +277,8 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
         notion.databases.query.return_value = {"results": [{"id": "habit-pid"}]}
         notion.pages.create.return_value = {"id": "new-pid"}
         notion.pages.update.return_value = {}
-        import pytz
-        tz = pytz.timezone("America/Chicago")
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/Chicago")
 
         with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
              patch("second_brain.healthtrack.steps._yesterday", return_value="2026-04-27"), \
@@ -295,8 +295,8 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
 
     async def test_nightly_stamp_skips_yesterday_when_no_data(self):
         # Nothing in state for yesterday
-        import pytz
-        tz = pytz.timezone("America/Chicago")
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/Chicago")
 
         notion = MagicMock()
         notion.databases.query.return_value = {"results": []}

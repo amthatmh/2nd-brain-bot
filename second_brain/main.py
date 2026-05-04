@@ -15,7 +15,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Callable
 
-import pytz
+from zoneinfo import ZoneInfo
 from aiohttp import web
 from dotenv import load_dotenv
 from telegram import (
@@ -186,7 +186,7 @@ NOTION_PACKING_ITEMS_DB = os.environ.get("NOTION_PACKING_ITEMS_DB", "")
 NOTION_TRIPS_DB         = os.environ.get("NOTION_TRIPS_DB", "")
 OPENWEATHER_KEY     = os.environ.get("OPENWEATHER_KEY", "")
 
-TZ           = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
+TZ           = ZoneInfo(os.environ.get("TIMEZONE", "America/Chicago"))
 _rc_h, _rc_m = _parse_hhmm_env("RECURRING_CHECK_TIME", "7:00")
 _sr_h, _sr_m = _parse_hhmm_env("SUNDAY_REVIEW_TIME", "12:00")
 
@@ -817,10 +817,10 @@ async def handle_note_input(message, text: str) -> None:
             parsed = urllib.parse.urlsplit(url)
             if not parsed.scheme or not parsed.netloc:
                 raise ValueError("invalid URL")
-            meta = await asyncio.get_event_loop().run_in_executor(
+            meta = await asyncio.get_running_loop().run_in_executor(
                 None, fetch_url_metadata, url
             )
-            classified = await asyncio.get_event_loop().run_in_executor(
+            classified = await asyncio.get_running_loop().run_in_executor(
                 None, ai_classify.classify_note,
                 claude, CLAUDE_MODEL, meta["title"], meta["description"], url, text, TOPIC_OPTIONS,
             )
@@ -2475,7 +2475,7 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
         overrides = infer_batch_overrides(raw_text)
         context_override = overrides.get("context")
         deadline_override = overrides.get("deadline_days")
-        loop    = asyncio.get_event_loop()
+        loop    = asyncio.get_running_loop()
         results = await asyncio.gather(*[
             loop.run_in_executor(None, _run_capture, t, force_create, context_override, deadline_override)
             for t in task_texts
@@ -2745,7 +2745,7 @@ async def route_classified_message_v10(message, text: str) -> None:
     thinking = await message.reply_text("🧠 Got it...")
     if NOTION_WORKOUT_LOG_DB or NOTION_WOD_LOG_DB or NOTION_WORKOUT_PROGRAM_DB:
         try:
-            workout_result = await asyncio.get_event_loop().run_in_executor(None, lambda: classify_workout_message(text, claude, CLAUDE_MODEL, CLAUDE_MAX_TOK))
+            workout_result = await asyncio.get_running_loop().run_in_executor(None, lambda: classify_workout_message(text, claude, CLAUDE_MODEL, CLAUDE_MAX_TOK))
         except Exception:
             workout_result = {"type": "none"}
         if workout_result.get("type") == "programme":
@@ -2764,7 +2764,7 @@ async def route_classified_message_v10(message, text: str) -> None:
         return
     try:
         result = await asyncio.wait_for(
-            asyncio.get_event_loop().run_in_executor(None, lambda: ai_classify.classify_message(claude, CLAUDE_MODEL, text, list(habit_cache.keys()), bool(NOTION_WATCHLIST_DB), bool(NOTION_WANTSLIST_V2_DB), bool(NOTION_PHOTO_DB), bool(NOTION_NOTES_DB), local_today())),
+            asyncio.get_running_loop().run_in_executor(None, lambda: ai_classify.classify_message(claude, CLAUDE_MODEL, text, list(habit_cache.keys()), bool(NOTION_WATCHLIST_DB), bool(NOTION_WANTSLIST_V2_DB), bool(NOTION_PHOTO_DB), bool(NOTION_NOTES_DB), local_today())),
             timeout=18,
         )
     except asyncio.TimeoutError:
@@ -4343,8 +4343,9 @@ async def run_asana_sync(bot) -> None:
     if not ASANA_PAT:
         return  # Sync disabled — bot still works without Asana
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     sync_status["asana"]["last_run"] = utc_now_iso()
+    started = time.monotonic()
     try:
         stats = await loop.run_in_executor(
             None,
@@ -4359,8 +4360,9 @@ async def run_asana_sync(bot) -> None:
             ),
         )
         # Only log when something happened — keeps logs readable at 15s polling
+        elapsed = round(time.monotonic() - started, 3)
         if any(v for k, v in stats.items() if k != "skipped"):
-            log.info(f"Asana sync: {stats}")
+            log.info(f"Asana sync: {stats} (elapsed={elapsed}s)")
         sync_status["asana"]["ok"] = True
         sync_status["asana"]["error"] = None
         sync_status["asana"]["stats"] = stats
@@ -4369,7 +4371,8 @@ async def run_asana_sync(bot) -> None:
         sync_status["asana"]["ok"] = False
         sync_status["asana"]["error"] = str(e)
     except Exception as e:
-        log.exception(f"Asana sync failed: {e}")
+        elapsed = round(time.monotonic() - started, 3)
+        log.exception(f"Asana sync failed after {elapsed}s: {e}")
         sync_status["asana"]["ok"] = False
         sync_status["asana"]["error"] = str(e)
 
@@ -4784,12 +4787,12 @@ async def process_pending_programmes(bot) -> None:
         log.info("process_pending_programmes: processing '%s' (%d chars)", week_name, len(full_text))
 
         try:
-            parsed = await asyncio.get_event_loop().run_in_executor(
+            parsed = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: parse_programme(full_text, claude, CLAUDE_MODEL, CLAUDE_PARSE_MAX_TOKENS),
             )
 
-            days_created = await asyncio.get_event_loop().run_in_executor(
+            days_created = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: save_programme_from_notion_row(
                     notion,
@@ -4929,7 +4932,7 @@ async def post_init(app: Application) -> None:
         else:
             if ASANA_STARTUP_SMOKE:
                 try:
-                    loop = asyncio.get_event_loop()
+                    loop = asyncio.get_running_loop()
                     smoke = await loop.run_in_executor(
                         None,
                         lambda: startup_smoke_test(

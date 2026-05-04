@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -21,7 +21,7 @@ class ExpiringDict(dict):
         self._expiries: dict[Any, datetime] = {}
 
     def _purge(self) -> None:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         stale = [k for k, exp in self._expiries.items() if exp <= now]
         for key in stale:
             self._expiries.pop(key, None)
@@ -29,7 +29,7 @@ class ExpiringDict(dict):
 
     def __setitem__(self, key: Any, value: Any) -> None:
         self._purge()
-        self._expiries[key] = datetime.utcnow() + timedelta(seconds=self._ttl)
+        self._expiries[key] = datetime.now(timezone.utc) + timedelta(seconds=self._ttl)
         super().__setitem__(key, value)
 
     def __getitem__(self, key: Any) -> Any:
