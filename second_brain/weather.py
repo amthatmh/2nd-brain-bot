@@ -393,4 +393,15 @@ async def fetch_weather_cache(bot) -> None:
     fetch_weather("current", force_refresh=True)
     fetch_weather("today", force_refresh=True)
     fetch_weather("tomorrow", force_refresh=True)
+
+
+def uvi_emoji(uvi: float) -> str:
+    """Backwards-compatible UVI badge helper for legacy formatter call sites."""
+    if uvi >= 8:
+        return "🔴"
+    if uvi >= 6:
+        return "🟠"
+    if uvi >= 3:
+        return "🟡"
+    return "🟢"
     log.debug("Weather cache refreshed")
