@@ -15,7 +15,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Callable
 
-import pytz
+from zoneinfo import ZoneInfo
 from aiohttp import web
 from dotenv import load_dotenv
 from telegram import (
@@ -186,7 +186,7 @@ NOTION_PACKING_ITEMS_DB = os.environ.get("NOTION_PACKING_ITEMS_DB", "")
 NOTION_TRIPS_DB         = os.environ.get("NOTION_TRIPS_DB", "")
 OPENWEATHER_KEY     = os.environ.get("OPENWEATHER_KEY", "")
 
-TZ           = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
+TZ           = ZoneInfo(os.environ.get("TIMEZONE", "America/Chicago"))
 _rc_h, _rc_m = _parse_hhmm_env("RECURRING_CHECK_TIME", "7:00")
 _sr_h, _sr_m = _parse_hhmm_env("SUNDAY_REVIEW_TIME", "12:00")
 
