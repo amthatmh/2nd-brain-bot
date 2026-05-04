@@ -2408,48 +2408,12 @@ def is_on_pace(habit: dict) -> bool:
 # NOTION — TO-DO
 # ══════════════════════════════════════════════════════════════════════════════
 
-from second_brain.notion.tasks import _deadline_prop as _deadline_prop_impl, _parse_deadline, _get_prop, _task_sort_key, _context_label, _normalize_task_name
-
+from second_brain.notion.tasks import _deadline_prop as _deadline_prop_impl, _parse_deadline, _get_prop, _task_sort_key, _context_label, _normalize_task_name, create_task, mark_done, set_deadline_from_horizon_code, set_focus, set_last_generated
 
 def _deadline_prop(days: int | None) -> dict:
     _deadline_prop_impl.__globals__["local_today"] = local_today
     return _deadline_prop_impl(days)
 
-
-def create_task(name: str, deadline_days: int | None, context: str,
-                recurring: str = "None", repeat_day: str | None = None) -> str:
-    props = {
-        "Name":      {"title":  [{"text": {"content": name}}]},
-        "Deadline":  _deadline_prop(deadline_days),
-        "Context":   {"select": {"name": context}},
-        "Source":    {"select": {"name": "📱 Telegram"}},
-        "Recurring": {"select": {"name": recurring}},
-    }
-    if repeat_day:
-        props["Repeat Day"] = {"select": {"name": repeat_day}}
-    page = notion.pages.create(parent={"database_id": NOTION_DB_ID}, properties=props)
-    return page["id"]
-
-
-def mark_done(page_id: str) -> None:
-    notion.pages.update(page_id=page_id, properties={"Done": {"checkbox": True}})
-
-
-def set_deadline_from_horizon_code(page_id: str, code: str) -> None:
-    days = HORIZON_DEADLINE_OFFSETS.get(code)
-    if days is None:
-        notion.pages.update(page_id=page_id, properties={"Deadline": {"date": None}})
-    else:
-        target = local_today() + timedelta(days=days)
-        notion.pages.update(page_id=page_id, properties={"Deadline": {"date": {"start": target.isoformat()}}})
-
-
-def set_focus(page_id: str, focused: bool) -> None:
-    notion.pages.update(page_id=page_id, properties={"Focus": {"checkbox": focused}})
-
-
-def set_last_generated(page_id: str, d: date) -> None:
-    notion.pages.update(page_id=page_id, properties={"Last Generated": {"date": {"start": d.isoformat()}}})
 
 
 def store_signoff_note(text: str) -> None:
@@ -3321,7 +3285,7 @@ def spawn_recurring_instance(template: dict) -> None:
             "Source":   {"select": {"name": "✏️ Manual"}},
         },
     )
-    set_last_generated(template["page_id"], today)
+    set_last_generated(notion, template["page_id"], today)
     log.info(f"Spawned recurring: {template['name']}")
 
 
@@ -3386,7 +3350,7 @@ def _run_capture(raw_text: str, force_create: bool = False,
             return {"status": "duplicate", "name": task_name, "duplicate": dup}
 
     try:
-        page_id = create_task(task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
+        page_id = create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
         return {
             "status": "captured", "name": task_name,
             "horizon_label": horizon_label, "context": ctx,
@@ -4400,7 +4364,7 @@ def todo_picker_keyboard(key: str) -> InlineKeyboardMarkup:
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def complete_task_by_page_id(message, page_id: str, name: str) -> None:
-    mark_done(page_id)
+    mark_done(notion, page_id)
     suffix = "\n↻ Next instance created" if handle_done_recurring(page_id) else ""
     await message.reply_text(f"✅ Done: {name}{suffix}")
 
@@ -4463,7 +4427,7 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
     recur_tag = f"\n🔁 {recurring}" if recurring != "None" else ""
 
     try:
-        page_id = create_task(task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
+        page_id = create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
         if confidence == "high":
             await thinking.edit_text(
                 f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}{recur_tag}\n\n_Saved to Notion_",
@@ -5170,7 +5134,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
                 if 1 <= n <= len(items):
                     pid  = items[n - 1]["page_id"]
                     name = items[n - 1]["name"]
-                    mark_done(pid)
+                    mark_done(notion, pid)
                     suffix = " ↻ next queued" if handle_done_recurring(pid) else ""
                     done_names.append(f"{name}{suffix}")
         elif message.reply_to_message:
@@ -5181,7 +5145,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
                 if task:
                     pid = task["page_id"]
                     name = task["name"]
-                    mark_done(pid)
+                    mark_done(notion, pid)
                     suffix = " ↻ next queued" if handle_done_recurring(pid) else ""
                     done_names.append(f"{name}{suffix}")
 
@@ -5245,7 +5209,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if match_focus:
         matched = fuzzy_match(match_focus.group(1).strip(), get_all_active_tasks())
         if matched:
-            set_focus(matched["page_id"], True)
+            set_focus(notion, matched["page_id"], True)
             await message.reply_text(f"🎯 Focused: {matched['name']} → *Doing*", parse_mode="Markdown")
         else:
             await message.reply_text(f"Couldn't find a task matching \"{match_focus.group(1).strip()}\".")
@@ -5255,7 +5219,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if match_unfocus:
         matched = fuzzy_match(match_unfocus.group(1).strip(), get_all_active_tasks())
         if matched:
-            set_focus(matched["page_id"], False)
+            set_focus(notion, matched["page_id"], False)
             await message.reply_text(f"⬜ Unfocused: {matched['name']} → *To Do*", parse_mode="Markdown")
         else:
             await message.reply_text(f"Couldn't find a task matching \"{match_unfocus.group(1).strip()}\".")
@@ -5620,7 +5584,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if parts[0] == "d" and len(parts) == 2:
         page_id = _restore_pid(parts[1])
         try:
-            mark_done(page_id)
+            mark_done(notion, page_id)
             suffix = "\n↻ Next instance created" if handle_done_recurring(page_id) else ""
             await q.edit_message_text(f"✅ Marked as done!{suffix}")
         except Exception as e:
@@ -5632,7 +5596,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         page_id       = _restore_pid(pid_clean)
         horizon_label = HORIZON_LABELS.get(code, "⚪ Backburner")
         try:
-            set_deadline_from_horizon_code(page_id, code)
+            set_deadline_from_horizon_code(notion, page_id, code)
             await q.edit_message_text(f"Updated → {horizon_label} ✓")
         except Exception as e:
             log.error(f"Notion horizon error: {e}"); await q.edit_message_text("⚠️ Couldn't update Notion.")
@@ -5654,7 +5618,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await q.answer("Already marked done.", show_alert=False)
             return
         try:
-            mark_done(task["page_id"])
+            mark_done(notion, task["page_id"])
             handle_done_recurring(task["page_id"])
             task["_done"] = True
         except Exception as e:
@@ -5680,7 +5644,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await q.edit_message_text("⚠️ This picker expired. Send `done` again.", parse_mode="Markdown"); return
         try:
             task = done_picker_map[key][int(idx_str)]
-            mark_done(task["page_id"])
+            mark_done(notion, task["page_id"])
             suffix = "\n↻ Next instance created" if handle_done_recurring(task["page_id"]) else ""
             await q.edit_message_text(f"✅ Done: {task['name']}{suffix}")
         except Exception as e:
@@ -5741,7 +5705,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             else:
                 task = tasks[idx]
                 try:
-                    mark_done(task["page_id"])
+                    mark_done(notion, task["page_id"])
                     handle_done_recurring(task["page_id"])
                     done_indices.add(idx)
                     context.user_data["palette_done_indices"] = done_indices
