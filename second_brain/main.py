@@ -1282,128 +1282,6 @@ def _count_habit_completions_this_week(habit_page_id: str) -> int:
         return 0
 
 
-def get_week_completion_count_for_week(habit_page_id: str, week_of: date) -> int:
-    try:
-        results = notion.databases.query(
-            database_id=NOTION_LOG_DB,
-            filter={
-                "and": [
-                    {"property": "Habit", "relation": {"contains": habit_page_id}},
-                    {"property": "Completed", "checkbox": {"equals": True}},
-                    {"property": "Date", "date": {"on_or_after": week_of.isoformat()}},
-                    {"property": "Date", "date": {"on_or_before": (week_of + timedelta(days=6)).isoformat()}},
-                ]
-            },
-        )
-        return len(results.get("results", []))
-    except Exception as e:
-        log.error("get_week_completion_count_for_week error for %s: %s", habit_page_id, e)
-        return 0
-
-
-def get_previous_streak(habit_page_id: str, week_of: date) -> int:
-    prior_monday = week_of - timedelta(days=7)
-    try:
-        results = notion.databases.query(
-            database_id=NOTION_STREAK_DB,
-            filter={
-                "and": [
-                    {"property": "Habit", "relation": {"contains": habit_page_id}},
-                    {"property": "Week Of", "date": {"equals": prior_monday.isoformat()}},
-                    {"property": "Goal Met", "checkbox": {"equals": True}},
-                ]
-            },
-        )
-        rows = results.get("results", [])
-        if rows:
-            return int(rows[0].get("properties", {}).get("Current Streak", {}).get("number") or 0)
-        return 0
-    except Exception as e:
-        log.error("get_previous_streak error for %s: %s", habit_page_id, e)
-        return 0
-
-
-def get_existing_streak_record(habit_page_id: str, week_of: date) -> dict | None:
-    try:
-        results = notion.databases.query(
-            database_id=NOTION_STREAK_DB,
-            filter={
-                "and": [
-                    {"property": "Habit", "relation": {"contains": habit_page_id}},
-                    {"property": "Week Of", "date": {"equals": week_of.isoformat()}},
-                ]
-            },
-        )
-        rows = results.get("results", [])
-        if not rows:
-            return None
-        first = rows[0]
-        return {
-            "page_id": first["id"],
-            "current_streak": first.get("properties", {}).get("Current Streak", {}).get("number") or 0,
-        }
-    except Exception as e:
-        log.error("get_existing_streak_record error for %s: %s", habit_page_id, e)
-        return None
-
-
-def write_streak_record(
-    habit_page_id: str,
-    habit_name: str,
-    week_of: date,
-    completed: int,
-    target: int,
-    goal_met: bool,
-) -> None:
-    try:
-        current_streak = (get_previous_streak(habit_page_id, week_of) + 1) if goal_met else 0
-        week_label = week_of.strftime("%-V")
-        name = f"{habit_name} — W{week_label} {week_of.year}"
-        props = {
-            "Name": {"title": [{"text": {"content": name}}]},
-            "Habit": {"relation": [{"id": habit_page_id}]},
-            "Week Of": {"date": {"start": week_of.isoformat()}},
-            "Target": {"number": target},
-            "Completed": {"number": completed},
-            "Goal Met": {"checkbox": goal_met},
-            "Current Streak": {"number": current_streak},
-        }
-        existing = get_existing_streak_record(habit_page_id, week_of)
-        if existing:
-            notion.pages.update(page_id=existing["page_id"], properties=props)
-        else:
-            notion.pages.create(parent={"database_id": NOTION_STREAK_DB}, properties=props)
-    except Exception as e:
-        log.error("write_streak_record error for %s: %s", habit_page_id, e)
-
-
-async def check_and_notify_weekly_goals(bot, chat_id: int) -> None:
-    for habit_name, habit in habit_cache.items():
-        habit_page_id = habit["page_id"]
-        if habit_page_id in notified_goals_this_week:
-            continue
-        count = get_week_completion_count(habit_page_id)
-        freq = get_habit_frequency(habit_page_id)
-        if count >= freq:
-            await bot.send_message(
-                chat_id=chat_id,
-                text=f"🎯 Weekly goal met: {habit_name} — see you next Monday!",
-            )
-            notified_goals_this_week.add(habit_page_id)
-
-
-async def record_weekly_streaks(bot) -> None:
-    _ = bot
-    last_monday = get_current_monday() - timedelta(days=7)
-    for habit_name, habit in habit_cache.items():
-        habit_page_id = habit["page_id"]
-        completed = get_week_completion_count_for_week(habit_page_id, last_monday)
-        target = get_habit_frequency(habit_page_id)
-        goal_met = completed >= target
-        write_streak_record(habit_page_id, habit_name, last_monday, completed, target, goal_met)
-    log.info(f"Streak records written for {len(habit_cache)} habits — week of {last_monday}")
-
-
 def logs_this_week(habit_page_id: str) -> int:
     today  = datetime.now(TZ).date()
     monday = today - timedelta(days=today.weekday())
@@ -2899,7 +2777,19 @@ async def route_classified_message_v10(message, text: str) -> None:
             else:
                 log_habit(habit_pid, habit_name)
                 await thinking.edit_text(f"✅ Logged!\n\n{habit_name}\n📅 {date.today().strftime('%B %-d')}")
-                asyncio.create_task(check_and_notify_weekly_goals(message.get_bot(), MY_CHAT_ID))
+                asyncio.create_task(
+                    check_and_notify_weekly_goals(
+                        message.get_bot(),
+                        MY_CHAT_ID,
+                        notion,
+                        NOTION_LOG_DB,
+                        NOTION_HABIT_DB,
+                        habit_cache,
+                        notified_goals_this_week,
+                        get_week_completion_count,
+                        get_habit_frequency,
+                    )
+                )
         else:
             all_habits = [{"page_id": h["page_id"], "name": name} for name, h in habit_cache.items()]
             all_habits.sort(key=lambda h: h["name"].lower())
@@ -3672,7 +3562,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             log.warning("Habit success UI update failed for %s: %s", habit_name, ui_error)
             await q.message.reply_text(f"✅ {habit_name} logged!")
 
-        asyncio.create_task(check_and_notify_weekly_goals(q.bot, MY_CHAT_ID))
+        asyncio.create_task(
+            check_and_notify_weekly_goals(
+                q.bot,
+                MY_CHAT_ID,
+                notion,
+                NOTION_LOG_DB,
+                NOTION_HABIT_DB,
+                habit_cache,
+                notified_goals_this_week,
+                get_week_completion_count,
+                get_habit_frequency,
+            )
+        )
         return
 
     if parts[0] == "hpag" and len(parts) == 3:
@@ -3936,7 +3838,16 @@ async def run_recurring_check(bot) -> None:
     notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB); _refresh_habit_cache_refs()
     if datetime.now(TZ).weekday() == 0:
         notified_goals_this_week.clear()
-        await record_weekly_streaks(bot)
+        await record_weekly_streaks(
+            bot,
+            notion,
+            NOTION_LOG_DB,
+            NOTION_HABIT_DB,
+            NOTION_STREAK_DB,
+            habit_cache,
+            get_current_monday,
+            get_habit_frequency,
+        )
     if is_muted():
         log.info("Recurring check skipped (muted)")
         return
