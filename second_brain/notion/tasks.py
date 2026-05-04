@@ -1,6 +1,7 @@
 """Task-related Notion helpers."""
 
 import re
+import calendar
 from datetime import date, datetime, timedelta
 
 from notion_client import Client as NotionClient
@@ -282,3 +283,102 @@ def recover_digest_items_from_text(notion: NotionClient, notion_db_id: str, text
         if matched:
             recovered[n] = matched
     return recovered
+
+REPEAT_DAY_TO_WEEKDAY = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
+REPEAT_DAY_TO_MONTHDAY = {
+    "1st": 1, "2nd": 2, "3rd": 3, "4th": 4, "5th": 5,
+    "6th": 6, "7th": 7, "8th": 8, "9th": 9, "10th": 10,
+    "11th": 11, "12th": 12, "13th": 13, "14th": 14, "15th": 15,
+    "16th": 16, "17th": 17, "18th": 18, "19th": 19, "20th": 20,
+    "21st": 21, "22nd": 22, "23rd": 23, "24th": 24, "25th": 25,
+    "26th": 26, "27th": 27, "28th": 28, "29th": 29, "30th": 30,
+    "31st": 31, "Last": -1,
+}
+
+
+def _resolve_monthly_target_day(repeat_day: str, today: date) -> int | None:
+    if repeat_day not in REPEAT_DAY_TO_MONTHDAY:
+        return None
+    configured_day = REPEAT_DAY_TO_MONTHDAY[repeat_day]
+    month_last_day = calendar.monthrange(today.year, today.month)[1]
+    if configured_day == -1:
+        return month_last_day
+    return min(configured_day, month_last_day)
+
+
+def should_spawn_today(template: dict, today: date) -> bool:
+    recurring = template["recurring"]
+    repeat_day = template["repeat_day"]
+    last_gen = template["last_generated"]
+    if last_gen == today.isoformat():
+        return False
+    if recurring == "🔁 Daily":
+        return True
+    if recurring == "📅 Weekly":
+        if not repeat_day or repeat_day not in REPEAT_DAY_TO_WEEKDAY:
+            return False
+        return today.weekday() == REPEAT_DAY_TO_WEEKDAY[repeat_day]
+    if recurring == "🗓️ Monthly":
+        if not repeat_day:
+            return False
+        target_day = _resolve_monthly_target_day(repeat_day, today)
+        return target_day is not None and today.day == target_day
+    if recurring == "📆 Quarterly":
+        if not repeat_day:
+            return False
+        target_day = _resolve_monthly_target_day(repeat_day, today)
+        if target_day is None or today.day != target_day:
+            return False
+        anchor_raw = template.get("deadline") or last_gen
+        if not anchor_raw:
+            return today.month % 3 == 0
+        try:
+            anchor = date.fromisoformat(anchor_raw)
+        except ValueError:
+            return today.month % 3 == 0
+        months_since_anchor = (today.year - anchor.year) * 12 + (today.month - anchor.month)
+        return months_since_anchor >= 0 and months_since_anchor % 3 == 0
+    return False
+
+
+def spawn_recurring_instance(notion: NotionClient, notion_db_id: str, template: dict) -> None:
+    today = local_today()
+    notion.pages.create(
+        parent={"database_id": notion_db_id},
+        properties={
+            "Name": {"title": [{"text": {"content": template["name"]}}]},
+            "Deadline": {"date": {"start": today.isoformat()}},
+            "Context": {"select": {"name": template["context"]}},
+            "Source": {"select": {"name": "✏️ Manual"}},
+        },
+    )
+    set_last_generated(notion, template["page_id"], today)
+
+
+def process_recurring_tasks(notion: NotionClient, notion_db_id: str) -> int:
+    today = local_today()
+    spawned = 0
+    for t in get_recurring_templates(notion, notion_db_id):
+        if should_spawn_today(t, today):
+            spawn_recurring_instance(notion, notion_db_id, t)
+            spawned += 1
+    return spawned
+
+
+def handle_done_recurring(notion: NotionClient, notion_db_id: str, page_id: str) -> bool:
+    result = notion.pages.retrieve(page_id=page_id)
+    p = result["properties"]
+    recurring = _get_prop(p, "Recurring", "select") or "None"
+    if recurring == "None":
+        return False
+    spawn_recurring_instance(notion, notion_db_id, {
+        "page_id": page_id,
+        "name": _get_prop(p, "Name", "title") or "Untitled",
+        "auto_horizon": _get_prop(p, "Auto Horizon", "formula") or "🔴 Today",
+        "context": _get_prop(p, "Context", "select") or "🏠 Personal",
+        "recurring": recurring,
+        "repeat_day": _get_prop(p, "Repeat Day", "select"),
+        "last_generated": _get_prop(p, "Last Generated", "date"),
+        "deadline": _get_prop(p, "Deadline", "date"),
+    })
+    return True
