@@ -73,7 +73,10 @@ def get_current_week_programme(notion, program_db_id: str):
 
 def save_programme(notion, program_db_id: str, workout_days_db_id: str, movements_db_id: str, parsed: dict, full_text: str) -> str:
     if "tracks" not in parsed and "days" in parsed:
-        parsed = {"week_label": parsed.get("week_label"), "tracks": [{"track": "Performance", "days": parsed.get("days", [])}]}
+        parsed = {
+            "week_label": parsed.get("week_label"),
+            "tracks": [{"track": "Performance", "days": parsed.get("days", [])}],
+        }
 
     week_label = parsed.get("week_label") or "Week"
     monday_iso = this_monday()
@@ -93,6 +96,25 @@ def save_programme(notion, program_db_id: str, workout_days_db_id: str, movement
         log.error("save_programme: failed to create Weekly Programs row: %s", e)
         raise
 
+    movement_cache: dict[str, str] = {}
+    if movements_db_id:
+        all_movement_names: set[str] = set()
+        for track_row in parsed.get("tracks", []):
+            for day_row in track_row.get("days", []):
+                for movement_name in (day_row.get("section_b") or {}).get("movements") or []:
+                    if movement_name:
+                        all_movement_names.add(movement_name)
+                for movement_name in (day_row.get("section_c") or {}).get("movements") or []:
+                    if movement_name:
+                        all_movement_names.add(movement_name)
+
+        log.info("save_programme: resolving %d unique movements", len(all_movement_names))
+        for movement_name in all_movement_names:
+            try:
+                movement_cache[movement_name] = get_or_create_movement(notion, movements_db_id, movement_name)
+            except Exception as e:
+                log.warning("save_programme: could not resolve movement '%s': %s", movement_name, e)
+
     days_created = 0
     for track_row in parsed.get("tracks", []):
         track = track_row.get("track") or "Performance"
@@ -104,23 +126,13 @@ def save_programme(notion, program_db_id: str, workout_days_db_id: str, movement
             b_desc = section_b.get("description") or ""
             c_desc = section_c.get("description") or ""
 
-            b_ids, c_ids = [], []
-            if movements_db_id:
-                for m in section_b.get("movements") or []:
-                    try:
-                        b_ids.append(get_or_create_movement(notion, movements_db_id, m))
-                    except Exception as e:
-                        log.warning("save_programme: could not create movement %s: %s", m, e)
-                for m in section_c.get("movements") or []:
-                    try:
-                        c_ids.append(get_or_create_movement(notion, movements_db_id, m))
-                    except Exception as e:
-                        log.warning("save_programme: could not create movement %s: %s", m, e)
+            b_ids = [movement_cache[m] for m in (section_b.get("movements") or []) if m and m in movement_cache]
+            c_ids = [movement_cache[m] for m in (section_c.get("movements") or []) if m and m in movement_cache]
 
             if not workout_days_db_id:
                 continue
 
-            props = {
+            props: dict = {
                 "Name": {"title": [{"text": {"content": f"{day} — {track} — {week_label}"}}]},
                 "Day": {"select": {"name": day}},
                 "Track": {"select": {"name": track}},
@@ -149,11 +161,34 @@ def save_programme(notion, program_db_id: str, workout_days_db_id: str, movement
             try:
                 notion_call(notion.pages.create, parent={"database_id": workout_days_db_id}, properties=props)
                 days_created += 1
+                log.info("save_programme: created day row %s / %s", track, day)
             except Exception as e:
-                log.error("save_programme: failed to create Workout Day row %s/%s: %s", track, day, e)
+                log.error("save_programme: failed to create row %s/%s: %s", track, day, e)
+                log.error("save_programme: failed props keys: %s", list(props.keys()))
 
     log.info("save_programme: complete — %d day rows created", days_created)
     return parent_page_id
+
+
+def validate_workout_days_db(notion, workout_days_db_id: str) -> list[str]:
+    """
+    Validate that the Workout Days DB is writable and has expected schema.
+    Returns list of problems. Empty = OK.
+    """
+    problems = []
+    if not workout_days_db_id:
+        problems.append("NOTION_WORKOUT_DAYS_DB is not set")
+        return problems
+    try:
+        db = notion_call(notion.databases.retrieve, database_id=workout_days_db_id)
+        props = db.get("properties", {})
+        required = ["Name", "Day", "Track", "Week", "Week Of", "Section B", "Section C", "Is Partner"]
+        for required_name in required:
+            if required_name not in props:
+                problems.append(f"Missing property: '{required_name}'")
+    except Exception as e:
+        problems.append(f"Cannot retrieve Workout Days DB: {e}")
+    return problems
 
 def get_previous_best(notion, prs_db_id, movement_page_id, reps):
     res=notion_call(notion.databases.query,database_id=prs_db_id,page_size=50).get("results",[])
