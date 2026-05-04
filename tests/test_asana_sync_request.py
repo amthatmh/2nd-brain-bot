@@ -4,8 +4,8 @@ import unittest
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError, URLError
 
-import asana_sync
-from asana_sync import AsanaSyncError, _asana_request
+import second_brain.asana.sync as asana_sync
+from second_brain.asana.sync import AsanaSyncError, _asana_request
 
 
 def _mock_urlopen_with_json(payload: dict):
@@ -16,8 +16,8 @@ def _mock_urlopen_with_json(payload: dict):
 
 
 class TestAsanaRequestRetries(unittest.TestCase):
-    @patch("asana_sync.time.sleep", return_value=None)
-    @patch("asana_sync.random.uniform", return_value=0.0)
+    @patch("second_brain.asana.sync.time.sleep", return_value=None)
+    @patch("second_brain.asana.sync.random.uniform", return_value=0.0)
     def test_retries_on_429_then_succeeds(self, *_mocks):
         transient = HTTPError(
             url="https://example.com",
@@ -28,7 +28,7 @@ class TestAsanaRequestRetries(unittest.TestCase):
         )
         success_cm = _mock_urlopen_with_json({"data": {"gid": "123"}})
 
-        with patch("asana_sync.request.urlopen", side_effect=[transient, success_cm]) as mocked:
+        with patch("second_brain.asana.sync.request.urlopen", side_effect=[transient, success_cm]) as mocked:
             with patch.object(asana_sync, "ASANA_MAX_RETRIES", 3):
                 payload = _asana_request("/tasks", token="abc")
 
@@ -43,15 +43,15 @@ class TestAsanaRequestRetries(unittest.TestCase):
             hdrs=None,
             fp=io.BytesIO(b""),
         )
-        with patch("asana_sync.request.urlopen", side_effect=bad_request):
+        with patch("second_brain.asana.sync.request.urlopen", side_effect=bad_request):
             with self.assertRaises(HTTPError):
                 _asana_request("/tasks", token="abc")
 
-    @patch("asana_sync.time.sleep", return_value=None)
-    @patch("asana_sync.random.uniform", return_value=0.0)
+    @patch("second_brain.asana.sync.time.sleep", return_value=None)
+    @patch("second_brain.asana.sync.random.uniform", return_value=0.0)
     def test_exhausted_retries_raise_asana_sync_error(self, *_mocks):
         net_err = URLError("temporary failure")
-        with patch("asana_sync.request.urlopen", side_effect=net_err):
+        with patch("second_brain.asana.sync.request.urlopen", side_effect=net_err):
             with patch.object(asana_sync, "ASANA_MAX_RETRIES", 2):
                 with self.assertRaises(AsanaSyncError):
                     _asana_request("/tasks", token="abc")

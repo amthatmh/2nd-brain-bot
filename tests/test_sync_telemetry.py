@@ -1,6 +1,6 @@
 import unittest
 
-from sync_telemetry import format_sync_status_message, init_sync_status
+from second_brain.sync_telemetry import format_sync_status_message, init_sync_status
 
 
 class TestSyncTelemetry(unittest.TestCase):

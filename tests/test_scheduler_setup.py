@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timezone
 
-from scheduler_setup import register_cinema_jobs, register_core_jobs
+from second_brain.scheduler import register_cinema_jobs, register_core_jobs
 
 
 class _FakeScheduler:
