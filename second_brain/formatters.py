@@ -377,4 +377,3 @@ def uvi_emoji(uvi: float) -> str:
     if uvi <= 10:
         return "🔴"
     return "🟣"
-
