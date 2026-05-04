@@ -245,7 +245,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
             return {}
 
         self.main.notion_call = fake_notion_call
-        page_id, fav_saved = self.main.create_entertainment_log_entry({
+        page_id, fav_saved = self.main.create_entertainment_log_entry(self.main.notion, {
             "log_type": "cinema",
             "title": "The Drama at AMC Roosevelt Collection 16 on 2026/04/27 at 20:40 Seat D6 Auditorium D5",
             "date": "2026-04-27",
@@ -280,7 +280,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
             return {}
 
         self.main.notion_call = fake_notion_call
-        page_id, fav_saved = self.main.create_entertainment_log_entry({
+        page_id, fav_saved = self.main.create_entertainment_log_entry(self.main.notion, {
             "log_type": "performance",
             "title": "The Drama",
             "date": "2026-04-29T20:40:00",
@@ -318,7 +318,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
             return {}
 
         self.main.notion_call = fake_notion_call
-        page_id, fav_saved = self.main.create_entertainment_log_entry({
+        page_id, fav_saved = self.main.create_entertainment_log_entry(self.main.notion, {
             "log_type": "performance",
             "title": "The Drama",
             "date": "2026-04-29T20:40:00",
@@ -444,7 +444,7 @@ class TestEntertainmentEnvFallbacks(unittest.TestCase):
             return {}
 
         self.main.notion_call = fake_notion_call
-        page_id, _ = self.main.create_entertainment_log_entry({
+        page_id, _ = self.main.create_entertainment_log_entry(self.main.notion, {
             "log_type": "cinema",
             "title": "The Drama at AMC Roosevelt Collection 16 on 2026/04/27 at 20:40 Seat D6 Auditorium D5",
             "date": "2026-04-25",
@@ -492,7 +492,7 @@ class TestEntertainmentEnvFallbacks(unittest.TestCase):
             return {}
 
         self.main.notion_call = fake_notion_call
-        page_id, fav_saved = self.main.create_entertainment_log_entry({
+        page_id, fav_saved = self.main.create_entertainment_log_entry(self.main.notion, {
             "log_type": "sport",
             "title": "Cubs vs Dodgers",
             "date": "2026-02-01",
@@ -522,7 +522,7 @@ class TestEntertainmentEnvFallbacks(unittest.TestCase):
             return {}
 
         self.main.notion_call = fake_notion_call
-        page_id, fav_saved = self.main.create_entertainment_log_entry({
+        page_id, fav_saved = self.main.create_entertainment_log_entry(self.main.notion, {
             "log_type": "sport",
             "title": "The Movie",
             "date": "2026-04-26T20:35:00",
@@ -544,7 +544,7 @@ class TestEntertainmentLogFollowups(unittest.IsolatedAsyncioTestCase):
         message.chat = MagicMock(id=1)
         message.reply_text = AsyncMock()
         with patch.object(self.main, "create_entertainment_log_entry", return_value=("sport-page", False)):
-            await self.main.handle_entertainment_log(message, {
+            await self.main.handle_entertainment_log(self.main.notion, message, {
                 "log_type": "sport",
                 "title": "Cubs vs Dodgers",
                 "date": "2026-02-01",
