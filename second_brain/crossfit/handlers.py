@@ -30,10 +30,10 @@ def parse_time_to_seconds(text: str):
 async def handle_gymnastics_level_check(message, movement_page_id, movement_name, notion, config, cf_pending, flow_key) -> bool:
     if not config.get("NOTION_PROGRESSIONS_DB") or not config.get("NOTION_MOVEMENTS_DB"):
         return False
-    category = await asyncio.get_event_loop().run_in_executor(None, lambda: get_movement_category(notion, config["NOTION_MOVEMENTS_DB"], movement_page_id))
+    category = await asyncio.get_running_loop().run_in_executor(None, lambda: get_movement_category(notion, config["NOTION_MOVEMENTS_DB"], movement_page_id))
     if category != "Gymnastic":
         return False
-    steps = await asyncio.get_event_loop().run_in_executor(None, lambda: get_progressions_for_movement(notion, config["NOTION_PROGRESSIONS_DB"], movement_page_id))
+    steps = await asyncio.get_running_loop().run_in_executor(None, lambda: get_progressions_for_movement(notion, config["NOTION_PROGRESSIONS_DB"], movement_page_id))
     if not steps:
         return False
     state = cf_pending.get(flow_key, {})
@@ -71,7 +71,7 @@ async def handle_cf_upload_programme(message, text, claude_client, notion, confi
                 log.error("handle_cf_upload_programme: could not send status: %s", inner)
 
     try:
-        parsed = await asyncio.get_event_loop().run_in_executor(
+        parsed = await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: parse_programme(
                 text,
@@ -95,7 +95,7 @@ async def handle_cf_upload_programme(message, text, claude_client, notion, confi
     await _edit_or_reply(f"✅ Parsed: {len(tracks)} track(s), {parsed_days} day(s).\n💾 Saving to Notion...")
 
     try:
-        await asyncio.get_event_loop().run_in_executor(
+        await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: save_programme(
                 notion,
@@ -142,7 +142,7 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
         return
     key = str(message.chat_id)
     movement_name = workout_result.get("movement") or "Back Squat"
-    movement_id = await asyncio.get_event_loop().run_in_executor(None, lambda: get_or_create_movement(notion, config["NOTION_MOVEMENTS_DB"], movement_name))
+    movement_id = await asyncio.get_running_loop().run_in_executor(None, lambda: get_or_create_movement(notion, config["NOTION_MOVEMENTS_DB"], movement_name))
     cf_pending[key] = {"mode": "strength", "stage": "notes", "movement": movement_name, "movement_page_id": movement_id, "load_lbs": workout_result.get("load_lbs") or 0, "sets": workout_result.get("sets") or 1, "reps": workout_result.get("reps") or 1, "readiness": {}}
     if await handle_gymnastics_level_check(message, movement_id, movement_name, notion, config, cf_pending, key):
         return
@@ -174,11 +174,11 @@ async def handle_cf_prs(message, notion, config):
 async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
     state = cf_pending.get(key) or {}
     if state.get("mode") == "strength":
-        movement_id = state.get("movement_page_id") or await asyncio.get_event_loop().run_in_executor(None, lambda: get_or_create_movement(notion, config["NOTION_MOVEMENTS_DB"], state.get("movement") or "Unknown"))
-        await asyncio.get_event_loop().run_in_executor(None, lambda: create_strength_log(notion, config["NOTION_WORKOUT_LOG_DB"], movement_id, state.get("movement") or "Unknown", float(state.get("load_lbs") or 0), int(state.get("sets") or 1), int(state.get("reps") or 1), False, None, None, state.get("readiness")))
+        movement_id = state.get("movement_page_id") or await asyncio.get_running_loop().run_in_executor(None, lambda: get_or_create_movement(notion, config["NOTION_MOVEMENTS_DB"], state.get("movement") or "Unknown"))
+        await asyncio.get_running_loop().run_in_executor(None, lambda: create_strength_log(notion, config["NOTION_WORKOUT_LOG_DB"], movement_id, state.get("movement") or "Unknown", float(state.get("load_lbs") or 0), int(state.get("sets") or 1), int(state.get("reps") or 1), False, None, None, state.get("readiness")))
         await message.reply_text("✅ Strength logged!\n\n_Saved to Notion_", parse_mode="Markdown")
     elif state.get("mode") == "wod":
-        await asyncio.get_event_loop().run_in_executor(None, lambda: create_wod_log(notion, config["NOTION_WOD_LOG_DB"], state.get("format") or "AMRAP", None, None, "Reps", None, None, None, "Rx", state.get("level_current_name") or notes, False, None, [], None, state.get("readiness")))
+        await asyncio.get_running_loop().run_in_executor(None, lambda: create_wod_log(notion, config["NOTION_WOD_LOG_DB"], state.get("format") or "AMRAP", None, None, "Reps", None, None, None, "Rx", state.get("level_current_name") or notes, False, None, [], None, state.get("readiness")))
         await message.reply_text("✅ WOD logged!\n\n_Saved to Notion_", parse_mode="Markdown")
     cf_pending.pop(key, None)
 
@@ -252,7 +252,7 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         key = parts[2]
         page_id = _restore_pid(parts[3])
         state = cf_pending.get(key, {})
-        await asyncio.get_event_loop().run_in_executor(None, lambda: set_current_level(notion, config.get("NOTION_PROGRESSIONS_DB", ""), state.get("level_movement_page_id"), page_id))
+        await asyncio.get_running_loop().run_in_executor(None, lambda: set_current_level(notion, config.get("NOTION_PROGRESSIONS_DB", ""), state.get("level_movement_page_id"), page_id))
         chosen = next((s for s in state.get("level_steps", []) if s.get("page_id") == page_id), {})
         state["level_current_name"] = chosen.get("name")
         cf_pending[key] = state
@@ -267,7 +267,7 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
             await q.edit_message_text("🏆 Already at top of ladder!", parse_mode="Markdown")
             return
         goal = steps[current_idx + 1]
-        await asyncio.get_event_loop().run_in_executor(None, lambda: set_current_level(notion, config.get("NOTION_PROGRESSIONS_DB", ""), state.get("level_movement_page_id"), goal.get("page_id")))
+        await asyncio.get_running_loop().run_in_executor(None, lambda: set_current_level(notion, config.get("NOTION_PROGRESSIONS_DB", ""), state.get("level_movement_page_id"), goal.get("page_id")))
         state["level_current_name"] = goal.get("name")
         cf_pending[key] = state
         await q.edit_message_text(f"🎉 {goal.get('name')} unlocked!", parse_mode="Markdown")

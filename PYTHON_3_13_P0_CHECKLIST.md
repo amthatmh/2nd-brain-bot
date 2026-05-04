@@ -1,7 +1,6 @@
 # Python 3.13 P0 execution checklist
 
-This document records the P0 work for Python 3.13 migration. Runtime is pinned in both `.python-version` (`3.13.9`, for local/dev tooling) and `runtime.txt` (`python-3.13.9`, for deployment platforms like Heroku).
-
+This document records the P0 work for Python 3.13 migration:
 
 1. **Dependency baseline refresh**
    - Upgraded pinned runtime dependencies to current maintained releases with Python 3.13 support targets.
