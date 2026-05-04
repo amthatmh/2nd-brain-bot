@@ -1182,7 +1182,7 @@ async def handle_photo_followup(message, text: str) -> bool:
 def log_habit(habit_page_id: str, habit_name: str, source: str = "📱 Telegram") -> None:
     today = datetime.now(TZ).date().isoformat()
     props = {
-        "Entry":     {"title":    [{"text": {"content": f"{habit_name} — {today}"}}]},
+        "Entry":     {"title":    [{"text": {"content": habit_name}}]},
         "Habit":     {"relation": [{"id": habit_page_id}]},
         "Completed": {"checkbox": True},
         "Date":      {"date":     {"start": today}},
