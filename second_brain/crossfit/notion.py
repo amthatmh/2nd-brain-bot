@@ -2,6 +2,9 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timedelta
 from second_brain.notion import notion_call
+import logging
+
+log = logging.getLogger(__name__)
 
 
 def _title(props, key="Name"):
@@ -26,6 +29,16 @@ def get_or_create_movement(notion, movements_db_id: str, name: str) -> str:
     page = notion_call(notion.pages.create, parent={"database_id": movements_db_id}, properties={"Name": {"title": [{"text": {"content": name}}]}, "Category": {"select": {"name": "Compound"}}})
     return page["id"]
 
+
+
+def _rich_text_chunks(text: str, limit: int = 1900) -> list[dict]:
+    """Split text into Notion rich_text block array respecting per-block limit."""
+    if not text:
+        return [{"text": {"content": ""}}]
+    chunks = []
+    for i in range(0, len(text), limit):
+        chunks.append({"text": {"content": text[i:i + limit]}})
+    return chunks
 
 
 def this_monday() -> str:
@@ -61,11 +74,26 @@ def get_current_week_programme(notion, program_db_id: str):
 def save_programme(notion, program_db_id: str, workout_days_db_id: str, movements_db_id: str, parsed: dict, full_text: str) -> str:
     if "tracks" not in parsed and "days" in parsed:
         parsed = {"week_label": parsed.get("week_label"), "tracks": [{"track": "Performance", "days": parsed.get("days", [])}]}
+
     week_label = parsed.get("week_label") or "Week"
-    parent = notion_call(notion.pages.create, parent={"database_id": program_db_id}, properties={"Name": {"title": [{"text": {"content": week_label}}]}, "Full Program": {"rich_text": [{"text": {"content": full_text[:1900]}}]}})
-    parent_page_id = parent["id"]
     monday_iso = this_monday()
 
+    try:
+        parent = notion_call(
+            notion.pages.create,
+            parent={"database_id": program_db_id},
+            properties={
+                "Name": {"title": [{"text": {"content": week_label}}]},
+                "Full Program": {"rich_text": _rich_text_chunks(full_text)},
+            },
+        )
+        parent_page_id = parent["id"]
+        log.info("save_programme: created parent row %s", parent_page_id)
+    except Exception as e:
+        log.error("save_programme: failed to create Weekly Programs row: %s", e)
+        raise
+
+    days_created = 0
     for track_row in parsed.get("tracks", []):
         track = track_row.get("track") or "Performance"
         for day_row in track_row.get("days", []):
@@ -75,33 +103,56 @@ def save_programme(notion, program_db_id: str, workout_days_db_id: str, movement
             training_notes = day_row.get("training_notes") or ""
             b_desc = section_b.get("description") or ""
             c_desc = section_c.get("description") or ""
+
             b_ids, c_ids = [], []
-            for m in section_b.get("movements", []) or []:
-                if movements_db_id:
-                    b_ids.append(get_or_create_movement(notion, movements_db_id, m))
-            for m in section_c.get("movements", []) or []:
-                if movements_db_id:
-                    c_ids.append(get_or_create_movement(notion, movements_db_id, m))
-            if workout_days_db_id:
-                props = {
-                    "Name": {"title": [{"text": {"content": f"{day} — {track} — {week_label}"}}]},
-                    "Day": {"select": {"name": day}},
-                    "Track": {"select": {"name": track}},
-                    "Week": {"relation": [{"id": parent_page_id}]},
-                    "Week Of": {"date": {"start": monday_iso}},
-                    "Section B": {"rich_text": [{"text": {"content": b_desc[:1900]}}]},
-                    "Section B Type": {"select": {"name": infer_section_b_type(section_b)}},
-                    "Section B Movements": {"relation": [{"id": mid} for mid in b_ids]},
-                    "Section C": {"rich_text": [{"text": {"content": c_desc[:1900]}}]},
-                    "Section C Movements": {"relation": [{"id": mid} for mid in c_ids]},
-                    "Duration Mins": {"number": section_c.get("duration_mins")},
-                    "Time Cap Mins": {"number": section_c.get("time_cap_mins")},
-                    "Is Partner": {"checkbox": bool(section_c.get("is_partner"))},
-                    "Training Notes": {"rich_text": [{"text": {"content": training_notes[:1900]}}]},
-                }
-                if section_c.get("format"):
-                    props["Section C Format"] = {"select": {"name": section_c.get("format")}}
+            if movements_db_id:
+                for m in section_b.get("movements") or []:
+                    try:
+                        b_ids.append(get_or_create_movement(notion, movements_db_id, m))
+                    except Exception as e:
+                        log.warning("save_programme: could not create movement %s: %s", m, e)
+                for m in section_c.get("movements") or []:
+                    try:
+                        c_ids.append(get_or_create_movement(notion, movements_db_id, m))
+                    except Exception as e:
+                        log.warning("save_programme: could not create movement %s: %s", m, e)
+
+            if not workout_days_db_id:
+                continue
+
+            props = {
+                "Name": {"title": [{"text": {"content": f"{day} — {track} — {week_label}"}}]},
+                "Day": {"select": {"name": day}},
+                "Track": {"select": {"name": track}},
+                "Week": {"relation": [{"id": parent_page_id}]},
+                "Week Of": {"date": {"start": monday_iso}},
+                "Is Partner": {"checkbox": bool(section_c.get("is_partner"))},
+            }
+            if b_desc:
+                props["Section B"] = {"rich_text": _rich_text_chunks(b_desc)}
+                props["Section B Type"] = {"select": {"name": infer_section_b_type(section_b)}}
+            if b_ids:
+                props["Section B Movements"] = {"relation": [{"id": mid} for mid in b_ids]}
+            if c_desc:
+                props["Section C"] = {"rich_text": _rich_text_chunks(c_desc)}
+            if section_c.get("format"):
+                props["Section C Format"] = {"select": {"name": section_c["format"]}}
+            if c_ids:
+                props["Section C Movements"] = {"relation": [{"id": mid} for mid in c_ids]}
+            if section_c.get("duration_mins") is not None:
+                props["Duration Mins"] = {"number": section_c["duration_mins"]}
+            if section_c.get("time_cap_mins") is not None:
+                props["Time Cap Mins"] = {"number": section_c["time_cap_mins"]}
+            if training_notes:
+                props["Training Notes"] = {"rich_text": _rich_text_chunks(training_notes)}
+
+            try:
                 notion_call(notion.pages.create, parent={"database_id": workout_days_db_id}, properties=props)
+                days_created += 1
+            except Exception as e:
+                log.error("save_programme: failed to create Workout Day row %s/%s: %s", track, day, e)
+
+    log.info("save_programme: complete — %d day rows created", days_created)
     return parent_page_id
 
 def get_previous_best(notion, prs_db_id, movement_page_id, reps):

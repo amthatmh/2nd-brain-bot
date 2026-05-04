@@ -133,3 +133,22 @@ def test_save_programme_flat_fallback():
     parsed = {"week_label": "Week of 2026-05-04", "days": [{"day": "Monday", "section_b": None, "section_c": None}]}
     save_programme(notion, "program", "days", "", parsed, "raw")
     assert len(calls) >= 2
+
+
+def test_rich_text_chunks_splits_long_text():
+    """_rich_text_chunks should split text > 1900 chars into multiple blocks."""
+    from second_brain.crossfit.notion import _rich_text_chunks
+
+    long = "A" * 4000
+    chunks = _rich_text_chunks(long)
+    assert len(chunks) == 3
+    assert all(len(c["text"]["content"]) <= 1900 for c in chunks)
+
+
+def test_rich_text_chunks_short_text():
+    """Short text should produce a single block."""
+    from second_brain.crossfit.notion import _rich_text_chunks
+
+    chunks = _rich_text_chunks("hello")
+    assert len(chunks) == 1
+    assert chunks[0]["text"]["content"] == "hello"
