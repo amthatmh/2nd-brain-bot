@@ -34,23 +34,23 @@ class TestTaskDedup(unittest.TestCase):
     def test_exact_match_returns_task(self):
         main = load_main_module()
         tasks = [{"name": "Pay electricity bill", "page_id": "1"}]
-        self.assertEqual(main.fuzzy_match("Pay electricity bill", tasks), tasks[0])
+        self.assertEqual(main.notion_tasks.fuzzy_match("Pay electricity bill", tasks), tasks[0])
 
     def test_partial_substring_match_returns_task(self):
         main = load_main_module()
         tasks = [{"name": "Call Alice about taxes", "page_id": "1"}]
-        self.assertEqual(main.fuzzy_match("call alice", tasks), tasks[0])
+        self.assertEqual(main.notion_tasks.fuzzy_match("call alice", tasks), tasks[0])
 
     def test_no_match_returns_none(self):
         main = load_main_module()
         tasks = [{"name": "Book dentist", "page_id": "1"}]
-        self.assertIsNone(main.fuzzy_match("renew passport", tasks))
+        self.assertIsNone(main.notion_tasks.fuzzy_match("renew passport", tasks))
 
     def test_normalization_strips_punctuation_and_trailing_s(self):
         main = load_main_module()
         task = {"name": "Clean emails!!!", "page_id": "123"}
         with patch("second_brain.notion.tasks.get_all_active_tasks", return_value=[task]):
-            found = main.find_duplicate_active_task("clean email")
+            found = main.notion_tasks.find_duplicate_active_task(main.notion, main.NOTION_DB_ID, "clean email")
         self.assertEqual(found, task)
 
 

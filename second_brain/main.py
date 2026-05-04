@@ -2410,11 +2410,6 @@ def is_on_pace(habit: dict) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def _deadline_prop(days: int | None) -> dict:
-    notion_tasks._deadline_prop.__globals__["local_today"] = local_today
-    return notion_tasks._deadline_prop(days)
-
-
 
 def store_signoff_note(text: str) -> None:
     global _signoff_note_today
@@ -2781,22 +2776,6 @@ def horizon_view_back_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("📅 Full Sunday Review", callback_data="digest:sunday")],
         ]
     )
-
-
-def get_quick_refresh_tasks(limit: int = 10) -> list[dict]:
-    return notion_tasks.get_quick_refresh_tasks(notion, NOTION_DB_ID, limit=limit)
-
-
-def fuzzy_match(query: str, tasks: list[dict]) -> dict | None:
-    return notion_tasks.fuzzy_match(query, tasks)
-
-
-def find_duplicate_active_task(name: str) -> dict | None:
-    return notion_tasks.find_duplicate_active_task(notion, NOTION_DB_ID, name)
-
-
-
-
 
 
 
@@ -4422,7 +4401,7 @@ async def route_classified_message_v10(message, text: str) -> None:
             else:
                 log_habit(habit_pid, habit_name)
                 await thinking.edit_text(f"✅ Logged!\n\n{habit_name}\n📅 {date.today().strftime('%B %-d')}")
-                asyncio.notion_tasks.create_task(check_and_notify_weekly_goals(message.get_bot(), MY_CHAT_ID))
+                asyncio.create_task(check_and_notify_weekly_goals(message.get_bot(), MY_CHAT_ID))
         else:
             all_habits = [{"page_id": h["page_id"], "name": name} for name, h in habit_cache.items()]
             all_habits.sort(key=lambda h: h["name"].lower())
@@ -5236,7 +5215,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             log.warning("Habit success UI update failed for %s: %s", habit_name, ui_error)
             await q.message.reply_text(f"✅ {habit_name} logged!")
 
-        asyncio.notion_tasks.create_task(check_and_notify_weekly_goals(q.bot, MY_CHAT_ID))
+        asyncio.create_task(check_and_notify_weekly_goals(q.bot, MY_CHAT_ID))
         return
 
     if parts[0] == "hpag" and len(parts) == 3:
