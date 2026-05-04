@@ -118,6 +118,8 @@ from second_brain.config import FEATURES
 from second_brain.notion import notion_call, notion_call_async
 from second_brain.notion.habits import extract_habit_frequency
 from second_brain.notion import tasks as notion_tasks
+from second_brain import keyboards as kb
+from second_brain import formatters as fmt
 from second_brain.state import STATE
 from second_brain.utils import ExpiringDict, reply_notion_error
 from second_brain.http_utils import cors_headers
@@ -1004,9 +1006,9 @@ def digest_location_label() -> str:
 def format_weather_snapshot() -> str:
     """Compose a compact weather summary for quick access."""
     lines = [f"📍 *Weather for {current_location}*"]
-    current = format_weather_block(fetch_weather("current"), label="🌤️ Now")
-    today = format_weather_block(fetch_weather("today"), label="📅 Today")
-    tomorrow = format_weather_block(fetch_weather("tomorrow"), label="🌙 Tomorrow")
+    current = fmt.format_weather_block(fetch_weather("current"), label="🌤️ Now")
+    today = fmt.format_weather_block(fetch_weather("today"), label="📅 Today")
+    tomorrow = fmt.format_weather_block(fetch_weather("tomorrow"), label="🌙 Tomorrow")
     for line in (current, today, tomorrow):
         if line:
             lines.append(line)
@@ -1020,8 +1022,8 @@ def format_weather_snapshot() -> str:
         current = uvi_data["current"]
         max_uvi = uvi_data["max"]
         uvi_line = (
-            f"☀️ UVI: {current:.1f} now {uvi_emoji(current)} · "
-            f"{max_uvi:.1f} max {uvi_emoji(max_uvi)}"
+            f"☀️ UVI: {current:.1f} now {fmt.uvi_emoji(current)} · "
+            f"{max_uvi:.1f} max {fmt.uvi_emoji(max_uvi)}"
         )
         lines.append(uvi_line)
     return "\n".join(lines)
@@ -1805,7 +1807,7 @@ async def handle_watchlist_intent(message, title: str, media_type: str) -> None:
     await thinking.edit_text(
         f"📺 Found a few matches for *{title}* — which one?",
         parse_mode="Markdown",
-        reply_markup=tmdb_candidates_keyboard(key, candidates),
+        reply_markup=kb.tmdb_candidates_keyboard(key, candidates),
     )
 
 
@@ -1820,7 +1822,7 @@ async def handle_wantslist_intent(message, item: str, category: str) -> None:
     await message.reply_text(
         f"🎁 Save *{item}* to your Wantslist?\n_Category: {category}_",
         parse_mode="Markdown",
-        reply_markup=wantslist_confirm_keyboard(key),
+        reply_markup=kb.wantslist_confirm_keyboard(key),
     )
 
 
@@ -2252,7 +2254,7 @@ def format_hybrid_digest(tasks: list[dict]) -> tuple[str, list[dict]]:
     lines.append("🚨 *Overdue*")
     if overdue:
         for task in overdue:
-            lines.append(f"{num_emoji(n)} {task['name']}  {notion_tasks._context_label(task)}")
+            lines.append(f"{fmt.num_emoji(n)} {task['name']}  {notion_tasks._context_label(task)}")
             ordered.append(task)
             n += 1
     else:
@@ -2262,7 +2264,7 @@ def format_hybrid_digest(tasks: list[dict]) -> tuple[str, list[dict]]:
     lines.append("📌 *Due Today*")
     if today_tasks:
         for task in today_tasks:
-            lines.append(f"{num_emoji(n)} {task['name']}  {notion_tasks._context_label(task)}")
+            lines.append(f"{fmt.num_emoji(n)} {task['name']}  {notion_tasks._context_label(task)}")
             ordered.append(task)
             n += 1
     else:
@@ -2304,7 +2306,7 @@ def format_week_view(view_type: str) -> tuple[str, list[dict]]:
         hidden_count = len(tasks) - max_display
 
     for i, task in enumerate(shown, 1):
-        lines.append(f"{num_emoji(i)} {task['name']}  {notion_tasks._context_label(task)}")
+        lines.append(f"{fmt.num_emoji(i)} {task['name']}  {notion_tasks._context_label(task)}")
 
     if hidden_count:
         lines.append("")
@@ -2383,7 +2385,7 @@ def format_digest_view() -> tuple[str, InlineKeyboardMarkup]:
     if beyond_count:
         lines.extend(["", f"...and {beyond_count} more beyond 7 days (view in Notion)"])
 
-    return "\n".join(lines).strip(), back_to_palette_keyboard()
+    return "\n".join(lines).strip(), kb.back_to_palette_keyboard()
 
 
 def format_todo_view(marked_done_indices: set | None = None) -> tuple[str, InlineKeyboardMarkup]:
@@ -2407,7 +2409,7 @@ def format_todo_view(marked_done_indices: set | None = None) -> tuple[str, Inlin
                 lines.append(f"✅ {label}")
                 continue
             keyboard_rows.append(
-                [InlineKeyboardButton(f"{num_emoji(idx + 1)} {label}", callback_data=f"qp:done:{idx}")]
+                [InlineKeyboardButton(f"{fmt.num_emoji(idx + 1)} {label}", callback_data=f"qp:done:{idx}")]
             )
         if len(marked_done_indices) >= len(tasks):
             lines.append("✅ All today's tasks marked done! 🎉")
@@ -3367,7 +3369,7 @@ async def _maybe_prompt_explicit_venue(message, payload: dict, raw_text: str) ->
     await message.reply_text(
         f"🎬 I found a close venue match.\n\nYou wrote: *{original}*\nDid you mean: *{suggested}*?\n\nSave with suggested venue?",
         parse_mode="Markdown",
-        reply_markup=entertainment_confirm_keyboard(key),
+        reply_markup=kb.entertainment_confirm_keyboard(key),
     )
     return True
 
@@ -3405,28 +3407,28 @@ def format_daily_digest(
     carryover = [t for t in tasks if t not in overdue and t not in today_now]
 
     lines, ordered, n = [f"☀️ *{date_str}*"], [], 1
-    weather_block = format_weather_block(fetch_weather(weather_mode), label="🌤️")
-    lines.append(weather_block or weather_unavailable_digest_line())
+    weather_block = fmt.format_weather_block(fetch_weather(weather_mode), label="🌤️")
+    lines.append(weather_block or fmt.weather_unavailable_digest_line())
     lines.append("")
 
     if overdue:
         lines.append("🚨 *Overdue*")
         for t in overdue:
-            lines.append(f"{num_emoji(n)}{context_emoji(t.get('context'))} {t['name']}")
+            lines.append(f"{fmt.num_emoji(n)}{fmt.context_emoji(t.get('context'))} {t['name']}")
             ordered.append(t); n += 1
         lines.append("")
 
     if today_now:
         lines.append("📌 *Today*")
         for t in today_now:
-            lines.append(f"{num_emoji(n)}{context_emoji(t.get('context'))} {t['name']}")
+            lines.append(f"{fmt.num_emoji(n)}{fmt.context_emoji(t.get('context'))} {t['name']}")
             ordered.append(t); n += 1
         lines.append("")
 
     if carryover:
         lines.append("🔁 *Carry-over (still open)*")
         for t in carryover:
-            lines.append(f"{num_emoji(n)}{context_emoji(t.get('context'))} {t['name']} · {t['auto_horizon']}")
+            lines.append(f"{fmt.num_emoji(n)}{fmt.context_emoji(t.get('context'))} {t['name']} · {t['auto_horizon']}")
             ordered.append(t); n += 1
         lines.append("")
 
@@ -3443,13 +3445,13 @@ def format_sunday_intro(week_tasks: list[dict], month_tasks: list[dict]) -> tupl
     if week_tasks:
         lines.append("🟠 *This Week*")
         for t in week_tasks:
-            lines.append(f"{num_emoji(n)} {t['name']}  {t['context']}")
+            lines.append(f"{fmt.num_emoji(n)} {t['name']}  {t['context']}")
             ordered.append(t); n += 1
         lines.append("")
     if month_tasks:
         lines.append("🟡 *This Month*")
         for t in month_tasks:
-            lines.append(f"{num_emoji(n)} {t['name']}  {t['context']}")
+            lines.append(f"{fmt.num_emoji(n)} {t['name']}  {t['context']}")
             ordered.append(t); n += 1
     lines.append("\n_Reply `review 1` or `review 1,3` to reassign urgency_")
     return "\n".join(lines), ordered
@@ -3467,7 +3469,7 @@ def quick_actions_keyboard() -> ReplyKeyboardMarkup:
 async def refresh_quick_actions_keyboard(message) -> None:
     """Force-refresh the reply keyboard to replace legacy layouts (e.g. old Mute button)."""
     await message.reply_text("🔄 Refreshing quick actions…", reply_markup=ReplyKeyboardRemove())
-    await message.reply_text("✅ Quick actions updated.", reply_markup=quick_actions_keyboard())
+    await message.reply_text("✅ Quick actions updated.", reply_markup=kb.quick_actions_keyboard())
 
 
 def notes_options_keyboard() -> InlineKeyboardMarkup:
@@ -3554,7 +3556,7 @@ def format_reminder_snapshot(mode: str = "priority", limit: int = 8) -> str:
     else:
         for idx, task in enumerate(ordered[:limit], start=1):
             deadline = f" · due {task['deadline']}" if task.get("deadline") else ""
-            lines.append(f"{num_emoji(idx)} {task['name']}  {task['context']} · {task['auto_horizon']}{deadline}")
+            lines.append(f"{fmt.num_emoji(idx)} {task['name']}  {task['context']} · {task['auto_horizon']}{deadline}")
         if len(ordered) > limit:
             lines.append(f"\n…and *{len(ordered) - limit}* more.")
 
@@ -3564,9 +3566,9 @@ def format_reminder_snapshot(mode: str = "priority", limit: int = 8) -> str:
 
 async def send_quick_reminder(message, mode: str = "priority") -> None:
     await message.reply_text(
-        format_reminder_snapshot(mode=mode),
+        fmt.format_reminder_snapshot(mode=mode),
         parse_mode="Markdown",
-        reply_markup=quick_actions_keyboard(),
+        reply_markup=kb.quick_actions_keyboard(),
     )
 
 
@@ -3701,7 +3703,7 @@ def todo_picker_keyboard(key: str) -> InlineKeyboardMarkup:
     for idx, task in enumerate(tasks):
         if task.get("_done"):
             continue
-        label = f"{context_emoji(task.get('context'))} {task.get('name', 'Untitled')}"
+        label = f"{fmt.context_emoji(task.get('context'))} {task.get('name', 'Untitled')}"
         rows.append([InlineKeyboardButton(label, callback_data=f"td:{key}:{idx}")])
     return InlineKeyboardMarkup(rows)
 
@@ -3732,7 +3734,7 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
             loop.run_in_executor(None, _run_capture, t, force_create, context_override, deadline_override)
             for t in task_texts
         ])
-        await thinking.edit_text(format_batch_summary(list(results)), parse_mode="Markdown")
+        await thinking.edit_text(fmt.format_batch_summary(list(results)), parse_mode="Markdown")
         return
 
     try:
@@ -3817,7 +3819,7 @@ async def open_habit_picker(message) -> None:
     await message.reply_text(
         "🏃 *Which habit did you complete?*",
         parse_mode="Markdown",
-        reply_markup=habit_buttons(pending_habits, "manual"),
+        reply_markup=kb.habit_buttons(pending_habits, "manual"),
     )
 
 
@@ -3889,7 +3891,7 @@ async def cmd_notes_text(message, context: ContextTypes.DEFAULT_TYPE | None = No
         return
     await message.reply_text(
         "📝 Notes options:",
-        reply_markup=notes_options_keyboard(),
+        reply_markup=kb.notes_options_keyboard(),
     )
 
 
@@ -3907,7 +3909,7 @@ async def handle_weather(location: str) -> str:
     """Return weather output for a confirmed location."""
     if not location:
         return "📍 I need a location first. Send `weather: <city>` or `/location`."
-    return format_weather_snapshot()
+    return fmt.format_weather_snapshot()
 
 
 async def cmd_mute_text(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
@@ -3917,7 +3919,7 @@ async def cmd_mute_text(message, context: ContextTypes.DEFAULT_TYPE | None = Non
         context.user_data["awaiting_mute_days"] = False
     await message.reply_text(
         "🔕 Mute options for scheduled digests:",
-        reply_markup=mute_options_keyboard(),
+        reply_markup=kb.mute_options_keyboard(),
     )
 
 
@@ -4064,7 +4066,7 @@ async def route_classified_message_v10(message, text: str) -> None:
         else:
             all_habits = [{"page_id": h["page_id"], "name": name} for name, h in habit_cache.items()]
             all_habits.sort(key=lambda h: h["name"].lower())
-            await thinking.edit_text("Which habit did you complete?", reply_markup=habit_buttons(all_habits, "manual"))
+            await thinking.edit_text("Which habit did you complete?", reply_markup=kb.habit_buttons(all_habits, "manual"))
         return
 
     if intent == "entertainment_log":
@@ -4087,7 +4089,7 @@ async def route_classified_message_v10(message, text: str) -> None:
         await thinking.edit_text(
             f"🎬 I think this is an entertainment log:\n\n*{preview}*\n\nSave it?",
             parse_mode="Markdown",
-            reply_markup=entertainment_confirm_keyboard(key),
+            reply_markup=kb.entertainment_confirm_keyboard(key),
         )
         return
 
@@ -4414,7 +4416,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             kind_label = kind_label_map.get(awaiting_note_capture, "note")
             await message.reply_text(
                 f"✅ {kind_label.capitalize()} saved to Notes.",
-                reply_markup=quick_actions_keyboard(),
+                reply_markup=kb.quick_actions_keyboard(),
             )
         except Exception as e:
             log.error("fn=handle_message_text event=note_quick_save_failed err=%s", e)
@@ -4515,8 +4517,8 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
                 if 1 <= n <= len(items):
                     task = items[n - 1]
                     await message.reply_text(
-                        f"{num_emoji(n)} {task['name']}\nChoose a new horizon:",
-                        reply_markup=review_keyboard(task["page_id"]),
+                        f"{fmt.num_emoji(n)} {task['name']}\nChoose a new horizon:",
+                        reply_markup=kb.review_keyboard(task["page_id"]),
                     )
                     queued += 1
         elif message.reply_to_message:
@@ -4526,8 +4528,8 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
                 task = recovered.get(n)
                 if task:
                     await message.reply_text(
-                        f"{num_emoji(n)} {task['name']}\nChoose a new horizon:",
-                        reply_markup=review_keyboard(task["page_id"]),
+                        f"{fmt.num_emoji(n)} {task['name']}\nChoose a new horizon:",
+                        reply_markup=kb.review_keyboard(task["page_id"]),
                     )
                     queued += 1
 
@@ -4748,7 +4750,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await q.edit_message_text("❌ Mute action canceled.")
             return
         if action == "status":
-            await q.edit_message_text(mute_status_text())
+            await q.edit_message_text(fmt.mute_status_text())
             return
         if action == "unmute":
             global mute_until
@@ -4882,7 +4884,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         all_habits = get_active_habits_for_trigger()
         try:
             await q.edit_message_reply_markup(
-                reply_markup=habit_buttons(all_habits, prefix, page=int(page_str))
+                reply_markup=kb.habit_buttons(all_habits, prefix, page=int(page_str))
             )
         except Exception as e:
             log.error(f"Habit pagination error: {e}")
@@ -5071,7 +5073,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await q.edit_message_text(
                 "🎯 *Quick Access*",
                 parse_mode="Markdown",
-                reply_markup=format_command_palette(),
+                reply_markup=kb.format_command_palette(),
             )
             return
 
@@ -5082,29 +5084,29 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         if action == "notes":
             if NOTION_NOTES_DB:
-                await q.edit_message_text("📝 Notes connected. Choose an option:", reply_markup=notes_options_keyboard())
+                await q.edit_message_text("📝 Notes connected. Choose an option:", reply_markup=kb.notes_options_keyboard())
             else:
                 await q.edit_message_text("📝 Notes DB isn't configured yet — add NOTION_NOTES_DB first.")
             return
 
         if action == "weather":
-            await q.edit_message_text(format_weather_snapshot(), parse_mode="Markdown")
+            await q.edit_message_text(fmt.format_weather_snapshot(), parse_mode="Markdown")
             return
 
         if action == "mute":
             await q.edit_message_text(
                 "🔕 Choose a mute option:",
-                reply_markup=mute_options_keyboard(),
+                reply_markup=kb.mute_options_keyboard(),
             )
             return
 
     if parts[0] == "qv" and len(parts) == 2 and parts[1] in {"week", "backlog"}:
         try:
-            message, ordered = format_week_view(parts[1])
+            message, ordered = fmt.format_week_view(parts[1])
             await q.edit_message_text(
                 text=message,
                 parse_mode="Markdown",
-                reply_markup=horizon_view_back_keyboard(),
+                reply_markup=kb.horizon_view_back_keyboard(),
             )
             if ordered and q.message:
                 digest_map[q.message.message_id] = ordered
@@ -5116,7 +5118,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if q.data == "digest:today":
         try:
             tasks = notion_tasks.get_today_and_overdue_tasks(notion, NOTION_DB_ID)
-            message, ordered = format_hybrid_digest(tasks)
+            message, ordered = fmt.format_hybrid_digest(tasks)
             await q.edit_message_text(text=message, parse_mode="Markdown")
             if ordered and q.message:
                 digest_map[q.message.message_id] = ordered
@@ -5373,16 +5375,16 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
 
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
     lines = [f"☀️ *{date_str}*", ""]
-    weather_block = format_weather_block(fetch_weather("today"), label="🌤️")
+    weather_block = fmt.format_weather_block(fetch_weather("today"), label="🌤️")
     uvi_data = fetch_uvi_data()
     if weather_block and uvi_data:
         max_uvi = uvi_data["max"]
-        weather_block += f" · ☀️ {max_uvi:.1f} {uvi_emoji(max_uvi)}"
-    location_label = digest_location_label()
+        weather_block += f" · ☀️ {max_uvi:.1f} {fmt.uvi_emoji(max_uvi)}"
+    location_label = fmt.digest_location_label()
     if weather_block:
-        lines.append(append_location_to_weather_block(weather_block, location_label))
+        lines.append(fmt.append_location_to_weather_block(weather_block, location_label))
     else:
-        lines.append(weather_unavailable_digest_line())
+        lines.append(fmt.weather_unavailable_digest_line())
     lines.append("")
     n = 1
 
@@ -5408,21 +5410,21 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     if overdue:
         lines.append("🚨 *Overdue*")
         for task in overdue:
-            lines.append(f"{num_emoji(n)}{context_emoji(task.get('context'))} {task['name']}")
+            lines.append(f"{fmt.num_emoji(n)}{fmt.context_emoji(task.get('context'))} {task['name']}")
             n += 1
         lines.append("")
 
     if today_tasks:
         lines.append("📌 *Today*")
         for task in today_tasks:
-            lines.append(f"{num_emoji(n)}{context_emoji(task.get('context'))} {task['name']}")
+            lines.append(f"{fmt.num_emoji(n)}{fmt.context_emoji(task.get('context'))} {task['name']}")
             n += 1
         lines.append("")
 
     if this_week_tasks:
         lines.append("📅 *This Week*")
         for task in this_week_tasks:
-            lines.append(f"{num_emoji(n)}{context_emoji(task.get('context'))} {task['name']}")
+            lines.append(f"{fmt.num_emoji(n)}{fmt.context_emoji(task.get('context'))} {task['name']}")
             n += 1
         lines.append("")
 
@@ -5435,7 +5437,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         chat_id=MY_CHAT_ID,
         text=message,
         parse_mode="Markdown",
-        reply_markup=habit_buttons(habits, "morning") if habits else None,
+        reply_markup=kb.habit_buttons(habits, "morning") if habits else None,
     )
 
     if ordered:
@@ -5471,7 +5473,7 @@ async def send_evening_checkin(bot) -> None:
         chat_id=MY_CHAT_ID,
         text=habit_text.rstrip(),
         parse_mode="Markdown",
-        reply_markup=habit_buttons(evening_habits, "evening"),
+        reply_markup=kb.habit_buttons(evening_habits, "evening"),
     )
     log.info("Evening check-in sent — %d habits", len(evening_habits))
 
@@ -5482,7 +5484,7 @@ async def send_sunday_review(bot) -> None:
         return
     week_tasks = query_tasks_by_auto_horizon(["🟠 This Week"])
     month_tasks = query_tasks_by_auto_horizon(["🟡 This Month"])
-    header, ordered = format_sunday_intro(week_tasks, month_tasks)
+    header, ordered = fmt.format_sunday_intro(week_tasks, month_tasks)
     sent_review = await bot.send_message(chat_id=MY_CHAT_ID, text=header, parse_mode="Markdown")
     if ordered:
         digest_map[sent_review.message_id] = ordered
@@ -5515,7 +5517,7 @@ async def send_daily_habits_list(bot) -> None:
         chat_id=MY_CHAT_ID,
         text="🎯 *Daily habits* — tap to log:",
         parse_mode="Markdown",
-        reply_markup=habit_buttons(habits, "morning"),
+        reply_markup=kb.habit_buttons(habits, "morning"),
     )
     log.info("Habits list sent — %s available habits", len(habits))
 
@@ -6266,7 +6268,7 @@ async def handle_done_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(
             "🏃 *Which habit did you complete?*",
             parse_mode="Markdown",
-            reply_markup=habit_buttons(pending_habits, "manual"),
+            reply_markup=kb.habit_buttons(pending_habits, "manual"),
         )
     if tasks:
         global _done_picker_counter
@@ -6390,7 +6392,7 @@ async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """/weather — show current + upcoming forecast snapshot."""
     if update.effective_chat.id != MY_CHAT_ID:
         return
-    await update.message.reply_text(format_weather_snapshot(), parse_mode="Markdown")
+    await update.message.reply_text(fmt.format_weather_snapshot(), parse_mode="Markdown")
 
 
 async def cmd_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -6398,7 +6400,7 @@ async def cmd_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat.id != MY_CHAT_ID:
         return
     if NOTION_NOTES_DB:
-        await update.message.reply_text("📝 Notes connected. Choose an option:", reply_markup=notes_options_keyboard())
+        await update.message.reply_text("📝 Notes connected. Choose an option:", reply_markup=kb.notes_options_keyboard())
     else:
         await update.message.reply_text("📝 Notes DB isn't configured yet — add NOTION_NOTES_DB first.")
 
