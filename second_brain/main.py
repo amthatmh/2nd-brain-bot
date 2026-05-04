@@ -80,23 +80,23 @@ import anthropic
 import httpx
 from notion_client import Client as NotionClient
 
-from second_brain.asana_sync import (
+from second_brain.asana.sync import (
     reconcile,
     AsanaSyncError,
     validate_notion_schema,
     startup_smoke_test,
 )
-from cinema.sync import sync_cinema_log_to_notion, sync_single_cinema_entry
-from cinema.config import (
+from second_brain.cinema.sync import sync_cinema_log_to_notion, sync_single_cinema_entry
+from second_brain.cinema.config import (
     CINEMA_DB_ID,
     FAVE_DB_ID,
     TMDB_API_KEY,
     validate_config as validate_cinema_config,
 )
 from second_brain.sync_telemetry import init_sync_status, utc_now_iso, format_sync_status_message
-from second_brain.scheduler_setup import register_cinema_jobs
+from second_brain.scheduler import register_cinema_jobs
 from second_brain.notion.notes import create_note_entry, save_note, fetch_note_topics_from_notion
-from second_brain.notes_flow import (
+from second_brain.notes.flow import (
     split_kind_keyboard,
     ordered_topics,
     note_topics_keyboard,
