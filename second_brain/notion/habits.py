@@ -19,6 +19,9 @@ habit_cache: dict[str, dict[str, Any]] = {}
 log = logging.getLogger(__name__)
 habit_cache: dict[str, dict[str, Any]] = {}
 
+log = logging.getLogger(__name__)
+habit_cache: dict[str, dict[str, Any]] = {}
+
 
 def _plain_text_from_property(prop: dict[str, Any] | None) -> str:
     """Extract readable text from a Notion property payload."""
