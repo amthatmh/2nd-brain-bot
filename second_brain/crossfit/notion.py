@@ -1,6 +1,6 @@
 from __future__ import annotations
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from second_brain.notion import notion_call
 import logging
 
@@ -304,15 +304,15 @@ def get_previous_best(notion, prs_db_id, movement_page_id, reps):
     return best
 
 def create_pr_entry(notion, prs_db_id, cycles_db_id, movement_page_id, movement_name, weight_lbs, reps, previous_best_lbs, notes):
-    props={"Name":{"title":[{"text":{"content":f"{movement_name} {reps}RM — {datetime.now(datetime.UTC).date().isoformat()}"}}]},"Date":{"date":{"start":datetime.now(datetime.UTC).date().isoformat()}},"Movement":{"relation":[{"id":movement_page_id}]},"Weight (lbs)":{"number":weight_lbs},"Previous Best (lbs)":{"number":previous_best_lbs or 0},"Reps":{"number":reps},"Rep Format":{"rich_text":[{"text":{"content":f"{reps}RM"}}]},"Notes":{"rich_text":[{"text":{"content":notes or ""}}]}}
+    props={"Name":{"title":[{"text":{"content":f"{movement_name} {reps}RM — {datetime.now(timezone.utc).date().isoformat()}"}}]},"Date":{"date":{"start":datetime.now(timezone.utc).date().isoformat()}},"Movement":{"relation":[{"id":movement_page_id}]},"Weight (lbs)":{"number":weight_lbs},"Previous Best (lbs)":{"number":previous_best_lbs or 0},"Reps":{"number":reps},"Rep Format":{"rich_text":[{"text":{"content":f"{reps}RM"}}]},"Notes":{"rich_text":[{"text":{"content":notes or ""}}]}}
     page=notion_call(notion.pages.create,parent={"database_id":prs_db_id},properties=props); return page["id"]
 
 def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_name, load_lbs, effort_sets, effort_reps, is_max_attempt, weekly_program_page_id, cycle_page_id, readiness):
-    props={"Name":{"title":[{"text":{"content":f"{movement_name} — {datetime.now(datetime.UTC).date().isoformat()}"}}]},"Date":{"date":{"start":datetime.now(datetime.UTC).date().isoformat()}},"Movement":{"relation":[{"id":movement_page_id}]},"load_lbs":{"number":load_lbs},"effort_sets":{"number":effort_sets},"effort_reps":{"number":effort_reps},"is_max_attempt":{"checkbox":bool(is_max_attempt)}}
+    props={"Name":{"title":[{"text":{"content":f"{movement_name} — {datetime.now(timezone.utc).date().isoformat()}"}}]},"Date":{"date":{"start":datetime.now(timezone.utc).date().isoformat()}},"Movement":{"relation":[{"id":movement_page_id}]},"load_lbs":{"number":load_lbs},"effort_sets":{"number":effort_sets},"effort_reps":{"number":effort_reps},"is_max_attempt":{"checkbox":bool(is_max_attempt)}}
     page=notion_call(notion.pages.create,parent={"database_id":workout_log_db_id},properties=props); return page["id"]
 
 def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mins, result_type, result_seconds, result_rounds, result_reps, rx_scaled, scaling_notes, is_partner, wod_name, movement_page_ids, weekly_program_page_id, readiness):
-    props={"Name":{"title":[{"text":{"content":f"{(wod_name or wod_format)} — {datetime.now(datetime.UTC).date().isoformat()}"}}]},"Date":{"date":{"start":datetime.now(datetime.UTC).date().isoformat()}},"Format":{"select":{"name":wod_format}},"Result Type":{"select":{"name":result_type}},"Rx / Scaled":{"select":{"name":rx_scaled}},"Partner?":{"checkbox":bool(is_partner)}}
+    props={"Name":{"title":[{"text":{"content":f"{(wod_name or wod_format)} — {datetime.now(timezone.utc).date().isoformat()}"}}]},"Date":{"date":{"start":datetime.now(timezone.utc).date().isoformat()}},"Format":{"select":{"name":wod_format}},"Result Type":{"select":{"name":result_type}},"Rx / Scaled":{"select":{"name":rx_scaled}},"Partner?":{"checkbox":bool(is_partner)}}
     page=notion_call(notion.pages.create,parent={"database_id":wod_log_db_id},properties=props); return page["id"]
 
 def query_subs(notion, subs_db_id, movements_db_id, movement_name, sub_type):
