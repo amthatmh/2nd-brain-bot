@@ -9,8 +9,8 @@ class TestMainDuplicateFunctions(unittest.TestCase):
         tree = ast.parse(src)
         names = [n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
         dupes = sorted(name for name in set(names) if names.count(name) > 1)
-        # One nested helper named context_rank still exists in two separate functions.
-        self.assertEqual(dupes, ["context_rank"])
+        # No duplicate function definitions should remain in main.py.
+        self.assertEqual(dupes, [])
 
 
 if __name__ == "__main__":
