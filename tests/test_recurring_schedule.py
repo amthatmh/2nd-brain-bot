@@ -36,8 +36,8 @@ def test_monthly_supports_any_ordinal_day():
         "last_generated": None,
     }
 
-    assert main.should_spawn_today(template, date(2026, 4, 4))
-    assert not main.should_spawn_today(template, date(2026, 4, 5))
+    assert main.notion_tasks.should_spawn_today(template, date(2026, 4, 4))
+    assert not main.notion_tasks.should_spawn_today(template, date(2026, 4, 5))
 
 
 def test_monthly_31st_rolls_to_month_end_for_short_months():
@@ -48,8 +48,8 @@ def test_monthly_31st_rolls_to_month_end_for_short_months():
         "last_generated": None,
     }
 
-    assert main.should_spawn_today(template, date(2026, 4, 30))
-    assert not main.should_spawn_today(template, date(2026, 4, 29))
+    assert main.notion_tasks.should_spawn_today(template, date(2026, 4, 30))
+    assert not main.notion_tasks.should_spawn_today(template, date(2026, 4, 29))
 
 
 def test_quarterly_uses_anchor_month_and_repeat_day():
@@ -61,8 +61,8 @@ def test_quarterly_uses_anchor_month_and_repeat_day():
         "deadline": "2026-01-04",
     }
 
-    assert main.should_spawn_today(template, date(2026, 4, 4))
-    assert not main.should_spawn_today(template, date(2026, 5, 4))
+    assert main.notion_tasks.should_spawn_today(template, date(2026, 4, 4))
+    assert not main.notion_tasks.should_spawn_today(template, date(2026, 5, 4))
 
 
 def test_quarterly_last_day_rolls_to_month_end():
@@ -74,8 +74,8 @@ def test_quarterly_last_day_rolls_to_month_end():
         "deadline": "2026-01-31",
     }
 
-    assert main.should_spawn_today(template, date(2026, 4, 30))
-    assert not main.should_spawn_today(template, date(2026, 4, 29))
+    assert main.notion_tasks.should_spawn_today(template, date(2026, 4, 30))
+    assert not main.notion_tasks.should_spawn_today(template, date(2026, 4, 29))
 
 
 def test_next_repeat_day_date_monthly_uses_future_ordinal_day():

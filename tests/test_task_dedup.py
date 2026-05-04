@@ -49,7 +49,7 @@ class TestTaskDedup(unittest.TestCase):
     def test_normalization_strips_punctuation_and_trailing_s(self):
         main = load_main_module()
         task = {"name": "Clean emails!!!", "page_id": "123"}
-        with patch.object(main, "get_all_active_tasks", return_value=[task]):
+        with patch("second_brain.notion.tasks.get_all_active_tasks", return_value=[task]):
             found = main.find_duplicate_active_task("clean email")
         self.assertEqual(found, task)
 
