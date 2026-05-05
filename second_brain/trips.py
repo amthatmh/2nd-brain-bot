@@ -95,7 +95,8 @@ async def execute_trip(
     _ = (fetch_weather, claude)
     trip = trip_map[key]
 
-    if not NOTION_TRIPS_DB:
+    database_id = _normalize_notion_database_id(NOTION_TRIPS_DB)
+    if not database_id:
         await query.message.reply_text("⚠️ NOTION_TRIPS_DB is not configured, so I couldn't save this trip.")
         return
 
@@ -118,10 +119,18 @@ async def execute_trip(
         properties.pop("Duration")
 
     try:
-        notion.pages.create(parent={"database_id": NOTION_TRIPS_DB}, properties=properties)
+        notion.pages.create(parent={"database_id": database_id}, properties=properties)
     except Exception as exc:
         await query.message.reply_text(f"⚠️ I couldn't save the trip to Notion: {exc}")
         return
 
     await query.message.reply_text("🧳 Trip saved to Notion. Packing flow scaffold saved.")
     set_awaiting_packing_feedback(True)
+
+
+def _normalize_notion_database_id(raw_id: str) -> str:
+    cleaned = re.sub(r"[^0-9a-fA-F]", "", (raw_id or ""))
+    if len(cleaned) < 32:
+        return ""
+    cleaned = cleaned[-32:]
+    return f"{cleaned[0:8]}-{cleaned[8:12]}-{cleaned[12:16]}-{cleaned[16:20]}-{cleaned[20:32]}"

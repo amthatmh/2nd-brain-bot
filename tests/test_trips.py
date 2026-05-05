@@ -45,7 +45,7 @@ def _trip_map():
 
 
 def test_execute_trip_saves_to_notion(monkeypatch):
-    monkeypatch.setattr(trips, "NOTION_TRIPS_DB", "abc123")
+    monkeypatch.setattr(trips, "NOTION_TRIPS_DB", "c57f9edbf406d4368b32d23f0ea2a0c66")
     query = _Query()
     created = {}
 
@@ -66,7 +66,7 @@ def test_execute_trip_saves_to_notion(monkeypatch):
         fetch_weather=lambda _: None,
     ))
 
-    assert created["parent"]["database_id"] == "abc123"
+    assert created["parent"]["database_id"] == "57f9edbf-406d-4368-b32d-23f0ea2a0c66"
     assert created["properties"]["Trip"]["title"][0]["text"]["content"].startswith("Nashville TN")
     assert flag["value"] is True
     assert any("Trip saved to Notion" in msg for msg in query.message.sent)
@@ -79,3 +79,9 @@ def test_parse_trip_message_falls_back_when_nlp_unavailable():
     assert parsed["purpose"] == "Both"
     assert parsed["departure_date"] is None
     assert parsed["return_date"] is None
+
+
+def test_normalize_notion_database_id():
+    assert trips._normalize_notion_database_id("c57f9edbf406d4368b32d23f0ea2a0c66") == "57f9edbf-406d-4368-b32d-23f0ea2a0c66"
+    assert trips._normalize_notion_database_id("57f9edbf-406d-4368-b32d-23f0ea2a0c66") == "57f9edbf-406d-4368-b32d-23f0ea2a0c66"
+    assert trips._normalize_notion_database_id("bad-id") == ""
