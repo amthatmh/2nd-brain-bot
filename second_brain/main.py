@@ -3690,6 +3690,7 @@ async def post_init(app: Application) -> None:
             BotCommand("weather", "Show weather snapshot"),
             BotCommand("habits", "Show habits list"),
             BotCommand("log", "Log cinema/performance/sport"),
+            BotCommand("trip", "Log a work trip"),
             BotCommand("sync", "Run manual sync"),
             BotCommand("syncstatus", "Show sync status"),
             BotCommand("mute", "Pause scheduled digests"),
