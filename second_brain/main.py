@@ -1264,9 +1264,6 @@ async def cmd_refresh(message, context: ContextTypes.DEFAULT_TYPE | None = None)
     include_habits = True if config is None else bool(config.get("include_habits", True))
     await send_daily_digest(message.get_bot(), include_habits=include_habits, config=config)
 
-    if _scheduler is not None:
-        build_digest_schedule(_scheduler, message.get_bot())
-
 
 
 
