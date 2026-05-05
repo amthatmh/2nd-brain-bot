@@ -4,16 +4,10 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date, timedelta
+from datetime import date
 from typing import Callable
 
-from second_brain.config import (
-    CLAUDE_MODEL,
-    NOTION_PACKING_ITEMS_DB,
-    NOTION_TRIPS_DB,
-    OPENWEATHER_KEY,
-    TZ,
-)
+from second_brain.config import CLAUDE_MODEL, NOTION_TRIPS_DB
 
 
 def format_trip_dates(dep: str, ret: str) -> str:
@@ -53,15 +47,36 @@ async def execute_trip(
     set_awaiting_packing_feedback: Callable[[bool], None],
     fetch_weather: Callable[[str], dict | None],
 ) -> None:
-    _ = (NOTION_TRIPS_DB, OPENWEATHER_KEY, TZ, claude, notion)
+    _ = (fetch_weather, claude)
     trip = trip_map[key]
-    today_weather = fetch_weather("today") or {}
-    flags = []
-    _summary = today_weather.get("summary", "Weather unavailable")
-    trip["weather_flags"] = flags
-    dep = date.fromisoformat(trip["departure_date"])
-    _reminder_2d = dep - timedelta(days=2)
-    _reminder_1d = dep - timedelta(days=1)
-    _title = f"{', '.join(trip['destinations'])} — {format_trip_dates(trip['departure_date'], trip['return_date'])}"
-    await query.message.reply_text("🧳 Trip captured. Packing flow scaffold saved.")
+
+    if not NOTION_TRIPS_DB:
+        await query.message.reply_text("⚠️ NOTION_TRIPS_DB is not configured, so I couldn't save this trip.")
+        return
+
+    title = f"{', '.join(trip['destinations'])} — {format_trip_dates(trip['departure_date'], trip['return_date'])}"
+
+    properties = {
+        "Trip": {"title": [{"text": {"content": title}}]},
+        "Departure Date": {"date": {"start": trip["departure_date"]}},
+        "Return Date": {"date": {"start": trip["return_date"]}},
+        "Destination(s)": {"rich_text": [{"text": {"content": ", ".join(trip.get("destinations") or [])}}]},
+        "Duration": {"select": {"name": trip.get("duration_label") or ""}},
+        "Purpose": {"select": {"name": trip.get("purpose") or "Work"}},
+        "Field Work": {"multi_select": [{"name": item} for item in (trip.get("field_work_types") or []) if item and item != "None"]},
+        "Multiple Sites": {"checkbox": bool(trip.get("multiple_sites"))},
+        "Checked Luggage": {"checkbox": bool(trip.get("checked_luggage"))},
+    }
+
+    # Avoid sending empty select names; Notion API rejects them.
+    if not properties["Duration"]["select"]["name"]:
+        properties.pop("Duration")
+
+    try:
+        notion.pages.create(parent={"database_id": NOTION_TRIPS_DB}, properties=properties)
+    except Exception as exc:
+        await query.message.reply_text(f"⚠️ I couldn't save the trip to Notion: {exc}")
+        return
+
+    await query.message.reply_text("🧳 Trip saved to Notion. Packing flow scaffold saved.")
     set_awaiting_packing_feedback(True)
