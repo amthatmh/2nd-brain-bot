@@ -105,3 +105,36 @@ def test_fetch_daily_weather_reuses_cached_one_call_data(monkeypatch):
     assert len(digest_today) == 1
     assert len(weather_five_days) == 5
     assert weather_five_days[0] == digest_today[0]
+
+
+def test_palette_digest_view_includes_weather_card():
+    from second_brain import palette
+
+    class FakeTasks:
+        @staticmethod
+        def get_all_active_tasks(notion, notion_db_id):
+            return []
+
+        @staticmethod
+        def _parse_deadline(deadline):
+            return None
+
+        @staticmethod
+        def _task_sort_key(task):
+            return task.get("name", "")
+
+        @staticmethod
+        def _context_label(task):
+            return ""
+
+    message, _keyboard = palette.format_digest_view(
+        notion_tasks=FakeTasks,
+        notion=None,
+        notion_db_id="test-db",
+        local_today_fn=lambda: datetime.now(wx.TZ).date(),
+        back_to_palette_keyboard=lambda: None,
+        weather_card="📍 Chicago · ☁️ Clouds\n🌡️ 20°C / 10°C",
+    )
+
+    assert "📍 Chicago · ☁️ Clouds" in message
+    assert message.index("📍 Chicago") < message.index("✅ Clear for next 7 days!")
