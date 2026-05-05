@@ -43,6 +43,8 @@ def format_hybrid_digest(tasks: list[dict]) -> tuple[str, list[dict]]:
     lines = [
         f"☀️ *{date_str}*",
         "",
+        format_digest_weather_card(),
+        "",
         f"📊 {', '.join(summary_parts)}",
         "",
     ]
