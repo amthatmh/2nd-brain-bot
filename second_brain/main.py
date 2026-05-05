@@ -53,6 +53,7 @@ from second_brain.cinema.config import (
 from second_brain.sync_telemetry import init_sync_status, utc_now_iso, format_sync_status_message
 from second_brain.scheduler import register_cinema_jobs
 from second_brain.notion import notes as notion_notes
+from second_brain import digests as digests_mod
 from second_brain.notion import daily_log as notion_daily_log
 from second_brain.notes.flow import (
     ordered_topics,
@@ -353,6 +354,7 @@ _digest_slot_sent_today: set[str] = set()
 notified_goals_this_week: set[str] = set()
 mute_until: datetime | None = None
 _signoff_note_today: str = ""
+_claude_activity_today: list[str] = []
 _last_daily_log_url: str = ""
 _app_bot = None  # set during post_init for health route bot access
 STATE_DIR = _resolve_state_dir()
@@ -1039,6 +1041,17 @@ def get_and_clear_signoff_note() -> str:
     _signoff_note_today = ""
     return note
 
+async def trigger_signoff_now(message, note: str | None = None) -> None:
+    if note:
+        store_signoff_note(note)
+    await generate_daily_log(message.get_bot())
+    note_msg = f"\n\n📝 {_escape_markdown_v2(note[:180])}" if note else ""
+    await message.reply_text(
+        "📓 Signoff captured — daily log generated now." + note_msg,
+        parse_mode="MarkdownV2" if note else None,
+    )
+
+
 
 
 
@@ -1055,6 +1068,25 @@ def _get_today_tasks_for_palette() -> list[dict]:
     today_str = local_today().isoformat()
     return [t for t in tasks if t.get("deadline") == today_str]
 
+
+
+
+def track_claude_activity(text: str) -> None:
+    global _claude_activity_today
+    cleaned = re.sub(r"\s+", " ", (text or "").strip())
+    if not cleaned:
+        return
+    timestamp = datetime.now(TZ).strftime("%H:%M")
+    _claude_activity_today.append(f"{timestamp} — {cleaned[:200]}")
+    if len(_claude_activity_today) > 60:
+        _claude_activity_today = _claude_activity_today[-60:]
+
+
+def get_and_clear_claude_activity() -> list[str]:
+    global _claude_activity_today
+    items = _claude_activity_today
+    _claude_activity_today = []
+    return items
 
 def format_digest_view() -> tuple[str, InlineKeyboardMarkup]:
     """Build digest view for today + next 7 calendar days, grouped by date."""
@@ -1500,12 +1532,30 @@ async def cmd_refresh(message, context: ContextTypes.DEFAULT_TYPE | None = None)
     if message.chat_id != MY_CHAT_ID:
         return
     notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB); _refresh_habit_cache_refs()
-    if _scheduler is not None:
-        build_digest_schedule(_scheduler, message.get_bot())
-    await send_daily_digest(message.get_bot(), include_habits=True)
+    config = None
+    try:
+        slots = load_digest_slots()
+        now_dt = datetime.now(TZ)
+        config = digests_mod.manual_digest_config_now(slots, now_dt=now_dt, is_weekday=now_dt.weekday() < 5)
+    except Exception as e:
+        log.warning("Manual digest fallback config failed: %s", e)
+
+    include_habits = True if config is None else bool(config.get("include_habits", True))
+    await send_daily_digest(message.get_bot(), include_habits=include_habits, config=config)
+
     if _scheduler is not None:
         build_digest_schedule(_scheduler, message.get_bot())
 
+
+
+
+
+
+
+
+def _manual_digest_config_now(slots: list[dict], now_dt: datetime | None = None) -> dict | None:
+    now_dt = now_dt or datetime.now(TZ)
+    return digests_mod.manual_digest_config_now(slots, now_dt=now_dt, is_weekday=now_dt.weekday() < 5)
 
 async def cmd_todo(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
     del context
@@ -1792,6 +1842,7 @@ async def route_classified_message_v10(message, text: str) -> None:
 COMMAND_DISPATCH: dict[str, Callable] = {
     "digest": cmd_refresh,
     "📜digest": cmd_refresh,
+    "📜 digest": cmd_refresh,
     "refresh": cmd_refresh,
     "🔄 refresh": cmd_refresh,
     "✅ to do": cmd_todo,
@@ -1849,6 +1900,21 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not text:
         return
     lower = text.lower().strip()
+    lower_normalized = re.sub(r"\s+", " ", lower).strip()
+    if lower.startswith("/signoff"):
+        note = text.split(" ", 1)[1].strip() if " " in text else ""
+        await trigger_signoff_now(message, note=note or None)
+        return
+    if lower == "signoff":
+        await trigger_signoff_now(message)
+        return
+    match_signoff_inline = re.match(r"signoff:\s*(.+)$", text, re.IGNORECASE)
+    if match_signoff_inline:
+        await trigger_signoff_now(message, note=match_signoff_inline.group(1).strip())
+        return
+
+    if not lower.startswith("signoff:") and not lower.startswith("/signoff") and lower != "signoff":
+        track_claude_activity(text)
 
     if lower == "cancel":
         if message.reply_to_message and message.reply_to_message.message_id in digest_map:
@@ -2113,7 +2179,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             await message.reply_text("Reply with `done 1` or `done 1,3`, or use `done: task name`.", parse_mode="Markdown")
             return
 
-    command_handler = COMMAND_DISPATCH.get(lower)
+    command_handler = COMMAND_DISPATCH.get(lower) or COMMAND_DISPATCH.get(lower_normalized)
     if command_handler:
         await command_handler(message, context)
         return
@@ -2235,16 +2301,6 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     cf_flow_key = context.user_data.get("cf_flow_key")
     if cf_flow_key and cf_flow_key in cf_pending:
         await handle_cf_text_reply(message, text, cf_flow_key, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_PRS_DB": NOTION_PRS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB, "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB}, cf_pending)
-        return
-
-    match_signoff = re.match(r"signoff:\s*(.+)$", text, re.IGNORECASE)
-    if match_signoff:
-        note = match_signoff.group(1).strip()
-        store_signoff_note(note)
-        await message.reply_text(
-            f"📓 Signoff noted — I'll include this in tonight's log.\n\n_{note}_",
-            parse_mode="Markdown",
-        )
         return
 
     match_force = re.match(r"force:\s*(.+)$", text, re.IGNORECASE)
@@ -3050,6 +3106,7 @@ async def generate_daily_log(bot) -> None:
         claude_model=CLAUDE_MODEL,
         tz=TZ,
         signoff_note=get_and_clear_signoff_note(),
+        claude_activity=get_and_clear_claude_activity(),
     )
 
 
@@ -3058,7 +3115,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     if _is_muted():
         log.info("Daily digest skipped (muted)")
         return
-    tasks = _filter_digest_tasks(get_today_and_overdue_tasks(limit=None), config=config)
+    tasks = _filter_digest_tasks(notion_tasks.get_today_and_overdue_tasks(notion, NOTION_DB_ID, limit=None), config=config)
     today = local_today()
     overdue = [t for t in tasks if (d := notion_tasks._parse_deadline(t.get("deadline"))) is not None and d < today]
     today_tasks = [t for t in tasks if (d := notion_tasks._parse_deadline(t.get("deadline"))) is not None and d == today and t not in overdue]
@@ -4114,6 +4171,14 @@ async def cmd_habits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await send_daily_habits_list(context.bot)
 
 
+
+
+async def cmd_signoff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_chat.id != MY_CHAT_ID:
+        return
+    note = " ".join(context.args or []).strip()
+    await trigger_signoff_now(update.message, note=note or None)
+
 async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/log <cinema|movie|performance|sport> <title> at <venue> — explicit entertainment logging."""
     if update.effective_chat.id != MY_CHAT_ID:
@@ -4160,6 +4225,7 @@ def main() -> None:
     app.add_handler(CommandHandler("habits", cmd_habits))
     app.add_handler(CommandHandler("log", cmd_log))
     app.add_handler(CommandHandler("trip", handle_trip_command))
+    app.add_handler(CommandHandler("signoff", cmd_signoff))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message_text))
     app.add_handler(CallbackQueryHandler(handle_callback))
     log.info(f"🤖 Second Brain bot starting ({APP_VERSION})...")
