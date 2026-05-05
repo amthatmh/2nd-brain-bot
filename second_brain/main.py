@@ -1674,6 +1674,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not text:
         return
     lower = text.lower().strip()
+    lower = lower.replace("️", "").replace("‍", "")
     lower_normalized = re.sub(r"\s+", " ", lower).strip()
     if lower.startswith("/signoff"):
         note = text.split(" ", 1)[1].strip() if " " in text else ""
