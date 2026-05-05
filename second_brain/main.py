@@ -562,6 +562,10 @@ def infer_batch_overrides(text: str) -> dict:
     return task_parsing_service.infer_batch_overrides(text)
 
 
+def infer_deadline_override(text: str) -> int | None:
+    return task_parsing_service.infer_deadline_override(text)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CLAUDE CLASSIFICATION
 # ══════════════════════════════════════════════════════════════════════════════
@@ -994,6 +998,9 @@ def _run_capture(raw_text: str, force_create: bool = False,
                 deadline_days = computed_days
         if deadline_override is not None:
             deadline_days = deadline_override
+        explicit_deadline = infer_deadline_override(raw_text)
+        if explicit_deadline is not None:
+            deadline_days = explicit_deadline
         horizon_label = deadline_days_to_label(deadline_days)
     except Exception as e:
         log.error(f"Claude error for '{raw_text}': {e}")
@@ -1165,6 +1172,9 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
             computed_days = (target_date - local_today()).days
             if deadline_days is None or (deadline_days <= 0 and computed_days > 0):
                 deadline_days = computed_days
+        explicit_deadline = infer_deadline_override(raw_text)
+        if explicit_deadline is not None:
+            deadline_days = explicit_deadline
         horizon_label = deadline_days_to_label(deadline_days)
     except Exception as e:
         log.error(f"Claude error: {e}")
