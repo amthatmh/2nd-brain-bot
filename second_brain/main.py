@@ -254,7 +254,6 @@ OPENWEATHER_KEY     = os.environ.get("OPENWEATHER_KEY", "")
 
 TZ           = ZoneInfo(os.environ.get("TIMEZONE", "America/Chicago"))
 _rc_h, _rc_m = main_helpers.parse_hhmm_env("RECURRING_CHECK_TIME", "7:00", log)
-_sr_h, _sr_m = main_helpers.parse_hhmm_env("SUNDAY_REVIEW_TIME", "12:00", log)
 
 CLAUDE_MODEL   = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
@@ -275,7 +274,6 @@ OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "").strip()
 WEATHER_LOCATION = os.environ.get("WEATHER_LOCATION", "Chicago,IL").strip()
 NOTION_ENV_DB = os.environ.get("ENV_DB_ID", "").strip()
 UV_THRESHOLD = float(os.environ.get("UV_THRESHOLD", "3"))
-SUNDAY_REVIEW_CARD_LIMIT = max(1, int(os.environ.get("SUNDAY_REVIEW_CARD_LIMIT", "6")))
 
 # ── Asana sync config ────────────────────────────────────────────────────────
 ASANA_PAT           = os.environ.get("ASANA_PAT", "")
@@ -2553,9 +2551,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await q.edit_message_text("⚠️ Couldn't refresh today's digest right now.")
         return
 
-    if q.data == "digest:sunday":
-        await send_sunday_review(q.bot)
-        return
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2923,33 +2918,6 @@ async def send_evening_checkin(bot) -> None:
     )
     log.info("Evening check-in sent — %d habits", len(evening_habits))
 
-
-async def send_sunday_review(bot) -> None:
-    if _is_muted():
-        log.info("Sunday review skipped (muted)")
-        return
-    week_tasks = notion_habits.query_tasks_by_auto_horizon(notion=notion, notion_db_id=NOTION_DB_ID, horizons=["🟠 This Week"])
-    month_tasks = notion_habits.query_tasks_by_auto_horizon(notion=notion, notion_db_id=NOTION_DB_ID, horizons=["🟡 This Month"])
-    header, ordered = fmt.format_sunday_intro(week_tasks, month_tasks)
-    sent_review = await bot.send_message(chat_id=MY_CHAT_ID, text=header, parse_mode="Markdown")
-    if ordered:
-        digest_map[sent_review.message_id] = ordered
-        limit = max(1, SUNDAY_REVIEW_CARD_LIMIT)
-        for task in ordered[:limit]:
-            context_label = task.get("context") or "No context"
-            horizon_label = task.get("auto_horizon") or "No horizon"
-            await bot.send_message(
-                chat_id=MY_CHAT_ID,
-                text=f"• *{task.get('name', 'Untitled')}*\n{context_label} · {horizon_label}",
-                parse_mode="Markdown",
-            )
-        overflow = len(ordered) - limit
-        if overflow > 0:
-            await bot.send_message(
-                chat_id=MY_CHAT_ID,
-                text=f"…and {overflow} more items not shown to avoid flooding chat.",
-            )
-    log.info(f"Sunday review sent — {len(ordered)} items")
 
 
 async def send_daily_habits_list(bot) -> None:
@@ -3535,8 +3503,6 @@ async def post_init(app: Application) -> None:
     scheduler = AsyncIOScheduler(timezone=TZ)
     if FEATURES.get("FEATURE_RECURRING", True):
         scheduler.add_job(run_recurring_check, "cron", hour=_rc_h, minute=_rc_m, args=[app.bot])
-    if FEATURES.get("FEATURE_SUNDAY_REVIEW", True):
-        scheduler.add_job(send_sunday_review, "cron", day_of_week="sun", hour=_sr_h, minute=_sr_m, args=[app.bot])
     # Register digest cron jobs only. Do not queue missed digest slots on startup;
     # restarting the bot should not send an immediate digest.
     build_digest_schedule(scheduler, app.bot)
@@ -3703,7 +3669,6 @@ async def post_init(app: Application) -> None:
     _scheduler = scheduler
     log.info(
         f"Scheduler started ✓  TZ={TZ}  "
-        f"sunday_review={_sr_h:02d}:{_sr_m:02d}  "
         f"weather=hourly  "
         f"recurring={_rc_h:02d}:{_rc_m:02d}  "
         f"asana_sync={asana_status}  smoke={smoke_status}  "

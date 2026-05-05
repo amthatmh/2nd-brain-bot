@@ -55,7 +55,6 @@ WEATHER_LOCATION = os.environ.get("WEATHER_LOCATION", "Chicago,IL").strip()
 
 TZ = ZoneInfo(os.environ.get("TIMEZONE", "America/Chicago"))
 RECURRING_CHECK_TIME = parse_hhmm_env("RECURRING_CHECK_TIME", "7:00")
-SUNDAY_REVIEW_TIME = parse_hhmm_env("SUNDAY_REVIEW_TIME", "12:00")
 
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
@@ -75,7 +74,6 @@ FEATURES = {
     "FEATURE_HABITS": _flag("FEATURE_HABITS", "1"),
     "FEATURE_NOTES": _flag("FEATURE_NOTES", "1"),
     "FEATURE_RECURRING": _flag("FEATURE_RECURRING", "1"),
-    "FEATURE_SUNDAY_REVIEW": _flag("FEATURE_SUNDAY_REVIEW", "1"),
 }
 
 PENDING_TTL = timedelta(hours=1)

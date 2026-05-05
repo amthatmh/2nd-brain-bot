@@ -183,6 +183,5 @@ def horizon_view_back_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("← Back to Today", callback_data="digest:today")],
-            [InlineKeyboardButton("📅 Full Sunday Review", callback_data="digest:sunday")],
         ]
     )

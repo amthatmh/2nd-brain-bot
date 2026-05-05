@@ -142,25 +142,6 @@ def format_week_view(view_type: str) -> tuple[str, list[dict]]:
 
     return "\n".join(lines), shown
 
-def format_sunday_intro(week_tasks: list[dict], month_tasks: list[dict]) -> tuple[str, list[dict]]:
-    date_str = datetime.now(TZ).strftime("%A, %B %-d")
-    if not week_tasks and not month_tasks:
-        return f"🔁 *Weekly Review — {date_str}*\n\nNothing in This Week or This Month — clean slate! 🎉", []
-    lines, ordered, n = [f"🔁 *Weekly Review — {date_str}*\n"], [], 1
-    if week_tasks:
-        lines.append("🟠 *This Week*")
-        for t in week_tasks:
-            lines.append(f"{num_emoji(n)} {t['name']}  {t['context']}")
-            ordered.append(t); n += 1
-        lines.append("")
-    if month_tasks:
-        lines.append("🟡 *This Month*")
-        for t in month_tasks:
-            lines.append(f"{num_emoji(n)} {t['name']}  {t['context']}")
-            ordered.append(t); n += 1
-    lines.append("\n_Reply `review 1` or `review 1,3` to reassign urgency_")
-    return "\n".join(lines), ordered
-
 def format_reminder_snapshot(mode: str = "priority", limit: int = 8) -> str:
     today = local_today()
     today_str = today.isoformat()

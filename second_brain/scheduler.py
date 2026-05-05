@@ -11,7 +11,6 @@ def register_core_jobs(
     bot,
     run_recurring_check,
     send_daily_digest,
-    send_sunday_review,
     rc_h: int,
     rc_m: int,
     wk_h: int,
@@ -22,7 +21,6 @@ def register_core_jobs(
     scheduler.add_job(run_recurring_check, "cron", hour=rc_h, minute=rc_m, args=[bot])
     scheduler.add_job(send_daily_digest, "cron", day_of_week="mon-fri", hour=wk_h, minute=wk_m, args=[bot])
     scheduler.add_job(send_daily_digest, "cron", day_of_week="sat", hour=we_h, minute=we_m, args=[bot])
-    scheduler.add_job(send_sunday_review, "cron", day_of_week="sun", hour=we_h, minute=we_m, args=[bot])
 
 
 def register_cinema_jobs(
