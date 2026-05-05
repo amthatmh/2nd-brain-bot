@@ -368,6 +368,60 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
         return None
 
 
+def fetch_trip_weather_range(departure_date: str, return_date: str, destination: str) -> list[dict]:
+    if not OPENWEATHER_KEY:
+        return []
+    try:
+        start = datetime.fromisoformat(departure_date).date()
+        end = datetime.fromisoformat(return_date).date()
+    except Exception:
+        return []
+    if end < start:
+        return []
+    try:
+        geo = httpx.get("https://api.openweathermap.org/geo/1.0/direct", params={"q": destination, "limit": 1, "appid": OPENWEATHER_KEY}, timeout=10)
+        geo.raise_for_status()
+        places = geo.json()
+        if not places:
+            return []
+        lat = places[0].get("lat")
+        lon = places[0].get("lon")
+        if lat is None or lon is None:
+            return []
+        fc = httpx.get("https://api.openweathermap.org/data/2.5/forecast", params={"lat": lat, "lon": lon, "appid": OPENWEATHER_KEY, "units": "metric"}, timeout=10)
+        fc.raise_for_status()
+        rows = fc.json().get("list", [])
+    except Exception as e:
+        log.warning("Trip weather fetch failed for %s: %s", destination, e)
+        return []
+
+    buckets: dict = {}
+    for row in rows:
+        dt_utc = datetime.fromtimestamp(row["dt"], timezone.utc)
+        local_dt = dt_utc.astimezone(TZ)
+        day = local_dt.date()
+        if day < start or day > end:
+            continue
+        item = buckets.setdefault(day, {"highs": [], "lows": [], "pops": [], "conds": []})
+        item["highs"].append(row.get("main", {}).get("temp_max", 0))
+        item["lows"].append(row.get("main", {}).get("temp_min", 0))
+        item["pops"].append(row.get("pop", 0))
+        item["conds"].append((row.get("weather") or [{}])[0].get("main", "Unknown"))
+    out: list[dict] = []
+    for day in sorted(buckets):
+        item = buckets[day]
+        conds = item["conds"] or ["Unknown"]
+        out.append({
+            "date": day.isoformat(),
+            "label": day.strftime("%a %b %-d"),
+            "temp_high": round(max(item["highs"])) if item["highs"] else None,
+            "temp_low": round(min(item["lows"])) if item["lows"] else None,
+            "precip_chance": int(round(max(item["pops"]) * 100)) if item["pops"] else 0,
+            "condition": max(set(conds), key=conds.count),
+        })
+    return out
+
+
 def fetch_uvi_data() -> dict | None:
     if not OPENWEATHER_KEY or current_lat is None or current_lon is None:
         return None

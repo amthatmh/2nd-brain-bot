@@ -2074,7 +2074,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         trip_map[key]["checked_luggage"] = (ans == "y")
         await q.message.reply_text("🧠 Building your packing list...")
-        await trips_mod.execute_trip(key, q, notion=notion, claude=claude, trip_map=trip_map, set_awaiting_packing_feedback=lambda value: globals().__setitem__("awaiting_packing_feedback", value), fetch_weather=wx.fetch_weather)
+        await trips_mod.execute_trip(
+            key,
+            q,
+            notion=notion,
+            claude=claude,
+            trip_map=trip_map,
+            set_awaiting_packing_feedback=lambda value: globals().__setitem__("awaiting_packing_feedback", value),
+            fetch_weather=wx.fetch_weather,
+            fetch_trip_weather_range=wx.fetch_trip_weather_range,
+        )
         return
 
     if parts[0] == "cf":

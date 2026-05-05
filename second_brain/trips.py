@@ -90,7 +90,8 @@ async def execute_trip(
     claude,
     trip_map: dict,
     set_awaiting_packing_feedback: Callable[[bool], None],
-    fetch_weather: Callable[[str], dict | None],
+    fetch_weather: Callable[[str], dict | None] | None = None,
+    fetch_trip_weather_range: Callable[[str, str, str], list[dict]] | None = None,
 ) -> None:
     _ = (fetch_weather, claude)
     trip = trip_map[key]
@@ -102,7 +103,13 @@ async def execute_trip(
 
     title = f"{', '.join(trip['destinations'])} — {format_trip_dates(trip['departure_date'], trip['return_date'])}"
 
-    weather_summary, weather_flags = _build_trip_weather_summary(fetch_weather)
+    weather_summary, weather_flags = _build_trip_weather_summary(
+        trip.get("departure_date"),
+        trip.get("return_date"),
+        ", ".join(trip.get("destinations") or []),
+        fetch_weather=fetch_weather,
+        fetch_trip_weather_range=fetch_trip_weather_range,
+    )
     properties = {
         "Trip": {"title": [{"text": {"content": title}}]},
         "Departure Date": {"date": {"start": trip["departure_date"]}},
@@ -188,15 +195,31 @@ def _adapt_trip_properties_to_schema(notion, database_id: str, payload: dict) ->
     return adapted
 
 
-def _build_trip_weather_summary(fetch_weather: Callable[[str], dict | None]) -> tuple[str, str]:
+def _build_trip_weather_summary(
+    departure_date: str | None,
+    return_date: str | None,
+    destination: str,
+    *,
+    fetch_weather: Callable[[str], dict | None] | None,
+    fetch_trip_weather_range: Callable[[str, str, str], list[dict]] | None,
+) -> tuple[str, str]:
     snapshots: list[tuple[str, dict]] = []
-    for bucket in ("today", "tomorrow"):
+    if fetch_trip_weather_range and departure_date and return_date and destination:
         try:
-            data = fetch_weather(bucket)
+            rows = fetch_trip_weather_range(departure_date, return_date, destination)
         except Exception:
-            data = None
-        if data:
-            snapshots.append((bucket, data))
+            rows = []
+        for row in rows:
+            label = row.get("label") or row.get("date") or "Day"
+            snapshots.append((label, row))
+    elif fetch_weather:
+        for bucket in ("today", "tomorrow"):
+            try:
+                data = fetch_weather(bucket)
+            except Exception:
+                data = None
+            if data:
+                snapshots.append((bucket, data))
     if not snapshots:
         return "", ""
     labels: list[str] = []

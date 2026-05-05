@@ -179,3 +179,19 @@ def test_execute_trip_maps_weather_flags_to_multi_select(monkeypatch):
 
     tags = [item["name"] for item in created["properties"]["Weather Flags"]["multi_select"]]
     assert set(tags) == {"Rain", "Hot", "Cold"}
+
+
+def test_trip_weather_summary_uses_trip_date_range():
+    summary, flags = trips._build_trip_weather_summary(
+        "2026-05-14",
+        "2026-05-17",
+        "Nashville, TN",
+        fetch_weather=lambda _: {"condition": "Rain", "temp_high": 31, "temp_low": 4, "precip_chance": 80},
+        fetch_trip_weather_range=lambda dep, ret, dest: [
+            {"label": "Thu May 14", "condition": "Clear", "temp_high": 24, "temp_low": 14, "precip_chance": 0},
+            {"label": "Fri May 15", "condition": "Rain", "temp_high": 20, "temp_low": 10, "precip_chance": 70},
+        ],
+    )
+    assert "Thu May 14" in summary
+    assert "Fri May 15" in summary
+    assert "Rain" in flags
