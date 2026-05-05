@@ -85,6 +85,8 @@ from second_brain.handler_registry import register_core_handlers
 from second_brain.state import STATE
 from second_brain.utils import ExpiringDict, reply_notion_error
 from second_brain.http_utils import cors_headers
+from second_brain.services import task_parsing as task_parsing_service
+from second_brain.services import note_utils as note_utils_service
 
 from second_brain.crossfit.classify import classify_workout_message, parse_programme
 from second_brain.crossfit.handlers import (
@@ -533,11 +535,7 @@ def load_digest_slots() -> list[dict]:
 
 def extract_date_only(date_str: str | None) -> str | None:
     """Normalize Notion date strings to YYYY-MM-DD for calendar matching."""
-    if not date_str:
-        return None
-    if len(date_str) >= 10 and date_str[4] == "-" and date_str[7] == "-":
-        return date_str[:10]
-    return date_str
+    return note_utils_service.extract_date_only(date_str)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -545,77 +543,19 @@ def extract_date_only(date_str: str | None) -> str | None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def split_tasks(text: str) -> list[str]:
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    if any(_BULLET_RE.match(l) for l in lines):
-        tasks = [_BULLET_RE.sub("", l).strip() for l in lines if _BULLET_RE.match(l)]
-        return tasks if len(tasks) > 1 else [text]
-    if len(lines) > 1:
-        lower = text.lower()
-        if re.search(r"\bschedule\b.*\brecurring\b", lower) and re.search(r"\bevery\b", lower):
-            return [text]
-        return lines
-    return [text]
+    return task_parsing_service.split_tasks(text, _BULLET_RE)
 
 
 def looks_like_crossfit_programme(text: str) -> bool:
-    lower = text.lower()
-    day_hits = len(re.findall(r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)\b", lower))
-    section_hits = len(re.findall(r"(?:^|\n)\s*[bc]\.", lower))
-    workout_hits = len(re.findall(r"\b(amrap|emom|for time|rounds?|reps?|wod|snatch|clean|jerk|burpee|row|sit ups?|pushups?)\b", lower))
-    # Accept both full-week uploads and single-day programme blocks.
-    if day_hits >= 2 and (section_hits >= 2 or workout_hits >= 3):
-        return True
-    return day_hits >= 1 and (section_hits >= 1 or workout_hits >= 4)
+    return task_parsing_service.looks_like_crossfit_programme(text)
 
 
 def looks_like_task_batch(text: str) -> bool:
-    if looks_like_crossfit_programme(text):
-        return False
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    if len(lines) <= 1:
-        return False
-    numbered_or_bulleted = sum(1 for l in lines if _BULLET_RE.match(l))
-    if numbered_or_bulleted >= 2:
-        return True
-    lead = lines[0].lower()
-    if lead in {"add", "todo", "to-do", "tasks"}:
-        return True
-    return False
+    return task_parsing_service.looks_like_task_batch(text, _BULLET_RE)
 
 
 def infer_batch_overrides(text: str) -> dict:
-    lower = text.lower()
-    context = None
-    context_aliases = [
-        ("💼 Work", ["work", "💼"]),
-        ("🏠 Personal", ["personal", "🏠"]),
-        ("🏃 Health", ["health", "🏃"]),
-        ("🤝 Collab", ["collab", "🤝"]),
-    ]
-
-    explicit_scope = re.search(r"\b(?:under|for|in)\s+([^\n,.;:]+)", lower)
-    scoped_text = explicit_scope.group(1) if explicit_scope else ""
-    haystacks = [scoped_text, lower] if scoped_text else [lower]
-
-    for hay in haystacks:
-        for notion_context, aliases in context_aliases:
-            if any((a in hay) if not a.isalpha() else re.search(rf"\b{re.escape(a)}\b", hay) for a in aliases):
-                context = notion_context
-                break
-        if context:
-            break
-
-    deadline_days = None
-    if re.search(r"\btomorrow\b", lower):
-        deadline_days = 1
-    elif re.search(r"\b(?:today|tonight)\b", lower):
-        deadline_days = 0
-    elif re.search(r"\bthis week\b", lower):
-        deadline_days = 5
-    elif re.search(r"\bthis month\b", lower):
-        deadline_days = 20
-
-    return {"context": context, "deadline_days": deadline_days}
+    return task_parsing_service.infer_batch_overrides(text)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -656,8 +596,7 @@ async def start_note_capture_flow(message, text: str) -> None:
 
 def extract_url(text: str) -> str | None:
     """Return first URL found in text, or None."""
-    m = _URL_RE.search(text)
-    return m.group(0) if m else None
+    return note_utils_service.extract_url(text, _URL_RE)
 
 
 def fetch_url_metadata(url: str) -> dict:
@@ -730,11 +669,7 @@ async def handle_note_input(message, text: str) -> None:
 
 
 def deadline_days_to_label(days: int | None) -> str:
-    if days is None: return "⚪ Backburner"
-    if days <= 0:    return "🔴 Today"
-    if days <= 7:    return "🟠 This Week"
-    if days <= 31:   return "🟡 This Month"
-    return "⚪ Backburner"
+    return note_utils_service.deadline_days_to_label(days)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
