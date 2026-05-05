@@ -27,6 +27,21 @@ def parse_time_to_seconds(text: str):
     return (int(m.group(1)) * 60 + int(m.group(2))) if m else None
 
 
+def parse_rounds_only(text: str):
+    m = re.search(r"(\d+)\s*rounds?", text.lower())
+    return int(m.group(1)) if m else None
+
+
+def parse_emom_rounds(text: str):
+    m = re.search(r"emom\s*(\d+)", text.lower())
+    return int(m.group(1)) if m else None
+
+
+def parse_reps_only(text: str):
+    m = re.search(r"(\d+)\s*reps?", text.lower())
+    return int(m.group(1)) if m else None
+
+
 async def handle_gymnastics_level_check(message, movement_page_id, movement_name, notion, config, cf_pending, flow_key) -> bool:
     if not config.get("NOTION_PROGRESSIONS_DB") or not config.get("NOTION_MOVEMENTS_DB"):
         return False
@@ -151,7 +166,8 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
 
 async def handle_cf_wod_flow(message, workout_result, notion, config, cf_pending):
     del notion
-    if not config.get("NOTION_WOD_LOG_DB"):
+    target_wod_db = config.get("NOTION_WOD_LOG_DB") or config.get("NOTION_WORKOUT_LOG_DB")
+    if not target_wod_db:
         await message.reply_text("⚠️ CrossFit module isn't configured yet.", parse_mode="Markdown")
         return
     key = str(message.chat_id)
@@ -175,10 +191,43 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
     state = cf_pending.get(key) or {}
     if state.get("mode") == "strength":
         movement_id = state.get("movement_page_id") or await asyncio.get_running_loop().run_in_executor(None, lambda: get_or_create_movement(notion, config["NOTION_MOVEMENTS_DB"], state.get("movement") or "Unknown"))
-        await asyncio.get_running_loop().run_in_executor(None, lambda: create_strength_log(notion, config["NOTION_WORKOUT_LOG_DB"], movement_id, state.get("movement") or "Unknown", float(state.get("load_lbs") or 0), int(state.get("sets") or 1), int(state.get("reps") or 1), False, None, None, state.get("readiness")))
+        effort_sets = int(state.get("sets") or 1)
+        effort_reps = int(state.get("reps") or 1)
+        if notes:
+            parsed_sets, parsed_reps = parse_rounds_reps(notes)
+            if parsed_sets and parsed_reps:
+                effort_sets, effort_reps = parsed_sets, parsed_reps
+            else:
+                rounds = parse_rounds_only(notes) or parse_emom_rounds(notes)
+                reps_only = parse_reps_only(notes)
+                if rounds:
+                    effort_sets = rounds
+                if reps_only:
+                    effort_reps = reps_only
+        await asyncio.get_running_loop().run_in_executor(None, lambda: create_strength_log(notion, config["NOTION_WORKOUT_LOG_DB"], movement_id, state.get("movement") or "Unknown", float(state.get("load_lbs") or 0), effort_sets, effort_reps, False, None, None, state.get("readiness")))
         await message.reply_text("✅ Strength logged!\n\n_Saved to Notion_", parse_mode="Markdown")
     elif state.get("mode") == "wod":
-        await asyncio.get_running_loop().run_in_executor(None, lambda: create_wod_log(notion, config["NOTION_WOD_LOG_DB"], state.get("format") or "AMRAP", None, None, "Reps", None, None, None, "Rx", state.get("level_current_name") or notes, False, None, [], None, state.get("readiness")))
+        target_wod_db = config.get("NOTION_WOD_LOG_DB") or config.get("NOTION_WORKOUT_LOG_DB")
+        result_type = "Reps"
+        result_seconds = None
+        result_rounds = None
+        result_reps = None
+        if notes:
+            result_seconds = parse_time_to_seconds(notes)
+            rounds, reps = parse_rounds_reps(notes)
+            if rounds is not None:
+                result_rounds = rounds
+            if reps is not None:
+                result_reps = reps
+            if result_rounds is None:
+                result_rounds = parse_rounds_only(notes) or parse_emom_rounds(notes)
+            if result_reps is None:
+                result_reps = parse_reps_only(notes)
+            if result_seconds is not None:
+                result_type = "Time"
+            elif result_rounds is not None and result_reps is not None:
+                result_type = "Rounds+Reps"
+        await asyncio.get_running_loop().run_in_executor(None, lambda: create_wod_log(notion, target_wod_db, state.get("format") or "AMRAP", None, None, result_type, result_seconds, result_rounds, result_reps, "Rx", notes, False, None, [], None, state.get("readiness")))
         await message.reply_text("✅ WOD logged!\n\n_Saved to Notion_", parse_mode="Markdown")
     cf_pending.pop(key, None)
 
