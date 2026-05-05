@@ -98,3 +98,37 @@ def test_todo_callback_rerenders_remaining_picker_with_keyboard_module_helpers()
 
 async def _async_false(*_args, **_kwargs):
     return False
+
+
+def test_todo_picker_keyboard_includes_cancel_button():
+    main = load_main_module()
+    keyboard = main.kb.todo_picker_keyboard(
+        "7",
+        {"7": [{"name": "Pay bill", "context": "Personal", "page_id": "page-1"}]},
+        lambda _context: "🏠",
+    )
+
+    cancel_button = keyboard.inline_keyboard[-1][0]
+    assert cancel_button.text == "✖️ Cancel"
+    assert cancel_button.callback_data == "tdc:7"
+
+
+def test_todo_cancel_callback_dismisses_picker():
+    async def run():
+        main = load_main_module()
+        main.todo_picker_map.clear()
+        main.todo_picker_map["0"] = [
+            {"name": "Pay bill", "context": "Personal", "page_id": "page-1"},
+        ]
+        query = SimpleNamespace(data="tdc:0")
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update = SimpleNamespace(callback_query=query)
+
+        with patch.object(main, "handle_v10_callback", side_effect=_async_false):
+            await main.handle_callback(update, None)
+
+        assert "0" not in main.todo_picker_map
+        query.edit_message_text.assert_awaited_once_with("✖️ To Do picker canceled.")
+
+    asyncio.run(run())
