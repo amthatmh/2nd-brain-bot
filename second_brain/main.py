@@ -1607,7 +1607,7 @@ async def handle_trip_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     nights = (date.fromisoformat(ret) - date.fromisoformat(dep)).days
     trip_map[key]["nights"] = nights
     trip_map[key]["duration_label"] = "Overnight" if nights == 1 else ("2-3 Days" if nights <= 3 else "4-5 Days")
-    await message.reply_text(f"✈️ {destination} — {trips_mod.format_trip_dates(dep, ret)} ({nights} night(s), {trip_map[key]['purpose']})\n\nWhat field work are you doing?\n(Tap all that apply, then tap ✅ Done)", reply_markup=field_work_keyboard(key))
+    await message.reply_text(f"✈️ {destination} — {trips_mod.format_trip_dates(dep, ret)} ({nights} night(s), {trip_map[key]['purpose']})\n\nWhat field work are you doing?\n(Tap all that apply, then tap ✅ Done)", reply_markup=kb.field_work_keyboard(key, trip_map))
 
 async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat.id != MY_CHAT_ID:
@@ -1657,7 +1657,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         nights = (date.fromisoformat(ret) - date.fromisoformat(dep)).days
         trip_map[key]["nights"] = nights
         trip_map[key]["duration_label"] = "Overnight" if nights == 1 else ("2-3 Days" if nights <= 3 else "4-5 Days")
-        await message.reply_text(f"✈️ {trip_map[key]['destination']} — {trips_mod.format_trip_dates(dep, ret)} ({nights} night(s), {trip_map[key]['purpose']})\n\nWhat field work are you doing?\n(Tap all that apply, then tap ✅ Done)", reply_markup=field_work_keyboard(key))
+        await message.reply_text(f"✈️ {trip_map[key]['destination']} — {trips_mod.format_trip_dates(dep, ret)} ({nights} night(s), {trip_map[key]['purpose']})\n\nWhat field work are you doing?\n(Tap all that apply, then tap ✅ Done)", reply_markup=kb.field_work_keyboard(key, trip_map))
         return
 
     if awaiting_packing_feedback and not command_head.startswith('/'):
@@ -2043,7 +2043,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             current.remove(label); trip_map[key]["field_work_types"] = current
         elif label:
             current = [x for x in current if x != "None"]; current.append(label); trip_map[key]["field_work_types"] = current
-        await q.edit_message_reply_markup(reply_markup=field_work_keyboard(key))
+        await q.edit_message_reply_markup(reply_markup=kb.field_work_keyboard(key, trip_map))
         return
 
     if parts[0] == "twd" and len(parts) == 2:

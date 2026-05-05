@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import date
 from typing import Callable
 
 from second_brain.config import CLAUDE_MODEL, NOTION_TRIPS_DB
+
+logger = logging.getLogger(__name__)
 
 
 def format_trip_dates(dep: str, ret: str) -> str:
@@ -32,9 +35,51 @@ Return ONLY valid JSON, no markdown:
   \"multiple_cities\": true | false
 }}
 """
-    resp = claude.messages.create(model=CLAUDE_MODEL, max_tokens=300, messages=[{"role": "user", "content": prompt}])
-    raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
-    return json.loads(raw)
+    fallback = {
+        "destinations": _extract_destinations(text),
+        "departure_date": None,
+        "return_date": None,
+        "purpose": _infer_purpose(text),
+        "multiple_cities": False,
+    }
+
+    if claude is None:
+        return fallback
+
+    try:
+        resp = claude.messages.create(model=CLAUDE_MODEL, max_tokens=300, messages=[{"role": "user", "content": prompt}])
+        raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
+        parsed = json.loads(raw)
+        return {
+            "destinations": parsed.get("destinations") or fallback["destinations"],
+            "departure_date": parsed.get("departure_date"),
+            "return_date": parsed.get("return_date"),
+            "purpose": parsed.get("purpose") or fallback["purpose"],
+            "multiple_cities": bool(parsed.get("multiple_cities")),
+        }
+    except Exception as exc:
+        logger.warning("Trip NLP parse failed, using fallback extraction: %s", exc)
+        return fallback
+
+
+def _extract_destinations(text: str) -> list[str]:
+    match = re.search(r"\bto\s+([^,;]+)", text, re.IGNORECASE)
+    if not match:
+        return ["Trip"]
+    raw = re.sub(r"\bfrom\b.*$", "", match.group(1), flags=re.IGNORECASE).strip()
+    parts = [p.strip() for p in re.split(r"\s*(?:/| and )\s*", raw) if p.strip()]
+    return parts or ["Trip"]
+
+
+def _infer_purpose(text: str) -> str:
+    lower = text.lower()
+    has_work = "work" in lower or "site" in lower or "client" in lower
+    has_personal = "personal" in lower or "family" in lower or "vacation" in lower
+    if has_work and has_personal:
+        return "Both"
+    if has_personal:
+        return "Personal"
+    return "Work"
 
 
 async def execute_trip(
