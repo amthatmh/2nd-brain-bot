@@ -333,6 +333,10 @@ def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_na
 
 def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mins, result_type, result_seconds, result_rounds, result_reps, rx_scaled, scaling_notes, is_partner, wod_name, movement_page_ids, weekly_program_page_id, readiness):
     props={"Name":{"title":[{"text":{"content":f"{(wod_name or wod_format)} — {datetime.now(timezone.utc).date().isoformat()}"}}]},"Date":{"date":{"start":datetime.now(timezone.utc).date().isoformat()}},"Format":{"select":{"name":wod_format}},"Result Type":{"select":{"name":result_type}},"Rx / Scaled":{"select":{"name":rx_scaled}},"Partner?":{"checkbox":bool(is_partner)}}
+    if result_seconds is not None: props["Result (seconds)"]={"number":result_seconds}
+    if result_rounds is not None: props["Result (rounds)"]={"number":result_rounds}
+    if result_reps is not None: props["Result (reps)"]={"number":result_reps}
+    if scaling_notes: props["Scaling Notes"]={"rich_text":[{"text":{"content":str(scaling_notes)}}]}
     page=notion_call(notion.pages.create,parent={"database_id":wod_log_db_id},properties=props); return page["id"]
 
 def query_subs(notion, subs_db_id, movements_db_id, movement_name, sub_type):
