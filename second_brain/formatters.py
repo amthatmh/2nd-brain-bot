@@ -277,7 +277,7 @@ def format_weather_snapshot() -> str:
     if current:
         temp_c = int(round(float(current.get("temp", 0))))
         temp_f = int(round((temp_c * 9 / 5) + 32))
-        lines.append(f"🌤️ Now: {temp_f}°F / {temp_c}°C · {current.get('condition', 'Unknown')}")
+        lines.append(f"🌤️ Now: {temp_c}°C / {temp_f}°F · {current.get('condition', 'Unknown')}")
 
     daily = wx.fetch_daily_weather(days=5)
     if daily:
@@ -292,8 +292,8 @@ def format_weather_snapshot() -> str:
                 "",
                 f"{icon} {title}",
                 f"🌥️ {day.get('description', day.get('condition', 'Unknown'))}",
-                f"🌡️ High / Low: {high_f}°F / {low_f}°F",
-                f"   Metric: {high_c}°C / {low_c}°C",
+                f"🌡️ High / Low: {high_c}°C / {low_c}°C",
+                f"   Imperial: {high_f}°F / {low_f}°F",
                 f"💧 Rain: {int(day.get('precip_chance', 0))}%",
                 f"🔆 UV: {uvi:.1f} {uvi_level_text(uvi)} {uvi_emoji(uvi)}",
                 f"🧴 Sunscreen: {sunscreen}",
@@ -396,8 +396,8 @@ def format_digest_weather_card() -> str:
     lines = [
         f"📍 {location} · {current_icon} {condition}",
         "",
-        f"🌡️ {high_f}°F / {low_f}°F",
-        f"    {high_c}°C / {low_c}°C",
+        f"🌡️ {high_c}°C / {low_c}°C",
+        f"    {high_f}°F / {low_f}°F",
         "",
         f"💧 Rain chance: {rain}%",
         f"🔆 UV Index: {uvi:.1f} · {uvi_level_text(uvi)}",
