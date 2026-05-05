@@ -97,7 +97,7 @@ async def execute_trip(
 
     database_id = _normalize_notion_database_id(NOTION_TRIPS_DB)
     if not database_id:
-        await query.message.reply_text("⚠️ NOTION_TRIPS_DB is not configured, so I couldn't save this trip.")
+        await query.message.reply_text("⚠️ NOTION_TRIPS_DB looks invalid or inaccessible. Use the exact database ID and ensure it's shared with your integration.")
         return
 
     title = f"{', '.join(trip['destinations'])} — {format_trip_dates(trip['departure_date'], trip['return_date'])}"
@@ -130,7 +130,7 @@ async def execute_trip(
 
 def _normalize_notion_database_id(raw_id: str) -> str:
     cleaned = re.sub(r"[^0-9a-fA-F]", "", (raw_id or ""))
-    if len(cleaned) < 32:
+    if len(cleaned) != 32:
         return ""
-    cleaned = cleaned[-32:]
     return f"{cleaned[0:8]}-{cleaned[8:12]}-{cleaned[12:16]}-{cleaned[16:20]}-{cleaned[20:32]}"
+
