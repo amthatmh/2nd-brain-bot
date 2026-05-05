@@ -153,15 +153,17 @@ class TestManualDigestConfig(unittest.TestCase):
         main = load_main_module()
         now = main.datetime.now(main.TZ).replace(hour=18, minute=45)
         slots = [
-            {"time": "08:15", "is_weekday": True, "include_habits": False, "contexts": ["💼 Work"], "max_items": 10, "is_signoff": False},
-            {"time": "16:30", "is_weekday": True, "include_habits": True, "contexts": ["🏠 Personal"], "max_items": 5, "is_signoff": False},
-            {"time": "23:59", "is_weekday": True, "include_habits": False, "contexts": [], "max_items": None, "is_signoff": True},
+            {"time": "08:15", "is_weekday": True, "include_habits": False, "include_weather": False, "include_uvi": False, "contexts": ["💼 Work"], "max_items": 10, "is_signoff": False},
+            {"time": "16:30", "is_weekday": True, "include_habits": True, "include_weather": True, "include_uvi": True, "contexts": ["🏠 Personal"], "max_items": 5, "is_signoff": False},
+            {"time": "23:59", "is_weekday": True, "include_habits": False, "include_weather": False, "include_uvi": False, "contexts": [], "max_items": None, "is_signoff": True},
         ]
 
         config = main._manual_digest_config_now(slots, now_dt=now)
 
         self.assertIsNotNone(config)
         self.assertTrue(config["include_habits"])
+        self.assertTrue(config["include_weather"])
+        self.assertTrue(config["include_uvi"])
         self.assertEqual(config["contexts"], ["🏠 Personal"])
         self.assertEqual(config["max_items"], 5)
 
