@@ -261,6 +261,7 @@ NOTION_WORKOUT_LOG_DB = os.environ.get("NOTION_WORKOUT_LOG_DB", "")
 NOTION_SUBS_DB = os.environ.get("NOTION_SUBS_DB", "")
 NOTION_PRS_DB = os.environ.get("NOTION_PRS_DB", "")
 NOTION_WOD_LOG_DB = os.environ.get("NOTION_WOD_LOG_DB", "")
+NOTION_PROGRESSIONS_DB = os.environ.get("NOTION_PROGRESSIONS_DB", "")
 HTTP_PORT      = int(os.environ.get("PORT", "8080"))
 WEEKS_HISTORY  = int(os.environ.get("WEEKS_HISTORY", "52"))
 APP_VERSION    = os.environ.get("APP_VERSION", "v13.3.0")
@@ -3522,11 +3523,15 @@ async def process_pending_programmes(bot) -> None:
             )
 
             tracks = parsed.get("tracks", []) if isinstance(parsed, dict) else []
+            parsed_week_label = parsed.get("week_label") if isinstance(parsed, dict) else None
+            display_week_name = week_name
+            if (not display_week_name) or display_week_name.strip().lower() == "unknown week":
+                display_week_name = (parsed_week_label or "Week").strip()
             track_names = ", ".join(t.get("track", "") for t in tracks if t.get("track"))
             await bot.send_message(
                 chat_id=MY_CHAT_ID,
                 text=(
-                    f"📋 *{week_name}* parsed ✅\n\n"
+                    f"📋 *{display_week_name}* parsed ✅\n\n"
                     f"Tracks: {track_names or 'N/A'}\n"
                     f"Day rows created: {days_created}\n"
                     f"_Saved to Workout Days_"
