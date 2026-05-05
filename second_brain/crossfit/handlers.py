@@ -141,9 +141,13 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
         await message.reply_text("⚠️ CrossFit module isn't configured yet.", parse_mode="Markdown")
         return
     key = str(message.chat_id)
-    movement_name = workout_result.get("movement") or "Back Squat"
+    movement_name = (workout_result.get("movement") or "").strip()
+    cf_pending[key] = {"mode": "strength", "stage": "movement" if not movement_name else "notes", "movement": movement_name, "load_lbs": workout_result.get("load_lbs") or 0, "sets": workout_result.get("sets") or 1, "reps": workout_result.get("reps") or 1, "readiness": {}}
+    if not movement_name:
+        await message.reply_text("🏋️ Which movement did you train?", parse_mode="Markdown")
+        return
     movement_id = await asyncio.get_running_loop().run_in_executor(None, lambda: get_or_create_movement(notion, config["NOTION_MOVEMENTS_DB"], movement_name))
-    cf_pending[key] = {"mode": "strength", "stage": "notes", "movement": movement_name, "movement_page_id": movement_id, "load_lbs": workout_result.get("load_lbs") or 0, "sets": workout_result.get("sets") or 1, "reps": workout_result.get("reps") or 1, "readiness": {}}
+    cf_pending[key]["movement_page_id"] = movement_id
     if await handle_gymnastics_level_check(message, movement_id, movement_name, notion, config, cf_pending, key):
         return
     await message.reply_text("📝 Any notes about this session?\n(Reply with text, or tap Skip)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]))
@@ -156,8 +160,8 @@ async def handle_cf_wod_flow(message, workout_result, notion, config, cf_pending
         await message.reply_text("⚠️ CrossFit module isn't configured yet.", parse_mode="Markdown")
         return
     key = str(message.chat_id)
-    cf_pending[key] = {"mode": "wod", "stage": "format", "format": workout_result.get("format")}
-    await message.reply_text("Select WOD format:", parse_mode="Markdown", reply_markup=wod_format_keyboard(key))
+    cf_pending[key] = {"mode": "wod", "stage": "movement", "format": workout_result.get("format"), "movements": []}
+    await message.reply_text("🏋️ Which movement(s) were in the WOD? (comma-separated)", parse_mode="Markdown")
 
 
 async def handle_cf_subs_flow(message, notion, config, cf_pending):
@@ -180,7 +184,8 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         await message.reply_text("✅ Strength logged!\n\n_Saved to Notion_", parse_mode="Markdown")
     elif state.get("mode") == "wod":
         target_wod_db = config.get("NOTION_WOD_LOG_DB") or config.get("NOTION_WORKOUT_LOG_DB")
-        await asyncio.get_running_loop().run_in_executor(None, lambda: create_wod_log(notion, target_wod_db, state.get("format") or "AMRAP", None, None, "Reps", None, None, None, "Rx", state.get("level_current_name") or notes, False, None, [], None, state.get("readiness")))
+        movement_ids = await asyncio.get_running_loop().run_in_executor(None, lambda: [get_or_create_movement(notion, config["NOTION_MOVEMENTS_DB"], m) for m in (state.get("movements") or [])]) if config.get("NOTION_MOVEMENTS_DB") else []
+        await asyncio.get_running_loop().run_in_executor(None, lambda: create_wod_log(notion, target_wod_db, state.get("format") or "AMRAP", None, None, "Reps", None, None, None, "Rx", state.get("level_current_name") or notes, False, None, movement_ids, None, state.get("readiness")))
         await message.reply_text("✅ WOD logged!\n\n_Saved to Notion_", parse_mode="Markdown")
     cf_pending.pop(key, None)
 
@@ -188,6 +193,26 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
 async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, config, cf_pending):
     del claude
     state = cf_pending.get(cf_flow_key) or {}
+    if state.get("mode") == "strength" and state.get("stage") == "movement":
+        movement_name = text.strip()
+        if not movement_name:
+            await message.reply_text("Please send a movement name first.")
+            return
+        movement_id = await asyncio.get_running_loop().run_in_executor(None, lambda: get_or_create_movement(notion, config["NOTION_MOVEMENTS_DB"], movement_name))
+        state["movement"] = movement_name
+        state["movement_page_id"] = movement_id
+        state["stage"] = "notes"
+        cf_pending[cf_flow_key] = state
+        if await handle_gymnastics_level_check(message, movement_id, movement_name, notion, config, cf_pending, cf_flow_key):
+            return
+        await message.reply_text("📝 Any notes about this session?\n(Reply with text, or tap Skip)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{cf_flow_key}")]]))
+        return
+    if state.get("mode") == "wod" and state.get("stage") == "movement":
+        state["movements"] = [m.strip() for m in text.split(",") if m.strip()]
+        state["stage"] = "format"
+        cf_pending[cf_flow_key] = state
+        await message.reply_text("Select WOD format:", parse_mode="Markdown", reply_markup=wod_format_keyboard(cf_flow_key))
+        return
     if state.get("mode") == "subs" and state.get("stage") == "movement":
         state["movement"] = text
         state["stage"] = "subtype"
@@ -214,14 +239,12 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
             "2. Create a new row\n"
             "3. Paste the full programme text into *Full Program*\n"
             "4. Leave Processed unchecked\n\n"
-            "_Brian II will parse it within 15 minutes and notify you here._\n\n"
-            "Fallback: you can still paste short/single-day programmes in Telegram."
+            "_Brian II will parse it within 15 minutes and notify you here._"
         )
         try:
             await q.edit_message_text(prompt, parse_mode="Markdown")
         except Exception:
             await q.message.reply_text(prompt, parse_mode="Markdown")
-        cf_pending["__awaiting_upload__"] = True
         return
     elif parts[1] == "subs":
         await handle_cf_subs_flow(q.message, notion, config, cf_pending)

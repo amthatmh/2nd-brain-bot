@@ -1434,7 +1434,11 @@ async def route_classified_message_v10(message, text: str) -> None:
             workout_result = {"type": "none"}
         if workout_result.get("type") == "programme":
             await thinking.delete()
-            await handle_cf_upload_programme(message, text, claude, notion, {"NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS, "CLAUDE_MODEL": CLAUDE_MODEL})
+            await message.reply_text(
+                "📋 Weekly programmes are parsed from Notion only now.\n"
+                "Add a row in Weekly Programs, paste into *Full Program*, and leave *Processed* unchecked.",
+                parse_mode="Markdown",
+            )
             return
         if workout_result.get("type") in ("strength", "conditioning") and workout_result.get("confidence") == "high":
             await thinking.delete()
@@ -1764,7 +1768,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
                 )
                 return
 
-    # ── CrossFit programme upload — must be first before any classifier ──
+    # ── Weekly programme parsing is Notion-driven (15-minute poller) ──
     upload_programme_aliases = {
         "📤 upload programme",
         "📤 upload program",
@@ -1773,46 +1777,16 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         "📤 upload programme...",
         "📤 upload program...",
     }
-    if lower in upload_programme_aliases:
-        context.user_data["awaiting_programme_upload"] = True
+    if lower in upload_programme_aliases or looks_like_crossfit_programme(text):
         await message.reply_text(
-            "📋 *Upload Weekly Programme*\n\nPaste the full programme text now.\n"
-                    "_Paste the whole thing — I'll extract Performance, Fitness and Hyrox._",
+            "📋 Weekly programmes are parsed from Notion only now.\n\n"
+            "1. Open *Weekly Programs*\n"
+            "2. Add a row\n"
+            "3. Paste full text into *Full Program*\n"
+            "4. Leave *Processed* unchecked\n\n"
+            "The 15-minute job will parse and backfill this row.",
             parse_mode="Markdown",
         )
-        return
-
-    if context.user_data.get("awaiting_programme_upload") or cf_pending.pop("__awaiting_upload__", False):
-        buffered = (context.user_data.get("programme_upload_buffer") or "").strip()
-        merged_text = (buffered + "\n" + text).strip() if buffered else text
-        ok = await handle_cf_upload_programme(message, merged_text, claude, notion, {
-            "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB,
-            "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB,
-            "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB,
-            "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS,
-            "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB,
-            "CLAUDE_MODEL": CLAUDE_MODEL,
-        })
-        if ok:
-            context.user_data["awaiting_programme_upload"] = False
-            context.user_data["programme_upload_buffer"] = ""
-        else:
-            context.user_data["awaiting_programme_upload"] = True
-            context.user_data["programme_upload_buffer"] = merged_text[-12000:]
-            await message.reply_text("📎 If Telegram split your programme into multiple messages, paste the next part now and I'll merge them.")
-        return
-
-    # Fallback: parse obvious weekly programmes even if transient upload state was lost
-    # (e.g., after a worker restart between callback and pasted message).
-    if looks_like_crossfit_programme(text):
-        await handle_cf_upload_programme(message, text, claude, notion, {
-            "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB,
-            "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB,
-            "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB,
-            "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS,
-            "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB,
-            "CLAUDE_MODEL": CLAUDE_MODEL,
-        })
         return
 
     pending_custom_topic = context.user_data.get("awaiting_note_custom_topic")
