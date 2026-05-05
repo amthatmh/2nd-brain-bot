@@ -2841,6 +2841,12 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
 
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
     lines = [f"☀️ *{date_str}*", ""]
+
+    global _last_daily_log_url
+    if _last_daily_log_url:
+        log_date_label = (today - timedelta(days=1)).isoformat()
+        lines.append(f"📓 [{log_date_label} Log]({_last_daily_log_url})")
+        lines.append("")
     include_weather = True if config is None else bool(config.get("include_weather"))
     include_uvi = bool(config.get("include_uvi")) if config else False
     uvi_data = wx.fetch_uvi_data() if include_uvi else None
@@ -2914,14 +2920,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     last_digest_msg_id = sent_digest.message_id
     log.info("Consolidated daily digest sent — %d tasks, %d habits", len(ordered), len(habits))
 
-    global _last_daily_log_url
     if _last_daily_log_url:
-        await bot.send_message(
-            chat_id=MY_CHAT_ID,
-            text=f"📓 [Yesterday's log]({_last_daily_log_url})",
-            parse_mode="Markdown",
-            disable_web_page_preview=True,
-        )
         _last_daily_log_url = ""
 
 
