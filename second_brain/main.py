@@ -87,6 +87,7 @@ from second_brain.utils import ExpiringDict, reply_notion_error
 from second_brain.http_utils import cors_headers
 from second_brain.services import task_parsing as task_parsing_service
 from second_brain.services import note_utils as note_utils_service
+from second_brain.handlers.commands import CommandHandlers
 
 from second_brain.crossfit.classify import classify_workout_message, parse_programme
 from second_brain.crossfit.handlers import (
@@ -3717,37 +3718,37 @@ async def post_init(app: Application) -> None:
     )
 
 
+
+
+def _next_done_picker_key() -> int:
+    global _done_picker_counter
+    key = _done_picker_counter
+    _done_picker_counter += 1
+    return key
+
+
+def _command_handlers() -> CommandHandlers:
+    return CommandHandlers({
+        "MY_CHAT_ID": MY_CHAT_ID,
+        "habit_cache": habit_cache,
+        "already_logged_today": already_logged_today,
+        "notion_tasks": notion_tasks,
+        "notion": notion,
+        "NOTION_DB_ID": NOTION_DB_ID,
+        "kb": kb,
+        "done_picker_map": done_picker_map,
+        "done_picker_keyboard": done_picker_keyboard,
+        "next_done_picker_key": _next_done_picker_key,
+        "send_quick_reminder": send_quick_reminder,
+    })
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # COMMAND HANDLERS — defined before main() so Python can resolve names
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def handle_done_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/done — combined habit + task picker."""
-    if update.effective_chat.id != MY_CHAT_ID:
-        return
-    pending_habits = [
-        h for h in sorted(habit_cache.values(), key=lambda x: x["sort"])
-        if not already_logged_today(h["page_id"])
-    ]
-    tasks = notion_tasks.get_today_and_overdue_tasks(notion, NOTION_DB_ID)
-    if not pending_habits and not tasks:
-        await update.message.reply_text("✅ Everything done for today — nothing left to log!")
-        return
-    if pending_habits:
-        await update.message.reply_text(
-            "🏃 *Which habit did you complete?*",
-            parse_mode="Markdown",
-            reply_markup=kb.habit_buttons(pending_habits, "manual"),
-        )
-    if tasks:
-        global _done_picker_counter
-        key = str(_done_picker_counter); _done_picker_counter += 1
-        done_picker_map[key] = tasks
-        await update.message.reply_text(
-            "✅ *Which task did you finish?*",
-            parse_mode="Markdown",
-            reply_markup=done_picker_keyboard(key, page=0),
-        )
+    await _command_handlers().handle_done_command(update, context)
 
 
 async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3781,10 +3782,7 @@ async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def handle_remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/r and /remind — quick to-do reminder snapshot."""
-    if update.effective_chat.id != MY_CHAT_ID:
-        return
-    await send_quick_reminder(update.message, mode="priority")
+    await _command_handlers().handle_remind_command(update, context)
 
 
 async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
