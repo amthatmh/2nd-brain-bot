@@ -900,6 +900,17 @@ def get_and_clear_signoff_note() -> str:
     _signoff_note_today = ""
     return note
 
+async def trigger_signoff_now(message, note: str | None = None) -> None:
+    if note:
+        store_signoff_note(note)
+    await generate_daily_log(message.get_bot())
+    note_msg = f"\n\n📝 {_escape_markdown_v2(note[:180])}" if note else ""
+    await message.reply_text(
+        "📓 Signoff captured — daily log generated now." + note_msg,
+        parse_mode="MarkdownV2" if note else None,
+    )
+
+
 
 
 
@@ -915,6 +926,44 @@ def _get_today_tasks_for_palette() -> list[dict]:
         notion_tasks=notion_tasks, notion=notion, notion_db_id=NOTION_DB_ID, local_today_fn=local_today
     )
 
+
+
+def track_claude_activity(text: str) -> None:
+    global _claude_activity_today
+    cleaned = re.sub(r"\s+", " ", (text or "").strip())
+    if not cleaned:
+        return
+    timestamp = datetime.now(TZ).strftime("%H:%M")
+    _claude_activity_today.append(f"{timestamp} — {cleaned[:200]}")
+    if len(_claude_activity_today) > 60:
+        _claude_activity_today = _claude_activity_today[-60:]
+
+
+def get_and_clear_claude_activity() -> list[str]:
+    global _claude_activity_today
+    items = _claude_activity_today
+    _claude_activity_today = []
+    return items
+
+def format_digest_view() -> tuple[str, InlineKeyboardMarkup]:
+    """Build digest view for today + next 7 calendar days, grouped by date."""
+    today = local_today()
+    cutoff = today + timedelta(days=7)
+    tasks = notion_tasks.get_all_active_tasks(notion, NOTION_DB_ID)
+    groups: dict[str, list[dict]] = defaultdict(list)
+    beyond_count = 0
+
+    for task in tasks:
+        raw_deadline = task.get("deadline")
+        parsed_deadline = notion_tasks._parse_deadline(raw_deadline)
+        if not parsed_deadline:
+            continue
+        if parsed_deadline < today:
+            continue
+        if parsed_deadline <= cutoff:
+            groups[parsed_deadline.isoformat()].append(task)
+        else:
+            beyond_count += 1
 
 
 
@@ -1622,7 +1671,19 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     lower = text.lower().strip()
     lower_normalized = re.sub(r"\s+", " ", lower).strip()
-    if not lower.startswith("signoff:"):
+    if lower.startswith("/signoff"):
+        note = text.split(" ", 1)[1].strip() if " " in text else ""
+        await trigger_signoff_now(message, note=note or None)
+        return
+    if lower == "signoff":
+        await trigger_signoff_now(message)
+        return
+    match_signoff_inline = re.match(r"signoff:\s*(.+)$", text, re.IGNORECASE)
+    if match_signoff_inline:
+        await trigger_signoff_now(message, note=match_signoff_inline.group(1).strip())
+        return
+
+    if not lower.startswith("signoff:") and not lower.startswith("/signoff") and lower != "signoff":
         track_claude_activity(text)
 
     if lower == "cancel":
@@ -2010,16 +2071,6 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     cf_flow_key = context.user_data.get("cf_flow_key")
     if cf_flow_key and cf_flow_key in cf_pending:
         await handle_cf_text_reply(message, text, cf_flow_key, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_PRS_DB": NOTION_PRS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB, "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB}, cf_pending)
-        return
-
-    match_signoff = re.match(r"signoff:\s*(.+)$", text, re.IGNORECASE)
-    if match_signoff:
-        note = match_signoff.group(1).strip()
-        store_signoff_note(note)
-        await message.reply_text(
-            f"📓 Signoff noted — I'll include this in tonight's log.\n\n_{note}_",
-            parse_mode="Markdown",
-        )
         return
 
     match_force = re.match(r"force:\s*(.+)$", text, re.IGNORECASE)
@@ -3890,6 +3941,14 @@ async def cmd_habits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await send_daily_habits_list(context.bot)
 
 
+
+
+async def cmd_signoff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_chat.id != MY_CHAT_ID:
+        return
+    note = " ".join(context.args or []).strip()
+    await trigger_signoff_now(update.message, note=note or None)
+
 async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/log <cinema|movie|performance|sport> <title> at <venue> — explicit entertainment logging."""
     if update.effective_chat.id != MY_CHAT_ID:
@@ -3936,6 +3995,7 @@ def main() -> None:
     app.add_handler(CommandHandler("habits", cmd_habits))
     app.add_handler(CommandHandler("log", cmd_log))
     app.add_handler(CommandHandler("trip", handle_trip_command))
+    app.add_handler(CommandHandler("signoff", cmd_signoff))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message_text))
     app.add_handler(CallbackQueryHandler(handle_callback))
     log.info(f"🤖 Second Brain bot starting ({APP_VERSION})...")
