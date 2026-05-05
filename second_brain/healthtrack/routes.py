@@ -109,8 +109,11 @@ def _parse_health_export_payload(body: dict) -> tuple[int, str] | None:
         if not daily_totals:
             continue
 
-        best_date = max(daily_totals, key=lambda d: daily_totals[d])
-        return daily_totals[best_date], best_date
+        # Prefer the most recent day in payloads that include multiple dates.
+        # Health export batches can include both yesterday and today; choosing the
+        # highest total can incorrectly select an older day.
+        latest_date = max(daily_totals)
+        return daily_totals[latest_date], latest_date
 
     return None
 
