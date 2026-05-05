@@ -127,6 +127,7 @@ def register_health_routes(
     tz,
     bot_getter,  # callable() → bot, evaluated at request time to avoid circular import
     chat_id: int,
+    on_sync_result=None,  # optional callback(result: dict) for telemetry
 ) -> None:
     """
     Register /api/v1/steps-sync and /api/v1/steps-status routes on the aiohttp app.
@@ -202,6 +203,11 @@ def register_health_routes(
             chat_id=chat_id,
             write_intraday_below_threshold=STEPS_WRITE_INTRADAY_BELOW_THRESHOLD,
         )
+        if on_sync_result:
+            try:
+                on_sync_result(result)
+            except Exception as e:
+                log.warning("steps_sync: telemetry callback failed: %s", e)
 
         return web.Response(
             text=json.dumps({"ok": True, "result": result}),

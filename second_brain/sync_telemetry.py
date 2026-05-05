@@ -10,6 +10,7 @@ def init_sync_status() -> dict[str, dict]:
     return {
         "asana": {"last_run": None, "ok": None, "error": None, "stats": None},
         "cinema": {"last_run": None, "ok": None, "error": None, "stats": None},
+        "steps": {"last_run": None, "ok": None, "error": None, "stats": None},
     }
 
 
@@ -43,5 +44,7 @@ def format_sync_status_message(sync_status: dict[str, dict]) -> str:
         format_sync_block("Asana", sync_status["asana"]),
         "",
         format_sync_block("Cinema", sync_status["cinema"]),
+        "",
+        format_sync_block("Steps", sync_status["steps"]),
     ]
     return "\n".join(msg)

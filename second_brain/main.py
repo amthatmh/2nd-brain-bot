@@ -2685,7 +2685,11 @@ async def send_digest_for_slot(bot, slot: dict) -> None:
     if is_signoff:
         await generate_daily_log(bot)
         return
-    await send_daily_digest(bot, include_habits=slot["include_habits"], config=config)
+    await send_daily_digest(
+        bot,
+        include_habits=bool(config.get("include_habits")),
+        config=config,
+    )
     _digest_slot_sent_today.add(slot_key)
 
 
@@ -2869,7 +2873,13 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         habits_enabled = bool(config.get("include_habits"))
     if habits_enabled:
         morning_habits_all = notion_habits.get_habits_by_time(time_filter="🌅 Morning", notion_query_all=notion_query_all, notion_habit_db=NOTION_HABIT_DB, parse_time_to_minutes=_parse_time_to_minutes, count_habit_completions_this_week=_count_habit_completions_this_week, habit_capped_this_week=habit_capped_this_week) + notion_habits.get_habits_by_time(time_filter="🕐 Anytime", notion_query_all=notion_query_all, notion_habit_db=NOTION_HABIT_DB, parse_time_to_minutes=_parse_time_to_minutes, count_habit_completions_this_week=_count_habit_completions_this_week, habit_capped_this_week=habit_capped_this_week)
-        morning_habits_all = [h for h in morning_habits_all if not already_logged_today(h["page_id"]) and not is_on_pace(h)]
+        morning_habits_all = [
+            h
+            for h in morning_habits_all
+            if not already_logged_today(h["page_id"])
+            and not is_on_pace(h)
+            and (h.get("name") or "").strip().lower() != STEPS_HABIT_NAME.strip().lower()
+        ]
         uv_max = uvi_data["max"] if uvi_data else None
         if uv_max is not None:
             habits = [
@@ -3287,6 +3297,14 @@ async def start_http_server() -> None:
         tz=TZ,
         bot_getter=lambda: _app_bot,
         chat_id=MY_CHAT_ID,
+        on_sync_result=lambda result: sync_status["steps"].update(
+            {
+                "last_run": utc_now_iso(),
+                "ok": result.get("action") != "error",
+                "error": result.get("reason") if result.get("action") == "error" else None,
+                "stats": result,
+            }
+        ),
     )
     runner = web.AppRunner(app)
     await runner.setup()
@@ -3685,7 +3703,7 @@ async def post_init(app: Application) -> None:
         )
 
     async def _run_steps_final_stamp(bot) -> None:
-        await handle_steps_final_stamp(
+        result = await handle_steps_final_stamp(
             notion=notion,
             habit_db_id=NOTION_HABIT_DB,
             log_db_id=NOTION_LOG_DB,
@@ -3697,6 +3715,10 @@ async def post_init(app: Application) -> None:
             chat_id=MY_CHAT_ID,
             write_intraday_below_threshold=STEPS_WRITE_INTRADAY_BELOW_THRESHOLD,
         )
+        sync_status["steps"]["last_run"] = utc_now_iso()
+        sync_status["steps"]["ok"] = True
+        sync_status["steps"]["error"] = None
+        sync_status["steps"]["stats"] = result
 
     scheduler.add_job(
         _run_steps_final_stamp,
