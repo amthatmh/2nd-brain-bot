@@ -21,40 +21,20 @@ def context_emoji(context: str | None) -> str:
     return "📝"
 
 def format_hybrid_digest(tasks: list[dict]) -> tuple[str, list[dict]]:
-    """Main digest message with status peek and critical sections."""
+    """Main digest message in product layout: weather + Today + This Week."""
     del tasks  # counts and sections are always computed fresh
     overdue, today_tasks, this_week, backlog = _get_tasks_by_deadline_horizon()
-
-    now_dt = datetime.now(TZ)
-    date_str = now_dt.strftime("%A, %B %-d")
-
-    summary_parts = []
-    if overdue:
-        summary_parts.append(f"{len(overdue)} overdue")
-    if today_tasks:
-        summary_parts.append(f"{len(today_tasks)} due today")
-    if this_week:
-        summary_parts.append(f"{len(this_week)} this week")
-    if backlog:
-        summary_parts.append(f"{len(backlog)} backlog")
-    if not summary_parts:
-        summary_parts = ["0 due today"]
-
-    lines = [
-        f"☀️ *{date_str}*",
-        "",
-        format_digest_weather_card(),
-        "",
-        f"📊 {', '.join(summary_parts)}",
-        "",
-    ]
+    _ = backlog
+    date_str = datetime.now(TZ).strftime("%A, %B %-d")
+    lines = [f"☀️ *{date_str}*", format_digest_weather_card(), ""]
 
     ordered: list[dict] = []
     n = 1
+    today_bucket = overdue + today_tasks
 
-    lines.append("🚨 *Overdue*")
-    if overdue:
-        for task in overdue:
+    lines.append("📌 *Today*")
+    if today_bucket:
+        for task in today_bucket:
             lines.append(f"{num_emoji(n)} {task['name']}  {notion_tasks._context_label(task)}")
             ordered.append(task)
             n += 1
@@ -62,9 +42,9 @@ def format_hybrid_digest(tasks: list[dict]) -> tuple[str, list[dict]]:
         lines.append("✅ Nothing — all clear!")
     lines.append("")
 
-    lines.append("📌 *Due Today*")
-    if today_tasks:
-        for task in today_tasks:
+    lines.append("🗓️ *This Week*")
+    if this_week:
+        for task in this_week:
             lines.append(f"{num_emoji(n)} {task['name']}  {notion_tasks._context_label(task)}")
             ordered.append(task)
             n += 1
