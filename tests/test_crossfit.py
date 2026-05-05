@@ -129,10 +129,36 @@ def test_classify_short_text_not_fast_path():
 
 def test_save_programme_flat_fallback():
     calls = []
-    notion = SimpleNamespace(pages=SimpleNamespace(create=lambda **kwargs: calls.append(kwargs) or {"id": "parent"}))
+    updates = []
+    notion = SimpleNamespace(
+        pages=SimpleNamespace(
+            create=lambda **kwargs: calls.append(kwargs) or {"id": "parent"},
+            update=lambda **kwargs: updates.append(kwargs) or {"id": "parent"},
+        ),
+        databases=SimpleNamespace(query=lambda **kwargs: {"results": []}),
+    )
     parsed = {"week_label": "Week of 2026-05-04", "days": [{"day": "Monday", "section_b": None, "section_c": None}]}
     save_programme(notion, "program", "days", "", parsed, "raw")
     assert len(calls) >= 2
+    assert updates == []
+
+
+def test_save_programme_updates_parent_movements_relation():
+    calls = []
+    updates = []
+    notion = SimpleNamespace(
+        pages=SimpleNamespace(
+            create=lambda **kwargs: calls.append(kwargs) or {"id": "parent"},
+            update=lambda **kwargs: updates.append(kwargs) or {"id": "parent"},
+        ),
+        databases=SimpleNamespace(query=lambda **kwargs: {"results": [{"id": "mov-page", "properties": {"Name": {"title": [{"plain_text": "Back Squat"}]}}}]}),
+    )
+    parsed = {
+        "week_label": "Week of 2026-05-04",
+        "tracks": [{"track": "Performance", "days": [{"day": "Monday", "section_b": {"description": "5x5", "movements": ["Back Squat"]}, "section_c": None}]}],
+    }
+    save_programme(notion, "program", "days", "movements", parsed, "raw")
+    assert any("Movements" in u.get("properties", {}) for u in updates)
 
 
 def test_rich_text_chunks_splits_long_text():
