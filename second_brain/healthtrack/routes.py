@@ -63,23 +63,92 @@ from second_brain.http_utils import cors_headers
 log = logging.getLogger(__name__)
 
 
+_last_steps_webhook: dict = {}
+
+
+def _coerce_step_count(value) -> int | None:
+    """Convert Health Auto Export numeric values to an integer step count."""
+    if value is None:
+        return None
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _payload_summary(body) -> dict:
+    """Return a small, secret-free description of an incoming payload."""
+    if not isinstance(body, dict):
+        return {"type": type(body).__name__}
+
+    data_field = body.get("data")
+    if isinstance(data_field, dict):
+        metrics = data_field.get("metrics", [])
+        data_shape = "data.metrics"
+    elif isinstance(data_field, list):
+        metrics = data_field
+        data_shape = "data[]"
+    elif isinstance(body.get("metrics"), list):
+        metrics = body.get("metrics", [])
+        data_shape = "metrics[]"
+    else:
+        metrics = []
+        data_shape = type(data_field).__name__ if data_field is not None else "missing"
+
+    metric_names = []
+    for metric in metrics[:10]:
+        if isinstance(metric, dict):
+            metric_names.append(metric.get("name") or metric.get("type") or "<unnamed>")
+
+    return {
+        "type": "dict",
+        "top_level_keys": sorted(str(key) for key in body.keys())[:20],
+        "data_shape": data_shape,
+        "metric_count": len(metrics),
+        "metric_names": metric_names,
+    }
+
+
+def _record_steps_webhook(request: web.Request, *, status: str, detail: dict | None = None) -> None:
+    """Keep the latest webhook attempt visible via /steps-status without storing secrets."""
+    headers = request.headers
+    _last_steps_webhook.clear()
+    _last_steps_webhook.update(
+        {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "status": status,
+            "method": request.method,
+            "content_type": headers.get("Content-Type"),
+            "content_length": headers.get("Content-Length"),
+            "automation_name": headers.get("automation-name"),
+            "automation_id": headers.get("automation-id"),
+            "automation_period": headers.get("automation-period"),
+            "automation_aggregation": headers.get("automation-aggregation"),
+            "session_id": headers.get("session-id"),
+        }
+    )
+    if detail:
+        _last_steps_webhook.update(detail)
+
+
 def _parse_health_export_payload(body: dict) -> tuple[int, str] | None:
     # Shape 1: flat simple format {"steps": 1234, "date": "YYYY-MM-DD"}
     if "steps" in body and "date" in body:
-        try:
-            steps = int(body["steps"])
+        steps = _coerce_step_count(body.get("steps"))
+        if steps is not None:
             raw_date = str(body["date"])[:10]
             return steps, raw_date
-        except (ValueError, TypeError):
-            pass
 
     # Shape 2: Health Auto Export v2 — body["data"] is a dict with "metrics" key
     # Shape 3: Health Auto Export v1 — body["data"] is a list directly
-    data_field = body.get("data", [])
+    data_field = body.get("data")
     if isinstance(data_field, dict):
         data_array = data_field.get("metrics", [])
     elif isinstance(data_field, list):
         data_array = data_field
+    elif isinstance(body.get("metrics"), list):
+        # Be liberal for manually exported/test payloads that omit the data wrapper.
+        data_array = body.get("metrics", [])
     else:
         return None
 
@@ -96,15 +165,18 @@ def _parse_health_export_payload(body: dict) -> tuple[int, str] | None:
 
         daily_totals: dict[str, int] = {}
         for reading in readings:
-            qty = reading.get("qty") or reading.get("value") or 0
+            qty = _coerce_step_count(
+                reading.get("qty")
+                if reading.get("qty") is not None
+                else reading.get("value", reading.get("steps"))
+            )
+            if qty is None:
+                continue
             raw_date = str(reading.get("date") or reading.get("startDate") or "")
             if not raw_date:
                 continue
             date_str = raw_date[:10]
-            try:
-                daily_totals[date_str] = daily_totals.get(date_str, 0) + int(qty)
-            except (ValueError, TypeError):
-                continue
+            daily_totals[date_str] = daily_totals.get(date_str, 0) + qty
 
         if not daily_totals:
             continue
@@ -154,6 +226,7 @@ def register_health_routes(
             incoming = request.headers.get("X-Health-Secret", "")
             if incoming != WEBHOOK_SECRET:
                 log.warning("steps_sync: rejected request — invalid secret")
+                _record_steps_webhook(request, status="unauthorized")
                 return web.Response(
                     status=401,
                     text=json.dumps({"ok": False, "error": "unauthorized"}),
@@ -164,6 +237,7 @@ def register_health_routes(
         try:
             body = await request.json()
         except Exception:
+            _record_steps_webhook(request, status="invalid_json")
             return web.Response(
                 status=400,
                 text=json.dumps({"ok": False, "error": "invalid JSON"}),
@@ -173,7 +247,13 @@ def register_health_routes(
 
         parsed = _parse_health_export_payload(body)
         if parsed is None:
+            summary = _payload_summary(body)
             log.warning("steps_sync: could not parse payload: %s", body)
+            _record_steps_webhook(
+                request,
+                status="parse_error",
+                detail={"payload_summary": summary},
+            )
             return web.Response(
                 status=422,
                 text=json.dumps({"ok": False, "error": "could not parse step count from payload"}),
@@ -183,6 +263,14 @@ def register_health_routes(
 
         steps, date_str = parsed
         log.info("steps_sync: received %d steps for %s", steps, date_str)
+        _record_steps_webhook(
+            request,
+            status="parsed",
+            detail={
+                "payload_summary": _payload_summary(body),
+                "parsed": {"steps": steps, "date": date_str},
+            },
+        )
 
         try:
             bot = bot_getter()
@@ -209,6 +297,9 @@ def register_health_routes(
             except Exception as e:
                 log.warning("steps_sync: telemetry callback failed: %s", e)
 
+        _last_steps_webhook["status"] = "processed"
+        _last_steps_webhook["result"] = result
+
         return web.Response(
             text=json.dumps({"ok": True, "result": result}),
             content_type="application/json",
@@ -222,6 +313,7 @@ def register_health_routes(
                 "ok": True,
                 "threshold": STEPS_THRESHOLD,
                 "habit_name": STEPS_HABIT_NAME,
+                "last_webhook": dict(_last_steps_webhook),
                 "state": get_steps_state_summary(),
             }),
             content_type="application/json",

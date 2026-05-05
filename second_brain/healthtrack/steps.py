@@ -300,6 +300,7 @@ async def handle_steps_final_stamp(
             tz=tz,
             bot=bot,
             chat_id=chat_id,
+            write_intraday_below_threshold=write_intraday_below_threshold,
         )
         results[date_str] = result
 
