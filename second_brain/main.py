@@ -2618,15 +2618,17 @@ async def get_digest_config(slot_time: str, weekday: bool) -> dict:
         slots = load_digest_slots()
     except Exception as e:
         log.error("Failed to read digest config for %s (%s): %s", slot_time, "weekday" if weekday else "weekend", e)
-        return {"contexts": None, "max_items": None, "include_habits": False}
+        return {"contexts": None, "max_items": None, "include_habits": False, "include_weather": False, "include_uvi": False}
     for slot in slots:
         if slot.get("time") == slot_time and bool(slot.get("is_weekday")) == bool(weekday):
             return {
                 "contexts": slot.get("contexts"),
                 "max_items": slot.get("max_items"),
                 "include_habits": bool(slot.get("include_habits")),
+                "include_weather": bool(slot.get("include_weather")),
+                "include_uvi": bool(slot.get("include_uvi")),
             }
-    return {"contexts": None, "max_items": None, "include_habits": False}
+    return {"contexts": None, "max_items": None, "include_habits": False, "include_weather": False, "include_uvi": False}
 
 
 def _filter_digest_tasks(tasks: list[dict], config: dict | None = None) -> list[dict]:
@@ -2675,9 +2677,9 @@ async def send_digest_for_slot(bot, slot: dict) -> None:
     )
     is_signoff = slot.get("is_signoff", False)
 
-    if not config.get("contexts") and not config.get("include_habits") and not is_signoff:
+    if not config.get("contexts") and not config.get("include_habits") and not config.get("include_weather") and not is_signoff:
         log.info(
-            "Skipping slot %s — nothing selected (no contexts, habits, or signoff)",
+            "Skipping slot %s — nothing selected (no contexts, habits, weather, or signoff)",
             slot.get("time"),
         )
         return
@@ -2841,17 +2843,20 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
 
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
     lines = [f"☀️ *{date_str}*", ""]
-    weather_block = fmt.format_weather_block(wx.fetch_weather("today"), label="🌤️")
-    uvi_data = wx.fetch_uvi_data()
-    if weather_block and uvi_data:
-        max_uvi = uvi_data["max"]
-        weather_block += f" · ☀️ {max_uvi:.1f} {fmt.uvi_emoji(max_uvi)}"
-    location_label = fmt.digest_location_label()
-    if weather_block:
-        lines.append(fmt.append_location_to_weather_block(weather_block, location_label))
-    else:
-        lines.append(fmt.weather_unavailable_digest_line())
-    lines.append("")
+    include_weather = True if config is None else bool(config.get("include_weather"))
+    include_uvi = bool(config.get("include_uvi")) if config else False
+    uvi_data = wx.fetch_uvi_data() if include_uvi else None
+    if include_weather:
+        weather_block = fmt.format_weather_block(wx.fetch_weather("today"), label="🌤️")
+        if weather_block and uvi_data:
+            max_uvi = uvi_data["max"]
+            weather_block += f" · ☀️ {max_uvi:.1f} {fmt.uvi_emoji(max_uvi)}"
+        location_label = fmt.digest_location_label()
+        if weather_block:
+            lines.append(fmt.append_location_to_weather_block(weather_block, location_label))
+        else:
+            lines.append(fmt.weather_unavailable_digest_line())
+        lines.append("")
     n = 1
 
     habits: list[dict] = []
