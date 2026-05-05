@@ -902,6 +902,7 @@ def format_digest_view() -> tuple[str, InlineKeyboardMarkup]:
         notion_db_id=NOTION_DB_ID,
         local_today_fn=local_today,
         back_to_palette_keyboard=kb.back_to_palette_keyboard,
+        weather_card=fmt.format_digest_weather_card(),
     )
 
 

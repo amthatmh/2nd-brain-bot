@@ -167,6 +167,21 @@ class TestManualDigestConfig(unittest.TestCase):
         self.assertEqual(config["contexts"], ["🏠 Personal"])
         self.assertEqual(config["max_items"], 5)
 
+
+    def test_manual_digest_config_forces_weather_for_digest_button(self):
+        main = load_main_module()
+        now = main.datetime.now(main.TZ).replace(hour=9, minute=0)
+        slots = [
+            {"time": "08:15", "is_weekday": True, "include_habits": False, "include_weather": False, "include_uvi": False, "contexts": ["💼 Work"], "max_items": 10, "is_signoff": False},
+        ]
+
+        config = main._manual_digest_config_now(slots, now_dt=now)
+
+        self.assertIsNotNone(config)
+        self.assertTrue(config["include_weather"])
+        self.assertFalse(config["include_habits"])
+        self.assertEqual(config["contexts"], ["💼 Work"])
+
     def test_manual_digest_config_ignores_signoff_only_slots(self):
         main = load_main_module()
         now = main.datetime.now(main.TZ).replace(hour=23, minute=59)

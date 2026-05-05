@@ -25,7 +25,9 @@ def manual_digest_config_now(slots: list[dict], now_dt: datetime, is_weekday: bo
     chosen = max(earlier_or_equal, key=lambda x: x[0])[1] if earlier_or_equal else min(candidates, key=lambda x: x[0])[1]
     return {
         "include_habits": bool(chosen.get("include_habits")),
-        "include_weather": bool(chosen.get("include_weather")),
+        # Manual Digest requests should always include the weather card; scheduled
+        # Digest Selector slots still control weather via get_digest_config().
+        "include_weather": True,
         "include_uvi": bool(chosen.get("include_uvi")),
         "contexts": chosen.get("contexts"),
         "max_items": chosen.get("max_items"),

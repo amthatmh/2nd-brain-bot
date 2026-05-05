@@ -13,7 +13,7 @@ def get_today_tasks_for_palette(*, notion_tasks, notion, notion_db_id, local_tod
     return [t for t in tasks if t.get("deadline") == today_str]
 
 
-def format_digest_view(*, notion_tasks, notion, notion_db_id, local_today_fn, back_to_palette_keyboard) -> tuple[str, InlineKeyboardMarkup]:
+def format_digest_view(*, notion_tasks, notion, notion_db_id, local_today_fn, back_to_palette_keyboard, weather_card: str = "") -> tuple[str, InlineKeyboardMarkup]:
     today = local_today_fn()
     cutoff = today + timedelta(days=7)
     tasks = notion_tasks.get_all_active_tasks(notion, notion_db_id)
@@ -29,7 +29,11 @@ def format_digest_view(*, notion_tasks, notion, notion_db_id, local_today_fn, ba
         else:
             beyond_count += 1
 
-    lines = ["📖 Digest — Today + 7 Days", ""]
+    lines = ["📖 Digest — Today + 7 Days"]
+    if weather_card:
+        lines.extend([weather_card, ""])
+    else:
+        lines.append("")
     if not groups:
         lines.append("✅ Clear for next 7 days!")
     else:

@@ -311,11 +311,9 @@ def format_weather_snapshot() -> str:
             dt = datetime.fromisoformat(day["date"]).strftime("%a")
             high_c = int(day["temp_high"])
             low_c = int(day["temp_low"])
-            high_f = int(round((high_c * 9 / 5) + 32))
-            low_f = int(round((low_c * 9 / 5) + 32))
             uvi = float(day.get("uvi", 0))
             lines.append(
-                f"{dt}  {condition_emoji(day.get('condition', 'Unknown'))} {high_f}°/{low_f}° · "
+                f"{dt}  {condition_emoji(day.get('condition', 'Unknown'))} {high_c}°C/{low_c}°C · "
                 f"💧{int(day.get('precip_chance', 0))}% · UV {uvi:.1f} {uvi_emoji(uvi)}"
             )
     elif len(lines) == 1:
@@ -370,7 +368,7 @@ def weather_unavailable_digest_line() -> str:
 
 def format_digest_weather_card() -> str:
     """Digest weather card in the compact layout requested by product."""
-    daily = wx.fetch_daily_weather(days=1)
+    daily = wx.fetch_daily_weather(days=5)
     today = daily[0] if daily else None
     if not today:
         # Fallback for environments where One Call 3.0 is unavailable/slow.
