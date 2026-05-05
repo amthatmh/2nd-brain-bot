@@ -31,6 +31,21 @@ def get_or_create_movement(notion, movements_db_id: str, name: str) -> str:
 
 
 
+def _extract_unique_movement_names(parsed: dict) -> set[str]:
+    names: set[str] = set()
+    for track_row in (parsed or {}).get("tracks", []):
+        for day_row in track_row.get("days", []):
+            for m in (day_row.get("section_b") or {}).get("movements") or []:
+                if m:
+                    names.add(m)
+            for m in (day_row.get("section_c") or {}).get("movements") or []:
+                if m:
+                    names.add(m)
+    return names
+
+
+
+
 def _rich_text_chunks(text: str, limit: int = 1900) -> list[dict]:
     """Split text into Notion rich_text block array respecting per-block limit."""
     if not text:
@@ -98,15 +113,7 @@ def save_programme(notion, program_db_id: str, workout_days_db_id: str, movement
 
     movement_cache: dict[str, str] = {}
     if movements_db_id:
-        all_movement_names: set[str] = set()
-        for track_row in parsed.get("tracks", []):
-            for day_row in track_row.get("days", []):
-                for movement_name in (day_row.get("section_b") or {}).get("movements") or []:
-                    if movement_name:
-                        all_movement_names.add(movement_name)
-                for movement_name in (day_row.get("section_c") or {}).get("movements") or []:
-                    if movement_name:
-                        all_movement_names.add(movement_name)
+        all_movement_names = _extract_unique_movement_names(parsed)
 
         log.info("save_programme: resolving %d unique movements", len(all_movement_names))
         for movement_name in all_movement_names:
@@ -114,6 +121,12 @@ def save_programme(notion, program_db_id: str, workout_days_db_id: str, movement
                 movement_cache[movement_name] = get_or_create_movement(notion, movements_db_id, movement_name)
             except Exception as e:
                 log.warning("save_programme: could not resolve movement '%s': %s", movement_name, e)
+
+    if movement_cache:
+        try:
+            notion_call(notion.pages.update, page_id=parent_page_id, properties={"Movements": {"relation": [{"id": mid} for mid in movement_cache.values()]}})
+        except Exception as e:
+            log.warning("save_programme: could not update parent movements: %s", e)
 
     days_created = 0
     for track_row in parsed.get("tracks", []):
@@ -200,21 +213,22 @@ def save_programme_from_notion_row(
         log.warning("save_programme_from_notion_row: could not update parent name: %s", e)
 
     movement_cache: dict[str, str] = {}
+    all_names = _extract_unique_movement_names(parsed)
     if movements_db_id:
-        all_names: set[str] = set()
-        for track_row in parsed.get("tracks", []):
-            for day_row in track_row.get("days", []):
-                for m in (day_row.get("section_b") or {}).get("movements") or []:
-                    if m:
-                        all_names.add(m)
-                for m in (day_row.get("section_c") or {}).get("movements") or []:
-                    if m:
-                        all_names.add(m)
         for name in all_names:
             try:
                 movement_cache[name] = get_or_create_movement(notion, movements_db_id, name)
             except Exception as e:
                 log.warning("save_programme_from_notion_row: movement '%s' failed: %s", name, e)
+
+    # keep Weekly Programs metadata in sync (aggregate movement relation)
+    try:
+        parent_props = {"Name": {"title": [{"text": {"content": week_label}}]}}
+        if movement_cache:
+            parent_props["Movements"] = {"relation": [{"id": mid} for mid in movement_cache.values()]}
+        notion_call(notion.pages.update, page_id=parent_page_id, properties=parent_props)
+    except Exception as e:
+        log.warning("save_programme_from_notion_row: could not update parent metadata: %s", e)
 
     days_created = 0
     for track_row in parsed.get("tracks", []):
