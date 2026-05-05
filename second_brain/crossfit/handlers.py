@@ -137,7 +137,7 @@ async def handle_cf_upload_programme(message, text, claude_client, notion, confi
 
 async def handle_cf_strength_flow(message, workout_result, claude, notion, config, cf_pending):
     del claude
-    if not config.get("NOTION_WORKOUT_LOG_DB"):
+    if not config.get("NOTION_WORKOUT_LOG_DB") or not config.get("NOTION_MOVEMENTS_DB"):
         await message.reply_text("⚠️ CrossFit module isn't configured yet.", parse_mode="Markdown")
         return
     key = str(message.chat_id)
@@ -197,6 +197,9 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
 
 
 async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
+    if len(parts) < 2:
+        await q.answer("Action unavailable.", show_alert=False)
+        return
     if parts[1] == "log_strength":
         await handle_cf_strength_flow(q.message, {}, claude, notion, config, cf_pending)
     elif parts[1] == "log_wod":
@@ -237,6 +240,9 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         cf_pending.pop(key, None)
     elif parts[1] == "skip" and len(parts) == 3:
         await _finalize_flow(q.message, parts[2], notion, config, cf_pending, None)
+    elif parts[1] == "cancel":
+        cf_pending.pop(str(q.message.chat_id), None)
+        await q.edit_message_text("❌ CrossFit action canceled.")
     elif parts[1] == "levelok" and len(parts) == 3:
         key = parts[2]
         state = cf_pending.get(key, {})

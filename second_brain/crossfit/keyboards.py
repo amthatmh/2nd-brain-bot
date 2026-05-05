@@ -9,6 +9,7 @@ def crossfit_submenu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Log Strength (B)", callback_data="cf:log_strength"), InlineKeyboardButton("🏋️ Log WOD (C)", callback_data="cf:log_wod")],
         [InlineKeyboardButton("🏆 My PRs", callback_data="cf:prs"), InlineKeyboardButton("🔍 Sub / Add-on", callback_data="cf:subs")],
+        [InlineKeyboardButton("✖️ Cancel", callback_data="cf:cancel")],
     ])
 
 

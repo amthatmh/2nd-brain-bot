@@ -1618,6 +1618,8 @@ COMMAND_DISPATCH: dict[str, Callable] = {
     "🔄 refresh": cmd_refresh,
     "✅ to do": cmd_todo,
     "✅to do": cmd_todo,
+    "✅ todo": cmd_todo,
+    "✅todo": cmd_todo,
     "📋 all open": cmd_todo,
     "done": cmd_done_bare,
     "/habits": cmd_habits_text,
