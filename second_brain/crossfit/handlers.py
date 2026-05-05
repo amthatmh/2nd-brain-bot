@@ -151,7 +151,8 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
 
 async def handle_cf_wod_flow(message, workout_result, notion, config, cf_pending):
     del notion
-    if not config.get("NOTION_WOD_LOG_DB"):
+    target_wod_db = config.get("NOTION_WOD_LOG_DB") or config.get("NOTION_WORKOUT_LOG_DB")
+    if not target_wod_db:
         await message.reply_text("⚠️ CrossFit module isn't configured yet.", parse_mode="Markdown")
         return
     key = str(message.chat_id)
@@ -178,7 +179,8 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         await asyncio.get_running_loop().run_in_executor(None, lambda: create_strength_log(notion, config["NOTION_WORKOUT_LOG_DB"], movement_id, state.get("movement") or "Unknown", float(state.get("load_lbs") or 0), int(state.get("sets") or 1), int(state.get("reps") or 1), False, None, None, state.get("readiness")))
         await message.reply_text("✅ Strength logged!\n\n_Saved to Notion_", parse_mode="Markdown")
     elif state.get("mode") == "wod":
-        await asyncio.get_running_loop().run_in_executor(None, lambda: create_wod_log(notion, config["NOTION_WOD_LOG_DB"], state.get("format") or "AMRAP", None, None, "Reps", None, None, None, "Rx", state.get("level_current_name") or notes, False, None, [], None, state.get("readiness")))
+        target_wod_db = config.get("NOTION_WOD_LOG_DB") or config.get("NOTION_WORKOUT_LOG_DB")
+        await asyncio.get_running_loop().run_in_executor(None, lambda: create_wod_log(notion, target_wod_db, state.get("format") or "AMRAP", None, None, "Reps", None, None, None, "Rx", state.get("level_current_name") or notes, False, None, [], None, state.get("readiness")))
         await message.reply_text("✅ WOD logged!\n\n_Saved to Notion_", parse_mode="Markdown")
     cf_pending.pop(key, None)
 

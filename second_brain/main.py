@@ -381,7 +381,7 @@ REPEAT_DAY_TO_MONTHDAY = {
 }
 _BULLET_RE = re.compile(r"^[\s]*(?:[-•*]|\d+[.):])\s+", re.MULTILINE)
 BTN_REFRESH = "📜Digest"
-BTN_ALL_OPEN = "✅To Do"
+BTN_ALL_OPEN = "✅ To Do"
 BTN_HABITS = "🏃 Habits"
 BTN_CROSSFIT = "💪 CrossFit"
 BTN_NOTES = "📝 Notes"
@@ -1344,7 +1344,7 @@ async def cmd_todo(message, context: ContextTypes.DEFAULT_TYPE | None = None) ->
     await message.reply_text(
         "✅ *What did you get done?*",
         parse_mode="Markdown",
-        reply_markup=todo_picker_keyboard(key),
+        reply_markup=todo_picker_keyboard(key, todo_picker_map, context_emoji),
     )
 
 
@@ -2504,7 +2504,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         await q.edit_message_text(
             f"✅ {done_count} done · {remaining} remaining",
-            reply_markup=todo_picker_keyboard(key),
+            reply_markup=todo_picker_keyboard(key, todo_picker_map, context_emoji),
         )
         return
 
