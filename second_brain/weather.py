@@ -341,7 +341,16 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
             resp = httpx.get("https://api.openweathermap.org/data/2.5/weather", params={"lat": current_lat, "lon": current_lon, "appid": OPENWEATHER_KEY, "units": "metric"}, timeout=10)
             resp.raise_for_status()
             data = resp.json()
-            result = {"temp": round(data.get("main", {}).get("temp", 0)), "feels_like": round(data.get("main", {}).get("feels_like", 0)), "condition": (data.get("weather") or [{}])[0].get("main", "Unknown"), "precip_chance": int(round((data.get("pop") or 0) * 100))}
+            sunrise_ts = data.get("sys", {}).get("sunrise")
+            sunset_ts = data.get("sys", {}).get("sunset")
+            result = {
+                "temp": round(data.get("main", {}).get("temp", 0)),
+                "feels_like": round(data.get("main", {}).get("feels_like", 0)),
+                "condition": (data.get("weather") or [{}])[0].get("main", "Unknown"),
+                "precip_chance": int(round((data.get("pop") or 0) * 100)),
+                "sunrise": datetime.fromtimestamp(sunrise_ts, timezone.utc).astimezone(TZ).isoformat() if sunrise_ts else None,
+                "sunset": datetime.fromtimestamp(sunset_ts, timezone.utc).astimezone(TZ).isoformat() if sunset_ts else None,
+            }
         else:
             resp = httpx.get("https://api.openweathermap.org/data/2.5/forecast", params={"lat": current_lat, "lon": current_lon, "appid": OPENWEATHER_KEY, "units": "metric"}, timeout=10)
             resp.raise_for_status()
@@ -473,6 +482,8 @@ def fetch_daily_weather(days: int = 5) -> list[dict]:
                     "description": weather_item.get("description", "Unknown").title(),
                     "precip_chance": int(round(float(item.get("pop", 0)) * 100)),
                     "uvi": float(item.get("uvi", 0)),
+                    "sunrise": datetime.fromtimestamp(item.get("sunrise", 0), timezone.utc).astimezone(TZ).isoformat() if item.get("sunrise") else None,
+                    "sunset": datetime.fromtimestamp(item.get("sunset", 0), timezone.utc).astimezone(TZ).isoformat() if item.get("sunset") else None,
                 }
             )
         return rows
