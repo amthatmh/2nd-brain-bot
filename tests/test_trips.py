@@ -140,3 +140,42 @@ def test_execute_trip_uses_field_work_types_when_present(monkeypatch):
 
     assert "Field Work Types" in created["properties"]
     assert created["properties"]["Field Work Types"]["rich_text"][0]["text"]["content"] == "Site Survey"
+
+
+def test_execute_trip_maps_weather_flags_to_multi_select(monkeypatch):
+    monkeypatch.setattr(trips, "NOTION_TRIPS_DB", "c57f9edb406d4368b32d23f0ea2a0c66")
+    query = _Query()
+    created = {}
+
+    class _NotionPages:
+        def create(self, **kwargs):
+            created.update(kwargs)
+
+    class _NotionDatabases:
+        def retrieve(self, **kwargs):
+            return {
+                "properties": {
+                    "Trip": {"type": "title"},
+                    "Departure Date": {"type": "date"},
+                    "Return Date": {"type": "date"},
+                    "Destination(s)": {"type": "rich_text"},
+                    "Purpose": {"type": "select"},
+                    "Weather Flags": {"type": "multi_select"},
+                    "Weather Summary": {"type": "rich_text"},
+                }
+            }
+
+    notion = type("Notion", (), {"pages": _NotionPages(), "databases": _NotionDatabases()})()
+
+    asyncio.run(trips.execute_trip(
+        "0",
+        query,
+        notion=notion,
+        claude=None,
+        trip_map=_trip_map(),
+        set_awaiting_packing_feedback=lambda value: None,
+        fetch_weather=lambda bucket: {"condition": "Rain", "temp_high": 31, "temp_low": 4, "precip_chance": 80} if bucket == "today" else None,
+    ))
+
+    tags = [item["name"] for item in created["properties"]["Weather Flags"]["multi_select"]]
+    assert set(tags) == {"Rain", "Hot", "Cold"}

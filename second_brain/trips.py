@@ -165,6 +165,25 @@ def _adapt_trip_properties_to_schema(notion, database_id: str, payload: dict) ->
             elif ptype == "select" and items:
                 adapted[target_name] = {"select": {"name": items[0]}}
             continue
+        if name == "Weather Flags":
+            raw_text = ""
+            if value.get("rich_text"):
+                raw_text = value["rich_text"][0].get("text", {}).get("content", "")
+            tokens = [t.strip() for t in raw_text.split(",") if t.strip()]
+            if ptype == "multi_select":
+                adapted[target_name] = {"multi_select": [{"name": item} for item in tokens]}
+            elif ptype == "rich_text":
+                adapted[target_name] = {"rich_text": [{"text": {"content": ", ".join(tokens)}}]}
+            continue
+        if name == "Weather Summary":
+            raw_text = ""
+            if value.get("rich_text"):
+                raw_text = value["rich_text"][0].get("text", {}).get("content", "")
+            if ptype == "rich_text":
+                adapted[target_name] = {"rich_text": [{"text": {"content": raw_text}}]}
+            elif ptype == "select" and raw_text:
+                adapted[target_name] = {"select": {"name": raw_text[:100]}}
+            continue
         adapted[target_name] = value
     return adapted
 
@@ -188,10 +207,13 @@ def _build_trip_weather_summary(fetch_weather: Callable[[str], dict | None]) -> 
         hi = item.get("temp_high", item.get("temp"))
         lo = item.get("temp_low", item.get("temp"))
         labels.append(f"{bucket.title()}: {condition}, {lo}–{hi}°C, {precip}% rain")
-        if precip >= 50:
-            flags.append("Rain likely")
+        condition_l = condition.lower()
+        if precip >= 40 or "rain" in condition_l or "drizzle" in condition_l or "thunder" in condition_l:
+            flags.append("Rain")
         if hi is not None and hi >= 30:
             flags.append("Hot")
         if lo is not None and lo <= 5:
             flags.append("Cold")
+        if "snow" in condition_l or "sleet" in condition_l or "blizzard" in condition_l:
+            flags.append("Snow")
     return " | ".join(labels), ", ".join(sorted(set(flags)))
