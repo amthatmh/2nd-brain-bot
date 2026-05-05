@@ -1050,6 +1050,7 @@ async def send_quick_reminder(message, mode: str = "priority") -> None:
 #   dp:{key}:{idx}         - Select task from done picker
 #   dpp:{key}:{page}       - Navigate done picker to page number
 #   dpc:{key}              - Close/cancel done picker
+#   tdc:{key}              - Close/cancel to-do picker
 #
 # HABITS (h) — Morning/evening habit check-in
 #   h:log:{pid}            - Log a habit to Notion (morning or evening)
@@ -1985,6 +1986,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # d:{page_id}            — mark task done
     # h:{page_id}:{code}     — reassign horizon
     # td:{key}:{idx}         — to-do picker mark done
+    # tdc:{key}              — to-do picker cancel
     # dp:{key}:{idx}         — done picker select
     # dpp:{key}:{page}       — done picker paginate
     # dpc:{key}              — done picker cancel
@@ -2367,6 +2369,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await q.edit_message_text(f"Updated → {horizon_label} ✓")
         except Exception as e:
             log.error(f"Notion horizon error: {e}"); await q.edit_message_text("⚠️ Couldn't update Notion.")
+        return
+
+    if parts[0] == "tdc" and len(parts) == 2:
+        _, key = parts
+        todo_picker_map.pop(key, None)
+        await q.edit_message_text("✖️ To Do picker canceled.")
         return
 
     if parts[0] == "td" and len(parts) == 3:
