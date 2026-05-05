@@ -53,7 +53,23 @@ def test_execute_trip_saves_to_notion(monkeypatch):
         def create(self, **kwargs):
             created.update(kwargs)
 
-    notion = type("Notion", (), {"pages": _NotionPages()})()
+    class _NotionDatabases:
+        def retrieve(self, **kwargs):
+            return {
+                "properties": {
+                    "Trip": {"type": "title"},
+                    "Departure Date": {"type": "date"},
+                    "Return Date": {"type": "date"},
+                    "Destination(s)": {"type": "rich_text"},
+                    "Duration": {"type": "select"},
+                    "Purpose": {"type": "select"},
+                    "Field Work": {"type": "rich_text"},
+                    "Multiple Sites": {"type": "checkbox"},
+                    "Checked Luggage": {"type": "checkbox"},
+                }
+            }
+
+    notion = type("Notion", (), {"pages": _NotionPages(), "databases": _NotionDatabases()})()
     flag = {"value": False}
 
     asyncio.run(trips.execute_trip(
@@ -68,6 +84,7 @@ def test_execute_trip_saves_to_notion(monkeypatch):
 
     assert created["parent"]["database_id"] == "c57f9edb-406d-4368-b32d-23f0ea2a0c66"
     assert created["properties"]["Trip"]["title"][0]["text"]["content"].startswith("Nashville TN")
+    assert created["properties"]["Field Work"]["rich_text"][0]["text"]["content"] == "Site Survey"
     assert flag["value"] is True
     assert any("Trip saved to Notion" in msg for msg in query.message.sent)
 
@@ -85,3 +102,41 @@ def test_normalize_notion_database_id():
     assert trips._normalize_notion_database_id("c57f9edbf406d4368b32d23f0ea2a0c66") == ""
     assert trips._normalize_notion_database_id("c57f9edb406d4368b32d23f0ea2a0c66") == "c57f9edb-406d-4368-b32d-23f0ea2a0c66"
     assert trips._normalize_notion_database_id("bad-id") == ""
+
+
+def test_execute_trip_uses_field_work_types_when_present(monkeypatch):
+    monkeypatch.setattr(trips, "NOTION_TRIPS_DB", "c57f9edb406d4368b32d23f0ea2a0c66")
+    query = _Query()
+    created = {}
+
+    class _NotionPages:
+        def create(self, **kwargs):
+            created.update(kwargs)
+
+    class _NotionDatabases:
+        def retrieve(self, **kwargs):
+            return {
+                "properties": {
+                    "Trip": {"type": "title"},
+                    "Departure Date": {"type": "date"},
+                    "Return Date": {"type": "date"},
+                    "Destination(s)": {"type": "rich_text"},
+                    "Purpose": {"type": "select"},
+                    "Field Work Types": {"type": "rich_text"},
+                }
+            }
+
+    notion = type("Notion", (), {"pages": _NotionPages(), "databases": _NotionDatabases()})()
+
+    asyncio.run(trips.execute_trip(
+        "0",
+        query,
+        notion=notion,
+        claude=None,
+        trip_map=_trip_map(),
+        set_awaiting_packing_feedback=lambda value: None,
+        fetch_weather=lambda _: None,
+    ))
+
+    assert "Field Work Types" in created["properties"]
+    assert created["properties"]["Field Work Types"]["rich_text"][0]["text"]["content"] == "Site Survey"

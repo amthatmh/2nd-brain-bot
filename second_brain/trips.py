@@ -102,6 +102,7 @@ async def execute_trip(
 
     title = f"{', '.join(trip['destinations'])} — {format_trip_dates(trip['departure_date'], trip['return_date'])}"
 
+    weather_summary, weather_flags = _build_trip_weather_summary(fetch_weather)
     properties = {
         "Trip": {"title": [{"text": {"content": title}}]},
         "Departure Date": {"date": {"start": trip["departure_date"]}},
@@ -112,11 +113,17 @@ async def execute_trip(
         "Field Work": {"multi_select": [{"name": item} for item in (trip.get("field_work_types") or []) if item and item != "None"]},
         "Multiple Sites": {"checkbox": bool(trip.get("multiple_sites"))},
         "Checked Luggage": {"checkbox": bool(trip.get("checked_luggage"))},
+        "Weather Flags": {"rich_text": [{"text": {"content": weather_flags}}]},
+        "Weather Summary": {"rich_text": [{"text": {"content": weather_summary}}]},
     }
 
     # Avoid sending empty select names; Notion API rejects them.
     if not properties["Duration"]["select"]["name"]:
         properties.pop("Duration")
+    properties = _adapt_trip_properties_to_schema(notion, database_id, properties)
+    if "Trip" not in properties:
+        await query.message.reply_text("⚠️ Your Trips database is missing a title property named 'Trip'.")
+        return
 
     try:
         notion.pages.create(parent={"database_id": database_id}, properties=properties)
@@ -134,3 +141,57 @@ def _normalize_notion_database_id(raw_id: str) -> str:
         return ""
     return f"{cleaned[0:8]}-{cleaned[8:12]}-{cleaned[12:16]}-{cleaned[16:20]}-{cleaned[20:32]}"
 
+
+def _adapt_trip_properties_to_schema(notion, database_id: str, payload: dict) -> dict:
+    try:
+        schema = notion.databases.retrieve(database_id=database_id).get("properties", {})
+    except Exception:
+        return payload
+
+    adapted: dict = {}
+    field_work_target = "Field Work" if "Field Work" in schema else ("Field Work Types" if "Field Work Types" in schema else None)
+    for name, value in payload.items():
+        target_name = field_work_target if name == "Field Work" and field_work_target else name
+        prop = schema.get(target_name)
+        if not prop:
+            continue
+        ptype = prop.get("type")
+        if name == "Field Work":
+            items = [x.get("name", "") for x in value.get("multi_select", []) if x.get("name")]
+            if ptype == "multi_select":
+                adapted[target_name] = {"multi_select": [{"name": item} for item in items]}
+            elif ptype == "rich_text":
+                adapted[target_name] = {"rich_text": [{"text": {"content": ", ".join(items) if items else "None"}}]}
+            elif ptype == "select" and items:
+                adapted[target_name] = {"select": {"name": items[0]}}
+            continue
+        adapted[target_name] = value
+    return adapted
+
+
+def _build_trip_weather_summary(fetch_weather: Callable[[str], dict | None]) -> tuple[str, str]:
+    snapshots: list[tuple[str, dict]] = []
+    for bucket in ("today", "tomorrow"):
+        try:
+            data = fetch_weather(bucket)
+        except Exception:
+            data = None
+        if data:
+            snapshots.append((bucket, data))
+    if not snapshots:
+        return "", ""
+    labels: list[str] = []
+    flags: list[str] = []
+    for bucket, item in snapshots:
+        condition = item.get("condition", "Unknown")
+        precip = int(item.get("precip_chance", 0))
+        hi = item.get("temp_high", item.get("temp"))
+        lo = item.get("temp_low", item.get("temp"))
+        labels.append(f"{bucket.title()}: {condition}, {lo}–{hi}°C, {precip}% rain")
+        if precip >= 50:
+            flags.append("Rain likely")
+        if hi is not None and hi >= 30:
+            flags.append("Hot")
+        if lo is not None and lo <= 5:
+            flags.append("Cold")
+    return " | ".join(labels), ", ".join(sorted(set(flags)))
