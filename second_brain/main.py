@@ -839,6 +839,10 @@ def store_signoff_note(text: str) -> None:
     log.info("Signoff note stored: %s", text[:80])
 
 
+
+def is_muted() -> bool:
+    return _is_muted()
+
 def get_and_clear_signoff_note() -> str:
     global _signoff_note_today
     note = _signoff_note_today
@@ -871,44 +875,6 @@ def _get_today_tasks_for_palette() -> list[dict]:
         notion_tasks=notion_tasks, notion=notion, notion_db_id=NOTION_DB_ID, local_today_fn=local_today
     )
 
-
-
-def track_claude_activity(text: str) -> None:
-    global _claude_activity_today
-    cleaned = re.sub(r"\s+", " ", (text or "").strip())
-    if not cleaned:
-        return
-    timestamp = datetime.now(TZ).strftime("%H:%M")
-    _claude_activity_today.append(f"{timestamp} — {cleaned[:200]}")
-    if len(_claude_activity_today) > 60:
-        _claude_activity_today = _claude_activity_today[-60:]
-
-
-def get_and_clear_claude_activity() -> list[str]:
-    global _claude_activity_today
-    items = _claude_activity_today
-    _claude_activity_today = []
-    return items
-
-def format_digest_view() -> tuple[str, InlineKeyboardMarkup]:
-    """Build digest view for today + next 7 calendar days, grouped by date."""
-    today = local_today()
-    cutoff = today + timedelta(days=7)
-    tasks = notion_tasks.get_all_active_tasks(notion, NOTION_DB_ID)
-    groups: dict[str, list[dict]] = defaultdict(list)
-    beyond_count = 0
-
-    for task in tasks:
-        raw_deadline = task.get("deadline")
-        parsed_deadline = notion_tasks._parse_deadline(raw_deadline)
-        if not parsed_deadline:
-            continue
-        if parsed_deadline < today:
-            continue
-        if parsed_deadline <= cutoff:
-            groups[parsed_deadline.isoformat()].append(task)
-        else:
-            beyond_count += 1
 
 
 
@@ -1230,7 +1196,7 @@ async def open_done_picker(message) -> None:
         return
     key = str(_done_picker_counter); _done_picker_counter += 1
     done_picker_map[key] = tasks
-    await message.reply_text("Which task should be marked done?", reply_markup=done_picker_keyboard(key, page=0))
+    await message.reply_text("Which task should be marked done?", reply_markup=kb.done_picker_keyboard(key, done_picker_map, page=0))
 
 
 async def open_habit_picker(message) -> None:
@@ -1290,7 +1256,7 @@ async def cmd_todo(message, context: ContextTypes.DEFAULT_TYPE | None = None) ->
     await message.reply_text(
         "✅ *What did you get done?*",
         parse_mode="Markdown",
-        reply_markup=todo_picker_keyboard(key, todo_picker_map, context_emoji),
+        reply_markup=kb.todo_picker_keyboard(key, todo_picker_map, fmt.context_emoji),
     )
 
 
@@ -2435,7 +2401,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         await q.edit_message_text(
             f"✅ {done_count} done · {remaining} remaining",
-            reply_markup=todo_picker_keyboard(key, todo_picker_map, context_emoji),
+            reply_markup=kb.todo_picker_keyboard(key, todo_picker_map, fmt.context_emoji),
         )
         return
 
@@ -2456,7 +2422,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         _, key, page_str = parts
         if key not in done_picker_map:
             await q.edit_message_text("⚠️ This picker expired. Send `done` again.", parse_mode="Markdown"); return
-        await q.edit_message_reply_markup(reply_markup=done_picker_keyboard(key, page=int(page_str)))
+        await q.edit_message_reply_markup(reply_markup=kb.done_picker_keyboard(key, done_picker_map, page=int(page_str)))
         return
 
     if parts[0] == "noop":
@@ -3781,7 +3747,7 @@ def _command_handlers() -> CommandHandlers:
         "NOTION_DB_ID": NOTION_DB_ID,
         "kb": kb,
         "done_picker_map": done_picker_map,
-        "done_picker_keyboard": done_picker_keyboard,
+        "done_picker_keyboard": lambda key, page=0: kb.done_picker_keyboard(key, done_picker_map, page=page),
         "next_done_picker_key": _next_done_picker_key,
         "send_quick_reminder": send_quick_reminder,
     })
