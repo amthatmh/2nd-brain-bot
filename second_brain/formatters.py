@@ -277,7 +277,7 @@ def format_weather_snapshot() -> str:
     if current:
         temp_c = int(round(float(current.get("temp", 0))))
         temp_f = int(round((temp_c * 9 / 5) + 32))
-        lines.append(f"🌤️ Now: {temp_f}°F / {temp_c}°C · {current.get('condition', 'Unknown')}")
+        lines.append(f"🌤️ Now: {temp_c}°C / {temp_f}°F · {current.get('condition', 'Unknown')}")
 
     daily = wx.fetch_daily_weather(days=5)
     if daily:
@@ -288,16 +288,20 @@ def format_weather_snapshot() -> str:
             low_f = int(round((low_c * 9 / 5) + 32))
             uvi = float(day.get("uvi", 0))
             sunscreen = "Recommended if outdoors" if uvi >= 3 else "Usually optional"
-            return [
+            lines = [
                 "",
                 f"{icon} {title}",
                 f"🌥️ {day.get('description', day.get('condition', 'Unknown'))}",
-                f"🌡️ High / Low: {high_f}°F / {low_f}°F",
-                f"   Metric: {high_c}°C / {low_c}°C",
+                f"🌡️ High / Low: {high_c}°C / {low_c}°C",
+                f"   Imperial: {high_f}°F / {low_f}°F",
                 f"💧 Rain: {int(day.get('precip_chance', 0))}%",
-                f"🔆 UV: {uvi:.1f} {uvi_level_text(uvi)} {uvi_emoji(uvi)}",
-                f"🧴 Sunscreen: {sunscreen}",
             ]
+            if _should_show_uv_guidance(uvi, sunrise_iso=day.get("sunrise"), sunset_iso=day.get("sunset")):
+                lines.extend([
+                    f"🔆 UV: {uvi:.1f} {uvi_level_text(uvi)} {uvi_emoji(uvi)}",
+                    f"🧴 Sunscreen: {sunscreen}",
+                ])
+            return lines
 
         lines.extend(day_block("Today", daily[0], "📅"))
         if len(daily) > 1:
@@ -395,15 +399,36 @@ def format_digest_weather_card() -> str:
     current_icon = condition_emoji(current.get("condition", "")) if current else condition_emoji(today.get("condition", ""))
     lines = [
         f"📍 {location} · {current_icon} {condition}",
-        "",
-        f"🌡️ {high_f}°F / {low_f}°F",
-        f"    {high_c}°C / {low_c}°C",
-        "",
+        f"🌡️ {high_c}°C / {low_c}°C",
+        f"    {high_f}°F / {low_f}°F",
         f"💧 Rain chance: {rain}%",
-        f"🔆 UV Index: {uvi:.1f} · {uvi_level_text(uvi)}",
-        f"🧴 Sunscreen: {sunscreen}",
     ]
+    if _should_show_uv_guidance(uvi, sunrise_iso=today.get("sunrise"), sunset_iso=today.get("sunset")):
+        lines.extend([
+            f"🔆 UV Index: {uvi:.1f} · {uvi_level_text(uvi)}",
+            f"🧴 Sunscreen: {sunscreen}",
+        ])
     return "\n".join(lines)
+
+
+def _should_show_uv_guidance(
+    uvi: float,
+    now_dt: datetime | None = None,
+    sunrise_iso: str | None = None,
+    sunset_iso: str | None = None,
+) -> bool:
+    """Show UV/sunscreen guidance only when UV is meaningful and during daytime."""
+    if uvi < 3:
+        return False
+    now = now_dt or datetime.now(TZ)
+    if sunrise_iso and sunset_iso:
+        try:
+            sunrise = datetime.fromisoformat(sunrise_iso)
+            sunset = datetime.fromisoformat(sunset_iso)
+            return sunrise <= now <= sunset
+        except Exception:
+            pass
+    return 6 <= now.hour < 18
 
 def digest_location_label() -> str:
     """Compact location label for digest weather line (City, ST or country)."""
