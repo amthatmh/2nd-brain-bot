@@ -3528,7 +3528,9 @@ async def post_init(app: Application) -> None:
         scheduler.add_job(run_recurring_check, "cron", hour=_rc_h, minute=_rc_m, args=[app.bot])
     if FEATURES.get("FEATURE_SUNDAY_REVIEW", True):
         scheduler.add_job(send_sunday_review, "cron", day_of_week="sun", hour=_sr_h, minute=_sr_m, args=[app.bot])
-    build_digest_schedule(scheduler, app.bot, queue_catchup=True)
+    # Register digest cron jobs only. Do not queue missed digest slots on startup;
+    # restarting the bot should not send an immediate digest.
+    build_digest_schedule(scheduler, app.bot)
     scheduler.add_job(
         rebuild_digest_schedule_job,
         "cron",
