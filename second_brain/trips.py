@@ -240,3 +240,64 @@ def _build_trip_weather_summary(
         if "snow" in condition_l or "sleet" in condition_l or "blizzard" in condition_l:
             flags.append("Snow")
     return " | ".join(labels), ", ".join(sorted(set(flags)))
+
+
+def refresh_upcoming_trip_weather(
+    notion,
+    notion_trips_db: str,
+    *,
+    fetch_trip_weather_range: Callable[[str, str, str], list[dict]] | None,
+    lookahead_days: int = 5,
+) -> int:
+    if not notion_trips_db or not fetch_trip_weather_range:
+        return 0
+    today = date.today()
+    upper = today.toordinal() + lookahead_days
+    try:
+        resp = notion.databases.query(
+            database_id=notion_trips_db,
+            filter={
+                "and": [
+                    {"property": "Departure Date", "date": {"on_or_after": today.isoformat()}},
+                    {"property": "Departure Date", "date": {"on_or_before": date.fromordinal(upper).isoformat()}},
+                ]
+            },
+            page_size=50,
+        )
+    except Exception:
+        return 0
+    rows = resp.get("results", [])
+    updated = 0
+    for row in rows:
+        props = row.get("properties", {})
+        dep = props.get("Departure Date", {}).get("date", {}).get("start")
+        ret = props.get("Return Date", {}).get("date", {}).get("start")
+        dest_parts = props.get("Destination(s)", {}).get("rich_text", [])
+        destination = dest_parts[0].get("plain_text", "").strip() if dest_parts else ""
+        if not dep or not ret or not destination:
+            continue
+        summary, flags = _build_trip_weather_summary(
+            dep,
+            ret,
+            destination,
+            fetch_weather=None,
+            fetch_trip_weather_range=fetch_trip_weather_range,
+        )
+        payload = _adapt_trip_properties_to_schema(
+            notion,
+            notion_trips_db,
+            {
+                "Trip": {"title": [{"text": {"content": "ignore"}}]},
+                "Weather Flags": {"rich_text": [{"text": {"content": flags}}]},
+                "Weather Summary": {"rich_text": [{"text": {"content": summary}}]},
+            },
+        )
+        payload.pop("Trip", None)
+        if not payload:
+            continue
+        try:
+            notion.pages.update(page_id=row["id"], properties=payload)
+            updated += 1
+        except Exception:
+            continue
+    return updated

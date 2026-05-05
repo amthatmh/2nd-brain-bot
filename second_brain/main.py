@@ -3488,6 +3488,23 @@ async def process_pending_programmes(bot) -> None:
             except Exception:
                 pass
 
+
+async def refresh_trip_weather_job(bot) -> None:
+    _ = bot
+    if not NOTION_TRIPS_DB:
+        return
+    try:
+        updated = trips_mod.refresh_upcoming_trip_weather(
+            notion,
+            NOTION_TRIPS_DB,
+            fetch_trip_weather_range=wx.fetch_trip_weather_range,
+            lookahead_days=5,
+        )
+        if updated:
+            log.info("Trip weather refresh updated %d trip(s)", updated)
+    except Exception as exc:
+        log.warning("Trip weather refresh failed: %s", exc)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # STARTUP
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3547,6 +3564,14 @@ async def post_init(app: Application) -> None:
         hours=1,
         args=[app.bot],
         id="weather_refresh_hourly",
+    )
+    scheduler.add_job(
+        refresh_trip_weather_job,
+        "cron",
+        hour="*/6",
+        minute=10,
+        args=[app.bot],
+        id="trip_weather_refresh",
     )
 
     scheduler.add_job(

@@ -195,3 +195,46 @@ def test_trip_weather_summary_uses_trip_date_range():
     assert "Thu May 14" in summary
     assert "Fri May 15" in summary
     assert "Rain" in flags
+
+
+def test_refresh_upcoming_trip_weather_updates_rows():
+    updated_pages = []
+
+    class _NotionDatabases:
+        def query(self, **kwargs):
+            return {
+                "results": [
+                    {
+                        "id": "page-1",
+                        "properties": {
+                            "Departure Date": {"date": {"start": "2026-05-06"}},
+                            "Return Date": {"date": {"start": "2026-05-08"}},
+                            "Destination(s)": {"rich_text": [{"plain_text": "Nashville, TN"}]},
+                            "Weather Flags": {"type": "multi_select"},
+                            "Weather Summary": {"type": "rich_text"},
+                        },
+                    }
+                ]
+            }
+
+        def retrieve(self, **kwargs):
+            return {
+                "properties": {
+                    "Weather Flags": {"type": "multi_select"},
+                    "Weather Summary": {"type": "rich_text"},
+                }
+            }
+
+    class _NotionPages:
+        def update(self, **kwargs):
+            updated_pages.append(kwargs)
+
+    notion = type("Notion", (), {"databases": _NotionDatabases(), "pages": _NotionPages()})()
+    count = trips.refresh_upcoming_trip_weather(
+        notion,
+        "c57f9edb406d4368b32d23f0ea2a0c66",
+        fetch_trip_weather_range=lambda *_: [{"label": "Thu May 6", "condition": "Rain", "temp_high": 30, "temp_low": 10, "precip_chance": 80}],
+        lookahead_days=5,
+    )
+    assert count == 1
+    assert updated_pages
