@@ -46,20 +46,20 @@ class TestParseHealthExportPayload(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result, (11247, "2026-04-28"))
 
-    def test_nested_format_picks_date_with_most_steps(self):
+    def test_nested_format_picks_most_recent_date_even_if_lower(self):
         body = {
             "data": [
                 {
                     "name": "Step Count",
                     "data": [
-                        {"date": "2026-04-27 23:00:00 +0000", "qty": 500},
-                        {"date": "2026-04-28 22:00:00 +0000", "qty": 11000},
+                        {"date": "2026-04-27 23:00:00 +0000", "qty": 12000},
+                        {"date": "2026-04-28 22:00:00 +0000", "qty": 9000},
                     ],
                 }
             ]
         }
         result = _parse_health_export_payload(body)
-        self.assertEqual(result, (11000, "2026-04-28"))
+        self.assertEqual(result, (9000, "2026-04-28"))
 
     def test_returns_none_for_empty_body(self):
         self.assertIsNone(_parse_health_export_payload({}))
