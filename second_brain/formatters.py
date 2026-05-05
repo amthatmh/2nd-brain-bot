@@ -367,9 +367,21 @@ def weather_unavailable_digest_line() -> str:
 def format_digest_weather_card() -> str:
     """Digest weather card in the compact layout requested by product."""
     daily = wx.fetch_daily_weather(days=1)
-    if not daily:
+    today = daily[0] if daily else None
+    if not today:
+        # Fallback for environments where One Call 3.0 is unavailable/slow.
+        today_basic = wx.fetch_weather("today")
+        if today_basic:
+            today = {
+                "description": today_basic.get("condition", "Unknown"),
+                "condition": today_basic.get("condition", "Unknown"),
+                "temp_high": today_basic.get("temp_high", 0),
+                "temp_low": today_basic.get("temp_low", 0),
+                "precip_chance": today_basic.get("precip_chance", 0),
+                "uvi": 0.0,
+            }
+    if not today:
         return weather_unavailable_digest_line()
-    today = daily[0]
     current = wx.fetch_weather("current")
     location = digest_location_label() or (wx.current_location or "Unknown location")
     condition = today.get("description", today.get("condition", "Unknown"))
