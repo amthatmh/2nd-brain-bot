@@ -2855,13 +2855,9 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     include_uvi = bool(config.get("include_uvi")) if config else False
     uvi_data = wx.fetch_uvi_data() if include_uvi else None
     if include_weather:
-        weather_block = fmt.format_weather_block(wx.fetch_weather("today"), label="🌤️")
-        if weather_block and uvi_data:
-            max_uvi = uvi_data["max"]
-            weather_block += f" · ☀️ {max_uvi:.1f} {fmt.uvi_emoji(max_uvi)}"
-        location_label = fmt.digest_location_label()
+        weather_block = fmt.format_digest_weather_card()
         if weather_block:
-            lines.append(fmt.append_location_to_weather_block(weather_block, location_label))
+            lines.append(weather_block)
         else:
             lines.append(fmt.weather_unavailable_digest_line())
         lines.append("")
