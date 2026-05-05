@@ -81,6 +81,7 @@ from second_brain import palette as palette_helpers
 from second_brain import weather as wx
 from second_brain import watchlist as wl
 from second_brain import trips as trips_mod
+from second_brain.handler_registry import register_core_handlers
 from second_brain.state import STATE
 from second_brain.utils import ExpiringDict, reply_notion_error
 from second_brain.http_utils import cors_headers
@@ -3981,23 +3982,25 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 def main() -> None:
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler("start", handle_start_command))
-    app.add_handler(CommandHandler("r", handle_remind_command))
-    app.add_handler(CommandHandler("remind", handle_remind_command))
-    app.add_handler(CommandHandler("sync", handle_sync_command))
-    app.add_handler(CommandHandler("syncstatus", handle_sync_status_command))
-    app.add_handler(CommandHandler("done",  handle_done_command))
-    app.add_handler(CommandHandler("mute", cmd_mute))
-    app.add_handler(CommandHandler("unmute", cmd_unmute))
-    app.add_handler(CommandHandler("weather", cmd_weather))
-    app.add_handler(CommandHandler("notes", cmd_notes))
-    app.add_handler(CommandHandler("location", cmd_location))
-    app.add_handler(CommandHandler("habits", cmd_habits))
-    app.add_handler(CommandHandler("log", cmd_log))
-    app.add_handler(CommandHandler("trip", handle_trip_command))
-    app.add_handler(CommandHandler("signoff", cmd_signoff))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message_text))
-    app.add_handler(CallbackQueryHandler(handle_callback))
+    register_core_handlers(
+        app,
+        handle_start_command=handle_start_command,
+        handle_remind_command=handle_remind_command,
+        handle_sync_command=handle_sync_command,
+        handle_sync_status_command=handle_sync_status_command,
+        handle_done_command=handle_done_command,
+        cmd_mute=cmd_mute,
+        cmd_unmute=cmd_unmute,
+        cmd_weather=cmd_weather,
+        cmd_notes=cmd_notes,
+        cmd_location=cmd_location,
+        cmd_habits=cmd_habits,
+        cmd_log=cmd_log,
+        handle_trip_command=handle_trip_command,
+        cmd_signoff=cmd_signoff,
+        handle_message_text=handle_message_text,
+        handle_callback=handle_callback,
+    )
     log.info(f"🤖 Second Brain bot starting ({APP_VERSION})...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
