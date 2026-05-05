@@ -439,6 +439,48 @@ def fetch_uvi_data() -> dict | None:
         return None
 
 
+def fetch_daily_weather(days: int = 5) -> list[dict]:
+    """Return daily weather rows (today forward) including UV, condition, and temps."""
+    if not OPENWEATHER_KEY or days <= 0:
+        return []
+    if current_lat is None or current_lon is None:
+        if not set_location(WEATHER_LOCATION):
+            return []
+    try:
+        resp = httpx.get(
+            "https://api.openweathermap.org/data/3.0/onecall",
+            params={
+                "lat": current_lat,
+                "lon": current_lon,
+                "exclude": "minutely,hourly,alerts",
+                "appid": OPENWEATHER_KEY,
+                "units": "metric",
+            },
+            timeout=8,
+        )
+        resp.raise_for_status()
+        daily = resp.json().get("daily", [])[:days]
+        rows: list[dict] = []
+        for item in daily:
+            weather_item = (item.get("weather") or [{}])[0]
+            temps = item.get("temp", {})
+            rows.append(
+                {
+                    "date": datetime.fromtimestamp(item.get("dt", 0), timezone.utc).astimezone(TZ).date().isoformat(),
+                    "temp_high": round(temps.get("max", 0)),
+                    "temp_low": round(temps.get("min", 0)),
+                    "condition": weather_item.get("main", "Unknown"),
+                    "description": weather_item.get("description", "Unknown").title(),
+                    "precip_chance": int(round(float(item.get("pop", 0)) * 100)),
+                    "uvi": float(item.get("uvi", 0)),
+                }
+            )
+        return rows
+    except Exception as e:
+        log.error("Daily weather fetch failed: %s", e)
+        return []
+
+
 async def fetch_weather_cache(bot) -> None:
     _ = bot
     if not OPENWEATHER_KEY:
