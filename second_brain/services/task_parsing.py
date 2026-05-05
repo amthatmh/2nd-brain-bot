@@ -43,6 +43,19 @@ def looks_like_task_batch(text: str, bullet_re: re.Pattern[str]) -> bool:
     return False
 
 
+def infer_deadline_override(text: str) -> int | None:
+    lower = text.lower()
+    if re.search(r"\btomorrow\b", lower):
+        return 1
+    if re.search(r"\b(?:today|tonight)\b", lower):
+        return 0
+    if re.search(r"\bthis week\b", lower):
+        return 5
+    if re.search(r"\bthis month\b", lower):
+        return 20
+    return None
+
+
 def infer_batch_overrides(text: str) -> dict:
     lower = text.lower()
     context = None
@@ -65,14 +78,4 @@ def infer_batch_overrides(text: str) -> dict:
         if context:
             break
 
-    deadline_days = None
-    if re.search(r"\btomorrow\b", lower):
-        deadline_days = 1
-    elif re.search(r"\b(?:today|tonight)\b", lower):
-        deadline_days = 0
-    elif re.search(r"\bthis week\b", lower):
-        deadline_days = 5
-    elif re.search(r"\bthis month\b", lower):
-        deadline_days = 20
-
-    return {"context": context, "deadline_days": deadline_days}
+    return {"context": context, "deadline_days": infer_deadline_override(text)}
