@@ -261,46 +261,69 @@ CLAUDE AGENT ACTIVITY (from today's bot interactions):
 USER'S SIGNOFF NOTE (their own words about what they worked on today, including any Claude.ai conversations and decisions made):
 {signoff_note if signoff_note else "None provided"}
 
-Write a daily log entry in three parts. Be concise, honest, and personal.
+Write a daily log entry using this exact content framework and section intent.
+Be concise, honest, and personal.
 
-PART 1 — SUMMARY:
-1 to 3 lines maximum. Can be a single line or empty string on a light day.
-Describe the shape of the day — not a list, a narrative.
+Framework to produce:
+# Daily Development Log — [Date]
 
-PART 2 — KEY LEARNINGS:
-What actually mattered today. What was built, decided, deferred and why,
-what patterns emerged.
-If a signoff note was provided, weight it heavily — it reflects the user's
-own assessment of the day including work done outside this system.
-If carried forward threads were resolved today, note it explicitly.
-If the day was light, say so honestly in one line. Never pad.
-Maximum 5 bullet points starting with •. Can be fewer. Can be empty.
+## Summary
+[2–4 sentence overview of today’s progress.]
 
-PART 3 — CARRIED FORWARD:
-Distill what is still live and unresolved going into tomorrow.
-Sources to draw from:
-- Unresolved threads from previous Carried Forward entries that did not
-  resolve today
-- Deferred tasks that have appeared more than once (pattern of avoidance)
-- Ideas or decisions from today's Key Learnings that have no action yet
-- Anything from the signoff note that implies follow-up
+## Completed
+- [Task completed]
+
+## Code / Logic Changes
+### Files touched
+- [File name]
+
+### Functions changed
+- [Function name]
+
+### Logic summary
+- [What changed in the code or formulas]
+- [Why this change was made]
+
+## Testing / Validation
+- [What was tested]
+- [Result]
+- [Anything still unverified]
+
+## Issues / Bugs Found
+- [Bug, edge case, or concern]
+- [Potential cause, if known]
+
+## Key Learnings / Decisions
+- [Learning or decision]
+
+## Carried Forward
+- [Next task]
+- [Open question]
 
 Rules:
-- Drop anything that resolved today — completed tasks, closed decisions
-- Maximum 5 bullet points starting with •
-- Can be empty if everything is resolved or the day was truly light
-- Write each point as a live thread, not a task — e.g.
-  "• Daily Log Carried Forward logic — shipped v13.1, watching for edge cases"
-  not "• Check if Carried Forward works"
+- Summary must omit deferred/slid/postponed tasks.
+- Key Learnings / Decisions must focus on what was learned/decided today,
+  not behavior patterns.
+- Only Carried Forward may contain postponed/deferred tasks.
+- If signoff note is provided, weight it heavily.
+- Do not fabricate details; if data is missing, be explicit and concise.
 
-Return ONLY valid JSON, no markdown fences:
+Return ONLY valid JSON, no markdown fences, with markdown-ready section strings:
 {{
-  "summary": "1-3 line narrative, or empty string if nothing notable",
-  "key_learnings": "bullet points as single string, each starting with • on new line, or empty string",
-  "carried_forward": "bullet points as single string, each starting with • on new line, or empty string"
+  "summary": "2-4 sentences, no mention of deferred/slid/postponed tasks",
+  "completed": "markdown bullet list using '-' prefix, or empty string",
+  "code_logic_changes": "markdown for Files touched / Functions changed / Logic summary subsections, or empty string",
+  "testing_validation": "markdown bullet list, or empty string",
+  "issues_bugs_found": "markdown bullet list, or empty string",
+  "key_learnings_decisions": "markdown bullet list focused on today's learnings/decisions, or empty string",
+  "carried_forward": "markdown bullet list of postponed/open next tasks/questions only, or empty string"
 }}"""
 
     summary = ""
+    completed_md = ""
+    code_logic_changes = ""
+    testing_validation = ""
+    issues_bugs_found = ""
     key_learnings = ""
     carried_forward = ""
     try:
@@ -308,7 +331,11 @@ Return ONLY valid JSON, no markdown fences:
         raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
         result = json.loads(raw)
         summary = (result.get("summary") or "").strip()
-        key_learnings = (result.get("key_learnings") or "").strip()
+        completed_md = (result.get("completed") or "").strip()
+        code_logic_changes = (result.get("code_logic_changes") or "").strip()
+        testing_validation = (result.get("testing_validation") or "").strip()
+        issues_bugs_found = (result.get("issues_bugs_found") or "").strip()
+        key_learnings = (result.get("key_learnings_decisions") or "").strip()
         carried_forward = (result.get("carried_forward") or "").strip()
     except Exception as e:
         log.error("generate_daily_log: Claude call failed: %s", e)
@@ -317,11 +344,20 @@ Return ONLY valid JSON, no markdown fences:
         carried_forward = ""
 
     page_body_parts = []
+    page_body_parts.append(f"# Daily Development Log — {date_label}")
     if summary: page_body_parts.append(f"## Summary\n\n{summary}")
-    if key_learnings: page_body_parts.append(f"## Key Learnings\n\n{key_learnings}")
-    if completed_tasks: page_body_parts.append("## Completed\n\n" + "\n".join(f"• {t}" for t in completed_tasks))
-    if deferred_tasks: page_body_parts.append("## Deferred\n\n" + "\n".join(f"• {t}" for t in deferred_tasks))
-    if signoff_note: page_body_parts.append(f"## Signoff Note\n\n_{signoff_note}_")
+    if completed_md:
+        page_body_parts.append(f"## Completed\n\n{completed_md}")
+    elif completed_tasks:
+        page_body_parts.append("## Completed\n\n" + "\n".join(f"- {t}" for t in completed_tasks))
+    if code_logic_changes:
+        page_body_parts.append(f"## Code / Logic Changes\n\n{code_logic_changes}")
+    if testing_validation:
+        page_body_parts.append(f"## Testing / Validation\n\n{testing_validation}")
+    if issues_bugs_found:
+        page_body_parts.append(f"## Issues / Bugs Found\n\n{issues_bugs_found}")
+    if key_learnings:
+        page_body_parts.append(f"## Key Learnings / Decisions\n\n{key_learnings}")
     if carried_forward:
         page_body_parts.append(
             f"## Carried Forward\n\n{carried_forward}"
