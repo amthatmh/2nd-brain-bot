@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import re
 from datetime import date, datetime, timedelta, timezone
 from second_brain.notion import notion_call
 import logging
@@ -202,6 +203,8 @@ def save_programme_from_notion_row(
 
     week_label = parsed.get("week_label") or "Week"
     monday_iso = this_monday()
+    cycle_match = re.search(r"cycle\\s*#?\\s*(\\d+)", week_label, re.IGNORECASE)
+    cycle_num = int(cycle_match.group(1)) if cycle_match else None
 
     try:
         notion_call(
@@ -224,8 +227,11 @@ def save_programme_from_notion_row(
     # keep Weekly Programs metadata in sync (aggregate movement relation)
     try:
         parent_props = {"Name": {"title": [{"text": {"content": week_label}}]}}
+        if cycle_num is not None:
+            parent_props["Cycle #"] = {"number": cycle_num}
         if movement_cache:
             parent_props["Movements"] = {"relation": [{"id": mid} for mid in movement_cache.values()]}
+            parent_props["Movement Summary"] = {"rich_text": _rich_text_chunks(", ".join(sorted(movement_cache.keys())[:25]))}
         notion_call(notion.pages.update, page_id=parent_page_id, properties=parent_props)
     except Exception as e:
         log.warning("save_programme_from_notion_row: could not update parent metadata: %s", e)
