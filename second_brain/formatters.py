@@ -21,38 +21,20 @@ def context_emoji(context: str | None) -> str:
     return "📝"
 
 def format_hybrid_digest(tasks: list[dict]) -> tuple[str, list[dict]]:
-    """Main digest message with status peek and critical sections."""
+    """Main digest message in product layout: weather + Today + This Week."""
     del tasks  # counts and sections are always computed fresh
     overdue, today_tasks, this_week, backlog = _get_tasks_by_deadline_horizon()
-
-    now_dt = datetime.now(TZ)
-    date_str = now_dt.strftime("%A, %B %-d")
-
-    summary_parts = []
-    if overdue:
-        summary_parts.append(f"{len(overdue)} overdue")
-    if today_tasks:
-        summary_parts.append(f"{len(today_tasks)} due today")
-    if this_week:
-        summary_parts.append(f"{len(this_week)} this week")
-    if backlog:
-        summary_parts.append(f"{len(backlog)} backlog")
-    if not summary_parts:
-        summary_parts = ["0 due today"]
-
-    lines = [
-        f"☀️ *{date_str}*",
-        "",
-        f"📊 {', '.join(summary_parts)}",
-        "",
-    ]
+    _ = backlog
+    date_str = datetime.now(TZ).strftime("%A, %B %-d")
+    lines = [f"☀️ *{date_str}*", format_digest_weather_card(), ""]
 
     ordered: list[dict] = []
     n = 1
+    today_bucket = overdue + today_tasks
 
-    lines.append("🚨 *Overdue*")
-    if overdue:
-        for task in overdue:
+    lines.append("📌 *Today*")
+    if today_bucket:
+        for task in today_bucket:
             lines.append(f"{num_emoji(n)} {task['name']}  {notion_tasks._context_label(task)}")
             ordered.append(task)
             n += 1
@@ -60,9 +42,9 @@ def format_hybrid_digest(tasks: list[dict]) -> tuple[str, list[dict]]:
         lines.append("✅ Nothing — all clear!")
     lines.append("")
 
-    lines.append("📌 *Due Today*")
-    if today_tasks:
-        for task in today_tasks:
+    lines.append("🗓️ *This Week*")
+    if this_week:
+        for task in this_week:
             lines.append(f"{num_emoji(n)} {task['name']}  {notion_tasks._context_label(task)}")
             ordered.append(task)
             n += 1
@@ -289,29 +271,80 @@ def format_weather_block(weather: dict | None, label: str = "🌤️") -> str:
     return f"{label} C: {temp_c} · F: {temp_f} ({weather['condition']})"
 
 def format_weather_snapshot() -> str:
-    """Compose a compact weather summary for quick access."""
-    lines = [f"📍 *Weather for {wx.current_location}*"]
-    current = format_weather_block(wx.fetch_weather("current"), label="🌤️ Now")
-    today = format_weather_block(wx.fetch_weather("today"), label="📅 Today")
-    tomorrow = format_weather_block(wx.fetch_weather("tomorrow"), label="🌙 Tomorrow")
-    for line in (current, today, tomorrow):
-        if line:
-            lines.append(line)
-    if len(lines) == 1:
+    """Compose a richer weather snapshot for quick access."""
+    lines = [f"📍 Weather · {wx.current_location}"]
+    current = wx.fetch_weather("current")
+    if current:
+        temp_c = int(round(float(current.get("temp", 0))))
+        temp_f = int(round((temp_c * 9 / 5) + 32))
+        lines.append(f"🌤️ Now: {temp_f}°F / {temp_c}°C · {current.get('condition', 'Unknown')}")
+
+    daily = wx.fetch_daily_weather(days=5)
+    if daily:
+        def day_block(title: str, day: dict, icon: str) -> list[str]:
+            high_c = int(round(float(day.get("temp_high", 0))))
+            low_c = int(round(float(day.get("temp_low", 0))))
+            high_f = int(round((high_c * 9 / 5) + 32))
+            low_f = int(round((low_c * 9 / 5) + 32))
+            uvi = float(day.get("uvi", 0))
+            sunscreen = "Recommended if outdoors" if uvi >= 3 else "Usually optional"
+            return [
+                "",
+                f"{icon} {title}",
+                f"🌥️ {day.get('description', day.get('condition', 'Unknown'))}",
+                f"🌡️ High / Low: {high_f}°F / {low_f}°F",
+                f"   Metric: {high_c}°C / {low_c}°C",
+                f"💧 Rain: {int(day.get('precip_chance', 0))}%",
+                f"🔆 UV: {uvi:.1f} {uvi_level_text(uvi)} {uvi_emoji(uvi)}",
+                f"🧴 Sunscreen: {sunscreen}",
+            ]
+
+        lines.extend(day_block("Today", daily[0], "📅"))
+        if len(daily) > 1:
+            lines.extend(day_block("Tomorrow", daily[1], "🌙"))
+        lines.extend(["", "📆 Next 5 Days"])
+        for day in daily:
+            dt = datetime.fromisoformat(day["date"]).strftime("%a")
+            high_c = int(day["temp_high"])
+            low_c = int(day["temp_low"])
+            high_f = int(round((high_c * 9 / 5) + 32))
+            low_f = int(round((low_c * 9 / 5) + 32))
+            uvi = float(day.get("uvi", 0))
+            lines.append(
+                f"{dt}  {condition_emoji(day.get('condition', 'Unknown'))} {high_f}°/{low_f}° · "
+                f"💧{int(day.get('precip_chance', 0))}% · UV {uvi:.1f} {uvi_emoji(uvi)}"
+            )
+    elif len(lines) == 1:
         if not wx.OPENWEATHER_KEY:
             lines.append("Weather is unavailable: OPENWEATHER_KEY is missing or invalid.")
         else:
             lines.append("Weather is unavailable. Verify OpenWeather location (try /location) and API key access.")
-    uvi_data = wx.fetch_uvi_data()
-    if uvi_data:
-        current = uvi_data["current"]
-        max_uvi = uvi_data["max"]
-        uvi_line = (
-            f"☀️ UVI: {current:.1f} now {wx.uvi_emoji(current)} · "
-            f"{max_uvi:.1f} max {wx.uvi_emoji(max_uvi)}"
-        )
-        lines.append(uvi_line)
     return "\n".join(lines)
+
+
+def condition_emoji(condition: str) -> str:
+    mapping = {
+        "Clear": "☀️",
+        "Clouds": "☁️",
+        "Rain": "🌧️",
+        "Drizzle": "🌦️",
+        "Thunderstorm": "⛈️",
+        "Snow": "❄️",
+        "Mist": "🌫️",
+    }
+    return mapping.get((condition or "").strip(), "🌥️")
+
+
+def uvi_level_text(uvi: float) -> str:
+    if uvi <= 2:
+        return "Low"
+    if uvi <= 5:
+        return "Moderate"
+    if uvi <= 7:
+        return "High"
+    if uvi <= 10:
+        return "Very High"
+    return "Extreme"
 
 def append_location_to_weather_block(weather_block: str, location_label: str) -> str:
     """Attach compact location to the final line of a weather block."""
@@ -330,6 +363,35 @@ def weather_unavailable_digest_line() -> str:
     if wx.current_location:
         return f"🌤️ Weather unavailable. Last location: {wx.current_location} — send /location (city/state/country or ZIP)"
     return "🌤️ Weather unavailable — set with /location (city/state/country or ZIP)"
+
+def format_digest_weather_card() -> str:
+    """Digest weather card in the compact layout requested by product."""
+    daily = wx.fetch_daily_weather(days=1)
+    if not daily:
+        return weather_unavailable_digest_line()
+    today = daily[0]
+    current = wx.fetch_weather("current")
+    location = digest_location_label() or (wx.current_location or "Unknown location")
+    condition = today.get("description", today.get("condition", "Unknown"))
+    high_c = int(today.get("temp_high", 0))
+    low_c = int(today.get("temp_low", 0))
+    high_f = int(round((high_c * 9 / 5) + 32))
+    low_f = int(round((low_c * 9 / 5) + 32))
+    rain = int(today.get("precip_chance", 0))
+    uvi = float(today.get("uvi", 0))
+    sunscreen = "Recommended if outdoors" if uvi >= 3 else "Usually optional"
+    current_icon = condition_emoji(current.get("condition", "")) if current else condition_emoji(today.get("condition", ""))
+    lines = [
+        f"📍 {location} · {current_icon} {condition}",
+        "",
+        f"🌡️ {high_f}°F / {low_f}°F",
+        f"    {high_c}°C / {low_c}°C",
+        "",
+        f"💧 Rain chance: {rain}%",
+        f"🔆 UV Index: {uvi:.1f} · {uvi_level_text(uvi)}",
+        f"🧴 Sunscreen: {sunscreen}",
+    ]
+    return "\n".join(lines)
 
 def digest_location_label() -> str:
     """Compact location label for digest weather line (City, ST or country)."""
