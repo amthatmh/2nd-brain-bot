@@ -28,6 +28,11 @@ class TestParseHealthExportPayload(unittest.TestCase):
         result = _parse_health_export_payload(body)
         self.assertEqual(result, (8500, "2026-04-28"))
 
+    def test_flat_format_accepts_decimal_string_steps(self):
+        body = {"steps": "1018.0", "date": "2026-05-04"}
+        result = _parse_health_export_payload(body)
+        self.assertEqual(result, (1018, "2026-05-04"))
+
     def test_health_auto_export_nested_format(self):
         body = {
             "data": [
@@ -45,6 +50,33 @@ class TestParseHealthExportPayload(unittest.TestCase):
         result = _parse_health_export_payload(body)
         self.assertIsNotNone(result)
         self.assertEqual(result, (11247, "2026-04-28"))
+
+    def test_health_auto_export_v2_metrics_wrapper(self):
+        body = {
+            "data": {
+                "metrics": [
+                    {
+                        "name": "Step Count",
+                        "units": "count",
+                        "data": [{"date": "2026-05-04", "qty": "1018.0"}],
+                    }
+                ]
+            }
+        }
+        result = _parse_health_export_payload(body)
+        self.assertEqual(result, (1018, "2026-05-04"))
+
+    def test_metrics_without_data_wrapper_parses(self):
+        body = {
+            "metrics": [
+                {
+                    "name": "Step Count",
+                    "data": [{"date": "2026-05-04", "value": "1018"}],
+                }
+            ]
+        }
+        result = _parse_health_export_payload(body)
+        self.assertEqual(result, (1018, "2026-05-04"))
 
     def test_nested_format_picks_most_recent_date_even_if_lower(self):
         body = {
@@ -312,6 +344,34 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
 
         # Yesterday skipped (no data), today also skipped (0 steps = sub-threshold intraday)
         self.assertNotIn("2026-04-27", results)
+
+    async def test_nightly_stamp_can_write_below_threshold_today(self):
+        _steps_state["2026-04-28"] = {
+            "last_steps": 1018,
+            "threshold_notified": False,
+            "notion_page_id": None,
+        }
+
+        notion = MagicMock()
+        notion.databases.query.return_value = {"results": []}
+        notion.pages.create.return_value = {"id": "pid"}
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/Chicago")
+
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._yesterday", return_value="2026-04-27"), \
+             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"):
+            results = await handle_steps_final_stamp(
+                notion=notion,
+                habit_db_id="h", log_db_id="l", habit_name="Steps",
+                threshold=10000, source_label="📱 Apple Watch", tz=tz,
+                write_intraday_below_threshold=True,
+            )
+
+        self.assertEqual(results["2026-04-28"]["action"], "created")
+        props = notion.pages.create.call_args.kwargs["properties"]
+        self.assertEqual(props["Steps Count"]["number"], 1018)
+        self.assertFalse(props["Completed"]["checkbox"])
 
 
 class TestGetStepsStateSummary(unittest.TestCase):
