@@ -68,6 +68,7 @@ from second_brain.healthtrack.config import (
     STEPS_HABIT_NAME,
     STEPS_THRESHOLD,
     STEPS_SOURCE_LABEL,
+    STEPS_WRITE_INTRADAY_BELOW_THRESHOLD,
 )
 from second_brain.config import FEATURES
 from second_brain.notion import notion_call
@@ -3647,6 +3648,7 @@ async def post_init(app: Application) -> None:
             tz=TZ,
             bot=bot,
             chat_id=MY_CHAT_ID,
+            write_intraday_below_threshold=STEPS_WRITE_INTRADAY_BELOW_THRESHOLD,
         )
 
     scheduler.add_job(

@@ -22,3 +22,5 @@ STEPS_FINAL_HOUR: int = int(_final_h)
 STEPS_FINAL_MIN: int = int(_final_m)
 
 WEBHOOK_SECRET: str = os.environ.get("HEALTH_WEBHOOK_SECRET", "")
+
+STEPS_WRITE_INTRADAY_BELOW_THRESHOLD: bool = os.environ.get("HEALTH_STEPS_WRITE_INTRADAY", "1").strip().lower() in {"1", "true", "yes", "on"}

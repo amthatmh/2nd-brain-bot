@@ -54,6 +54,7 @@ from second_brain.healthtrack.config import (
     STEPS_HABIT_NAME,
     STEPS_SOURCE_LABEL,
     STEPS_THRESHOLD,
+    STEPS_WRITE_INTRADAY_BELOW_THRESHOLD,
     WEBHOOK_SECRET,
 )
 from second_brain.healthtrack.steps import handle_steps_sync, get_steps_state_summary
@@ -196,6 +197,7 @@ def register_health_routes(
             tz=tz,
             bot=bot,
             chat_id=chat_id,
+            write_intraday_below_threshold=STEPS_WRITE_INTRADAY_BELOW_THRESHOLD,
         )
 
         return web.Response(

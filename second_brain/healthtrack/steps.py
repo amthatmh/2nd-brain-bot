@@ -182,6 +182,7 @@ async def handle_steps_sync(
     tz,
     bot=None,
     chat_id: int | None = None,
+    write_intraday_below_threshold: bool = False,
 ) -> dict:
     """
     Process a steps sync payload from Health Auto Export.
@@ -215,10 +216,9 @@ async def handle_steps_sync(
         except Exception as e:
             log.error("steps: failed to send Telegram notification: %s", e)
 
-    # ── Intraday sub-threshold: no Notion write ──
-    # Only write to Notion during the nightly stamp job or for late arrivals.
-    # For today's intraday syncs below threshold, we just cache the count.
-    if is_today and not completed:
+    # ── Intraday sub-threshold behavior (configurable) ──
+    # Legacy mode only cached intraday counts until threshold/nightly stamp.
+    if is_today and not completed and not write_intraday_below_threshold:
         log.debug("steps: sub-threshold intraday sync (%d), caching only", steps)
         return {"action": "skipped", "steps": steps, "date": date_str, "reason": "sub_threshold_intraday"}
 
@@ -263,6 +263,7 @@ async def handle_steps_final_stamp(
     tz,
     bot=None,
     chat_id: int | None = None,
+    write_intraday_below_threshold: bool = False,
 ) -> dict:
     """
     Nightly 23:59 job — write the final daily step count as a permanent record.
