@@ -41,6 +41,7 @@ weather_cache: dict[str, dict] = {
     "current": {"timestamp": None, "data": None},
     "today": {"timestamp": None, "data": None},
     "tomorrow": {"timestamp": None, "data": None},
+    "daily": {"timestamp": None, "data": None},
 }
 
 
@@ -198,9 +199,7 @@ def set_location(location: str) -> bool:
         current_location = pretty
         current_lat = float(lat)
         current_lon = float(lon)
-        weather_cache["current"] = {"timestamp": None, "data": None}
-        weather_cache["today"] = {"timestamp": None, "data": None}
-        weather_cache["tomorrow"] = {"timestamp": None, "data": None}
+        clear_weather_cache()
         save_location_state(current_location)
         save_notion_env_location(current_location, float(lat), float(lon))
         return True
@@ -320,6 +319,12 @@ def set_location_smart(user_text: str, claude) -> bool:
         except Exception as e:
             log.warning("ZIP location fallback failed for %s: %s", zip_value, e)
     return False
+
+
+def clear_weather_cache() -> None:
+    """Clear all weather payloads after the active location changes."""
+    for key in weather_cache:
+        weather_cache[key] = {"timestamp": None, "data": None}
 
 
 def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -> dict | None:
@@ -448,13 +453,25 @@ def fetch_uvi_data() -> dict | None:
         return None
 
 
-def fetch_daily_weather(days: int = 5) -> list[dict]:
-    """Return daily weather rows (today forward) including UV, condition, and temps."""
+def fetch_daily_weather(days: int = 5, force_refresh: bool = False) -> list[dict]:
+    """Return cached daily weather rows (today forward) from the shared One Call pull."""
     if not OPENWEATHER_KEY or days <= 0:
         return []
     if current_lat is None or current_lon is None:
         if not set_location(WEATHER_LOCATION):
             return []
+
+    now = datetime.now(TZ)
+    cache_entry = weather_cache.get("daily", {"timestamp": None, "data": None})
+    cached_rows = cache_entry.get("data") or []
+    if (
+        not force_refresh
+        and cache_entry.get("timestamp")
+        and len(cached_rows) >= days
+        and now - cache_entry["timestamp"] <= timedelta(hours=3)
+    ):
+        return cached_rows[:days]
+
     try:
         resp = httpx.get(
             "https://api.openweathermap.org/data/3.0/onecall",
@@ -468,7 +485,7 @@ def fetch_daily_weather(days: int = 5) -> list[dict]:
             timeout=8,
         )
         resp.raise_for_status()
-        daily = resp.json().get("daily", [])[:days]
+        daily = resp.json().get("daily", [])[: max(days, 5)]
         rows: list[dict] = []
         for item in daily:
             weather_item = (item.get("weather") or [{}])[0]
@@ -486,9 +503,12 @@ def fetch_daily_weather(days: int = 5) -> list[dict]:
                     "sunset": datetime.fromtimestamp(item.get("sunset", 0), timezone.utc).astimezone(TZ).isoformat() if item.get("sunset") else None,
                 }
             )
-        return rows
+        weather_cache["daily"] = {"timestamp": now, "data": rows}
+        return rows[:days]
     except Exception as e:
         log.error("Daily weather fetch failed: %s", e)
+        if cached_rows:
+            return cached_rows[:days]
         return []
 
 
@@ -499,6 +519,7 @@ async def fetch_weather_cache(bot) -> None:
     fetch_weather("current", force_refresh=True)
     fetch_weather("today", force_refresh=True)
     fetch_weather("tomorrow", force_refresh=True)
+    fetch_daily_weather(days=5, force_refresh=True)
 
 
 def uvi_emoji(uvi: float) -> str:
