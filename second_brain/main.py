@@ -24,6 +24,8 @@ from telegram import (
     InlineKeyboardMarkup,
     ReplyKeyboardRemove,
     BotCommand,
+    BotCommandScopeChat,
+    BotCommandScopeDefault,
 )
 from telegram.ext import (
     Application,
@@ -3681,22 +3683,23 @@ async def post_init(app: Application) -> None:
         f"smoke={smoke_status}\n"
         f"features={v10_feature_flags()}",
     )
-    await app.bot.set_my_commands(
-        [
-            BotCommand("done", "Mark task/habit done"),
-            BotCommand("remind", "Show quick reminder"),
-            BotCommand("r", "Alias for /remind"),
-            BotCommand("notes", "Open notes capture"),
-            BotCommand("weather", "Show weather snapshot"),
-            BotCommand("habits", "Show habits list"),
-            BotCommand("log", "Log cinema/performance/sport"),
-            BotCommand("sync", "Run manual sync"),
-            BotCommand("syncstatus", "Show sync status"),
-            BotCommand("mute", "Pause scheduled digests"),
-            BotCommand("unmute", "Resume scheduled digests"),
-            BotCommand("location", "Set weather location"),
-        ]
-    )
+    commands = [
+        BotCommand("done", "Mark task/habit done"),
+        BotCommand("remind", "Show quick reminder"),
+        BotCommand("r", "Alias for /remind"),
+        BotCommand("notes", "Open notes capture"),
+        BotCommand("weather", "Show weather snapshot"),
+        BotCommand("habits", "Show habits list"),
+        BotCommand("log", "Log cinema/performance/sport"),
+        BotCommand("trip", "Log a work trip"),
+        BotCommand("sync", "Run manual sync"),
+        BotCommand("syncstatus", "Show sync status"),
+        BotCommand("mute", "Pause scheduled digests"),
+        BotCommand("unmute", "Resume scheduled digests"),
+        BotCommand("location", "Set weather location"),
+    ]
+    await app.bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+    await app.bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=MY_CHAT_ID))
 
 
 
