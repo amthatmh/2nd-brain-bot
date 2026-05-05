@@ -85,6 +85,9 @@ from second_brain.handler_registry import register_core_handlers
 from second_brain.state import STATE
 from second_brain.utils import ExpiringDict, reply_notion_error
 from second_brain.http_utils import cors_headers
+from second_brain.services import task_parsing as task_parsing_service
+from second_brain.services import note_utils as note_utils_service
+from second_brain.handlers.commands import CommandHandlers
 
 from second_brain.crossfit.classify import classify_workout_message, parse_programme
 from second_brain.crossfit.handlers import (
@@ -533,11 +536,7 @@ def load_digest_slots() -> list[dict]:
 
 def extract_date_only(date_str: str | None) -> str | None:
     """Normalize Notion date strings to YYYY-MM-DD for calendar matching."""
-    if not date_str:
-        return None
-    if len(date_str) >= 10 and date_str[4] == "-" and date_str[7] == "-":
-        return date_str[:10]
-    return date_str
+    return note_utils_service.extract_date_only(date_str)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -545,77 +544,19 @@ def extract_date_only(date_str: str | None) -> str | None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def split_tasks(text: str) -> list[str]:
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    if any(_BULLET_RE.match(l) for l in lines):
-        tasks = [_BULLET_RE.sub("", l).strip() for l in lines if _BULLET_RE.match(l)]
-        return tasks if len(tasks) > 1 else [text]
-    if len(lines) > 1:
-        lower = text.lower()
-        if re.search(r"\bschedule\b.*\brecurring\b", lower) and re.search(r"\bevery\b", lower):
-            return [text]
-        return lines
-    return [text]
+    return task_parsing_service.split_tasks(text, _BULLET_RE)
 
 
 def looks_like_crossfit_programme(text: str) -> bool:
-    lower = text.lower()
-    day_hits = len(re.findall(r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)\b", lower))
-    section_hits = len(re.findall(r"(?:^|\n)\s*[bc]\.", lower))
-    workout_hits = len(re.findall(r"\b(amrap|emom|for time|rounds?|reps?|wod|snatch|clean|jerk|burpee|row|sit ups?|pushups?)\b", lower))
-    # Accept both full-week uploads and single-day programme blocks.
-    if day_hits >= 2 and (section_hits >= 2 or workout_hits >= 3):
-        return True
-    return day_hits >= 1 and (section_hits >= 1 or workout_hits >= 4)
+    return task_parsing_service.looks_like_crossfit_programme(text)
 
 
 def looks_like_task_batch(text: str) -> bool:
-    if looks_like_crossfit_programme(text):
-        return False
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    if len(lines) <= 1:
-        return False
-    numbered_or_bulleted = sum(1 for l in lines if _BULLET_RE.match(l))
-    if numbered_or_bulleted >= 2:
-        return True
-    lead = lines[0].lower()
-    if lead in {"add", "todo", "to-do", "tasks"}:
-        return True
-    return False
+    return task_parsing_service.looks_like_task_batch(text, _BULLET_RE)
 
 
 def infer_batch_overrides(text: str) -> dict:
-    lower = text.lower()
-    context = None
-    context_aliases = [
-        ("💼 Work", ["work", "💼"]),
-        ("🏠 Personal", ["personal", "🏠"]),
-        ("🏃 Health", ["health", "🏃"]),
-        ("🤝 Collab", ["collab", "🤝"]),
-    ]
-
-    explicit_scope = re.search(r"\b(?:under|for|in)\s+([^\n,.;:]+)", lower)
-    scoped_text = explicit_scope.group(1) if explicit_scope else ""
-    haystacks = [scoped_text, lower] if scoped_text else [lower]
-
-    for hay in haystacks:
-        for notion_context, aliases in context_aliases:
-            if any((a in hay) if not a.isalpha() else re.search(rf"\b{re.escape(a)}\b", hay) for a in aliases):
-                context = notion_context
-                break
-        if context:
-            break
-
-    deadline_days = None
-    if re.search(r"\btomorrow\b", lower):
-        deadline_days = 1
-    elif re.search(r"\b(?:today|tonight)\b", lower):
-        deadline_days = 0
-    elif re.search(r"\bthis week\b", lower):
-        deadline_days = 5
-    elif re.search(r"\bthis month\b", lower):
-        deadline_days = 20
-
-    return {"context": context, "deadline_days": deadline_days}
+    return task_parsing_service.infer_batch_overrides(text)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -656,8 +597,7 @@ async def start_note_capture_flow(message, text: str) -> None:
 
 def extract_url(text: str) -> str | None:
     """Return first URL found in text, or None."""
-    m = _URL_RE.search(text)
-    return m.group(0) if m else None
+    return note_utils_service.extract_url(text, _URL_RE)
 
 
 def fetch_url_metadata(url: str) -> dict:
@@ -730,11 +670,7 @@ async def handle_note_input(message, text: str) -> None:
 
 
 def deadline_days_to_label(days: int | None) -> str:
-    if days is None: return "⚪ Backburner"
-    if days <= 0:    return "🔴 Today"
-    if days <= 7:    return "🟠 This Week"
-    if days <= 31:   return "🟡 This Month"
-    return "⚪ Backburner"
+    return note_utils_service.deadline_days_to_label(days)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1498,7 +1434,11 @@ async def route_classified_message_v10(message, text: str) -> None:
             workout_result = {"type": "none"}
         if workout_result.get("type") == "programme":
             await thinking.delete()
-            await handle_cf_upload_programme(message, text, claude, notion, {"NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS, "CLAUDE_MODEL": CLAUDE_MODEL})
+            await message.reply_text(
+                "📋 Weekly programmes are parsed from Notion only now.\n"
+                "Add a row in Weekly Programs, paste into *Full Program*, and leave *Processed* unchecked.",
+                parse_mode="Markdown",
+            )
             return
         if workout_result.get("type") in ("strength", "conditioning") and workout_result.get("confidence") == "high":
             await thinking.delete()
@@ -1828,7 +1768,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
                 )
                 return
 
-    # ── CrossFit programme upload — must be first before any classifier ──
+    # ── Weekly programme parsing is Notion-driven (15-minute poller) ──
     upload_programme_aliases = {
         "📤 upload programme",
         "📤 upload program",
@@ -1837,46 +1777,16 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         "📤 upload programme...",
         "📤 upload program...",
     }
-    if lower in upload_programme_aliases:
-        context.user_data["awaiting_programme_upload"] = True
+    if lower in upload_programme_aliases or looks_like_crossfit_programme(text):
         await message.reply_text(
-            "📋 *Upload Weekly Programme*\n\nPaste the full programme text now.\n"
-                    "_Paste the whole thing — I'll extract Performance, Fitness and Hyrox._",
+            "📋 Weekly programmes are parsed from Notion only now.\n\n"
+            "1. Open *Weekly Programs*\n"
+            "2. Add a row\n"
+            "3. Paste full text into *Full Program*\n"
+            "4. Leave *Processed* unchecked\n\n"
+            "The 15-minute job will parse and backfill this row.",
             parse_mode="Markdown",
         )
-        return
-
-    if context.user_data.get("awaiting_programme_upload") or cf_pending.pop("__awaiting_upload__", False):
-        buffered = (context.user_data.get("programme_upload_buffer") or "").strip()
-        merged_text = (buffered + "\n" + text).strip() if buffered else text
-        ok = await handle_cf_upload_programme(message, merged_text, claude, notion, {
-            "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB,
-            "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB,
-            "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB,
-            "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS,
-            "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB,
-            "CLAUDE_MODEL": CLAUDE_MODEL,
-        })
-        if ok:
-            context.user_data["awaiting_programme_upload"] = False
-            context.user_data["programme_upload_buffer"] = ""
-        else:
-            context.user_data["awaiting_programme_upload"] = True
-            context.user_data["programme_upload_buffer"] = merged_text[-12000:]
-            await message.reply_text("📎 If Telegram split your programme into multiple messages, paste the next part now and I'll merge them.")
-        return
-
-    # Fallback: parse obvious weekly programmes even if transient upload state was lost
-    # (e.g., after a worker restart between callback and pasted message).
-    if looks_like_crossfit_programme(text):
-        await handle_cf_upload_programme(message, text, claude, notion, {
-            "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB,
-            "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB,
-            "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB,
-            "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS,
-            "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB,
-            "CLAUDE_MODEL": CLAUDE_MODEL,
-        })
         return
 
     pending_custom_topic = context.user_data.get("awaiting_note_custom_topic")
@@ -2682,15 +2592,17 @@ async def get_digest_config(slot_time: str, weekday: bool) -> dict:
         slots = load_digest_slots()
     except Exception as e:
         log.error("Failed to read digest config for %s (%s): %s", slot_time, "weekday" if weekday else "weekend", e)
-        return {"contexts": None, "max_items": None, "include_habits": False}
+        return {"contexts": None, "max_items": None, "include_habits": False, "include_weather": False, "include_uvi": False}
     for slot in slots:
         if slot.get("time") == slot_time and bool(slot.get("is_weekday")) == bool(weekday):
             return {
                 "contexts": slot.get("contexts"),
                 "max_items": slot.get("max_items"),
                 "include_habits": bool(slot.get("include_habits")),
+                "include_weather": bool(slot.get("include_weather")),
+                "include_uvi": bool(slot.get("include_uvi")),
             }
-    return {"contexts": None, "max_items": None, "include_habits": False}
+    return {"contexts": None, "max_items": None, "include_habits": False, "include_weather": False, "include_uvi": False}
 
 
 def _filter_digest_tasks(tasks: list[dict], config: dict | None = None) -> list[dict]:
@@ -2739,9 +2651,9 @@ async def send_digest_for_slot(bot, slot: dict) -> None:
     )
     is_signoff = slot.get("is_signoff", False)
 
-    if not config.get("contexts") and not config.get("include_habits") and not is_signoff:
+    if not config.get("contexts") and not config.get("include_habits") and not config.get("include_weather") and not is_signoff:
         log.info(
-            "Skipping slot %s — nothing selected (no contexts, habits, or signoff)",
+            "Skipping slot %s — nothing selected (no contexts, habits, weather, or signoff)",
             slot.get("time"),
         )
         return
@@ -2905,17 +2817,20 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
 
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
     lines = [f"☀️ *{date_str}*", ""]
-    weather_block = fmt.format_weather_block(wx.fetch_weather("today"), label="🌤️")
-    uvi_data = wx.fetch_uvi_data()
-    if weather_block and uvi_data:
-        max_uvi = uvi_data["max"]
-        weather_block += f" · ☀️ {max_uvi:.1f} {fmt.uvi_emoji(max_uvi)}"
-    location_label = fmt.digest_location_label()
-    if weather_block:
-        lines.append(fmt.append_location_to_weather_block(weather_block, location_label))
-    else:
-        lines.append(fmt.weather_unavailable_digest_line())
-    lines.append("")
+    include_weather = True if config is None else bool(config.get("include_weather"))
+    include_uvi = bool(config.get("include_uvi")) if config else False
+    uvi_data = wx.fetch_uvi_data() if include_uvi else None
+    if include_weather:
+        weather_block = fmt.format_weather_block(wx.fetch_weather("today"), label="🌤️")
+        if weather_block and uvi_data:
+            max_uvi = uvi_data["max"]
+            weather_block += f" · ☀️ {max_uvi:.1f} {fmt.uvi_emoji(max_uvi)}"
+        location_label = fmt.digest_location_label()
+        if weather_block:
+            lines.append(fmt.append_location_to_weather_block(weather_block, location_label))
+        else:
+            lines.append(fmt.weather_unavailable_digest_line())
+        lines.append("")
     n = 1
 
     habits: list[dict] = []
@@ -3782,37 +3697,37 @@ async def post_init(app: Application) -> None:
     )
 
 
+
+
+def _next_done_picker_key() -> int:
+    global _done_picker_counter
+    key = _done_picker_counter
+    _done_picker_counter += 1
+    return key
+
+
+def _command_handlers() -> CommandHandlers:
+    return CommandHandlers({
+        "MY_CHAT_ID": MY_CHAT_ID,
+        "habit_cache": habit_cache,
+        "already_logged_today": already_logged_today,
+        "notion_tasks": notion_tasks,
+        "notion": notion,
+        "NOTION_DB_ID": NOTION_DB_ID,
+        "kb": kb,
+        "done_picker_map": done_picker_map,
+        "done_picker_keyboard": done_picker_keyboard,
+        "next_done_picker_key": _next_done_picker_key,
+        "send_quick_reminder": send_quick_reminder,
+    })
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # COMMAND HANDLERS — defined before main() so Python can resolve names
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def handle_done_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/done — combined habit + task picker."""
-    if update.effective_chat.id != MY_CHAT_ID:
-        return
-    pending_habits = [
-        h for h in sorted(habit_cache.values(), key=lambda x: x["sort"])
-        if not already_logged_today(h["page_id"])
-    ]
-    tasks = notion_tasks.get_today_and_overdue_tasks(notion, NOTION_DB_ID)
-    if not pending_habits and not tasks:
-        await update.message.reply_text("✅ Everything done for today — nothing left to log!")
-        return
-    if pending_habits:
-        await update.message.reply_text(
-            "🏃 *Which habit did you complete?*",
-            parse_mode="Markdown",
-            reply_markup=kb.habit_buttons(pending_habits, "manual"),
-        )
-    if tasks:
-        global _done_picker_counter
-        key = str(_done_picker_counter); _done_picker_counter += 1
-        done_picker_map[key] = tasks
-        await update.message.reply_text(
-            "✅ *Which task did you finish?*",
-            parse_mode="Markdown",
-            reply_markup=done_picker_keyboard(key, page=0),
-        )
+    await _command_handlers().handle_done_command(update, context)
 
 
 async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3846,10 +3761,7 @@ async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def handle_remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/r and /remind — quick to-do reminder snapshot."""
-    if update.effective_chat.id != MY_CHAT_ID:
-        return
-    await send_quick_reminder(update.message, mode="priority")
+    await _command_handlers().handle_remind_command(update, context)
 
 
 async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
