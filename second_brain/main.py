@@ -76,6 +76,8 @@ from second_brain.notion import tasks as notion_tasks
 from second_brain import keyboards as kb
 from second_brain import formatters as fmt
 from second_brain import main_helpers as main_helpers
+from second_brain import digest as digest_helpers
+from second_brain import palette as palette_helpers
 from second_brain import weather as wx
 from second_brain import watchlist as wl
 from second_brain import trips as trips_mod
@@ -522,152 +524,9 @@ def notion_query_all(database_id: str, **kwargs) -> list[dict]:
 
 
 def load_digest_slots() -> list[dict]:
-    """
-    Queries Notion Digest Selector DB.
-    Returns list of slot dicts.
-    """
-    context_map = {
-        "🏠 Personal": "🏠 Personal",
-        "💼 Work": "💼 Work",
-        "🏃 Health": "🏃 Health",
-        "🤝 HK": "🤝 HK",
-    }
-    def first_text(prop: dict) -> str:
-        rich_text = prop.get("rich_text", [])
-        if rich_text:
-            return (rich_text[0].get("plain_text") or "").strip()
-        title = prop.get("title", [])
-        if title:
-            return (title[0].get("plain_text") or "").strip()
-        select = prop.get("select")
-        if select and select.get("name"):
-            return (select.get("name") or "").strip()
-        date_value = prop.get("date") or {}
-        if isinstance(date_value, dict) and date_value.get("start"):
-            return str(date_value.get("start")).strip()
-        return ""
-
-    def normalize_slot_time(raw: str) -> str | None:
-        value = (raw or "").strip()
-        if not value:
-            return None
-
-        # Accept "HH:MM" / "H:MM", optionally with seconds.
-        iso_match = re.fullmatch(r"(\d{1,2}):(\d{2})(?::\d{2})?", value)
-        if iso_match:
-            hh = int(iso_match.group(1))
-            mm = int(iso_match.group(2))
-            if 0 <= hh <= 23 and 0 <= mm <= 59:
-                return f"{hh:02d}:{mm:02d}"
-            return None
-
-        # Accept "H:MM AM/PM" formats commonly used in select labels.
-        ampm_match = re.fullmatch(r"(\d{1,2}):(\d{2})\s*([AaPp][Mm])", value)
-        if ampm_match:
-            hh = int(ampm_match.group(1))
-            mm = int(ampm_match.group(2))
-            ampm = ampm_match.group(3).lower()
-            if not (1 <= hh <= 12 and 0 <= mm <= 59):
-                return None
-            if ampm == "am":
-                hh = 0 if hh == 12 else hh
-            else:
-                hh = 12 if hh == 12 else hh + 12
-            return f"{hh:02d}:{mm:02d}"
-
-        # If Notion date-time string is provided (e.g. 2026-04-26T09:00:00.000Z), parse time part.
-        dt_match = re.search(r"T(\d{2}):(\d{2})", value)
-        if dt_match:
-            hh = int(dt_match.group(1))
-            mm = int(dt_match.group(2))
-            if 0 <= hh <= 23 and 0 <= mm <= 59:
-                return f"{hh:02d}:{mm:02d}"
-
-        internal_match = re.search(r"\b(\d{1,2}):(\d{2})\b", value)
-        if internal_match:
-            hh = int(internal_match.group(1))
-            mm = int(internal_match.group(2))
-            if 0 <= hh <= 23 and 0 <= mm <= 59:
-                return f"{hh:02d}:{mm:02d}"
-        return None
-
-    slots: list[dict] = []
-    seen_slot_keys: set[tuple[str, bool]] = set()
+    """Queries Notion Digest Selector DB and returns normalized slot dicts."""
     rows = notion_query_all(NOTION_DIGEST_SELECTOR_DB)
-    for row in rows:
-        props = row.get("properties", {})
-
-        slot_time_raw = first_text(props.get("Time", {}))
-        slot_time = normalize_slot_time(slot_time_raw)
-        if not slot_time:
-            log.warning("Skipping digest selector row with invalid Time=%r", slot_time_raw)
-            continue
-        hh, mm = map(int, slot_time.split(":"))
-        if not (0 <= hh <= 23 and 0 <= mm <= 59):
-            log.warning("Skipping digest selector row with out-of-range Time=%r", slot_time_raw)
-            continue
-        if not slot_time:
-            continue
-
-        ww = props.get("Weekday/Weekend", {}).get("select")
-        ww_name = (ww.get("name") if ww else "").strip()
-        ww_norm = ww_name.lower()
-        is_all = ww_norm in {"all", "every day", "daily", "always"}
-        is_weekday_val = ww_norm in {"weekday", "weekdays", "mon-fri"}
-        is_weekend_val = ww_norm in {"weekend", "weekends", "sat,sun", "sat/sun"}
-
-        if not (is_all or is_weekday_val or is_weekend_val):
-            log.warning("Skipping digest selector row with invalid Weekday/Weekend=%r", ww_name)
-            continue
-
-        # "All" rows are expanded into two slots: one weekday, one weekend.
-        # Build the list of (is_weekday, slot_key) pairs to append.
-        weekday_variants: list[bool] = []
-        if is_all:
-            weekday_variants = [True, False]
-        elif is_weekday_val:
-            weekday_variants = [True]
-        else:
-            weekday_variants = [False]
-
-        include_habits = bool(props.get("Habits", {}).get("checkbox", False))
-        max_items_raw = props.get("Max Items", {}).get("number")
-        max_items = int(max_items_raw) if isinstance(max_items_raw, (int, float)) else None
-
-        selected_contexts = [
-            context_label
-            for prop_name, context_label in context_map.items()
-            if bool(props.get(prop_name, {}).get("checkbox", False))
-        ]
-        # Keep an explicit empty-list when no context checkboxes are selected so
-        # a slot can intentionally send a habits-only digest without task spillover.
-        contexts = selected_contexts
-
-        is_signoff = bool(props.get("Signoff", {}).get("checkbox", False))
-
-        for is_weekday in weekday_variants:
-            slot_key = (slot_time, is_weekday)
-            if slot_key in seen_slot_keys:
-                log.warning(
-                    "Skipping duplicate digest selector slot %s (%s)",
-                    slot_time,
-                    "weekday" if is_weekday else "weekend",
-                )
-                continue
-            seen_slot_keys.add(slot_key)
-            slots.append(
-                {
-                    "time": slot_time,
-                    "is_weekday": is_weekday,
-                    "include_habits": include_habits,
-                    "max_items": max_items,
-                    "contexts": contexts,
-                    "is_signoff": is_signoff,
-                }
-            )
-
-    log.info("Loaded %d digest selector slot(s) from Notion", len(slots))
-    return slots
+    return digest_helpers.load_digest_slots(rows=rows, logger=log)
 
 
 def extract_date_only(date_str: str | None) -> str | None:
@@ -1052,10 +911,9 @@ def get_and_clear_signoff_note() -> str:
 
 
 def _get_today_tasks_for_palette() -> list[dict]:
-    """Get today's tasks only (for To Do view)."""
-    tasks = notion_tasks.get_today_and_overdue_tasks(notion, NOTION_DB_ID)
-    today_str = local_today().isoformat()
-    return [t for t in tasks if t.get("deadline") == today_str]
+    return palette_helpers.get_today_tasks_for_palette(
+        notion_tasks=notion_tasks, notion=notion, notion_db_id=NOTION_DB_ID, local_today_fn=local_today
+    )
 
 
 
@@ -1078,159 +936,41 @@ def get_and_clear_claude_activity() -> list[str]:
     return items
 
 def format_digest_view() -> tuple[str, InlineKeyboardMarkup]:
-    """Build digest view for today + next 7 calendar days, grouped by date."""
-    today = local_today()
-    cutoff = today + timedelta(days=7)
-    tasks = notion_tasks.get_all_active_tasks(notion, NOTION_DB_ID)
-    groups: dict[str, list[dict]] = defaultdict(list)
-    beyond_count = 0
-
-    for task in tasks:
-        raw_deadline = task.get("deadline")
-        parsed_deadline = notion_tasks._parse_deadline(raw_deadline)
-        if not parsed_deadline:
-            continue
-        if parsed_deadline < today:
-            continue
-        if parsed_deadline <= cutoff:
-            groups[parsed_deadline.isoformat()].append(task)
-        else:
-            beyond_count += 1
-
-    lines = ["📖 Digest — Today + 7 Days", ""]
-    if not groups:
-        lines.append("✅ Clear for next 7 days!")
-    else:
-        for d in sorted(groups.keys()):
-            day_tasks = sorted(groups[d], key=notion_tasks._task_sort_key)
-            date_label = date.fromisoformat(d).strftime("%A, %B %-d")
-            lines.append(f"📌 {date_label} ({len(day_tasks)})")
-            for task in day_tasks:
-                lines.append(f"  • {task.get('name', 'Untitled')}  {notion_tasks._context_label(task)}")
-            lines.append("")
-        if lines[-1] == "":
-            lines.pop()
-
-    if beyond_count:
-        lines.extend(["", f"...and {beyond_count} more beyond 7 days (view in Notion)"])
-
-    return "\n".join(lines).strip(), kb.back_to_palette_keyboard()
+    return palette_helpers.format_digest_view(
+        notion_tasks=notion_tasks,
+        notion=notion,
+        notion_db_id=NOTION_DB_ID,
+        local_today_fn=local_today,
+        back_to_palette_keyboard=kb.back_to_palette_keyboard,
+    )
 
 
 def format_todo_view(marked_done_indices: set | None = None) -> tuple[str, InlineKeyboardMarkup]:
-    """
-    Format today's tasks with quick-mark buttons.
-
-    Args:
-        marked_done_indices: Set of task indices already marked done.
-    """
-    marked_done_indices = marked_done_indices or set()
-    tasks = _get_today_tasks_for_palette()
-    lines = ["✅ Today's Tasks — Mark Complete", ""]
-    keyboard_rows: list[list[InlineKeyboardButton]] = []
-
-    if not tasks:
-        lines.append("✅ No tasks due today!")
-    else:
-        for idx, task in enumerate(tasks):
-            label = task.get("name", "Untitled")
-            if idx in marked_done_indices:
-                lines.append(f"✅ {label}")
-                continue
-            keyboard_rows.append(
-                [InlineKeyboardButton(f"{fmt.num_emoji(idx + 1)} {label}", callback_data=f"qp:done:{idx}")]
-            )
-        if len(marked_done_indices) >= len(tasks):
-            lines.append("✅ All today's tasks marked done! 🎉")
-
-    keyboard_rows.append([InlineKeyboardButton("📖 Back to Palette", callback_data="qp:back")])
-    return "\n".join(lines).strip(), InlineKeyboardMarkup(keyboard_rows)
+    return palette_helpers.format_todo_view(
+        notion_tasks=notion_tasks,
+        notion=notion,
+        notion_db_id=NOTION_DB_ID,
+        local_today_fn=local_today,
+        num_emoji=fmt.num_emoji,
+        marked_done_indices=marked_done_indices,
+    )
 
 
 def quick_access_keyboard() -> InlineKeyboardMarkup:
-    """Keyboard with live This Week and Backlog counts."""
-    _, _, this_week, backlog = notion_tasks._get_tasks_by_deadline_horizon(notion, NOTION_DB_ID)
-    return InlineKeyboardMarkup(
-        [[
-            InlineKeyboardButton(f"🟠 This Week ({len(this_week)})", callback_data="qv:week"),
-            InlineKeyboardButton(f"⚪ Backlog ({len(backlog)})", callback_data="qv:backlog"),
-        ]]
-    )
+    return palette_helpers.quick_access_keyboard(notion_tasks=notion_tasks, notion=notion, notion_db_id=NOTION_DB_ID)
 
 
 
 
 
 def parse_done_numbers_command(text: str) -> list[int] | None:
-    normalized = text.strip().lower()
-
-    # Normalize keycap number emojis (e.g., "3️⃣") into plain digits so users can
-    # reply with either "complete 3" or "complete 3️⃣".
-    keycap_map = {
-        "0️⃣": "0",
-        "1️⃣": "1",
-        "2️⃣": "2",
-        "3️⃣": "3",
-        "4️⃣": "4",
-        "5️⃣": "5",
-        "6️⃣": "6",
-        "7️⃣": "7",
-        "8️⃣": "8",
-        "9️⃣": "9",
-        "🔟": "10",
-    }
-    for keycap, digit in keycap_map.items():
-        normalized = normalized.replace(keycap, digit)
-
-    m = re.match(
-        r"^(?:done|complete|finish|check(?:\s+off)?)\s+((?:\d+\s*(?:,|\band\b)?\s*)+)$",
-        normalized, re.IGNORECASE,
-    )
-    if not m:
-        m = re.match(
-            r"^mark\s+(?:done\s+)?((?:\d+\s*(?:,|\band\b)?\s*)+)\s+done$",
-            normalized, re.IGNORECASE,
-        )
-    if not m:
-        return None
-    nums = [int(n) for n in re.findall(r"\d+", m.group(1))]
-    return nums or None
+    from second_brain import palette as _palette_helpers
+    return _palette_helpers.parse_done_numbers_command(text)
 
 
 def parse_review_numbers_command(text: str) -> list[int] | None:
-    normalized = text.strip().lower()
-
-    # Normalize keycap number emojis (e.g., "3️⃣") into plain digits so users can
-    # reply with either "review 3" or "review 3️⃣".
-    keycap_map = {
-        "0️⃣": "0",
-        "1️⃣": "1",
-        "2️⃣": "2",
-        "3️⃣": "3",
-        "4️⃣": "4",
-        "5️⃣": "5",
-        "6️⃣": "6",
-        "7️⃣": "7",
-        "8️⃣": "8",
-        "9️⃣": "9",
-        "🔟": "10",
-    }
-    for keycap, digit in keycap_map.items():
-        normalized = normalized.replace(keycap, digit)
-
-    m = re.match(
-        r"^(?:review|reassign|horizon|check(?:\s+off)?)\s+((?:\d+\s*(?:,|\band\b)?\s*)+)$",
-        normalized, re.IGNORECASE,
-    )
-    if not m:
-        m = re.match(
-            r"^mark\s+(?:review\s+)?((?:\d+\s*(?:,|\band\b)?\s*)+)\s+review$",
-            normalized, re.IGNORECASE,
-        )
-    if not m:
-        return None
-    nums = [int(n) for n in re.findall(r"\d+", m.group(1))]
-    return nums or None
+    from second_brain import palette as _palette_helpers
+    return _palette_helpers.parse_review_numbers_command(text)
 
 
 def _resolve_monthly_target_day(repeat_day: str, today: date) -> int | None:
@@ -1289,20 +1029,12 @@ def _run_capture(raw_text: str, force_create: bool = False,
 
 
 def pending_habits_for_digest(time_str: str | None = None) -> list[dict]:
-    habits = (
-        habit_cache.values()
-        if time_str is None
-        else [h for h in habit_cache.values() if h.get("time") == time_str]
+    return digest_helpers.pending_habits_for_digest(
+        habit_cache=habit_cache,
+        time_str=time_str,
+        already_logged_today=already_logged_today,
+        is_on_pace=is_on_pace,
     )
-    pending: list[dict] = []
-    for habit in sorted(habits, key=lambda h: h["sort"]):
-        pid = habit["page_id"]
-        if already_logged_today(pid):
-            continue
-        if is_on_pace(habit):
-            continue
-        pending.append(habit)
-    return pending
 
 
 

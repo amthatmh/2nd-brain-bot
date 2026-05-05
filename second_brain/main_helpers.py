@@ -59,6 +59,7 @@ def load_mute_state(mute_state_file: Path, tz, logger):
         if raw:
             mute_until = datetime.fromisoformat(raw)
         if mute_until and datetime.now(tz) >= mute_until:
+            save_mute_state(None, mute_state_file, logger)
             return None
         return mute_until
     except Exception as e:
