@@ -3628,8 +3628,8 @@ async def process_pending_programmes(bot) -> None:
                 pass
 
 
-async def refresh_trip_weather_job(bot) -> None:
-    _ = bot
+async def update_trip_weather_job(application) -> None:
+    _ = application
     if not NOTION_TRIPS_DB:
         return
     try:
@@ -3645,8 +3645,12 @@ async def refresh_trip_weather_job(bot) -> None:
         log.warning("Trip weather refresh failed: %s", exc)
 
 
+async def refresh_trip_weather_job(bot) -> None:
+    await update_trip_weather_job(bot)
+
+
 async def handle_trip_weather_refresh(bot) -> None:
-    await refresh_trip_weather_job(bot)
+    await update_trip_weather_job(bot)
 
 
 async def _run_steps_final_stamp_dispatch(bot) -> None:
@@ -3881,6 +3885,15 @@ async def post_init(app: Application) -> None:
     # Register digest cron jobs only. Do not queue missed digest slots on startup;
     # restarting the bot should not send an immediate digest.
     build_digest_schedule(scheduler, app.bot)
+    scheduler.add_job(
+        update_trip_weather_job,
+        "cron",
+        hour=6,
+        minute=0,
+        args=[app],
+        id="trip_weather_daily",
+        replace_existing=True,
+    )
 
     # ── Cinema sync — validate config before Utility Scheduler can enable it ──
     cinema_ok, cinema_problems = validate_cinema_config()

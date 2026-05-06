@@ -29,12 +29,12 @@ class _Query:
         self.message = _Message()
 
 
-def _trip_map():
+def _trip_map(departure_date="2026-05-14", return_date="2026-05-17"):
     return {
         "0": {
             "destinations": ["Nashville TN"],
-            "departure_date": "2026-05-14",
-            "return_date": "2026-05-17",
+            "departure_date": departure_date,
+            "return_date": return_date,
             "duration_label": "2-3 Days",
             "purpose": "Work",
             "field_work_types": ["Site Survey"],
@@ -265,7 +265,7 @@ def test_execute_trip_maps_weather_flags_to_multi_select(monkeypatch):
         query,
         notion=notion,
         claude=None,
-        trip_map=_trip_map(),
+        trip_map=_trip_map(departure_date="2026-05-08", return_date="2026-05-10"),
         set_awaiting_packing_feedback=lambda value: None,
         fetch_weather=lambda bucket: {"condition": "Rain", "temp_high": 31, "temp_low": 4, "precip_chance": 80} if bucket == "today" else None,
     ))
@@ -276,25 +276,42 @@ def test_execute_trip_maps_weather_flags_to_multi_select(monkeypatch):
 
 def test_trip_weather_summary_uses_trip_date_range():
     summary, flags = trips._build_trip_weather_summary(
+        "2026-05-08",
+        "2026-05-10",
+        "Nashville, TN",
+        fetch_weather=lambda _: {"condition": "Rain", "temp_high": 31, "temp_low": 4, "precip_chance": 80},
+        fetch_trip_weather_range=lambda dep, ret, dest: [
+            {"label": "Fri May 8", "condition": "Clear", "temp_high": 24, "temp_low": 14, "precip_chance": 0},
+            {"label": "Sat May 9", "condition": "Rain", "temp_high": 20, "temp_low": 10, "precip_chance": 70},
+        ],
+    )
+    assert "Fri May 8" in summary
+    assert "Sat May 9" in summary
+    assert "Rain" in flags
+
+
+def test_trip_weather_summary_uses_placeholder_outside_five_day_window():
+    summary, flags = trips._build_trip_weather_summary(
         "2026-05-14",
         "2026-05-17",
         "Nashville, TN",
         fetch_weather=lambda _: {"condition": "Rain", "temp_high": 31, "temp_low": 4, "precip_chance": 80},
-        fetch_trip_weather_range=lambda dep, ret, dest: [
-            {"label": "Thu May 14", "condition": "Clear", "temp_high": 24, "temp_low": 14, "precip_chance": 0},
-            {"label": "Fri May 15", "condition": "Rain", "temp_high": 20, "temp_low": 10, "precip_chance": 70},
+        fetch_trip_weather_range=lambda *_: [
+            {"label": "Thu May 14", "condition": "Rain", "temp_high": 20, "temp_low": 10, "precip_chance": 70},
         ],
     )
-    assert "Thu May 14" in summary
-    assert "Fri May 15" in summary
-    assert "Rain" in flags
+
+    assert summary == trips.WEATHER_PLACEHOLDER_SUMMARY
+    assert flags == []
 
 
 def test_refresh_upcoming_trip_weather_updates_rows():
     updated_pages = []
+    query_calls = []
 
     class _NotionDatabases:
         def query(self, **kwargs):
+            query_calls.append(kwargs)
             return {
                 "results": [
                     {
@@ -331,6 +348,10 @@ def test_refresh_upcoming_trip_weather_updates_rows():
     )
     assert count == 1
     assert updated_pages
+    assert query_calls[0]["filter"]["and"][-1] == {
+        "property": "Weather Summary",
+        "rich_text": {"equals": trips.WEATHER_PLACEHOLDER_SUMMARY},
+    }
 
 
 def test_build_packing_blocks_queries_all_items_and_returns_native_blocks(monkeypatch):

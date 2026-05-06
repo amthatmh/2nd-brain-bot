@@ -107,6 +107,54 @@ def test_fetch_daily_weather_reuses_cached_one_call_data(monkeypatch):
     assert weather_five_days[0] == digest_today[0]
 
 
+def test_fetch_multi_day_forecast_buckets_three_hour_rows(monkeypatch):
+    monkeypatch.setattr(wx, "OPENWEATHER_KEY", "test-openweather-key")
+    wx.current_lat = 41.88
+    wx.current_lon = -87.63
+    base_day = datetime.now(wx.TZ).date()
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            rows = []
+            for day_offset in range(2):
+                for hour, temp, pop, condition in [
+                    (9, 10 + day_offset, 0.1, "Clouds"),
+                    (15, 20 + day_offset, 0.6, "Rain"),
+                ]:
+                    dt = datetime.combine(
+                        base_day + timedelta(days=day_offset),
+                        datetime.min.time(),
+                        tzinfo=wx.TZ,
+                    ).replace(hour=hour)
+                    rows.append(
+                        {
+                            "dt": int(dt.astimezone(timezone.utc).timestamp()),
+                            "main": {"temp_max": temp, "temp_min": temp - 2},
+                            "pop": pop,
+                            "weather": [{"main": condition, "description": condition.lower()}],
+                        }
+                    )
+            return {"list": rows}
+
+    def fake_get(*args, **kwargs):
+        calls.append((args, kwargs))
+        return FakeResponse()
+
+    monkeypatch.setattr(wx.httpx, "get", fake_get)
+
+    rows = wx.fetch_multi_day_forecast(2)
+
+    assert len(calls) == 1
+    assert rows is not None
+    assert len(rows) == 2
+    assert rows[0]["temp_high"] == 20
+    assert rows[0]["precip_chance"] == 60
+
+
 def test_palette_digest_view_includes_weather_card():
     from second_brain import palette
 

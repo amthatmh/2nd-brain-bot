@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import date
+from datetime import date, timedelta
 from typing import Callable
 
 from second_brain.config import (
@@ -17,6 +17,8 @@ from second_brain.notion import notion_call
 
 logger = logging.getLogger(__name__)
 
+
+WEATHER_PLACEHOLDER_SUMMARY = "⏳ Weather forecast available 5 days before departure"
 
 
 def format_trip_dates(dep: str, ret: str) -> str:
@@ -99,7 +101,7 @@ async def execute_trip(
     fetch_weather: Callable[[str], dict | None] | None = None,
     fetch_trip_weather_range: Callable[[str, str, str], list[dict]] | None = None,
 ) -> None:
-    _ = (fetch_weather, claude, set_awaiting_packing_feedback)
+    _ = (claude, set_awaiting_packing_feedback)
     trip = trip_map[key]
 
     database_id = _normalize_notion_database_id(NOTION_TRIPS_DB)
@@ -126,7 +128,7 @@ async def execute_trip(
         "Field Work": {"multi_select": [{"name": item} for item in (trip.get("field_work_types") or []) if item and item != "None"]},
         "Multiple Sites": {"checkbox": bool(trip.get("multiple_sites"))},
         "Checked Luggage": {"checkbox": bool(trip.get("checked_luggage"))},
-        "Weather Flags": {"rich_text": [{"text": {"content": weather_flags}}]},
+        "Weather Flags": {"multi_select": [{"name": item} for item in weather_flags]},
         "Weather Summary": {"rich_text": [{"text": {"content": weather_summary}}]},
     }
 
@@ -249,10 +251,19 @@ def _extract_select_or_text(prop: dict | None) -> str:
 
 
 def _extract_multi_select(prop: dict | None) -> list[str]:
-    """Extract list of option names from a multi_select Notion property."""
-    if not prop or prop.get("type") != "multi_select":
+    """Extract tag names from multi_select, select, or rich_text Notion properties."""
+    if not prop:
         return []
-    return [option.get("name", "") for option in prop.get("multi_select", []) if option.get("name")]
+    prop_type = prop.get("type")
+    if prop_type == "multi_select":
+        return [option.get("name", "") for option in prop.get("multi_select", []) if option.get("name")]
+    if prop_type == "select":
+        name = (prop.get("select") or {}).get("name", "")
+        return [name] if name else []
+    if prop_type == "rich_text":
+        text = "".join(rich_text.get("plain_text", "") for rich_text in prop.get("rich_text", [])).strip()
+        return [part.strip() for part in re.split(r"[,;/|]", text) if part.strip()]
+    return []
 
 
 def _normalize_notion_database_id(raw_id: str) -> str:
@@ -286,10 +297,13 @@ def _adapt_trip_properties_to_schema(notion, database_id: str, payload: dict) ->
                 adapted[target_name] = {"select": {"name": items[0]}}
             continue
         if name == "Weather Flags":
-            raw_text = ""
-            if value.get("rich_text"):
-                raw_text = value["rich_text"][0].get("text", {}).get("content", "")
-            tokens = [t.strip() for t in raw_text.split(",") if t.strip()]
+            if "multi_select" in value:
+                tokens = [x.get("name", "") for x in value.get("multi_select", []) if x.get("name")]
+            else:
+                raw_text = ""
+                if value.get("rich_text"):
+                    raw_text = value["rich_text"][0].get("text", {}).get("content", "")
+                tokens = [t.strip() for t in raw_text.split(",") if t.strip()]
             if ptype == "multi_select":
                 adapted[target_name] = {"multi_select": [{"name": item} for item in tokens]}
             elif ptype == "rich_text":
@@ -315,7 +329,10 @@ def _build_trip_weather_summary(
     *,
     fetch_weather: Callable[[str], dict | None] | None,
     fetch_trip_weather_range: Callable[[str, str, str], list[dict]] | None,
-) -> tuple[str, str]:
+) -> tuple[str, list[str]]:
+    if not _is_departure_within_forecast_window(departure_date):
+        return WEATHER_PLACEHOLDER_SUMMARY, []
+
     snapshots: list[tuple[str, dict]] = []
     if fetch_trip_weather_range and departure_date and return_date and destination:
         try:
@@ -334,7 +351,7 @@ def _build_trip_weather_summary(
             if data:
                 snapshots.append((bucket, data))
     if not snapshots:
-        return "", ""
+        return "", []
     labels: list[str] = []
     flags: list[str] = []
     for bucket, item in snapshots:
@@ -352,7 +369,19 @@ def _build_trip_weather_summary(
             flags.append("Cold")
         if "snow" in condition_l or "sleet" in condition_l or "blizzard" in condition_l:
             flags.append("Snow")
-    return " | ".join(labels), ", ".join(sorted(set(flags)))
+    return " | ".join(labels), sorted(set(flags))
+
+
+def _is_departure_within_forecast_window(departure_date: str | None, *, today: date | None = None, lookahead_days: int = 5) -> bool:
+    if not departure_date:
+        return True
+    try:
+        departure = date.fromisoformat(departure_date)
+    except ValueError:
+        return True
+    today = today or date.today()
+    days_until_departure = (departure - today).days
+    return days_until_departure <= lookahead_days
 
 
 def refresh_upcoming_trip_weather(
@@ -362,24 +391,35 @@ def refresh_upcoming_trip_weather(
     fetch_trip_weather_range: Callable[[str, str, str], list[dict]] | None,
     lookahead_days: int = 5,
 ) -> int:
-    if not notion_trips_db or not fetch_trip_weather_range:
+    database_id = _normalize_notion_database_id(notion_trips_db) or notion_trips_db
+    if not database_id or not fetch_trip_weather_range:
         return 0
     today = date.today()
-    upper = today.toordinal() + lookahead_days
-    try:
-        resp = notion.databases.query(
-            database_id=notion_trips_db,
-            filter={
-                "and": [
-                    {"property": "Departure Date", "date": {"on_or_after": today.isoformat()}},
-                    {"property": "Departure Date", "date": {"on_or_before": date.fromordinal(upper).isoformat()}},
-                ]
-            },
-            page_size=50,
-        )
-    except Exception:
-        return 0
-    rows = resp.get("results", [])
+    upper = today + timedelta(days=lookahead_days)
+    rows: list[dict] = []
+    cursor = None
+    while True:
+        try:
+            kwargs = {
+                "database_id": database_id,
+                "filter": {
+                    "and": [
+                        {"property": "Departure Date", "date": {"on_or_after": today.isoformat()}},
+                        {"property": "Departure Date", "date": {"on_or_before": upper.isoformat()}},
+                        {"property": "Weather Summary", "rich_text": {"equals": WEATHER_PLACEHOLDER_SUMMARY}},
+                    ]
+                },
+                "page_size": 50,
+            }
+            if cursor:
+                kwargs["start_cursor"] = cursor
+            resp = notion.databases.query(**kwargs)
+        except Exception:
+            return 0
+        rows.extend(resp.get("results", []))
+        if not resp.get("has_more"):
+            break
+        cursor = resp.get("next_cursor")
     updated = 0
     for row in rows:
         props = row.get("properties", {})
@@ -398,10 +438,10 @@ def refresh_upcoming_trip_weather(
         )
         payload = _adapt_trip_properties_to_schema(
             notion,
-            notion_trips_db,
+            database_id,
             {
                 "Trip": {"title": [{"text": {"content": "ignore"}}]},
-                "Weather Flags": {"rich_text": [{"text": {"content": flags}}]},
+                "Weather Flags": {"multi_select": [{"name": item} for item in flags]},
                 "Weather Summary": {"rich_text": [{"text": {"content": summary}}]},
             },
         )
