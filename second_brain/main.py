@@ -312,6 +312,46 @@ def format_reminder_snapshot(mode: str = "priority", limit: int = 8) -> str:
     )
 
 
+def load_notion_env_config() -> dict[str, str]:
+    """
+    Read scalar config rows from Notion ENV DB.
+
+    Returns dict of {Name: Value} for all rows that have a Value.
+    Falls back gracefully — never raises.
+    """
+    if not NOTION_ENV_DB:
+        return {}
+
+    try:
+        config: dict[str, str] = {}
+        cursor = None
+        while True:
+            query_args = {"database_id": NOTION_ENV_DB}
+            if cursor:
+                query_args["start_cursor"] = cursor
+            results = notion.databases.query(**query_args)
+
+            for row in results.get("results", []):
+                props = row.get("properties", {})
+                name_parts = props.get("Name", {}).get("title", [])
+                name = "".join(p.get("plain_text", "") for p in name_parts).strip()
+                value_parts = props.get("Value", {}).get("rich_text", [])
+                value = value_parts[0].get("text", {}).get("content", "").strip() if value_parts else ""
+                if name and value:
+                    config[name] = value
+
+            if not results.get("has_more"):
+                break
+            cursor = results.get("next_cursor")
+            if not cursor:
+                break
+
+        return config
+    except Exception as e:
+        log.warning("load_notion_env_config failed: %s", e)
+        return {}
+
+
 # ── Clients ──────────────────────────────────────────────────────────────────
 notion = NotionClient(auth=NOTION_TOKEN)
 claude = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
@@ -3625,7 +3665,7 @@ def _update_utility_job_status(notion, page_id: str, status: str, loaded_at: str
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def post_init(app: Application) -> None:
-    global _scheduler
+    global _scheduler, UV_THRESHOLD, STEPS_THRESHOLD, WEEKS_HISTORY, TZ
     try:
         startup_notion_health_check()
     except RuntimeError as e:
@@ -3638,6 +3678,38 @@ async def post_init(app: Application) -> None:
         ent_log.load_entertainment_schemas(notion)
     except Exception as e:
         log.warning("Entertainment schema load failed at startup: %s", e)
+
+    # ── Load dynamic config from Notion ENV DB ──
+    env_config = load_notion_env_config()
+
+    if "UV_THRESHOLD" in env_config:
+        try:
+            UV_THRESHOLD = float(env_config["UV_THRESHOLD"])
+            log.info("UV_THRESHOLD loaded from Notion ENV: %s", UV_THRESHOLD)
+        except ValueError:
+            log.warning("Invalid UV_THRESHOLD in Notion ENV: %s", env_config["UV_THRESHOLD"])
+
+    if "HEALTH_STEPS_THRESHOLD" in env_config:
+        try:
+            STEPS_THRESHOLD = int(env_config["HEALTH_STEPS_THRESHOLD"])
+            log.info("STEPS_THRESHOLD loaded from Notion ENV: %s", STEPS_THRESHOLD)
+        except ValueError:
+            log.warning("Invalid HEALTH_STEPS_THRESHOLD in Notion ENV: %s", env_config["HEALTH_STEPS_THRESHOLD"])
+
+    if "WEEKS_HISTORY" in env_config:
+        try:
+            WEEKS_HISTORY = int(env_config["WEEKS_HISTORY"])
+            log.info("WEEKS_HISTORY loaded from Notion ENV: %s", WEEKS_HISTORY)
+        except ValueError:
+            log.warning("Invalid WEEKS_HISTORY in Notion ENV: %s", env_config["WEEKS_HISTORY"])
+
+    if "TIMEZONE" in env_config:
+        try:
+            TZ = ZoneInfo(env_config["TIMEZONE"])
+            log.info("TIMEZONE loaded from Notion ENV: %s", TZ)
+        except Exception:
+            log.warning("Invalid TIMEZONE in Notion ENV: %s", env_config["TIMEZONE"])
+
     _load_mute_state()
     wx.load_location_state()  # load from local JSON cache first (fast)
     if not wx.load_notion_env_location():  # try Notion (authoritative)
