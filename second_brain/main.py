@@ -2017,7 +2017,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if key not in trip_map:
             await q.edit_message_text("⚠️ Trip session expired. Use /trip again.")
             return
-        slug_to_label = {"sw": "Site Walk", "st": "Site Testing", "it": "Isolation Testing", "hm": "24hr Monitoring", "nn": "None"}
+        # TEST: /trip work Austin Jun 14-17 → field work keyboard shows 7 options
+        # TEST: Tap "Noise Measurements" → toggled with ✅ prefix, no crash
+        # TEST: Tap "Vibration Measurements" → independent toggle
+        # TEST: Tap "RT Measurements" → independent toggle
+        # TEST: Tap "None" → clears all other selections
+        # TEST: Tap ✅ Done → flow proceeds to multiple sites question
+        # TEST: Old slug "st" no longer appears in keyboard or callback
+        slug_to_label = {
+            "sw": "Site Walk",
+            "nm": "Noise Measurements",
+            "vm": "Vibration Measurements",
+            "rt": "RT Measurements",
+            "it": "Isolation Testing",
+            "hm": "24hr Monitoring",
+            "nn": "None",
+        }
         label = slug_to_label.get(slug)
         current = trip_map[key].get("field_work_types", [])
         if label == "None":
@@ -3627,6 +3642,19 @@ async def post_init(app: Application) -> None:
         # Notion loaded successfully — sync back to local JSON cache
         wx.save_location_state(wx.current_location)
     notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB); _refresh_habit_cache_refs()
+    # Backfill steps state from Notion so redeploys don't zero out the 23:59 stamp
+    from second_brain.healthtrack.steps import backfill_steps_state_from_notion
+    from second_brain.healthtrack.config import STEPS_HABIT_NAME
+    try:
+        await backfill_steps_state_from_notion(
+            notion=notion,
+            habit_db_id=NOTION_HABIT_DB,
+            log_db_id=NOTION_LOG_DB,
+            habit_name=STEPS_HABIT_NAME,
+            tz=TZ,
+        )
+    except Exception as e:
+        log.warning("Steps state backfill failed (non-fatal): %s", e)
     global _app_bot
     _app_bot = app.bot
     await start_http_server()

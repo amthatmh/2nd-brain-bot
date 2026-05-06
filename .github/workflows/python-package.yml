@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.13"]
+        python-version: ["3.12", "3.13"]
 
     steps:
     - uses: actions/checkout@v4
@@ -49,6 +49,7 @@ jobs:
         NOTION_CINEMA_LOG_DB: "x"
         NOTION_NOTES_DB: "x"
         NOTION_DIGEST_SELECTOR_DB: "x"
+        NOTION_UTILITY_SCHEDULER_DB: "x"
         NOTION_PACKING_ITEMS_DB: "x"
         NOTION_TRIPS_DB: "x"
         OPENWEATHER_KEY: "x"
