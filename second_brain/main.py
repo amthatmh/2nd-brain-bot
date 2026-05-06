@@ -46,12 +46,6 @@ from second_brain.cinema.config import (
     validate_config as validate_cinema_config,
 )
 from second_brain.sync_telemetry import init_sync_status, utc_now_iso, format_sync_status_message
-from second_brain.scheduler import register_cinema_jobs
-from second_brain.utility_scheduler import (
-    UtilityJobDefinition,
-    UtilitySchedulerStatusRecorder,
-    load_and_apply_utility_scheduler,
-)
 from second_brain.notion import notes as notion_notes
 from second_brain import digests as digests_mod
 from second_brain.notion import daily_log as notion_daily_log
@@ -66,12 +60,9 @@ from second_brain.healthtrack.steps import (
     handle_steps_final_stamp,
 )
 from second_brain.healthtrack.config import (
-    STEPS_FINAL_HOUR,
-    STEPS_FINAL_MIN,
     STEPS_HABIT_NAME,
     STEPS_THRESHOLD,
     STEPS_SOURCE_LABEL,
-    STEPS_WRITE_INTRADAY_BELOW_THRESHOLD,
 )
 from second_brain.config import FEATURES
 from second_brain.notion import notion_call
@@ -249,7 +240,6 @@ NOTION_FAVE_DB = os.environ.get("NOTION_FAVE_DB", "").strip()
 NOTION_NOTES_DB = os.environ["NOTION_NOTES_DB"]    # 📒 Notes
 NOTION_DIGEST_SELECTOR_DB = os.environ["NOTION_DIGEST_SELECTOR_DB"]
 NOTION_UTILITY_SCHEDULER_DB = os.environ.get("NOTION_UTILITY_SCHEDULER_DB", "").strip()
-UTILITY_SCHEDULER_RELOAD_MINUTES = max(1, int(os.environ.get("UTILITY_SCHEDULER_RELOAD_MINUTES", "10")))
 NOTION_DAILY_LOG_DB = os.environ.get("NOTION_DAILY_LOG_DB", "")
 NOTION_PACKING_ITEMS_DB = os.environ.get("NOTION_PACKING_ITEMS_DB", "")
 NOTION_TRIPS_DB         = os.environ.get("NOTION_TRIPS_DB", "")
@@ -3416,107 +3406,158 @@ async def refresh_trip_weather_job(bot) -> None:
         log.warning("Trip weather refresh failed: %s", exc)
 
 
-def _build_utility_job_registry(
-    *,
-    bot,
-    scheduler,
-    run_steps_final_stamp,
-    cinema_available: bool,
-    cinema_unavailable_reason: str,
-) -> dict[str, UtilityJobDefinition]:
-    return {
-        "digest_schedule_rebuild": UtilityJobDefinition(rebuild_digest_schedule_job, args=(bot, scheduler)),
-        "digest_schedule_refresh": UtilityJobDefinition(refresh_digest_schedule_job, args=(bot, scheduler)),
-        "weather_cache_refresh": UtilityJobDefinition(wx.fetch_weather_cache, args=(bot,)),
-        "trip_weather_refresh": UtilityJobDefinition(refresh_trip_weather_job, args=(bot,)),
-        "process_pending_programmes": UtilityJobDefinition(process_pending_programmes, args=(bot,)),
-        "cinema_sync": UtilityJobDefinition(
-            run_cinema_sync,
-            args=(bot,),
-            available=cinema_available,
-            unavailable_reason=cinema_unavailable_reason,
-        ),
-        "steps_final_stamp": UtilityJobDefinition(run_steps_final_stamp, args=(bot,)),
-        "daily_log_generate": UtilityJobDefinition(generate_daily_log, args=(bot,)),
-    }
+async def handle_trip_weather_refresh(bot) -> None:
+    await refresh_trip_weather_job(bot)
 
 
-async def reload_utility_scheduler_job(scheduler, utility_registry, utility_status_recorder) -> None:
-    if not NOTION_UTILITY_SCHEDULER_DB:
-        return
-    stats = await load_and_apply_utility_scheduler(
-        database_id=NOTION_UTILITY_SCHEDULER_DB,
-        notion_query_all=notion_query_all,
-        scheduler=scheduler,
-        registry=utility_registry,
-        status_recorder=utility_status_recorder,
-        initial_load=False,
+async def _run_steps_final_stamp_dispatch(bot) -> None:
+    result = await handle_steps_final_stamp(
+        notion=notion,
+        habit_db_id=NOTION_HABIT_DB,
+        log_db_id=NOTION_LOG_DB,
+        habit_name=STEPS_HABIT_NAME,
+        threshold=STEPS_THRESHOLD,
+        source_label=STEPS_SOURCE_LABEL,
         tz=TZ,
-        now_fn=datetime.now,
-        logger=log,
+        bot=bot,
+        chat_id=MY_CHAT_ID,
     )
-    log.info("Utility Scheduler refreshed from Notion: %s", stats)
+    sync_status["steps"]["last_run"] = utc_now_iso()
+    sync_status["steps"]["ok"] = True
+    sync_status["steps"]["error"] = None
+    sync_status["steps"]["stats"] = result
 
 
-def _register_legacy_utility_jobs(*, scheduler, bot, run_steps_final_stamp, cinema_ok: bool) -> None:
-    log.warning("NOTION_UTILITY_SCHEDULER_DB is not set; registering legacy hard-coded utility jobs")
-    scheduler.add_job(
-        rebuild_digest_schedule_job,
-        "cron",
-        hour=0,
-        minute=0,
-        args=[bot, scheduler],
-        id="digest_schedule_rebuild",
-    )
-    scheduler.add_job(
-        refresh_digest_schedule_job,
-        "interval",
-        minutes=10,
-        args=[bot, scheduler],
-        id="digest_schedule_refresh",
-    )
-    scheduler.add_job(
-        wx.fetch_weather_cache,
-        "interval",
-        hours=1,
-        args=[bot],
-        id="weather_cache_refresh",
-    )
-    scheduler.add_job(
-        refresh_trip_weather_job,
-        "cron",
-        hour="*/6",
-        minute=10,
-        args=[bot],
-        id="trip_weather_refresh",
-    )
-    scheduler.add_job(
-        process_pending_programmes,
-        "interval",
-        minutes=15,
-        args=[bot],
-        id="process_pending_programmes",
-        max_instances=1,
-        coalesce=True,
-        next_run_time=datetime.now(TZ) + timedelta(minutes=1),
-    )
-    if CINEMA_DB_ID and cinema_ok:
-        register_cinema_jobs(
-            scheduler=scheduler,
-            bot=bot,
-            run_cinema_sync=run_cinema_sync,
-            sync_interval_minutes=60,
-            tz=TZ,
-            now_fn=datetime.now,
-        )
-    scheduler.add_job(
-        run_steps_final_stamp,
-        "cron",
-        hour=STEPS_FINAL_HOUR,
-        minute=STEPS_FINAL_MIN,
-        args=[bot],
-        id="steps_final_stamp",
-    )
+UTILITY_JOB_DISPATCH: dict[str, Callable] = {}
+
+
+def _utility_async_handler(coro_factory: Callable):
+    async def _handler() -> None:
+        await coro_factory()
+
+    return _handler
+
+
+def _build_utility_job_dispatch(bot) -> dict[str, Callable]:
+    """
+    Maps Utility Scheduler job keys to their async handler functions.
+    Add new job keys here as new features are added.
+    Each value must be an async callable that accepts no arguments (bot is
+    captured via closure).
+    """
+    dispatch = {
+        "digest_schedule_rebuild": _utility_async_handler(lambda: rebuild_digest_schedule_job(bot, _scheduler)),
+        "digest_schedule_refresh": _utility_async_handler(lambda: refresh_digest_schedule_job(bot, _scheduler)),
+        "weather_cache_refresh": _utility_async_handler(lambda: wx.fetch_weather_cache(bot)),
+        "trip_weather_refresh": _utility_async_handler(lambda: handle_trip_weather_refresh(bot)),
+        "process_pending_programmes": _utility_async_handler(lambda: process_pending_programmes(bot)),
+        "cinema_sync": _utility_async_handler(lambda: run_cinema_sync(bot)),
+        "steps_final_stamp": _utility_async_handler(lambda: _run_steps_final_stamp_dispatch(bot)),
+        "daily_log_generate": _utility_async_handler(lambda: generate_daily_log(bot)),
+        "run_recurring_check": _utility_async_handler(lambda: run_recurring_check(bot)),
+    }
+    UTILITY_JOB_DISPATCH.clear()
+    UTILITY_JOB_DISPATCH.update(dispatch)
+    return dispatch
+
+
+def load_and_register_utility_jobs(scheduler, bot) -> int:
+    """
+    Reads NOTION_UTILITY_SCHEDULER_DB and registers all active jobs with
+    APScheduler. Returns count of jobs registered.
+    Unknown job keys are logged as warnings (not errors) to avoid blocking startup.
+    Writes Last Status = 'ok' / 'unknown_job' and Last Loaded At back to Notion.
+    """
+    if not NOTION_UTILITY_SCHEDULER_DB:
+        log.warning("NOTION_UTILITY_SCHEDULER_DB not set — utility scheduler disabled")
+        return 0
+
+    dispatch = _build_utility_job_dispatch(bot)
+    rows = notion_query_all(NOTION_UTILITY_SCHEDULER_DB)
+    registered = 0
+
+    for row in rows:
+        props = row.get("properties", {})
+        page_id = row["id"]
+
+        active = bool(props.get("Active", {}).get("checkbox", False))
+        if not active:
+            continue
+
+        job_key_parts = props.get("Job Key", {}).get("title", [])
+        job_key = "".join(p.get("plain_text", "") for p in job_key_parts).strip()
+        if not job_key:
+            continue
+
+        if job_key not in dispatch:
+            log.warning("Utility Scheduler: unknown job key '%s' — skipping", job_key)
+            _update_utility_job_status(notion, page_id, "unknown_job", None)
+            continue
+
+        handler = dispatch[job_key]
+        trigger_type = (props.get("Trigger Type", {}).get("select") or {}).get("name", "").lower()
+
+        try:
+            if trigger_type == "interval":
+                interval_seconds = props.get("Interval Seconds", {}).get("number")
+                interval_minutes = props.get("Interval Minutes", {}).get("number")
+                interval_hours = props.get("Interval Hours", {}).get("number")
+                max_instances = int((props.get("Max Instances", {}).get("number") or 1))
+                misfire_grace = int((props.get("Misfire Grace Seconds", {}).get("number") or 300))
+                coalesce = bool(props.get("Coalesce", {}).get("checkbox", True))
+                kwargs = dict(max_instances=max_instances, misfire_grace_time=misfire_grace, coalesce=coalesce)
+                if interval_seconds:
+                    scheduler.add_job(handler, "interval", seconds=int(interval_seconds), id=job_key, replace_existing=True, **kwargs)
+                elif interval_minutes:
+                    scheduler.add_job(handler, "interval", minutes=int(interval_minutes), id=job_key, replace_existing=True, **kwargs)
+                elif interval_hours:
+                    scheduler.add_job(handler, "interval", hours=int(interval_hours), id=job_key, replace_existing=True, **kwargs)
+                else:
+                    log.warning("Utility Scheduler: interval job '%s' has no interval value", job_key)
+                    continue
+
+            elif trigger_type == "cron":
+                cron_day = (props.get("Cron Day Of Week", {}).get("select") or {}).get("name") or None
+                cron_hour = props.get("Cron Hour", {}).get("number")
+                cron_minute = props.get("Cron Minute", {}).get("number")
+                max_instances = int((props.get("Max Instances", {}).get("number") or 1))
+                misfire_grace = int((props.get("Misfire Grace Seconds", {}).get("number") or 300))
+                coalesce = bool(props.get("Coalesce", {}).get("checkbox", True))
+                kwargs = dict(max_instances=max_instances, misfire_grace_time=misfire_grace, coalesce=coalesce)
+                cron_kwargs = {}
+                if cron_day:
+                    cron_kwargs["day_of_week"] = cron_day
+                if cron_hour is not None:
+                    cron_kwargs["hour"] = int(cron_hour)
+                if cron_minute is not None:
+                    cron_kwargs["minute"] = int(cron_minute)
+                scheduler.add_job(handler, "cron", id=job_key, replace_existing=True, **cron_kwargs, **kwargs)
+
+            else:
+                log.warning("Utility Scheduler: unknown trigger type '%s' for job '%s'", trigger_type, job_key)
+                continue
+
+            _update_utility_job_status(notion, page_id, "ok", datetime.now(TZ).isoformat())
+            registered += 1
+            log.info("Utility Scheduler: registered job '%s' (%s)", job_key, trigger_type)
+
+        except Exception as e:
+            log.error("Utility Scheduler: failed to register job '%s': %s", job_key, e)
+            _update_utility_job_status(notion, page_id, f"error: {str(e)[:80]}", None)
+
+    log.info("Utility Scheduler: %d jobs registered", registered)
+    return registered
+
+
+def _update_utility_job_status(notion, page_id: str, status: str, loaded_at: str | None) -> None:
+    try:
+        props = {"Last Status": {"select": {"name": status}}}
+        if loaded_at:
+            props["Last Loaded At"] = {"date": {"start": loaded_at}}
+        notion.pages.update(page_id=page_id, properties=props)
+    except Exception as e:
+        log.warning("Could not update utility job status for %s: %s", page_id, e)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STARTUP
@@ -3551,6 +3592,7 @@ async def post_init(app: Application) -> None:
     _app_bot = app.bot
     await start_http_server()
     scheduler = AsyncIOScheduler(timezone=TZ)
+    _scheduler = scheduler
     try:
         await backfill_steps_state_from_notion(
             notion=notion,
@@ -3577,69 +3619,9 @@ async def post_init(app: Application) -> None:
     elif CINEMA_DB_ID:
         log.info("Cinema sync config validated ✓")
 
-    async def _run_steps_final_stamp(bot) -> None:
-        result = await handle_steps_final_stamp(
-            notion=notion,
-            habit_db_id=NOTION_HABIT_DB,
-            log_db_id=NOTION_LOG_DB,
-            habit_name=STEPS_HABIT_NAME,
-            threshold=STEPS_THRESHOLD,
-            source_label=STEPS_SOURCE_LABEL,
-            tz=TZ,
-            bot=bot,
-            chat_id=MY_CHAT_ID,
-            write_intraday_below_threshold=STEPS_WRITE_INTRADAY_BELOW_THRESHOLD,
-        )
-        sync_status["steps"]["last_run"] = utc_now_iso()
-        sync_status["steps"]["ok"] = True
-        sync_status["steps"]["error"] = None
-        sync_status["steps"]["stats"] = result
-
-    utility_registry = _build_utility_job_registry(
-        bot=app.bot,
-        scheduler=scheduler,
-        run_steps_final_stamp=_run_steps_final_stamp,
-        cinema_available=bool(CINEMA_DB_ID) and cinema_ok,
-        cinema_unavailable_reason="; ".join(cinema_problems) if cinema_problems else "CINEMA_DB_ID is not configured",
-    )
-
-    if NOTION_UTILITY_SCHEDULER_DB:
-        utility_status_recorder = UtilitySchedulerStatusRecorder(
-            notion=notion,
-            notion_call=notion_call,
-            logger=log,
-        )
-        utility_stats = await load_and_apply_utility_scheduler(
-            database_id=NOTION_UTILITY_SCHEDULER_DB,
-            notion_query_all=notion_query_all,
-            scheduler=scheduler,
-            registry=utility_registry,
-            status_recorder=utility_status_recorder,
-            initial_load=True,
-            tz=TZ,
-            now_fn=datetime.now,
-            logger=log,
-        )
-        scheduler.add_job(
-            reload_utility_scheduler_job,
-            "interval",
-            minutes=UTILITY_SCHEDULER_RELOAD_MINUTES,
-            args=[scheduler, utility_registry, utility_status_recorder],
-            id="utility_scheduler_reload",
-            max_instances=1,
-            coalesce=True,
-        )
-        log.info("Utility Scheduler loaded from Notion: %s", utility_stats)
-    else:
-        _register_legacy_utility_jobs(
-            scheduler=scheduler,
-            bot=app.bot,
-            run_steps_final_stamp=_run_steps_final_stamp,
-            cinema_ok=cinema_ok,
-        )
+    load_and_register_utility_jobs(scheduler, app.bot)
 
     scheduler.start()
-    _scheduler = scheduler
     log.info(
         f"Scheduler started ✓  TZ={TZ}  "
         f"weather=hourly  "
