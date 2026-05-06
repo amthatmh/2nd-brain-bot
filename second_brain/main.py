@@ -2017,7 +2017,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if key not in trip_map:
             await q.edit_message_text("⚠️ Trip session expired. Use /trip again.")
             return
-        slug_to_label = {"sw": "Site Walk", "st": "Site Testing", "it": "Isolation Testing", "hm": "24hr Monitoring", "nn": "None"}
+        # TEST: /trip work Austin Jun 14-17 → field work keyboard shows 7 options
+        # TEST: Tap "Noise Measurements" → toggled with ✅ prefix, no crash
+        # TEST: Tap "Vibration Measurements" → independent toggle
+        # TEST: Tap "RT Measurements" → independent toggle
+        # TEST: Tap "None" → clears all other selections
+        # TEST: Tap ✅ Done → flow proceeds to multiple sites question
+        # TEST: Old slug "st" no longer appears in keyboard or callback
+        slug_to_label = {
+            "sw": "Site Walk",
+            "nm": "Noise Measurements",
+            "vm": "Vibration Measurements",
+            "rt": "RT Measurements",
+            "it": "Isolation Testing",
+            "hm": "24hr Monitoring",
+            "nn": "None",
+        }
         label = slug_to_label.get(slug)
         current = trip_map[key].get("field_work_types", [])
         if label == "None":
