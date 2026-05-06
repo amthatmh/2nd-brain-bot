@@ -91,7 +91,6 @@ def load_digest_slots(*, rows: list[dict], logger) -> list[dict]:
         max_items_raw = props.get("Max Items", {}).get("number")
         max_items = int(max_items_raw) if isinstance(max_items_raw, (int, float)) else None
         contexts = [context_label for prop_name, context_label in context_map.items() if bool(props.get(prop_name, {}).get("checkbox", False))]
-        is_signoff = bool(props.get("Signoff", {}).get("checkbox", False))
         include_weather = bool(props.get("Weather", {}).get("checkbox", False))
         include_uvi = bool(props.get("UVI", {}).get("checkbox", False))
 
@@ -101,7 +100,7 @@ def load_digest_slots(*, rows: list[dict], logger) -> list[dict]:
                 logger.warning("Skipping duplicate digest selector slot %s (%s)", slot_time, "weekday" if is_weekday else "weekend")
                 continue
             seen_slot_keys.add(slot_key)
-            slots.append({"time": slot_time, "is_weekday": is_weekday, "include_habits": include_habits, "max_items": max_items, "contexts": contexts, "is_signoff": is_signoff, "include_weather": include_weather, "include_uvi": include_uvi})
+            slots.append({"time": slot_time, "is_weekday": is_weekday, "include_habits": include_habits, "max_items": max_items, "contexts": contexts, "include_weather": include_weather, "include_uvi": include_uvi})
 
     logger.info("Loaded %d digest selector slot(s) from Notion", len(slots))
     return slots

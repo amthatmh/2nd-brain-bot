@@ -4,12 +4,10 @@ from datetime import datetime
 
 
 def manual_digest_config_now(slots: list[dict], now_dt: datetime, is_weekday: bool) -> dict | None:
-    """Pick the most recent non-signoff slot for the provided day type."""
+    """Pick the most recent slot for the provided day type."""
     candidates: list[tuple[int, dict]] = []
     for slot in slots:
         if bool(slot.get("is_weekday")) != is_weekday:
-            continue
-        if bool(slot.get("is_signoff")):
             continue
         try:
             hh, mm = map(int, str(slot.get("time", "")).split(":"))

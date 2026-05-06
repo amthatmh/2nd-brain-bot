@@ -826,7 +826,7 @@ def is_on_pace(habit: dict) -> bool:
 def store_signoff_note(text: str) -> None:
     global _signoff_note_today
     _signoff_note_today = text.strip()
-    log.info("Signoff note stored: %s", text[:80])
+    log.info("Daily log note stored: %s", text[:80])
 
 
 
@@ -845,7 +845,7 @@ async def trigger_signoff_now(message, note: str | None = None) -> None:
     await generate_daily_log(message.get_bot())
     note_msg = f"\n\n📝 {_escape_markdown_v2(note[:180])}" if note else ""
     await message.reply_text(
-        "📓 Signoff captured — daily log generated now." + note_msg,
+        "📓 Daily log note captured — daily log generated now." + note_msg,
         parse_mode="MarkdownV2" if note else None,
     )
 
@@ -2647,17 +2647,11 @@ async def send_digest_for_slot(bot, slot: dict) -> None:
         config.get("contexts"),
         config.get("max_items"),
     )
-    is_signoff = slot.get("is_signoff", False)
-
-    if not config.get("contexts") and not config.get("include_habits") and not config.get("include_weather") and not is_signoff:
+    if not config.get("contexts") and not config.get("include_habits") and not config.get("include_weather"):
         log.info(
-            "Skipping slot %s — nothing selected (no contexts, habits, weather, or signoff)",
+            "Skipping slot %s — nothing selected (no contexts, habits, or weather)",
             slot.get("time"),
         )
-        return
-
-    if is_signoff:
-        await generate_daily_log(bot)
         return
     await send_daily_digest(
         bot,
@@ -2780,7 +2774,7 @@ async def refresh_digest_schedule_job(bot, scheduler) -> None:
 async def generate_daily_log(bot) -> None:
     """
     Generates end-of-day narrative log and writes it to 📓 Daily Log Notion DB.
-    Triggered by a Digest Selector slot with Signoff=True (typically 23:59).
+    Triggered by the Utility Scheduler daily_log_generate job.
     Runs silently — no Telegram message at generation time.
     Link is sent next morning via send_daily_digest().
     """
@@ -3443,6 +3437,7 @@ def _build_utility_job_registry(
             unavailable_reason=cinema_unavailable_reason,
         ),
         "steps_final_stamp": UtilityJobDefinition(run_steps_final_stamp, args=(bot,)),
+        "daily_log_generate": UtilityJobDefinition(generate_daily_log, args=(bot,)),
     }
 
 

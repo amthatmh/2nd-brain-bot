@@ -149,13 +149,13 @@ if __name__ == "__main__":
 
 
 class TestManualDigestConfig(unittest.TestCase):
-    def test_manual_digest_config_uses_latest_non_signoff_slot(self):
+    def test_manual_digest_config_uses_latest_slot_not_after_now(self):
         main = load_main_module()
         now = main.datetime.now(main.TZ).replace(hour=18, minute=45)
         slots = [
-            {"time": "08:15", "is_weekday": True, "include_habits": False, "include_weather": False, "include_uvi": False, "contexts": ["💼 Work"], "max_items": 10, "is_signoff": False},
-            {"time": "16:30", "is_weekday": True, "include_habits": True, "include_weather": True, "include_uvi": True, "contexts": ["🏠 Personal"], "max_items": 5, "is_signoff": False},
-            {"time": "23:59", "is_weekday": True, "include_habits": False, "include_weather": False, "include_uvi": False, "contexts": [], "max_items": None, "is_signoff": True},
+            {"time": "08:15", "is_weekday": True, "include_habits": False, "include_weather": False, "include_uvi": False, "contexts": ["💼 Work"], "max_items": 10},
+            {"time": "16:30", "is_weekday": True, "include_habits": True, "include_weather": True, "include_uvi": True, "contexts": ["🏠 Personal"], "max_items": 5},
+            {"time": "23:59", "is_weekday": True, "include_habits": False, "include_weather": False, "include_uvi": False, "contexts": [], "max_items": None},
         ]
 
         config = main._manual_digest_config_now(slots, now_dt=now)
@@ -172,7 +172,7 @@ class TestManualDigestConfig(unittest.TestCase):
         main = load_main_module()
         now = main.datetime.now(main.TZ).replace(hour=9, minute=0)
         slots = [
-            {"time": "08:15", "is_weekday": True, "include_habits": False, "include_weather": False, "include_uvi": False, "contexts": ["💼 Work"], "max_items": 10, "is_signoff": False},
+            {"time": "08:15", "is_weekday": True, "include_habits": False, "include_weather": False, "include_uvi": False, "contexts": ["💼 Work"], "max_items": 10},
         ]
 
         config = main._manual_digest_config_now(slots, now_dt=now)
@@ -182,16 +182,20 @@ class TestManualDigestConfig(unittest.TestCase):
         self.assertFalse(config["include_habits"])
         self.assertEqual(config["contexts"], ["💼 Work"])
 
-    def test_manual_digest_config_ignores_signoff_only_slots(self):
+    def test_manual_digest_config_uses_late_digest_slot(self):
         main = load_main_module()
         now = main.datetime.now(main.TZ).replace(hour=23, minute=59)
         slots = [
-            {"time": "23:59", "is_weekday": True, "include_habits": False, "contexts": [], "max_items": None, "is_signoff": True},
+            {"time": "23:59", "is_weekday": True, "include_habits": False, "contexts": [], "max_items": None},
         ]
 
         config = main._manual_digest_config_now(slots, now_dt=now)
 
-        self.assertIsNone(config)
+        self.assertIsNotNone(config)
+        self.assertTrue(config["include_weather"])
+        self.assertFalse(config["include_habits"])
+        self.assertEqual(config["contexts"], [])
+        self.assertIsNone(config["max_items"])
 
 
 class TestDailyDigestHabits(unittest.IsolatedAsyncioTestCase):
