@@ -2634,7 +2634,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         if action == "weather":
-            await q.edit_message_text(fmt.format_weather_snapshot(), parse_mode="Markdown")
+            weather_text = append_trip_reminders_to_text(fmt.format_weather_snapshot(), within_days=2)
+            await q.edit_message_text(weather_text, parse_mode="Markdown")
             return
 
         if action == "mute":
@@ -3030,6 +3031,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         lines.append("")
 
     message = "\n".join(lines).strip()
+    message = append_trip_reminders_to_text(message, within_days=2)
     sent_digest = await bot.send_message(
         chat_id=MY_CHAT_ID,
         text=message,
@@ -3044,6 +3046,139 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
 
     if _last_daily_log_url:
         _last_daily_log_url = ""
+
+
+def get_upcoming_trips_needing_reminder(within_days: int = 2) -> list[dict]:
+    """
+    Query NOTION_TRIPS_DB for trips departing within ``within_days`` days
+    that haven't had a trip reminder sent yet.
+    """
+    if not NOTION_TRIPS_DB:
+        return []
+
+    today = date.today()
+    cutoff_date = (today + timedelta(days=within_days)).isoformat()
+
+    try:
+        results = notion.databases.query(
+            database_id=NOTION_TRIPS_DB,
+            filter={
+                "and": [
+                    {"property": "Departure Date", "date": {"on_or_before": cutoff_date}},
+                    {"property": "Departure Date", "date": {"on_or_after": today.isoformat()}},
+                    {"property": "Reminder Sent", "checkbox": {"equals": False}},
+                ]
+            },
+        )
+
+        trips: list[dict] = []
+        for page in results.get("results", []):
+            page_id = page["id"]
+            props = page.get("properties", {})
+
+            title_prop = props.get("Trip", {}).get("title", [])
+            trip_title = "".join(t.get("plain_text", "") for t in title_prop).strip()
+
+            dep_date_prop = props.get("Departure Date", {}).get("date", {}) or {}
+            dep_start = dep_date_prop.get("start")
+            if not dep_start:
+                continue
+
+            ret_date_prop = props.get("Return Date", {}).get("date", {}) or {}
+            ret_start = ret_date_prop.get("start")
+
+            dep = date.fromisoformat(dep_start[:10])
+            ret = date.fromisoformat(ret_start[:10]) if ret_start else dep
+            days_until = (dep - today).days
+
+            purpose_prop = props.get("Purpose", {})
+            purpose = (purpose_prop.get("select") or {}).get("name", "Work")
+
+            field_work_prop = props.get("Field Work", {})
+            if field_work_prop.get("type") == "rich_text" or field_work_prop.get("rich_text") is not None:
+                field_work_text = "".join(r.get("plain_text", "") for r in field_work_prop.get("rich_text", [])).strip()
+                field_work = [item.strip() for item in field_work_text.split(",") if item.strip()]
+            else:
+                field_work = [fw.get("name", "") for fw in field_work_prop.get("multi_select", []) if fw.get("name")]
+
+            weather_summary_prop = props.get("Weather Summary", {}).get("rich_text", [])
+            weather_summary = "".join(r.get("plain_text", "") for r in weather_summary_prop).strip()
+
+            weather_flags_prop = props.get("Weather Flags", {})
+            if weather_flags_prop.get("type") == "rich_text" or weather_flags_prop.get("rich_text") is not None:
+                weather_flags_text = "".join(r.get("plain_text", "") for r in weather_flags_prop.get("rich_text", [])).strip()
+                weather_flags = [item.strip() for item in weather_flags_text.split(",") if item.strip()]
+            else:
+                weather_flags = [wf.get("name", "") for wf in weather_flags_prop.get("multi_select", []) if wf.get("name")]
+
+            trips.append(
+                {
+                    "page_id": page_id,
+                    "title": trip_title,
+                    "departure_date": dep,
+                    "return_date": ret,
+                    "days_until": days_until,
+                    "purpose": purpose,
+                    "field_work": field_work,
+                    "weather_summary": weather_summary,
+                    "weather_flags": weather_flags,
+                }
+            )
+
+        return trips
+
+    except Exception as e:
+        log.error("Failed to query upcoming trips: %s", e)
+        return []
+
+
+def mark_trip_reminder_sent(page_id: str) -> None:
+    """Mark a trip's reminder as sent to prevent duplicates."""
+    try:
+        notion.pages.update(page_id=page_id, properties={"Reminder Sent": {"checkbox": True}})
+    except Exception as e:
+        log.error("Failed to mark trip reminder sent for %s: %s", page_id[:8], e)
+
+
+def format_trip_reminder_block(trip: dict) -> str:
+    """Format a single trip reminder as a Markdown block."""
+    lines = [
+        f"🧳 *{trip['title']}*",
+        f"📅 Departing in {trip['days_until']} day{'s' if trip['days_until'] != 1 else ''} ({trip['departure_date'].strftime('%a, %b %d')})",
+    ]
+
+    field_work_display = trip["field_work"]
+    if field_work_display and field_work_display != ["None"]:
+        lines.append(f"🎯 {trip['purpose']} trip · {', '.join(field_work_display)}")
+    else:
+        lines.append(f"🎯 {trip['purpose']} trip")
+
+    lines.append("")
+    lines.append("🌤️ *Forecast:*")
+
+    weather_summary = trip["weather_summary"]
+    if weather_summary and weather_summary not in {"⏳ Weather forecast available 5 days before departure", "Weather unavailable"}:
+        lines.append(f"```\n{weather_summary}\n```")
+    else:
+        lines.append("_Weather data unavailable_")
+
+    if trip["weather_flags"]:
+        lines.append(f"⚠️ {', '.join(trip['weather_flags'])}")
+
+    return "\n".join(lines)
+
+
+def append_trip_reminders_to_text(text: str, within_days: int = 2) -> str:
+    """Append pending trip reminder blocks and mark them sent if displayed."""
+    upcoming_trips = get_upcoming_trips_needing_reminder(within_days=within_days)
+    if not upcoming_trips:
+        return text
+
+    trip_blocks = [format_trip_reminder_block(trip) for trip in upcoming_trips]
+    text = f"{text}\n\n{'─' * 30}\n\n" + "\n\n".join(trip_blocks)
+    for trip in upcoming_trips:
+        mark_trip_reminder_sent(trip["page_id"])
+    return text
 
 
 async def send_evening_checkin(bot) -> None:
@@ -4080,7 +4215,8 @@ async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if update.effective_chat.id != MY_CHAT_ID:
         return
     try:
-        await update.message.reply_text(fmt.format_weather_snapshot(), parse_mode="Markdown")
+        weather_text = append_trip_reminders_to_text(fmt.format_weather_snapshot(), within_days=2)
+        await update.message.reply_text(weather_text, parse_mode="Markdown")
     except Exception as e:
         log.error("/weather failed: %s", e)
         await update.message.reply_text("⚠️ Weather is temporarily unavailable. Try again in a moment or send /location.")

@@ -271,3 +271,96 @@ class TestDailyDigestHabits(unittest.IsolatedAsyncioTestCase):
         kwargs = bot.send_message.await_args.kwargs
         self.assertIn("*Habits:* tap to log:", kwargs["text"])
         self.assertIsNotNone(kwargs["reply_markup"])
+
+
+class TestTripReminderIntegration(unittest.IsolatedAsyncioTestCase):
+    def test_get_upcoming_trips_needing_reminder_filters_and_extracts_details(self):
+        main = load_main_module()
+        today = main.date.today()
+        dep = today + main.timedelta(days=1)
+        ret = today + main.timedelta(days=3)
+        captured = {}
+
+        class _Databases:
+            def query(self, **kwargs):
+                captured.update(kwargs)
+                return {
+                    "results": [
+                        {
+                            "id": "trip-1",
+                            "properties": {
+                                "Trip": {"title": [{"plain_text": "Nashville — 14–17 May"}]},
+                                "Departure Date": {"date": {"start": dep.isoformat()}},
+                                "Return Date": {"date": {"start": ret.isoformat()}},
+                                "Purpose": {"select": {"name": "Work"}},
+                                "Field Work": {"multi_select": [{"name": "Site Walk"}, {"name": "Noise Measurements"}]},
+                                "Weather Summary": {"rich_text": [{"plain_text": "May 14: Sunny, 22°C, 10% rain"}]},
+                                "Weather Flags": {"multi_select": [{"name": "Rain"}]},
+                            },
+                        }
+                    ]
+                }
+
+        main.NOTION_TRIPS_DB = "trips-db"
+        main.notion = type("Notion", (), {"databases": _Databases()})()
+
+        trips = main.get_upcoming_trips_needing_reminder(within_days=2)
+
+        self.assertEqual(captured["database_id"], "trips-db")
+        self.assertEqual(captured["filter"]["and"][2], {"property": "Reminder Sent", "checkbox": {"equals": False}})
+        self.assertEqual(trips[0]["page_id"], "trip-1")
+        self.assertEqual(trips[0]["title"], "Nashville — 14–17 May")
+        self.assertEqual(trips[0]["days_until"], 1)
+        self.assertEqual(trips[0]["field_work"], ["Site Walk", "Noise Measurements"])
+        self.assertEqual(trips[0]["weather_flags"], ["Rain"])
+
+    def test_append_trip_reminders_marks_displayed_trips_sent(self):
+        main = load_main_module()
+        today = main.date.today()
+        updated = []
+
+        class _Pages:
+            def update(self, **kwargs):
+                updated.append(kwargs)
+
+        main.notion = type("Notion", (), {"pages": _Pages()})()
+        with patch.object(
+            main,
+            "get_upcoming_trips_needing_reminder",
+            return_value=[
+                {
+                    "page_id": "trip-1",
+                    "title": "Nashville — 14–17 May",
+                    "departure_date": today + main.timedelta(days=2),
+                    "return_date": today + main.timedelta(days=5),
+                    "days_until": 2,
+                    "purpose": "Work",
+                    "field_work": ["Site Walk"],
+                    "weather_summary": "May 14: Sunny, 22°C, 10% rain",
+                    "weather_flags": ["Rain"],
+                }
+            ],
+        ):
+            text = main.append_trip_reminders_to_text("Weather body", within_days=2)
+
+        self.assertIn("Weather body", text)
+        self.assertIn("──────────────────────────────", text)
+        self.assertIn("🧳 *Nashville — 14–17 May*", text)
+        self.assertIn("📅 Departing in 2 days", text)
+        self.assertIn("🎯 Work trip · Site Walk", text)
+        self.assertEqual(updated, [{"page_id": "trip-1", "properties": {"Reminder Sent": {"checkbox": True}}}])
+
+    async def test_weather_command_appends_trip_reminders(self):
+        main = load_main_module()
+        message = MagicMock()
+        message.reply_text = AsyncMock()
+        update = MagicMock()
+        update.effective_chat.id = main.MY_CHAT_ID
+        update.message = message
+
+        with patch.object(main.fmt, "format_weather_snapshot", return_value="🌤️ Forecast"), \
+            patch.object(main, "append_trip_reminders_to_text", return_value="🌤️ Forecast\n\n🧳 *Trip*") as mock_append:
+            await main.cmd_weather(update, MagicMock())
+
+        mock_append.assert_called_once_with("🌤️ Forecast", within_days=2)
+        message.reply_text.assert_awaited_once_with("🌤️ Forecast\n\n🧳 *Trip*", parse_mode="Markdown")
