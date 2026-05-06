@@ -17,7 +17,6 @@ from second_brain.notion import notion_call
 
 logger = logging.getLogger(__name__)
 
-_FIELD_WORK_NONE = "None"
 
 
 def format_trip_dates(dep: str, ret: str) -> str:
@@ -100,7 +99,7 @@ async def execute_trip(
     fetch_weather: Callable[[str], dict | None] | None = None,
     fetch_trip_weather_range: Callable[[str, str, str], list[dict]] | None = None,
 ) -> None:
-    _ = (fetch_weather, claude)
+    _ = (fetch_weather, claude, set_awaiting_packing_feedback)
     trip = trip_map[key]
 
     database_id = _normalize_notion_database_id(NOTION_TRIPS_DB)
@@ -147,134 +146,113 @@ async def execute_trip(
 
     page_id = (page or {}).get("id")
 
-    # Generate packing checklist
-    try:
-        packing_checklist_id = await _generate_packing_checklist(
-            notion=notion,
-            trip_page_id=page_id,
-            trip_title=title,
-            field_work_types=trip.get("field_work_types") or [],
-            duration=trip.get("duration") or trip.get("duration_label"),
-            multiple_sites=trip.get("multiple_sites", False),
-            multiple_cities=trip.get("multiple_cities", False),
-            checked_luggage=trip.get("checked_luggage", False),
-            purpose=trip.get("purpose"),
-        )
-        if packing_checklist_id:
-            logger.info("Generated packing checklist %s for trip %s", packing_checklist_id, page_id)
-    except Exception as exc:
-        logger.warning("Packing checklist generation failed for trip %s: %s", page_id, exc)
+    blocks: list[dict] = []
+    if page_id:
+        try:
+            blocks = build_packing_blocks(trip, notion)
+            if blocks:
+                notion_call(notion.blocks.children.append, block_id=page_id, children=blocks)
+                logger.info("Appended %s packing checklist blocks for trip %s", len(blocks), page_id)
+        except Exception as exc:
+            logger.warning("Packing checklist generation failed for trip %s: %s", page_id, exc)
+    else:
+        logger.warning("Trip page ID missing; skipping packing checklist generation for %s", title)
 
-    await query.message.reply_text("🧳 Trip saved to Notion. Packing flow scaffold saved.")
-    set_awaiting_packing_feedback(True)
+    item_count = sum(1 for block in blocks if block.get("type") == "to_do")
+    await query.message.reply_text(f"✅ Trip saved to Notion. Packing checklist added ({item_count} items).")
 
 
-async def _generate_packing_checklist(
-    *,
-    notion,
-    trip_page_id: str | None,
-    trip_title: str,
-    field_work_types: list[str],
-    duration: str | None,
-    multiple_sites: bool,
-    multiple_cities: bool,
-    checked_luggage: bool,
-    purpose: str | None,
-) -> str | None:
+def build_packing_blocks(trip: dict, notion_client=None) -> list[dict]:
     """
-    Query Packing Items DB for applicable items, create checklist sub-page.
-    Returns checklist page ID or None on failure.
+    Query NOTION_PACKING_ITEMS_DB, filter by trip context, group by Category,
+    return a flat list of heading_2 + to_do Notion blocks.
     """
     if not NOTION_PACKING_ITEMS_DB:
-        logger.warning(
-            "NOTION_PACKING_ITEMS_DB is not set; skipping packing checklist generation for trip %s",
-            trip_page_id,
-        )
-        return None
-    if not trip_page_id:
-        logger.warning("Trip page ID missing; skipping packing checklist generation for %s", trip_title)
-        return None
+        logger.warning("NOTION_PACKING_ITEMS_DB is not set; skipping packing checklist generation")
+        return []
+    if notion_client is None:
+        notion_client = globals().get("notion")
+    if notion_client is None:
+        raise ValueError("A Notion client is required to build packing blocks")
 
-    # Build filter: item matches if ANY field work type checkbox is true
-    # OR if Always=true OR if duration/sites/cities/luggage/purpose match.
-    filters: list[dict] = []
-
-    # Field work type filters
-    for field_work_type in field_work_types:
-        if field_work_type and field_work_type != _FIELD_WORK_NONE:
-            filters.append({"property": field_work_type, "checkbox": {"equals": True}})
-
-    # Always-include items
-    filters.append({"property": "Always", "checkbox": {"equals": True}})
-
-    # Duration filter
-    if duration:
-        filters.append({"property": duration, "checkbox": {"equals": True}})
-
-    # Attribute filters
-    if multiple_sites:
-        filters.append({"property": "Multiple Sites", "checkbox": {"equals": True}})
-    if multiple_cities:
-        filters.append({"property": "Multiple Cities", "checkbox": {"equals": True}})
-    if checked_luggage:
-        filters.append({"property": "Checked Luggage", "checkbox": {"equals": True}})
-
-    # Purpose filter (Work/Personal)
-    if purpose == "Work":
-        filters.append({"property": "Work", "checkbox": {"equals": True}})
-    elif purpose == "Personal":
-        filters.append({"property": "Personal", "checkbox": {"equals": True}})
-
-    query_filter = {"or": filters} if len(filters) > 1 else filters[0]
-    results = notion_call(
-        notion.databases.query,
-        database_id=NOTION_PACKING_ITEMS_DB,
-        filter=query_filter,
-    )
+    field_work = {fw.lower() for fw in trip.get("field_work_types", []) if fw}
 
     items = []
-    for row in results.get("results", []):
-        item_title_prop = row.get("properties", {}).get("Item", {}).get("title", [])
-        item_name = "".join(chunk.get("plain_text", "") for chunk in item_title_prop).strip()
-        category_prop = row.get("properties", {}).get("Category", {}).get("select", {})
-        category = category_prop.get("name", "") if category_prop else ""
-        if item_name:
-            items.append({"name": item_name, "category": category})
+    cursor = None
+    while True:
+        kwargs = {"database_id": NOTION_PACKING_ITEMS_DB}
+        if cursor:
+            kwargs["start_cursor"] = cursor
+        resp = notion_call(notion_client.databases.query, **kwargs)
+        items.extend(resp.get("results", []))
+        if not resp.get("has_more"):
+            break
+        cursor = resp.get("next_cursor")
 
-    if not items:
-        logger.info("No packing items matched filters for trip %s", trip_page_id)
-        return None
+    grouped: dict[str, list[str]] = {}
+    for page in items:
+        props = page.get("properties", {})
+        name = _extract_title(props)
+        if not name:
+            continue
+        always = props.get("Always", {}).get("checkbox", False)
+        fw_tags = _extract_multi_select(props.get("Field Work"))
+        matches_fw = bool(field_work & {tag.lower() for tag in fw_tags})
+        if not always and not matches_fw:
+            continue
+        category = _extract_select_or_text(props.get("Category")) or "Other"
+        grouped.setdefault(category, []).append(name)
 
-    # Group items by category
-    by_category: dict[str, list[str]] = {}
-    for item in items:
-        category = item["category"] or "Uncategorized"
-        by_category.setdefault(category, []).append(item["name"])
-
-    # Build checklist content (Markdown with todo checkboxes)
-    content_lines = [f"# 📋 Packing Checklist — {trip_title}\n"]
-    for category in sorted(by_category.keys()):
-        content_lines.append(f"\n## {category}\n")
-        for item in sorted(by_category[category]):
-            content_lines.append(f"- [ ] {item}")
-
-    content = "\n".join(content_lines)
-
-    # Create checklist as sub-page under trip
-    checklist_page = notion_call(
-        notion.pages.create,
-        parent={"page_id": trip_page_id},
-        properties={"title": [{"text": {"content": f"📋 Packing Checklist — {trip_title}"}}]},
-        children=[
+    blocks: list[dict] = []
+    for category in sorted(grouped):
+        blocks.append(
             {
                 "object": "block",
-                "type": "paragraph",
-                "paragraph": {"rich_text": [{"text": {"content": content}}]},
+                "type": "heading_2",
+                "heading_2": {
+                    "rich_text": [{"type": "text", "text": {"content": category}}],
+                },
             }
-        ],
-    )
+        )
+        for item in sorted(grouped[category]):
+            blocks.append(
+                {
+                    "object": "block",
+                    "type": "to_do",
+                    "to_do": {
+                        "rich_text": [{"type": "text", "text": {"content": item}}],
+                        "checked": False,
+                    },
+                }
+            )
+    return blocks
 
-    return checklist_page["id"]
+
+def _extract_title(props: dict) -> str:
+    """Extract plain text from whichever property has type == 'title'."""
+    for prop in props.values():
+        if prop.get("type") == "title":
+            return "".join(rich_text.get("plain_text", "") for rich_text in prop.get("title", [])).strip()
+    return ""
+
+
+def _extract_select_or_text(prop: dict | None) -> str:
+    """Extract string from a select or rich_text Notion property."""
+    if not prop:
+        return ""
+    prop_type = prop.get("type")
+    if prop_type == "select":
+        return (prop.get("select") or {}).get("name", "").strip()
+    if prop_type == "rich_text":
+        return "".join(rich_text.get("plain_text", "") for rich_text in prop.get("rich_text", [])).strip()
+    return ""
+
+
+def _extract_multi_select(prop: dict | None) -> list[str]:
+    """Extract list of option names from a multi_select Notion property."""
+    if not prop or prop.get("type") != "multi_select":
+        return []
+    return [option.get("name", "") for option in prop.get("multi_select", []) if option.get("name")]
 
 
 def _normalize_notion_database_id(raw_id: str) -> str:
