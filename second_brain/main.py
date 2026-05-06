@@ -54,6 +54,11 @@ from second_brain.cinema.config import (
 )
 from second_brain.sync_telemetry import init_sync_status, utc_now_iso, format_sync_status_message
 from second_brain.scheduler import register_cinema_jobs
+from second_brain.utility_scheduler import (
+    UtilityJobDefinition,
+    UtilitySchedulerStatusRecorder,
+    load_and_apply_utility_scheduler,
+)
 from second_brain.notion import notes as notion_notes
 from second_brain import digests as digests_mod
 from second_brain.notion import daily_log as notion_daily_log
@@ -247,6 +252,8 @@ NOTION_SPORTS_LOG_DB = os.environ.get("NOTION_SPORTS_LOG_DB", os.environ.get("NO
 NOTION_FAVE_DB = os.environ.get("NOTION_FAVE_DB", "").strip()
 NOTION_NOTES_DB = os.environ["NOTION_NOTES_DB"]    # 📒 Notes
 NOTION_DIGEST_SELECTOR_DB = os.environ["NOTION_DIGEST_SELECTOR_DB"]
+NOTION_UTILITY_SCHEDULER_DB = os.environ.get("NOTION_UTILITY_SCHEDULER_DB", "").strip()
+UTILITY_SCHEDULER_RELOAD_MINUTES = max(1, int(os.environ.get("UTILITY_SCHEDULER_RELOAD_MINUTES", "10")))
 NOTION_DAILY_LOG_DB = os.environ.get("NOTION_DAILY_LOG_DB", "")
 NOTION_PACKING_ITEMS_DB = os.environ.get("NOTION_PACKING_ITEMS_DB", "")
 NOTION_TRIPS_DB         = os.environ.get("NOTION_TRIPS_DB", "")
@@ -254,7 +261,6 @@ OPENWEATHER_KEY     = os.environ.get("OPENWEATHER_KEY", "")
 
 TZ           = ZoneInfo(os.environ.get("TIMEZONE", "America/Chicago"))
 _rc_h, _rc_m = main_helpers.parse_hhmm_env("RECURRING_CHECK_TIME", "7:00", log)
-_sr_h, _sr_m = main_helpers.parse_hhmm_env("SUNDAY_REVIEW_TIME", "12:00", log)
 
 CLAUDE_MODEL   = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
@@ -275,7 +281,6 @@ OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "").strip()
 WEATHER_LOCATION = os.environ.get("WEATHER_LOCATION", "Chicago,IL").strip()
 NOTION_ENV_DB = os.environ.get("ENV_DB_ID", "").strip()
 UV_THRESHOLD = float(os.environ.get("UV_THRESHOLD", "3"))
-SUNDAY_REVIEW_CARD_LIMIT = max(1, int(os.environ.get("SUNDAY_REVIEW_CARD_LIMIT", "6")))
 
 # ── Asana sync config ────────────────────────────────────────────────────────
 ASANA_PAT           = os.environ.get("ASANA_PAT", "")
@@ -2553,9 +2558,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await q.edit_message_text("⚠️ Couldn't refresh today's digest right now.")
         return
 
-    if q.data == "digest:sunday":
-        await send_sunday_review(q.bot)
-        return
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2923,33 +2925,6 @@ async def send_evening_checkin(bot) -> None:
     )
     log.info("Evening check-in sent — %d habits", len(evening_habits))
 
-
-async def send_sunday_review(bot) -> None:
-    if _is_muted():
-        log.info("Sunday review skipped (muted)")
-        return
-    week_tasks = notion_habits.query_tasks_by_auto_horizon(notion=notion, notion_db_id=NOTION_DB_ID, horizons=["🟠 This Week"])
-    month_tasks = notion_habits.query_tasks_by_auto_horizon(notion=notion, notion_db_id=NOTION_DB_ID, horizons=["🟡 This Month"])
-    header, ordered = fmt.format_sunday_intro(week_tasks, month_tasks)
-    sent_review = await bot.send_message(chat_id=MY_CHAT_ID, text=header, parse_mode="Markdown")
-    if ordered:
-        digest_map[sent_review.message_id] = ordered
-        limit = max(1, SUNDAY_REVIEW_CARD_LIMIT)
-        for task in ordered[:limit]:
-            context_label = task.get("context") or "No context"
-            horizon_label = task.get("auto_horizon") or "No horizon"
-            await bot.send_message(
-                chat_id=MY_CHAT_ID,
-                text=f"• *{task.get('name', 'Untitled')}*\n{context_label} · {horizon_label}",
-                parse_mode="Markdown",
-            )
-        overflow = len(ordered) - limit
-        if overflow > 0:
-            await bot.send_message(
-                chat_id=MY_CHAT_ID,
-                text=f"…and {overflow} more items not shown to avoid flooding chat.",
-            )
-    log.info(f"Sunday review sent — {len(ordered)} items")
 
 
 async def send_daily_habits_list(bot) -> None:
@@ -3366,6 +3341,7 @@ def startup_notion_health_check() -> None:
         "NOTION_FAVE_DB": (NOTION_FAVE_DB, False),
         "NOTION_NOTES_DB": (NOTION_NOTES_DB, True),
         "NOTION_DIGEST_SELECTOR_DB": (NOTION_DIGEST_SELECTOR_DB, True),
+        "NOTION_UTILITY_SCHEDULER_DB": (NOTION_UTILITY_SCHEDULER_DB, False),
         "NOTION_WATCHLIST_DB": (NOTION_WATCHLIST_DB, False),
     }
     for label, (db_id, required) in dbs.items():
@@ -3500,6 +3476,128 @@ async def refresh_trip_weather_job(bot) -> None:
     except Exception as exc:
         log.warning("Trip weather refresh failed: %s", exc)
 
+
+def _build_utility_job_registry(
+    *,
+    bot,
+    scheduler,
+    run_steps_final_stamp,
+    asana_available: bool,
+    asana_unavailable_reason: str,
+    cinema_available: bool,
+    cinema_unavailable_reason: str,
+) -> dict[str, UtilityJobDefinition]:
+    return {
+        "digest_schedule_rebuild": UtilityJobDefinition(rebuild_digest_schedule_job, args=(bot, scheduler)),
+        "digest_schedule_refresh": UtilityJobDefinition(refresh_digest_schedule_job, args=(bot, scheduler)),
+        "weather_cache_refresh": UtilityJobDefinition(wx.fetch_weather_cache, args=(bot,)),
+        "trip_weather_refresh": UtilityJobDefinition(refresh_trip_weather_job, args=(bot,)),
+        "process_pending_programmes": UtilityJobDefinition(process_pending_programmes, args=(bot,)),
+        "asana_sync": UtilityJobDefinition(
+            run_asana_sync,
+            args=(bot,),
+            available=asana_available,
+            unavailable_reason=asana_unavailable_reason,
+        ),
+        "cinema_sync": UtilityJobDefinition(
+            run_cinema_sync,
+            args=(bot,),
+            available=cinema_available,
+            unavailable_reason=cinema_unavailable_reason,
+        ),
+        "steps_final_stamp": UtilityJobDefinition(run_steps_final_stamp, args=(bot,)),
+    }
+
+
+async def reload_utility_scheduler_job(scheduler, utility_registry, utility_status_recorder) -> None:
+    if not NOTION_UTILITY_SCHEDULER_DB:
+        return
+    stats = await load_and_apply_utility_scheduler(
+        database_id=NOTION_UTILITY_SCHEDULER_DB,
+        notion_query_all=notion_query_all,
+        scheduler=scheduler,
+        registry=utility_registry,
+        status_recorder=utility_status_recorder,
+        initial_load=False,
+        tz=TZ,
+        now_fn=datetime.now,
+        logger=log,
+    )
+    log.info("Utility Scheduler refreshed from Notion: %s", stats)
+
+
+def _register_legacy_utility_jobs(*, scheduler, bot, run_steps_final_stamp, asana_status: str, cinema_ok: bool) -> None:
+    log.warning("NOTION_UTILITY_SCHEDULER_DB is not set; registering legacy hard-coded utility jobs")
+    scheduler.add_job(
+        rebuild_digest_schedule_job,
+        "cron",
+        hour=0,
+        minute=0,
+        args=[bot, scheduler],
+        id="digest_schedule_rebuild",
+    )
+    scheduler.add_job(
+        refresh_digest_schedule_job,
+        "interval",
+        minutes=10,
+        args=[bot, scheduler],
+        id="digest_schedule_refresh",
+    )
+    scheduler.add_job(
+        wx.fetch_weather_cache,
+        "interval",
+        hours=1,
+        args=[bot],
+        id="weather_cache_refresh",
+    )
+    scheduler.add_job(
+        refresh_trip_weather_job,
+        "cron",
+        hour="*/6",
+        minute=10,
+        args=[bot],
+        id="trip_weather_refresh",
+    )
+    scheduler.add_job(
+        process_pending_programmes,
+        "interval",
+        minutes=15,
+        args=[bot],
+        id="process_pending_programmes",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(TZ) + timedelta(minutes=1),
+    )
+    if ASANA_PAT and asana_status not in {"DISABLED (schema)", "DISABLED (smoke)"}:
+        scheduler.add_job(
+            run_asana_sync,
+            "interval",
+            seconds=ASANA_SYNC_INTERVAL,
+            args=[bot],
+            id="asana_sync",
+            max_instances=ASANA_SYNC_MAX_INSTANCES,
+            coalesce=True,
+            misfire_grace_time=ASANA_SYNC_MISFIRE_GRACE_SECONDS,
+            next_run_time=datetime.now(TZ),
+        )
+    if CINEMA_DB_ID and cinema_ok:
+        register_cinema_jobs(
+            scheduler=scheduler,
+            bot=bot,
+            run_cinema_sync=run_cinema_sync,
+            sync_interval_minutes=60,
+            tz=TZ,
+            now_fn=datetime.now,
+        )
+    scheduler.add_job(
+        run_steps_final_stamp,
+        "cron",
+        hour=STEPS_FINAL_HOUR,
+        minute=STEPS_FINAL_MIN,
+        args=[bot],
+        id="steps_final_stamp",
+    )
+
 # ══════════════════════════════════════════════════════════════════════════════
 # STARTUP
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3535,54 +3633,11 @@ async def post_init(app: Application) -> None:
     scheduler = AsyncIOScheduler(timezone=TZ)
     if FEATURES.get("FEATURE_RECURRING", True):
         scheduler.add_job(run_recurring_check, "cron", hour=_rc_h, minute=_rc_m, args=[app.bot])
-    if FEATURES.get("FEATURE_SUNDAY_REVIEW", True):
-        scheduler.add_job(send_sunday_review, "cron", day_of_week="sun", hour=_sr_h, minute=_sr_m, args=[app.bot])
     # Register digest cron jobs only. Do not queue missed digest slots on startup;
     # restarting the bot should not send an immediate digest.
     build_digest_schedule(scheduler, app.bot)
-    scheduler.add_job(
-        rebuild_digest_schedule_job,
-        "cron",
-        hour=0,
-        minute=0,
-        args=[app.bot, scheduler],
-        id="digest_schedule_rebuild",
-    )
-    scheduler.add_job(
-        refresh_digest_schedule_job,
-        "interval",
-        minutes=10,
-        args=[app.bot, scheduler],
-        id="digest_schedule_refresh",
-    )
-    scheduler.add_job(
-        wx.fetch_weather_cache,
-        "interval",
-        hours=1,
-        args=[app.bot],
-        id="weather_refresh_hourly",
-    )
-    scheduler.add_job(
-        refresh_trip_weather_job,
-        "cron",
-        hour="*/6",
-        minute=10,
-        args=[app.bot],
-        id="trip_weather_refresh",
-    )
 
-    scheduler.add_job(
-        process_pending_programmes,
-        "interval",
-        minutes=15,
-        args=[app.bot],
-        id="process_pending_programmes",
-        max_instances=1,
-        coalesce=True,
-        next_run_time=datetime.now(TZ) + timedelta(minutes=1),
-    )
-
-    # ── Asana reconciler — gated by schema validation ──
+    # ── Asana reconciler — validate config before Utility Scheduler can enable it ──
     asana_status = "OFF"
     smoke_status = "SKIPPED"
     if ASANA_PAT:
@@ -3638,39 +3693,18 @@ async def post_init(app: Application) -> None:
             else:
                 smoke_status = "SKIPPED (disabled by ASANA_STARTUP_SMOKE)"
 
-        if asana_status not in {"DISABLED (schema)", "DISABLED (smoke)"}:
-            scheduler.add_job(
-                run_asana_sync,
-                "interval",
-                seconds=ASANA_SYNC_INTERVAL,
-                args=[app.bot],
-                id="asana_sync",
-                max_instances=ASANA_SYNC_MAX_INSTANCES,
-                coalesce=True,                     # Don't backfill missed runs
-                misfire_grace_time=ASANA_SYNC_MISFIRE_GRACE_SECONDS,
-                next_run_time=datetime.now(TZ),    # Fire once immediately on startup
-            )
-            asana_status = f"ON ({ASANA_SYNC_INTERVAL}s, mode={ASANA_SYNC_SOURCE})"
-            log.info("Notion schema validation passed ✓")
+            if asana_status not in {"DISABLED (schema)", "DISABLED (smoke)"}:
+                asana_status = f"ON (Utility Scheduler, mode={ASANA_SYNC_SOURCE})"
+                log.info("Notion schema validation passed ✓")
 
-    # ── Cinema sync — config validation + hourly background schedule ──
+    # ── Cinema sync — validate config before Utility Scheduler can enable it ──
     cinema_ok, cinema_problems = validate_cinema_config()
     if not cinema_ok:
         log.warning("Cinema sync disabled due to config issues:")
         for p in cinema_problems:
             log.warning(f"  - {p}")
     elif CINEMA_DB_ID:
-        register_cinema_jobs(
-            scheduler=scheduler,
-            bot=app.bot,
-            run_cinema_sync=run_cinema_sync,
-            sync_interval_minutes=60,
-            tz=TZ,
-            now_fn=datetime.now,
-        )
-        log.info(
-            "Cinema sync jobs registered (every 60 minutes)",
-        )
+        log.info("Cinema sync config validated ✓")
 
     async def _run_steps_final_stamp(bot) -> None:
         result = await handle_steps_final_stamp(
@@ -3690,20 +3724,56 @@ async def post_init(app: Application) -> None:
         sync_status["steps"]["error"] = None
         sync_status["steps"]["stats"] = result
 
-    scheduler.add_job(
-        _run_steps_final_stamp,
-        "cron",
-        hour=STEPS_FINAL_HOUR,
-        minute=STEPS_FINAL_MIN,
-        args=[app.bot],
-        id="steps_final_stamp",
+    utility_registry = _build_utility_job_registry(
+        bot=app.bot,
+        scheduler=scheduler,
+        run_steps_final_stamp=_run_steps_final_stamp,
+        asana_available=bool(ASANA_PAT) and asana_status not in {"DISABLED (schema)", "DISABLED (smoke)"},
+        asana_unavailable_reason=asana_status if ASANA_PAT else "ASANA_PAT is not configured",
+        cinema_available=bool(CINEMA_DB_ID) and cinema_ok,
+        cinema_unavailable_reason="; ".join(cinema_problems) if cinema_problems else "CINEMA_DB_ID is not configured",
     )
+
+    if NOTION_UTILITY_SCHEDULER_DB:
+        utility_status_recorder = UtilitySchedulerStatusRecorder(
+            notion=notion,
+            notion_call=notion_call,
+            logger=log,
+        )
+        utility_stats = await load_and_apply_utility_scheduler(
+            database_id=NOTION_UTILITY_SCHEDULER_DB,
+            notion_query_all=notion_query_all,
+            scheduler=scheduler,
+            registry=utility_registry,
+            status_recorder=utility_status_recorder,
+            initial_load=True,
+            tz=TZ,
+            now_fn=datetime.now,
+            logger=log,
+        )
+        scheduler.add_job(
+            reload_utility_scheduler_job,
+            "interval",
+            minutes=UTILITY_SCHEDULER_RELOAD_MINUTES,
+            args=[scheduler, utility_registry, utility_status_recorder],
+            id="utility_scheduler_reload",
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Utility Scheduler loaded from Notion: %s", utility_stats)
+    else:
+        _register_legacy_utility_jobs(
+            scheduler=scheduler,
+            bot=app.bot,
+            run_steps_final_stamp=_run_steps_final_stamp,
+            asana_status=asana_status,
+            cinema_ok=cinema_ok,
+        )
 
     scheduler.start()
     _scheduler = scheduler
     log.info(
         f"Scheduler started ✓  TZ={TZ}  "
-        f"sunday_review={_sr_h:02d}:{_sr_m:02d}  "
         f"weather=hourly  "
         f"recurring={_rc_h:02d}:{_rc_m:02d}  "
         f"asana_sync={asana_status}  smoke={smoke_status}  "
