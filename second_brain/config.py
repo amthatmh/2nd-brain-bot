@@ -43,6 +43,8 @@ NOTION_CINEMA_LOG_DB = os.environ.get("NOTION_CINEMA_LOG_DB", os.environ.get("NO
 NOTION_PERFORMANCE_LOG_DB = os.environ.get("NOTION_PERFORMANCE_LOG_DB", "").strip()
 NOTION_SPORTS_LOG_DB = os.environ.get("NOTION_SPORTS_LOG_DB", os.environ.get("NOTION_SPORTS_DB", "")).strip()
 NOTION_FAVE_DB = os.environ.get("NOTION_FAVE_DB", "").strip()
+NOTION_ENV_DB = os.environ.get("ENV_DB_ID", "").strip()
+NOTION_BOOT_LOG_DB = os.environ.get("NOTION_BOOT_LOG_DB", "").strip()
 
 ASANA_PAT = os.environ.get("ASANA_PAT", "")
 ASANA_PROJECT_GID = os.environ.get("ASANA_PROJECT_GID", "")

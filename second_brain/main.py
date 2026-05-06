@@ -279,6 +279,7 @@ APP_VERSION    = os.environ.get("APP_VERSION", "v13.3.0")
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "").strip()
 WEATHER_LOCATION = os.environ.get("WEATHER_LOCATION", "Chicago,IL").strip()
 NOTION_ENV_DB = os.environ.get("ENV_DB_ID", "").strip()
+NOTION_BOOT_LOG_DB = os.environ.get("NOTION_BOOT_LOG_DB", "").strip()
 UV_THRESHOLD = float(os.environ.get("UV_THRESHOLD", "3"))
 
 NOTION_WATCHLIST_DB    = os.environ.get("NOTION_WATCHLIST_DB", "")
@@ -350,6 +351,60 @@ def load_notion_env_config() -> dict[str, str]:
     except Exception as e:
         log.warning("load_notion_env_config failed: %s", e)
         return {}
+
+
+async def write_boot_log(
+    bot,
+    version: str,
+    sha: str,
+    asana_status: str,
+    features: str,
+    status: str = "ok",
+    notes: str = "",
+) -> None:
+    """
+    Write a boot record to the 🖥️ Boot Log Notion DB.
+    Silent — never raises, never sends Telegram.
+    Falls back gracefully if NOTION_BOOT_LOG_DB is not configured.
+    """
+    if not NOTION_BOOT_LOG_DB:
+        log.warning("write_boot_log: NOTION_BOOT_LOG_DB not configured, skipping")
+        return
+    try:
+        props = {
+            "Version": {
+                "title": [{"text": {"content": version}}]
+            },
+            "Boot Time": {
+                "date": {"start": datetime.now(TZ).isoformat()}
+            },
+            "Status": {
+                "select": {"name": status}
+            },
+            "SHA": {
+                "rich_text": [{"text": {"content": sha}}]
+            },
+            "Asana": {
+                "rich_text": [{"text": {"content": asana_status}}]
+            },
+            "Features": {
+                "rich_text": [{"text": {"content": features}}]
+            },
+            "Timezone": {
+                "rich_text": [{"text": {"content": str(TZ)}}]
+            },
+        }
+        if notes:
+            props["Notes"] = {
+                "rich_text": [{"text": {"content": notes[:2000]}}]
+            }
+        notion.pages.create(
+            parent={"database_id": NOTION_BOOT_LOG_DB},
+            properties=props,
+        )
+        log.info("Boot log written to Notion: %s %s", version, sha)
+    except Exception as e:
+        log.error("write_boot_log: failed to write to Notion: %s", e)
 
 
 # ── Clients ──────────────────────────────────────────────────────────────────
@@ -3761,11 +3816,31 @@ async def post_init(app: Application) -> None:
         f"recurring={_rc_h:02d}:{_rc_m:02d}  "
         f"v10_flags=[{v10_feature_flags()}]"
     )
-    await _try_send_telegram(
-        app.bot,
-        f"🚀 {APP_VERSION} booted\n"
-        f"sha={_git_sha()}\n"
-        f"features={v10_feature_flags()}",
+    asana_status = (
+        f"ENABLED source={ASANA_SYNC_SOURCE} archive_orphans={ASANA_ARCHIVE_ORPHANS}"
+        if ASANA_PAT
+        else "DISABLED"
+    )
+    smoke_status = "SKIP"
+
+    # Determine boot status — warn if any subsystem degraded
+    boot_notes_parts = []
+    boot_status = "ok"
+    if "DISABLED" in asana_status:
+        boot_status = "warn"
+        boot_notes_parts.append(f"Asana: {asana_status}")
+    if smoke_status.startswith("FAIL"):
+        boot_status = "warn"
+        boot_notes_parts.append(f"Smoke: {smoke_status}")
+
+    await write_boot_log(
+        bot=app.bot,
+        version=APP_VERSION,
+        sha=_git_sha(),
+        asana_status=f"{asana_status} smoke={smoke_status}",
+        features=v10_feature_flags(),
+        status=boot_status,
+        notes="; ".join(boot_notes_parts),
     )
     commands = [
         BotCommand("done", "Mark task/habit done"),
