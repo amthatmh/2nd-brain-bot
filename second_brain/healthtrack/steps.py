@@ -294,15 +294,12 @@ async def handle_steps_final_stamp(
                         state["last_steps"] = steps_raw
                         state["notion_page_id"] = existing_id
                         log.info(
-                            "steps final stamp: recovered %d steps for %s",
+                            "steps final stamp: recovered %d steps",
                             steps_raw,
-                            today_str,
                         )
                 except Exception as e:
                     log.warning(
-                        "steps final stamp: Notion recovery failed %s: %s",
-                        today_str,
-                        e,
+                        "steps final stamp: recovery failed: %s", e
                     )
 
     yesterday = _yesterday(tz)
@@ -344,12 +341,12 @@ async def backfill_steps_state_from_notion(
     habit_name: str,
     tz,
 ) -> None:
-    """Called at bot startup to pre-populate _steps_state from Notion,
-    so redeploys don't cause the 23:59 stamp to write 0.
+    """Pre-populate _steps_state from Notion at bot startup so redeploys
+    don't cause the 23:59 stamp to write 0.
     """
     habit_page_id = _find_steps_habit_page_id(notion, habit_db_id, habit_name)
     if not habit_page_id:
-        log.warning("steps backfill: habit '%s' not found, skipping", habit_name)
+        log.warning("steps backfill: habit '%s' not found", habit_name)
         return
     today = _local_today(tz)
     yesterday = _yesterday(tz)
