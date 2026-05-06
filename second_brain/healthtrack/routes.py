@@ -59,6 +59,7 @@ When adding generic health metrics (/api/v1/health/export for UV, metrics, etc.)
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from datetime import datetime, timezone
@@ -248,11 +249,7 @@ def register_health_routes(
             )
 
         if WEBHOOK_SECRET and incoming_secret != WEBHOOK_SECRET:
-            log.warning(
-                "steps_sync: invalid secret (expected %s..., got %s...)",
-                WEBHOOK_SECRET[:8],
-                incoming_secret[:8],
-            )
+            log.warning("steps_sync: invalid secret")
             _record_steps_webhook(request, status="unauthorized")
             return web.Response(
                 status=401,
@@ -338,7 +335,9 @@ def register_health_routes(
         )
         if on_sync_result:
             try:
-                on_sync_result(result)
+                callback_result = on_sync_result(result)
+                if inspect.isawaitable(callback_result):
+                    await callback_result
             except Exception as e:
                 log.warning("steps_sync: telemetry callback failed: %s", e)
 

@@ -565,6 +565,65 @@ class TestStepsRoutes(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["ok"])
         self.assertIn("state", payload)
 
+    async def test_steps_sync_options_preflight_returns_204(self):
+        app = web.Application()
+        register_health_routes(
+            app,
+            notion=MagicMock(),
+            habit_db_id="h",
+            log_db_id="l",
+            tz=None,
+            bot_getter=lambda: None,
+            chat_id=123,
+        )
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            response = await client.options("/api/v1/steps-sync")
+        finally:
+            await client.close()
+
+        self.assertEqual(response.status, 204)
+        self.assertIn("X-Health-Secret", response.headers.get("Access-Control-Allow-Headers", ""))
+
+    async def test_steps_sync_awaits_async_telemetry_callback(self):
+        callback = AsyncMock()
+        app = web.Application()
+        register_health_routes(
+            app,
+            notion=MagicMock(),
+            habit_db_id="h",
+            log_db_id="l",
+            tz=None,
+            bot_getter=lambda: None,
+            chat_id=123,
+            on_sync_result=callback,
+        )
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with patch("second_brain.healthtrack.routes.WEBHOOK_SECRET", "secret"), \
+                 patch("second_brain.healthtrack.routes.handle_steps_sync", new_callable=AsyncMock) as sync_mock:
+                sync_mock.return_value = {
+                    "action": "skipped",
+                    "steps": 10500,
+                    "date": "2026-05-06",
+                    "completed": True,
+                    "timestamp": "2026-05-06T00:00:00+00:00",
+                }
+                response = await client.post(
+                    "/api/v1/steps-sync",
+                    headers={"X-Health-Secret": "secret"},
+                    json={"steps": 10500, "date": "2026-05-06"},
+                )
+                body = await response.text()
+        finally:
+            await client.close()
+
+        self.assertEqual(response.status, 200, body)
+        callback.assert_awaited_once()
+        self.assertEqual(callback.await_args.args[0]["timestamp"], "2026-05-06T00:00:00+00:00")
+
 
 if __name__ == "__main__":
     unittest.main()
