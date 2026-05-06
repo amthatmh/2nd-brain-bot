@@ -8,7 +8,6 @@ import re
 import logging
 import calendar
 import subprocess
-import time
 import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from collections import defaultdict
@@ -39,12 +38,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import anthropic
 from notion_client import Client as NotionClient
 
-from second_brain.asana.sync import (
-    reconcile,
-    AsanaSyncError,
-    validate_notion_schema,
-    startup_smoke_test,
-)
 from second_brain.cinema.sync import sync_cinema_log_to_notion
 from second_brain.cinema.config import (
     CINEMA_DB_ID,
@@ -285,17 +278,6 @@ WEATHER_LOCATION = os.environ.get("WEATHER_LOCATION", "Chicago,IL").strip()
 NOTION_ENV_DB = os.environ.get("ENV_DB_ID", "").strip()
 UV_THRESHOLD = float(os.environ.get("UV_THRESHOLD", "3"))
 
-# ── Asana sync config ────────────────────────────────────────────────────────
-ASANA_PAT           = os.environ.get("ASANA_PAT", "")
-ASANA_PROJECT_GID   = os.environ.get("ASANA_PROJECT_GID", "")
-ASANA_WORKSPACE_GID = os.environ.get("ASANA_WORKSPACE_GID", "")  # v9.2: required for my_tasks mode
-ASANA_SYNC_SOURCE   = os.environ.get("ASANA_SYNC_SOURCE", "project").strip().lower()
-ASANA_SYNC_INTERVAL = max(1, int(os.environ.get("ASANA_SYNC_EVERY_SECONDS", "15")))
-ASANA_SYNC_TIMEOUT_SECONDS = max(10, int(os.environ.get("ASANA_SYNC_TIMEOUT_SECONDS", "45")))
-ASANA_SYNC_MAX_INSTANCES = max(1, int(os.environ.get("ASANA_SYNC_MAX_INSTANCES", "1")))
-ASANA_SYNC_MISFIRE_GRACE_SECONDS = max(1, int(os.environ.get("ASANA_SYNC_MISFIRE_GRACE_SECONDS", "20")))
-ASANA_STARTUP_SMOKE = os.environ.get("ASANA_STARTUP_SMOKE", "1").strip().lower() not in {"0", "false", "no", "off"}
-ASANA_ARCHIVE_ORPHANS = os.environ.get("ASANA_ARCHIVE_ORPHANS", "0").strip().lower() in {"1", "true", "yes", "on"}
 NOTION_WATCHLIST_DB    = os.environ.get("NOTION_WATCHLIST_DB", "")
 NOTION_WANTSLIST_V2_DB = os.environ.get("NOTION_WANTSLIST_V2_DB", "")
 NOTION_PHOTO_DB        = os.environ.get("NOTION_PHOTO_DB", "")
@@ -2979,64 +2961,6 @@ async def send_daily_habits_list(bot) -> None:
     log.info("Habits list sent — %s available habits", len(habits))
 
 
-async def run_asana_sync(bot) -> None:
-    """
-    Bi-directional Asana ↔ Notion reconcile.
-    Offloads blocking I/O to thread pool so Telegram event loop stays responsive.
-    Self-contained: does not touch Telegram, does not read habit_cache.
-    """
-    if not ASANA_PAT:
-        return  # Sync disabled — bot still works without Asana
-
-    loop = asyncio.get_running_loop()
-    sync_status["asana"]["last_run"] = utc_now_iso()
-    started = time.monotonic()
-    try:
-        stats = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: reconcile(
-                    notion=notion,
-                    notion_db_id=NOTION_DB_ID,
-                    asana_token=ASANA_PAT,
-                    asana_project_gid=ASANA_PROJECT_GID,
-                    asana_workspace_gid=ASANA_WORKSPACE_GID,   # v9.2: required for my_tasks mode
-                    source_mode=ASANA_SYNC_SOURCE,
-                    archive_orphans=ASANA_ARCHIVE_ORPHANS,
-                ),
-            ),
-            timeout=ASANA_SYNC_TIMEOUT_SECONDS,
-        )
-        # Only log when something happened — keeps logs readable at 15s polling
-        elapsed = round(time.monotonic() - started, 3)
-        if any(v for k, v in stats.items() if k != "skipped"):
-            log.info(f"Asana sync: {stats} (elapsed={elapsed}s)")
-        sync_status["asana"]["ok"] = True
-        sync_status["asana"]["error"] = None
-        sync_status["asana"]["stats"] = stats
-        elapsed = round(time.monotonic() - started, 3)
-        metrics = sync_status["asana"]["metrics"]
-        durations = metrics.setdefault("durations_seconds", [])
-        durations.append(elapsed)
-        if len(durations) > 100:
-            del durations[:-100]
-        metrics["last_duration_seconds"] = elapsed
-        metrics["notion_failed_queue_size"] = stats.get("failed_queue_size", 0)
-        metrics["deferred_pages"] = stats.get("deferred_pages", 0)
-    except TimeoutError:
-        log.error("Asana sync timed out after %ss", ASANA_SYNC_TIMEOUT_SECONDS)
-        sync_status["asana"]["ok"] = False
-        sync_status["asana"]["error"] = f"timeout_after_{ASANA_SYNC_TIMEOUT_SECONDS}s"
-    except AsanaSyncError as e:
-        log.error(f"Asana sync config error: {e}")
-        sync_status["asana"]["ok"] = False
-        sync_status["asana"]["error"] = str(e)
-    except Exception as e:
-        elapsed = round(time.monotonic() - started, 3)
-        log.exception(f"Asana sync failed after {elapsed}s: {e}")
-        sync_status["asana"]["ok"] = False
-        sync_status["asana"]["error"] = str(e)
-
 
 async def run_cinema_sync(bot, *, force: bool = False) -> dict[str, int]:
     """Background sync for Cinema Log → Favourite Shows."""
@@ -3296,16 +3220,6 @@ async def start_http_server() -> None:
 # STARTUP HELPERS — schema validation + alert
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _format_schema_alert(problems: list[str]) -> str:
-    """Telegram-friendly alert message for schema validation problems."""
-    bullets = "\n".join(f"• {p}" for p in problems)
-    return (
-        "🚨 *Asana sync DISABLED — Notion schema check failed*\n\n"
-        f"{bullets}\n\n"
-        "_Fix the To-Do DB and redeploy. The bot is otherwise running normally "
-        "(habits, tasks, digests all work)._"
-    )
-
 
 async def _try_send_telegram(bot, text: str) -> None:
     """Best-effort Telegram alert. Never raises."""
@@ -3345,11 +3259,6 @@ def _git_sha() -> str:
     except Exception:
         return "unknown"
 
-
-def _asana_boot_mode_label() -> str:
-    if ASANA_SYNC_SOURCE == "project":
-        return f"project:{ASANA_PROJECT_GID or 'missing_gid'}"
-    return f"my_tasks:{ASANA_WORKSPACE_GID or 'missing_gid'}"
 
 
 def v10_feature_flags() -> str:
@@ -3518,8 +3427,6 @@ def _build_utility_job_registry(
     bot,
     scheduler,
     run_steps_final_stamp,
-    asana_available: bool,
-    asana_unavailable_reason: str,
     cinema_available: bool,
     cinema_unavailable_reason: str,
 ) -> dict[str, UtilityJobDefinition]:
@@ -3529,12 +3436,6 @@ def _build_utility_job_registry(
         "weather_cache_refresh": UtilityJobDefinition(wx.fetch_weather_cache, args=(bot,)),
         "trip_weather_refresh": UtilityJobDefinition(refresh_trip_weather_job, args=(bot,)),
         "process_pending_programmes": UtilityJobDefinition(process_pending_programmes, args=(bot,)),
-        "asana_sync": UtilityJobDefinition(
-            run_asana_sync,
-            args=(bot,),
-            available=asana_available,
-            unavailable_reason=asana_unavailable_reason,
-        ),
         "cinema_sync": UtilityJobDefinition(
             run_cinema_sync,
             args=(bot,),
@@ -3562,7 +3463,7 @@ async def reload_utility_scheduler_job(scheduler, utility_registry, utility_stat
     log.info("Utility Scheduler refreshed from Notion: %s", stats)
 
 
-def _register_legacy_utility_jobs(*, scheduler, bot, run_steps_final_stamp, asana_status: str, cinema_ok: bool) -> None:
+def _register_legacy_utility_jobs(*, scheduler, bot, run_steps_final_stamp, cinema_ok: bool) -> None:
     log.warning("NOTION_UTILITY_SCHEDULER_DB is not set; registering legacy hard-coded utility jobs")
     scheduler.add_job(
         rebuild_digest_schedule_job,
@@ -3604,18 +3505,6 @@ def _register_legacy_utility_jobs(*, scheduler, bot, run_steps_final_stamp, asan
         coalesce=True,
         next_run_time=datetime.now(TZ) + timedelta(minutes=1),
     )
-    if ASANA_PAT and asana_status not in {"DISABLED (schema)", "DISABLED (smoke)"}:
-        scheduler.add_job(
-            run_asana_sync,
-            "interval",
-            seconds=ASANA_SYNC_INTERVAL,
-            args=[bot],
-            id="asana_sync",
-            max_instances=ASANA_SYNC_MAX_INSTANCES,
-            coalesce=True,
-            misfire_grace_time=ASANA_SYNC_MISFIRE_GRACE_SECONDS,
-            next_run_time=datetime.now(TZ),
-        )
     if CINEMA_DB_ID and cinema_ok:
         register_cinema_jobs(
             scheduler=scheduler,
@@ -3684,66 +3573,6 @@ async def post_init(app: Application) -> None:
     # restarting the bot should not send an immediate digest.
     build_digest_schedule(scheduler, app.bot)
 
-    # ── Asana reconciler — validate config before Utility Scheduler can enable it ──
-    asana_status = "OFF"
-    smoke_status = "SKIPPED"
-    if ASANA_PAT:
-        problems = validate_notion_schema(notion, NOTION_DB_ID)
-        # v9.2: also catch missing workspace GID for my_tasks mode early
-        if ASANA_SYNC_SOURCE == "my_tasks" and not ASANA_WORKSPACE_GID:
-            problems.append(
-                "ASANA_WORKSPACE_GID env var is required when ASANA_SYNC_SOURCE=my_tasks"
-            )
-        if problems:
-            log.error("Asana sync DISABLED — startup checks failed:")
-            for p in problems:
-                log.error(f"  - {p}")
-            await _try_send_telegram(app.bot, _format_schema_alert(problems))
-            asana_status = "DISABLED (schema)"
-        else:
-            if ASANA_STARTUP_SMOKE:
-                try:
-                    loop = asyncio.get_running_loop()
-                    smoke = await loop.run_in_executor(
-                        None,
-                        lambda: startup_smoke_test(
-                            notion=notion,
-                            notion_db_id=NOTION_DB_ID,
-                            asana_token=ASANA_PAT,
-                            asana_project_gid=ASANA_PROJECT_GID,
-                            asana_workspace_gid=ASANA_WORKSPACE_GID,
-                            source_mode=ASANA_SYNC_SOURCE,
-                        ),
-                    )
-                    smoke_status = f"PASS (sample={smoke.get('sample_task_gid')})"
-                    log.info("Asana startup smoke test passed ✓ %s", smoke)
-                except AsanaSyncError as e:
-                    smoke_status = f"FAIL ({e})"
-                    asana_status = "DISABLED (smoke)"
-                    log.error("Asana sync DISABLED — startup smoke failed: %s", e)
-                    await _try_send_telegram(
-                        app.bot,
-                        "🚨 *Asana sync DISABLED — startup smoke test failed*\n\n"
-                        f"• {e}\n\n"
-                        "_Fix config/integration and redeploy. Scheduler was not started for Asana sync._",
-                    )
-                except Exception as e:
-                    smoke_status = f"FAIL ({e})"
-                    asana_status = "DISABLED (smoke)"
-                    log.exception("Asana sync DISABLED — unexpected smoke test error: %s", e)
-                    await _try_send_telegram(
-                        app.bot,
-                        "🚨 *Asana sync DISABLED — startup smoke test crashed*\n\n"
-                        f"• {e}\n\n"
-                        "_Fix and redeploy._",
-                    )
-            else:
-                smoke_status = "SKIPPED (disabled by ASANA_STARTUP_SMOKE)"
-
-            if asana_status not in {"DISABLED (schema)", "DISABLED (smoke)"}:
-                asana_status = f"ON (Utility Scheduler, mode={ASANA_SYNC_SOURCE})"
-                log.info("Notion schema validation passed ✓")
-
     # ── Cinema sync — validate config before Utility Scheduler can enable it ──
     cinema_ok, cinema_problems = validate_cinema_config()
     if not cinema_ok:
@@ -3775,8 +3604,6 @@ async def post_init(app: Application) -> None:
         bot=app.bot,
         scheduler=scheduler,
         run_steps_final_stamp=_run_steps_final_stamp,
-        asana_available=bool(ASANA_PAT) and asana_status not in {"DISABLED (schema)", "DISABLED (smoke)"},
-        asana_unavailable_reason=asana_status if ASANA_PAT else "ASANA_PAT is not configured",
         cinema_available=bool(CINEMA_DB_ID) and cinema_ok,
         cinema_unavailable_reason="; ".join(cinema_problems) if cinema_problems else "CINEMA_DB_ID is not configured",
     )
@@ -3813,7 +3640,6 @@ async def post_init(app: Application) -> None:
             scheduler=scheduler,
             bot=app.bot,
             run_steps_final_stamp=_run_steps_final_stamp,
-            asana_status=asana_status,
             cinema_ok=cinema_ok,
         )
 
@@ -3823,18 +3649,12 @@ async def post_init(app: Application) -> None:
         f"Scheduler started ✓  TZ={TZ}  "
         f"weather=hourly  "
         f"recurring={_rc_h:02d}:{_rc_m:02d}  "
-        f"asana_sync={asana_status}  smoke={smoke_status}  "
-        f"archive_orphans={ASANA_ARCHIVE_ORPHANS}  "
         f"v10_flags=[{v10_feature_flags()}]"
     )
     await _try_send_telegram(
         app.bot,
         f"🚀 {APP_VERSION} booted\n"
         f"sha={_git_sha()}\n"
-        f"asana={asana_status}\n"
-        f"source={_asana_boot_mode_label()}\n"
-        f"archive_orphans={ASANA_ARCHIVE_ORPHANS}\n"
-        f"smoke={smoke_status}\n"
         f"features={v10_feature_flags()}",
     )
     commands = [
@@ -3930,12 +3750,10 @@ async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     args = [a.strip().lower() for a in (context.args or []) if a.strip()]
     cinema_only = args[:1] == ["cinema"]
     status = await update.message.reply_text(
-        "🔄 Running cinema sync…" if cinema_only else "🔄 Running full sync (Asana + Cinema + Habit cache)…"
+        "🔄 Running cinema sync…" if cinema_only else "🔄 Running sync (Cinema + Habit cache)…"
     )
     try:
         notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB); _refresh_habit_cache_refs()
-        if not cinema_only:
-            await run_asana_sync(context.bot)
         cinema_stats = await run_cinema_sync(context.bot)
         await status.edit_text(
             "✅ Sync finished.\n"
@@ -3948,7 +3766,7 @@ async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def handle_sync_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/syncstatus — show latest sync telemetry for Asana + Cinema."""
+    """/syncstatus — show latest sync telemetry for Cinema + Steps."""
     if update.effective_chat.id != MY_CHAT_ID:
         return
     await update.message.reply_text(format_sync_status_message(sync_status), parse_mode="Markdown")
