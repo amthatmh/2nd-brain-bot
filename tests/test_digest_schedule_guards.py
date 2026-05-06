@@ -192,3 +192,78 @@ class TestManualDigestConfig(unittest.TestCase):
         config = main._manual_digest_config_now(slots, now_dt=now)
 
         self.assertIsNone(config)
+
+
+class TestDailyDigestHabits(unittest.IsolatedAsyncioTestCase):
+    async def test_send_daily_digest_renders_cached_morning_habit_when_direct_query_empty(self):
+        main = load_main_module()
+        test_habit = {
+            "page_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "name": "Test Morning Habit",
+            "time": "🌅 Morning",
+            "sort": 1,
+            "freq_per_week": None,
+            "weather_gated": False,
+        }
+        main.habit_cache = {"Test Morning Habit": test_habit}
+        bot = MagicMock()
+        sent = MagicMock(message_id=42)
+        bot.send_message = AsyncMock(return_value=sent)
+
+        with patch.object(main.notion_tasks, "get_today_and_overdue_tasks", return_value=[]), \
+            patch.object(main.notion_habits, "get_habits_by_time", return_value=[]), \
+            patch.object(main, "already_logged_today", return_value=False), \
+            patch.object(main, "is_on_pace", return_value=False):
+            await main.send_daily_digest(
+                bot,
+                include_habits=True,
+                config={
+                    "contexts": [],
+                    "max_items": None,
+                    "include_habits": True,
+                    "include_weather": False,
+                    "include_uvi": False,
+                },
+            )
+
+        bot.send_message.assert_awaited_once()
+        kwargs = bot.send_message.await_args.kwargs
+        self.assertIn("*Habits:* tap to log:", kwargs["text"])
+        self.assertIsNotNone(kwargs["reply_markup"])
+
+    async def test_send_daily_digest_fail_opens_weather_gated_habits_without_uvi(self):
+        main = load_main_module()
+        habit = {
+            "page_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "name": "Test Morning Habit",
+            "time_str": "🌅 Morning",
+            "frequency": None,
+            "completion_count": 0,
+            "weather_gated": True,
+        }
+        bot = MagicMock()
+        sent = MagicMock(message_id=43)
+        bot.send_message = AsyncMock(return_value=sent)
+
+        def habits_by_time(*, time_filter, **_kwargs):
+            return [habit] if time_filter == "🌅 Morning" else []
+
+        with patch.object(main.notion_tasks, "get_today_and_overdue_tasks", return_value=[]), \
+            patch.object(main.notion_habits, "get_habits_by_time", side_effect=habits_by_time), \
+            patch.object(main, "already_logged_today", return_value=False), \
+            patch.object(main, "is_on_pace", return_value=False):
+            await main.send_daily_digest(
+                bot,
+                include_habits=True,
+                config={
+                    "contexts": [],
+                    "max_items": None,
+                    "include_habits": True,
+                    "include_weather": False,
+                    "include_uvi": False,
+                },
+            )
+
+        kwargs = bot.send_message.await_args.kwargs
+        self.assertIn("*Habits:* tap to log:", kwargs["text"])
+        self.assertIsNotNone(kwargs["reply_markup"])
