@@ -2859,26 +2859,44 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     habits_enabled = include_habits
     if config and config.get("include_habits") is not None:
         habits_enabled = bool(config.get("include_habits"))
+    log.info(
+        "Digest habits check: habits_enabled=%s include_habits_param=%s config_include_habits=%s",
+        habits_enabled, include_habits, config.get("include_habits") if config else None
+    )
     if habits_enabled:
         morning_habits_all = notion_habits.get_habits_by_time(time_filter="🌅 Morning", notion_query_all=notion_query_all, notion_habit_db=NOTION_HABIT_DB, parse_time_to_minutes=_parse_time_to_minutes, count_habit_completions_this_week=_count_habit_completions_this_week, habit_capped_this_week=habit_capped_this_week) + notion_habits.get_habits_by_time(time_filter="🕐 Anytime", notion_query_all=notion_query_all, notion_habit_db=NOTION_HABIT_DB, parse_time_to_minutes=_parse_time_to_minutes, count_habit_completions_this_week=_count_habit_completions_this_week, habit_capped_this_week=habit_capped_this_week)
-        morning_habits_all = [
+        if not morning_habits_all:
+            cached_morning_habits = pending_habits_for_digest("🌅 Morning") + pending_habits_for_digest("🕐 Anytime")
+            if cached_morning_habits:
+                log.warning(
+                    "Digest habits direct Notion query returned no morning/anytime habits; using %d cached pending habit(s)",
+                    len(cached_morning_habits),
+                )
+                morning_habits_all = cached_morning_habits
+        habits = [
             h
             for h in morning_habits_all
             if not already_logged_today(h["page_id"])
             and not is_on_pace(h)
             and (h.get("name") or "").strip().lower() != STEPS_HABIT_NAME.strip().lower()
         ]
-        uv_max = uvi_data["max"] if uvi_data else None
+        uv_max = uvi_data.get("max") if isinstance(uvi_data, dict) else None
+        log.info(
+            "Digest habits: morning_habits_all=%d after_filter=%d uv_max=%s uv_threshold=%s",
+            len(morning_habits_all) if morning_habits_all else 0,
+            len(habits) if 'habits' in locals() else 0,
+            uv_max, UV_THRESHOLD
+        )
         if uv_max is not None:
             habits = [
-                h for h in morning_habits_all
+                h for h in habits
                 if not h.get("weather_gated") or uv_max >= UV_THRESHOLD
             ]
             log.info(f"UV max today: {uv_max} — threshold: {UV_THRESHOLD}")
         else:
             # UV fetch failed — fail open so weather-gated habits are not silently dropped
-            habits = morning_habits_all
             log.warning("UV fetch failed — showing all habits including weather-gated ones")
+        log.info("Digest habits final: count=%d habit_names=%s", len(habits), [h.get("name") for h in habits[:5]])
 
     if overdue:
         lines.append("🚨 *Overdue*")
@@ -2902,7 +2920,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         lines.append("")
 
     if habits:
-        lines.append("*Habits* - tap to log:")
+        lines.append("*Habits:* tap to log:")
         lines.append("")
 
     message = "\n".join(lines).strip()
