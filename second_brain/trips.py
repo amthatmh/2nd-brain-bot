@@ -130,6 +130,8 @@ async def execute_trip(
         "Checked Luggage": {"checkbox": bool(trip.get("checked_luggage"))},
         "Weather Flags": {"multi_select": [{"name": item} for item in weather_flags]},
         "Weather Summary": {"rich_text": [{"text": {"content": weather_summary}}]},
+        "Reminder Sent": {"checkbox": False},
+        "Packing Done": {"checkbox": False},
     }
 
     # Avoid sending empty select names; Notion API rejects them.

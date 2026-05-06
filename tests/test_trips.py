@@ -67,6 +67,7 @@ def test_execute_trip_saves_to_notion(monkeypatch):
                     "Field Work": {"type": "rich_text"},
                     "Multiple Sites": {"type": "checkbox"},
                     "Checked Luggage": {"type": "checkbox"},
+                    "Reminder Sent": {"type": "checkbox"},
                 }
             }
 
@@ -86,6 +87,7 @@ def test_execute_trip_saves_to_notion(monkeypatch):
     assert created["parent"]["database_id"] == "c57f9edb-406d-4368-b32d-23f0ea2a0c66"
     assert created["properties"]["Trip"]["title"][0]["text"]["content"].startswith("Nashville TN")
     assert created["properties"]["Field Work"]["rich_text"][0]["text"]["content"] == "Site Survey"
+    assert created["properties"]["Reminder Sent"] == {"checkbox": False}
     assert flag["value"] is False
     assert any("Trip saved to Notion" in msg for msg in query.message.sent)
     assert any("Packing checklist added" in msg for msg in query.message.sent)
@@ -116,6 +118,7 @@ def test_execute_trip_appends_native_packing_blocks(monkeypatch):
                     "Field Work": {"type": "multi_select"},
                     "Multiple Sites": {"type": "checkbox"},
                     "Checked Luggage": {"type": "checkbox"},
+                    "Reminder Sent": {"type": "checkbox"},
                 }
             }
 
