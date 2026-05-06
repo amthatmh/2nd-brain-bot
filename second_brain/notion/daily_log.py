@@ -238,12 +238,8 @@ def generate_daily_log(
     else:
         cf_section = "CARRIED FORWARD FROM PREVIOUS DAYS:\nNone — this may be the first log entry.\n\n"
 
-    prompt = f"""You are writing the end-of-day log entry for a personal second brain system.
+    prompt = f"""You are writing a daily development log for a software developer.
 Today is {date_label}.
-
-Derive every section automatically from the structured data below:
-completed_tasks, deferred_tasks, habits_logged, notes_captured, signoff_note, recent_carried_forward, and claude_agent_activity.
-No section should pad with placeholder text. If there is no signal for a section, omit it by returning an empty string or write a single honest "Nothing to record" line only when that is more accurate than omission.
 
 {cf_section}Here is what happened today:
 
@@ -259,95 +255,69 @@ HABITS LOGGED ({habits_count}):
 NOTES CAPTURED ({len(notes_captured)}):
 {_bullet_list(notes_captured)}
 
-CLAUDE AGENT ACTIVITY (from today's bot interactions):
-{_bullet_list((claude_activity or [])[:30])}
-
-USER'S SIGNOFF NOTE (their own words about what they worked on today, including any Claude.ai conversations and decisions made):
+USER'S SIGNOFF NOTE (their own words — includes Claude.ai work,
+architectural decisions, anything done outside the bot):
 {signoff_note if signoff_note else "None provided"}
 
-Return ONLY valid JSON, no markdown fences, with exactly these 7 keys:
+Generate a daily log in 7 sections. Return ONLY valid JSON, no markdown fences.
+If a section has no signal, return empty string "" — never write placeholder
+text like "No files reported" or "Nothing to record".
+
 {{
-  "summary": "2–4 sentence narrative of the day. No bullet points. Honest, not padded.",
-  "completed": "bullet list of completed tasks as single string, each starting with • on new line, or empty string",
-  "code_logic_changes": "bullet list derived from notes/signoff that mention code changes, refactors, new logic, or schema changes. Each bullet: what changed and why. Empty string if no dev work today.",
-  "testing_validation": "bullet list of what was tested or verified today, derived from notes/signoff/completed tasks. Empty string if nothing tested.",
-  "issues_bugs": "bullet list of bugs, edge cases, or problems found today, derived from notes/signoff/deferred tasks. Empty string if none.",
-  "key_learnings": "bullet list of genuine learnings or decisions made today — what was understood, resolved, or decided. Focus on concrete learnings (e.g. 'Notion Place field is API-inaccessible — must use Select'), NOT pattern recognition about the user's behaviour. Max 5 bullets. Empty string if nothing notable.",
-  "carried_forward": "bullet list of unresolved live threads going into tomorrow. Drop anything resolved. Write as live thread state not as tasks. Max 5 bullets. Empty string if everything resolved."
+  "summary": "2–4 sentence narrative of the day's shape. Not a list. Honest, not padded. Empty string on a genuinely light day.",
+  "completed": "bullet list of completed tasks, each starting with • on new line. Empty string if none.",
+  "code_logic_changes": "bullet list derived from notes and signoff_note mentioning: files changed, functions added/removed, refactors, schema changes, architectural decisions. Each bullet: what changed and why. Empty string if no dev work in the notes/signoff.",
+  "testing_validation": "bullet list of what was tested or verified today, from notes/signoff/completed tasks. Empty string if nothing tested.",
+  "issues_bugs": "bullet list of bugs, edge cases, or problems found, from notes/signoff/deferred tasks. Empty string if none.",
+  "key_learnings": "bullet list of genuine learnings or decisions made today — concrete things understood, resolved, or decided. Example: '• Notion Place field is not writable via API — Select field required.' NOT pattern recognition about the user's behaviour. Max 5 bullets. Empty string if nothing notable.",
+  "carried_forward": "bullet list of live unresolved threads going into tomorrow. Drop anything resolved today. Max 5 bullets. Empty string if everything resolved."
 }}
 
-Instructions:
-- code_logic_changes: scan notes_captured and signoff_note for mentions of
-  files changed, functions added/removed, refactors, schema changes, or
-  architectural decisions. If none found, return empty string. Do NOT write
-  "No files reported" or any placeholder — return "".
-- testing_validation: scan for any mention of testing, verification, checks,
-  or validation in notes and signoff. If none found, return "".
-- issues_bugs: scan for bugs, failures, edge cases, or problems in notes,
-  signoff, and deferred tasks. If none found, return "".
-- key_learnings: write only things that were actually learned or decided today.
-  Do not infer behavioural patterns from frequency of tasks. Good example:
-  "Notion Place field is not writable via API — Select field required."
-  Bad example: "User tends to defer tasks related to venue architecture."
-- summary: write as a narrative sentence or two. Do not list tasks.
-  Example of good summary: "Productive dev day focused on cinema log venue
-  autofill. Architectural decision made on Select field approach after API
-  limitations confirmed."
+Rules:
+- code_logic_changes: scan notes_captured and signoff_note only. If no code work mentioned, return "".
+- key_learnings: write only things actually learned or decided today. Do NOT infer behavioural patterns.
+- summary: narrative only, no bullet points.
+- Never return placeholder text for empty sections — return "" instead."""
 
-Additional rules:
-- If signoff note is provided, weight it heavily.
-- Do not fabricate details.
-- completed should only include completed_tasks; if there are no completed_tasks, return "".
-- Deferred tasks must not be output as their own section; use them only as signal for issues_bugs and carried_forward.
-- Use • bullets for all non-empty bullet-list fields.
-"""
-
-    summary = ""
-    completed_md = ""
-    code_logic_changes = ""
-    testing_validation = ""
-    issues_bugs = ""
-    key_learnings = ""
-    carried_forward = ""
     try:
         resp = claude.messages.create(model=claude_model, max_tokens=1200, messages=[{"role": "user", "content": prompt}])
         raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
         result = json.loads(raw)
-        summary = (result.get("summary") or "").strip()
-        completed_md = (result.get("completed") or "").strip()
-        code_logic_changes = (result.get("code_logic_changes") or "").strip()
-        testing_validation = (result.get("testing_validation") or "").strip()
-        issues_bugs = (result.get("issues_bugs") or "").strip()
-        key_learnings = (result.get("key_learnings") or "").strip()
-        carried_forward = (result.get("carried_forward") or "").strip()
+        summary            = (result.get("summary") or "").strip()
+        completed_text     = (result.get("completed") or "").strip()
+        code_logic         = (result.get("code_logic_changes") or "").strip()
+        testing            = (result.get("testing_validation") or "").strip()
+        issues             = (result.get("issues_bugs") or "").strip()
+        key_learnings      = (result.get("key_learnings") or "").strip()
+        carried_forward    = (result.get("carried_forward") or "").strip()
     except Exception as e:
         log.error("generate_daily_log: Claude call failed: %s", e)
-        summary = ""
-        key_learnings = f"Log generation failed: {e}"
-        carried_forward = ""
+        summary = ""; completed_text = ""; code_logic = ""
+        testing = ""; issues = ""; key_learnings = ""
+        carried_forward = f"Log generation failed: {e}"
 
     page_body_parts = []
     page_body_parts.append(f"# Daily Development Log — {date_label}")
-    if summary: page_body_parts.append(f"## Summary\n\n{summary}")
-    if completed_md:
-        page_body_parts.append(f"## Completed\n\n{completed_md}")
-    elif completed_tasks:
-        page_body_parts.append("## Completed\n\n" + "\n".join(f"• {t}" for t in completed_tasks))
-    if code_logic_changes:
-        page_body_parts.append(f"## Code / Logic Changes\n\n{code_logic_changes}")
-    if testing_validation:
-        page_body_parts.append(f"## Testing / Validation\n\n{testing_validation}")
-    if issues_bugs:
-        page_body_parts.append(f"## Issues / Bugs Found\n\n{issues_bugs}")
+    if summary:
+        page_body_parts.append(f"## Summary\n\n{summary}")
+    if completed_text:
+        page_body_parts.append(f"## Completed\n\n{completed_text}")
+    if code_logic:
+        page_body_parts.append(f"## Code / Logic Changes\n\n{code_logic}")
+    if testing:
+        page_body_parts.append(f"## Testing / Validation\n\n{testing}")
+    if issues:
+        page_body_parts.append(f"## Issues / Bugs Found\n\n{issues}")
     if key_learnings:
         page_body_parts.append(f"## Key Learnings / Decisions\n\n{key_learnings}")
     if signoff_note:
-        page_body_parts.append(f"## Signoff Note\n\n{signoff_note}")
+        page_body_parts.append(f"## Signoff Note\n\n_{signoff_note}_")
     if carried_forward:
-        page_body_parts.append(
-            f"## Carried Forward\n\n{carried_forward}"
-        )
-    page_content = "\n\n".join(page_body_parts) if page_body_parts else "_Light day — nothing notable to log._"
+        page_body_parts.append(f"## Carried Forward\n\n{carried_forward}")
+    if not page_body_parts:
+        page_body_parts.append("_Light day — nothing notable to log._")
+
+    page_content = "\n\n".join(page_body_parts)
 
     daily_log_db_properties: dict[str, Any] = {}
     try:
@@ -371,8 +341,8 @@ Additional rules:
         props["Summary"] = {"rich_text": [{"text": {"content": summary[:2000]}}]}
     if key_learnings:
         props["Key Learnings"] = {"rich_text": [{"text": {"content": key_learnings[:2000]}}]}
-    if code_logic_changes and daily_log_db_properties.get("Code Changes"):
-        props["Code Changes"] = {"rich_text": [{"text": {"content": code_logic_changes[:2000]}}]}
+    if code_logic and daily_log_db_properties.get("Code Changes"):
+        props["Code Changes"] = {"rich_text": [{"text": {"content": code_logic[:2000]}}]}
     if signoff_note:
         props["Signoff Note"] = {"rich_text": [{"text": {"content": signoff_note[:2000]}}]}
     if carried_forward:
