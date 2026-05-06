@@ -52,6 +52,7 @@ def test_execute_trip_saves_to_notion(monkeypatch):
     class _NotionPages:
         def create(self, **kwargs):
             created.update(kwargs)
+            return {"id": "trip-1"}
 
     class _NotionDatabases:
         def retrieve(self, **kwargs):
@@ -85,8 +86,98 @@ def test_execute_trip_saves_to_notion(monkeypatch):
     assert created["parent"]["database_id"] == "c57f9edb-406d-4368-b32d-23f0ea2a0c66"
     assert created["properties"]["Trip"]["title"][0]["text"]["content"].startswith("Nashville TN")
     assert created["properties"]["Field Work"]["rich_text"][0]["text"]["content"] == "Site Survey"
-    assert flag["value"] is True
+    assert flag["value"] is False
     assert any("Trip saved to Notion" in msg for msg in query.message.sent)
+    assert any("Packing checklist added" in msg for msg in query.message.sent)
+
+
+def test_execute_trip_appends_native_packing_blocks(monkeypatch):
+    monkeypatch.setattr(trips, "NOTION_TRIPS_DB", "c57f9edb406d4368b32d23f0ea2a0c66")
+    monkeypatch.setattr(trips, "NOTION_PACKING_ITEMS_DB", "packing-db")
+    query = _Query()
+    calls = {"pages": [], "queries": [], "appends": []}
+    flag = {"value": False}
+
+    class _NotionPages:
+        def create(self, **kwargs):
+            calls["pages"].append(kwargs)
+            return {"id": "trip-1"}
+
+    class _NotionDatabases:
+        def retrieve(self, **kwargs):
+            return {
+                "properties": {
+                    "Trip": {"type": "title"},
+                    "Departure Date": {"type": "date"},
+                    "Return Date": {"type": "date"},
+                    "Destination(s)": {"type": "rich_text"},
+                    "Duration": {"type": "select"},
+                    "Purpose": {"type": "select"},
+                    "Field Work": {"type": "multi_select"},
+                    "Multiple Sites": {"type": "checkbox"},
+                    "Checked Luggage": {"type": "checkbox"},
+                }
+            }
+
+        def query(self, **kwargs):
+            calls["queries"].append(kwargs)
+            return {
+                "has_more": False,
+                "results": [
+                    {
+                        "properties": {
+                            "Item": {"type": "title", "title": [{"plain_text": "Passport"}]},
+                            "Category": {"type": "select", "select": {"name": "Documents"}},
+                            "Always": {"type": "checkbox", "checkbox": True},
+                            "Field Work": {"type": "multi_select", "multi_select": []},
+                        }
+                    },
+                    {
+                        "properties": {
+                            "Item": {"type": "title", "title": [{"plain_text": "Sound level meter"}]},
+                            "Category": {"type": "select", "select": {"name": "Field Gear"}},
+                            "Always": {"type": "checkbox", "checkbox": False},
+                            "Field Work": {"type": "multi_select", "multi_select": [{"name": "Site Survey"}]},
+                        }
+                    },
+                    {
+                        "properties": {
+                            "Item": {"type": "title", "title": [{"plain_text": "Beach towel"}]},
+                            "Category": {"type": "select", "select": {"name": "Personal"}},
+                            "Always": {"type": "checkbox", "checkbox": False},
+                            "Field Work": {"type": "multi_select", "multi_select": [{"name": "Personal"}]},
+                        }
+                    },
+                ],
+            }
+
+    class _NotionChildren:
+        def append(self, **kwargs):
+            calls["appends"].append(kwargs)
+
+    class _NotionBlocks:
+        children = _NotionChildren()
+
+    notion = type("Notion", (), {"pages": _NotionPages(), "databases": _NotionDatabases(), "blocks": _NotionBlocks()})()
+
+    asyncio.run(trips.execute_trip(
+        "0",
+        query,
+        notion=notion,
+        claude=None,
+        trip_map=_trip_map(),
+        set_awaiting_packing_feedback=lambda value: flag.update(value=value),
+        fetch_weather=lambda _: None,
+    ))
+
+    assert len(calls["pages"]) == 1
+    assert calls["pages"][0]["parent"] == {"database_id": "c57f9edb-406d-4368-b32d-23f0ea2a0c66"}
+    assert calls["queries"] == [{"database_id": "packing-db"}]
+    assert calls["appends"][0]["block_id"] == "trip-1"
+    assert [block["type"] for block in calls["appends"][0]["children"]] == ["heading_2", "to_do", "heading_2", "to_do"]
+    assert flag["value"] is False
+    assert query.message.sent == ["✅ Trip saved to Notion. Packing checklist added (2 items)."]
+
 
 
 def test_parse_trip_message_falls_back_when_nlp_unavailable():
@@ -112,6 +203,7 @@ def test_execute_trip_uses_field_work_types_when_present(monkeypatch):
     class _NotionPages:
         def create(self, **kwargs):
             created.update(kwargs)
+            return {"id": "trip-1"}
 
     class _NotionDatabases:
         def retrieve(self, **kwargs):
@@ -150,6 +242,7 @@ def test_execute_trip_maps_weather_flags_to_multi_select(monkeypatch):
     class _NotionPages:
         def create(self, **kwargs):
             created.update(kwargs)
+            return {"id": "trip-1"}
 
     class _NotionDatabases:
         def retrieve(self, **kwargs):
@@ -240,70 +333,77 @@ def test_refresh_upcoming_trip_weather_updates_rows():
     assert updated_pages
 
 
-def test_generate_packing_checklist_queries_matching_items(monkeypatch):
+def test_build_packing_blocks_queries_all_items_and_returns_native_blocks(monkeypatch):
     monkeypatch.setattr(trips, "NOTION_PACKING_ITEMS_DB", "packing-db")
-    calls = {"queries": [], "pages": []}
+    calls = {"queries": []}
 
     class _NotionDatabases:
         def query(self, **kwargs):
             calls["queries"].append(kwargs)
+            if len(calls["queries"]) == 1:
+                return {
+                    "has_more": True,
+                    "next_cursor": "cursor-2",
+                    "results": [
+                        {
+                            "properties": {
+                                "Item": {"type": "title", "title": [{"plain_text": "Sound level meter"}]},
+                                "Category": {"type": "select", "select": {"name": "Field Gear"}},
+                                "Always": {"type": "checkbox", "checkbox": False},
+                                "Field Work": {"type": "multi_select", "multi_select": [{"name": "Noise Measurements"}]},
+                            }
+                        },
+                        {
+                            "properties": {
+                                "Item": {"type": "title", "title": [{"plain_text": "Passport"}]},
+                                "Category": {"type": "rich_text", "rich_text": [{"plain_text": "Documents"}]},
+                                "Always": {"type": "checkbox", "checkbox": True},
+                                "Field Work": {"type": "multi_select", "multi_select": []},
+                            }
+                        },
+                    ],
+                }
             return {
+                "has_more": False,
                 "results": [
                     {
                         "properties": {
-                            "Item": {"title": [{"plain_text": "Sound level meter"}]},
-                            "Category": {"select": {"name": "Field Gear"}},
+                            "Item": {"type": "title", "title": [{"plain_text": "Beach towel"}]},
+                            "Category": {"type": "select", "select": {"name": "Personal"}},
+                            "Always": {"type": "checkbox", "checkbox": False},
+                            "Field Work": {"type": "multi_select", "multi_select": [{"name": "Personal"}]},
                         }
                     },
                     {
                         "properties": {
-                            "Item": {"title": [{"plain_text": "Socks"}]},
-                            "Category": {"select": {"name": "Clothes"}},
+                            "Item": {"type": "title", "title": [{"plain_text": "Belt"}]},
+                            "Category": {"type": "select", "select": {"name": "Clothing"}},
+                            "Always": {"type": "checkbox", "checkbox": True},
+                            "Field Work": {"type": "multi_select", "multi_select": []},
                         }
                     },
-                ]
+                ],
             }
 
-    class _NotionPages:
-        def create(self, **kwargs):
-            calls["pages"].append(kwargs)
-            return {"id": "checklist-1"}
+    notion = type("Notion", (), {"databases": _NotionDatabases()})()
 
-    notion = type("Notion", (), {"databases": _NotionDatabases(), "pages": _NotionPages()})()
+    blocks = trips.build_packing_blocks({"field_work_types": ["noise measurements"]}, notion)
 
-    checklist_id = asyncio.run(
-        trips._generate_packing_checklist(
-            notion=notion,
-            trip_page_id="trip-1",
-            trip_title="Austin — 14–17 Jun 2026",
-            field_work_types=["Noise Measurements"],
-            duration="2-3 Days",
-            multiple_sites=True,
-            multiple_cities=False,
-            checked_luggage=True,
-            purpose="Work",
-        )
-    )
-
-    assert checklist_id == "checklist-1"
-    assert calls["queries"][0]["database_id"] == "packing-db"
-    query_filter = calls["queries"][0]["filter"]
-    assert {"property": "Noise Measurements", "checkbox": {"equals": True}} in query_filter["or"]
-    assert {"property": "Always", "checkbox": {"equals": True}} in query_filter["or"]
-    assert {"property": "2-3 Days", "checkbox": {"equals": True}} in query_filter["or"]
-    assert {"property": "Multiple Sites", "checkbox": {"equals": True}} in query_filter["or"]
-    assert {"property": "Checked Luggage", "checkbox": {"equals": True}} in query_filter["or"]
-    assert {"property": "Work", "checkbox": {"equals": True}} in query_filter["or"]
-    page = calls["pages"][0]
-    assert page["parent"] == {"page_id": "trip-1"}
-    content = page["children"][0]["paragraph"]["rich_text"][0]["text"]["content"]
-    assert "## Clothes" in content
-    assert "- [ ] Socks" in content
-    assert "## Field Gear" in content
-    assert "- [ ] Sound level meter" in content
+    assert calls["queries"] == [
+        {"database_id": "packing-db"},
+        {"database_id": "packing-db", "start_cursor": "cursor-2"},
+    ]
+    assert [block["type"] for block in blocks] == ["heading_2", "to_do", "heading_2", "to_do", "heading_2", "to_do"]
+    assert blocks[0]["heading_2"]["rich_text"][0]["text"]["content"] == "Clothing"
+    assert blocks[1]["to_do"]["rich_text"][0]["text"]["content"] == "Belt"
+    assert blocks[2]["heading_2"]["rich_text"][0]["text"]["content"] == "Documents"
+    assert blocks[3]["to_do"]["rich_text"][0]["text"]["content"] == "Passport"
+    assert blocks[4]["heading_2"]["rich_text"][0]["text"]["content"] == "Field Gear"
+    assert blocks[5]["to_do"]["rich_text"][0]["text"]["content"] == "Sound level meter"
+    assert all(block.get("to_do", {}).get("checked") is False for block in blocks if block["type"] == "to_do")
 
 
-def test_generate_packing_checklist_skips_when_db_unset(monkeypatch, caplog):
+def test_build_packing_blocks_skips_when_db_unset(monkeypatch, caplog):
     monkeypatch.setattr(trips, "NOTION_PACKING_ITEMS_DB", "")
 
     class _NotionDatabases:
@@ -312,51 +412,33 @@ def test_generate_packing_checklist_skips_when_db_unset(monkeypatch, caplog):
 
     notion = type("Notion", (), {"databases": _NotionDatabases()})()
 
-    checklist_id = asyncio.run(
-        trips._generate_packing_checklist(
-            notion=notion,
-            trip_page_id="trip-1",
-            trip_title="Austin",
-            field_work_types=["Noise Measurements"],
-            duration=None,
-            multiple_sites=False,
-            multiple_cities=False,
-            checked_luggage=False,
-            purpose=None,
-        )
-    )
+    blocks = trips.build_packing_blocks({"field_work_types": ["Noise Measurements"]}, notion)
 
-    assert checklist_id is None
+    assert blocks == []
     assert "NOTION_PACKING_ITEMS_DB is not set" in caplog.text
 
 
-def test_generate_packing_checklist_returns_none_for_no_items(monkeypatch, caplog):
-    caplog.set_level("INFO", logger="second_brain.trips")
+def test_build_packing_blocks_returns_empty_for_no_matching_items(monkeypatch):
     monkeypatch.setattr(trips, "NOTION_PACKING_ITEMS_DB", "packing-db")
 
     class _NotionDatabases:
         def query(self, **kwargs):
-            return {"results": []}
+            return {
+                "has_more": False,
+                "results": [
+                    {
+                        "properties": {
+                            "Item": {"type": "title", "title": [{"plain_text": "Tripod"}]},
+                            "Category": {"type": "select", "select": {"name": "Field Gear"}},
+                            "Always": {"type": "checkbox", "checkbox": False},
+                            "Field Work": {"type": "multi_select", "multi_select": [{"name": "Vibration Measurements"}]},
+                        }
+                    }
+                ],
+            }
 
-    class _NotionPages:
-        def create(self, **kwargs):
-            raise AssertionError("Checklist should not be created when no items match")
+    notion = type("Notion", (), {"databases": _NotionDatabases()})()
 
-    notion = type("Notion", (), {"databases": _NotionDatabases(), "pages": _NotionPages()})()
+    blocks = trips.build_packing_blocks({"field_work_types": ["None"]}, notion)
 
-    checklist_id = asyncio.run(
-        trips._generate_packing_checklist(
-            notion=notion,
-            trip_page_id="trip-1",
-            trip_title="Austin",
-            field_work_types=["None"],
-            duration=None,
-            multiple_sites=False,
-            multiple_cities=False,
-            checked_luggage=False,
-            purpose="Personal",
-        )
-    )
-
-    assert checklist_id is None
-    assert "No packing items matched filters for trip trip-1" in caplog.text
+    assert blocks == []
