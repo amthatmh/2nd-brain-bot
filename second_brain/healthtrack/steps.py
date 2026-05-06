@@ -33,7 +33,7 @@ State (in-memory, per date key "YYYY-MM-DD"):
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
 
@@ -200,6 +200,16 @@ async def handle_steps_sync(
 
     completed = steps >= threshold
 
+    def _sync_result(action: str, **extra) -> dict:
+        return {
+            "action": action,
+            "steps": steps,
+            "date": date_str,
+            "completed": completed,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            **extra,
+        }
+
     # ── Threshold notification (only for today, only once per day) ──
     if is_today and completed and not state["threshold_notified"] and bot and chat_id:
         try:
@@ -216,17 +226,17 @@ async def handle_steps_sync(
     # Legacy mode only cached intraday counts until threshold/nightly stamp.
     if is_today and not completed and not write_intraday_below_threshold:
         log.debug("steps: sub-threshold intraday sync (%d), caching only", steps)
-        return {"action": "skipped", "steps": steps, "date": date_str, "reason": "sub_threshold_intraday"}
+        return _sync_result("skipped", reason="sub_threshold_intraday")
 
     # ── For today above threshold, or any yesterday sync: upsert Notion entry ──
     if not (is_today or is_yesterday):
         log.info("steps: received data for %s (not today/yesterday), skipping", date_str)
-        return {"action": "skipped", "steps": steps, "date": date_str, "reason": "old_date"}
+        return _sync_result("skipped", reason="old_date")
 
     # Resolve habit page_id (check memory first)
     habit_page_id = _find_steps_habit_page_id(notion, habit_db_id, habit_name)
     if not habit_page_id:
-        return {"action": "error", "steps": steps, "date": date_str, "reason": "habit_not_found"}
+        return _sync_result("error", reason="habit_not_found")
 
     # Check for existing Notion entry (check memory cache first to save API calls)
     existing_page_id = state.get("notion_page_id")
@@ -237,7 +247,7 @@ async def handle_steps_sync(
         # UPDATE existing entry (preserve Completed if already True — don't downgrade)
         _update_log_entry_steps(notion, existing_page_id, steps, completed)
         state["notion_page_id"] = existing_page_id
-        return {"action": "updated", "steps": steps, "date": date_str, "page_id": existing_page_id}
+        return _sync_result("updated", page_id=existing_page_id)
     else:
         # CREATE new entry
         new_page_id = _create_log_entry(
@@ -245,7 +255,7 @@ async def handle_steps_sync(
         )
         if new_page_id:
             state["notion_page_id"] = new_page_id
-        return {"action": "created", "steps": steps, "date": date_str, "page_id": new_page_id}
+        return _sync_result("created", page_id=new_page_id)
 
 
 async def handle_steps_final_stamp(
