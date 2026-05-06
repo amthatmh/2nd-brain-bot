@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 
 def init_sync_status() -> dict[str, dict]:
     return {
-        "asana": {"last_run": None, "ok": None, "error": None, "stats": None},
         "cinema": {"last_run": None, "ok": None, "error": None, "stats": None},
         "steps": {"last_run": None, "ok": None, "error": None, "stats": None},
     }
@@ -40,8 +39,6 @@ def format_sync_block(name: str, info: dict) -> str:
 def format_sync_status_message(sync_status: dict[str, dict]) -> str:
     msg = [
         "📊 *Sync Status*",
-        "",
-        format_sync_block("Asana", sync_status["asana"]),
         "",
         format_sync_block("Cinema", sync_status["cinema"]),
         "",
