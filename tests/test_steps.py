@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from second_brain.healthtrack.routes import _parse_health_export_payload
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+
+from second_brain.healthtrack.routes import _parse_health_export_payload, register_health_routes
 from second_brain.healthtrack.steps import (
     _date_state,
     _steps_state,
     get_steps_state_summary,
     handle_steps_sync,
     handle_steps_final_stamp,
+    backfill_steps_state_from_notion,
 )
 
 
@@ -294,6 +299,38 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(props["Steps Count"]["number"], 7000)
 
 
+class TestBackfillStepsStateFromNotion(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        _steps_state.clear()
+
+    async def test_backfill_populates_today_from_existing_notion_entry(self):
+        notion = MagicMock()
+        notion.pages.retrieve.return_value = {
+            "properties": {"Steps Count": {"number": 8500}}
+        }
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/Chicago")
+
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._yesterday", return_value="2026-04-27"), \
+             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"), \
+             patch("second_brain.healthtrack.steps._find_existing_log_entry") as find_existing:
+            find_existing.side_effect = lambda notion_arg, log_db_id, habit_page_id, date_str: (
+                "today-page" if date_str == "2026-04-28" else None
+            )
+            await backfill_steps_state_from_notion(
+                notion=notion,
+                habit_db_id="h",
+                log_db_id="l",
+                habit_name="Steps",
+                tz=tz,
+            )
+
+        self.assertEqual(_steps_state["2026-04-28"]["last_steps"], 8500)
+        self.assertEqual(_steps_state["2026-04-28"]["notion_page_id"], "today-page")
+        notion.pages.retrieve.assert_called_once_with(page_id="today-page")
+
+
 class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         _steps_state.clear()
@@ -345,6 +382,56 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
         # Yesterday skipped (no data), today also skipped (0 steps = sub-threshold intraday)
         self.assertNotIn("2026-04-27", results)
 
+    async def test_nightly_stamp_recovers_today_from_notion_when_state_empty(self):
+        notion = MagicMock()
+        notion.pages.retrieve.return_value = {
+            "properties": {"Steps Count": {"number": 9000}}
+        }
+        notion.pages.update.return_value = {}
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/Chicago")
+
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._yesterday", return_value="2026-04-27"), \
+             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"), \
+             patch("second_brain.healthtrack.steps._find_existing_log_entry", return_value="today-page"):
+            results = await handle_steps_final_stamp(
+                notion=notion,
+                habit_db_id="h", log_db_id="l", habit_name="Steps",
+                threshold=10000, source_label="📱 Apple Watch", tz=tz,
+                write_intraday_below_threshold=True,
+            )
+
+        self.assertEqual(_steps_state["2026-04-28"]["last_steps"], 9000)
+        self.assertEqual(results["2026-04-28"]["steps"], 9000)
+        update_props = notion.pages.update.call_args.kwargs["properties"]
+        self.assertEqual(update_props["Steps Count"]["number"], 9000)
+
+    async def test_nightly_stamp_skips_recovery_lookup_when_state_populated(self):
+        _steps_state["2026-04-28"] = {
+            "last_steps": 12000,
+            "threshold_notified": True,
+            "notion_page_id": "today-page",
+        }
+        notion = MagicMock()
+        notion.pages.update.return_value = {}
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/Chicago")
+
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._yesterday", return_value="2026-04-27"), \
+             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"), \
+             patch("second_brain.healthtrack.steps._find_existing_log_entry") as find_existing:
+            results = await handle_steps_final_stamp(
+                notion=notion,
+                habit_db_id="h", log_db_id="l", habit_name="Steps",
+                threshold=10000, source_label="📱 Apple Watch", tz=tz,
+            )
+
+        self.assertEqual(results["2026-04-28"]["steps"], 12000)
+        notion.pages.retrieve.assert_not_called()
+        find_existing.assert_not_called()
+
     async def test_nightly_stamp_can_write_below_threshold_today(self):
         _steps_state["2026-04-28"] = {
             "last_steps": 1018,
@@ -388,6 +475,35 @@ class TestGetStepsStateSummary(unittest.TestCase):
         self.assertEqual(summary["2026-04-28"]["last_steps"], 9500)
         self.assertFalse(summary["2026-04-28"]["threshold_notified"])
         self.assertTrue(summary["2026-04-28"]["has_notion_entry"])
+
+
+class TestStepsRoutes(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        _steps_state.clear()
+
+    async def test_steps_status_returns_json(self):
+        app = web.Application()
+        register_health_routes(
+            app,
+            notion=MagicMock(),
+            habit_db_id="h",
+            log_db_id="l",
+            tz=None,
+            bot_getter=lambda: None,
+            chat_id=123,
+        )
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            response = await client.get("/api/v1/steps-status")
+            body = await response.text()
+        finally:
+            await client.close()
+
+        self.assertEqual(response.status, 200)
+        payload = json.loads(body)
+        self.assertTrue(payload["ok"])
+        self.assertIn("state", payload)
 
 
 if __name__ == "__main__":
