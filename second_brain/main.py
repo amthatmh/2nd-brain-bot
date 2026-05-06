@@ -3483,59 +3483,53 @@ async def log_habit_http_handler(request: web.Request) -> web.Response:
         )
 
 
-async def _persist_sync_result_to_env_db(notion_client, result: dict) -> None:
-    """Write steps sync observability data to the Notion ENV DB."""
-    if not result or not NOTION_ENV_DB or result.get("action") == "error":
+async def _persist_steps_sync_to_env_db(notion_client, env_db_id: str) -> None:
+    """Update HEALTH_STEPS_THRESHOLD row in Notion ENV DB with current sync date."""
+    if not env_db_id:
+        log.warning("steps: ENV DB ID is not configured; skipping sync timestamp update")
         return
 
     try:
-        now_iso = result.get("timestamp") or datetime.now(timezone.utc).isoformat()
-        action = result.get("action", "unknown")
-        steps = result.get("steps", 0)
-
         try:
-            try:
-                db_results = notion_client.databases.query(
-                    database_id=NOTION_ENV_DB,
-                    filter={
-                        "property": "Name",
-                        "title": {"equals": "HEALTH_STEPS_THRESHOLD"},
-                    },
-                )
-            except Exception:
-                db_results = notion_client.databases.query(
-                    database_id=NOTION_ENV_DB,
-                    filter={
-                        "property": "Name",
-                        "rich_text": {"equals": "HEALTH_STEPS_THRESHOLD"},
-                    },
-                )
-
-            pages = db_results.get("results", [])
-            if not pages:
-                log.warning("steps: HEALTH_STEPS_THRESHOLD row not found in ENV DB")
-                return
-
-            page_id = pages[0]["id"]
-            notion_client.pages.update(
-                page_id=page_id,
-                properties={
-                    "Last Sync Time": {"date": {"start": now_iso[:10]}},
+            results = notion_client.databases.query(
+                database_id=env_db_id,
+                filter={
+                    "property": "Name",
+                    "rich_text": {"equals": "HEALTH_STEPS_THRESHOLD"},
                 },
             )
-            log.info(
-                "steps: updated Last Sync Time in ENV DB (action=%s, steps=%s)",
-                action,
-                steps,
+        except Exception:
+            results = notion_client.databases.query(
+                database_id=env_db_id,
+                filter={
+                    "property": "Name",
+                    "title": {"equals": "HEALTH_STEPS_THRESHOLD"},
+                },
             )
-        except Exception as e:
-            log.warning("steps: could not update ENV DB sync timestamp: %s", e)
+
+        if not results.get("results"):
+            log.warning("steps: HEALTH_STEPS_THRESHOLD not found in ENV DB")
+            return
+
+        page_id = results["results"][0]["id"]
+        today = datetime.now(TZ).strftime("%Y-%m-%d")
+
+        notion_client.pages.update(
+            page_id=page_id,
+            properties={
+                "Last Sync Time": {
+                    "date": {"start": today},
+                },
+            },
+        )
+        log.info("steps: updated HEALTH_STEPS_THRESHOLD Last Sync Time to %s", today)
+
     except Exception as e:
-        log.error("steps: error persisting sync result: %s", e)
+        log.error("steps: error updating ENV DB sync timestamp: %s", e)
 
 
-def _record_steps_sync_result(result: dict) -> None:
-    """Update in-memory sync telemetry and persist steps sync observability asynchronously."""
+async def _record_steps_sync_result(result: dict) -> None:
+    """Handle steps sync completion: update in-memory status and ENV DB."""
     if not result:
         return
 
@@ -3547,8 +3541,9 @@ def _record_steps_sync_result(result: dict) -> None:
             "stats": result,
         }
     )
+
     if result.get("action") != "error":
-        asyncio.create_task(_persist_sync_result_to_env_db(notion, result))
+        asyncio.create_task(_persist_steps_sync_to_env_db(notion, NOTION_ENV_DB))
 
 
 async def start_http_server() -> None:
