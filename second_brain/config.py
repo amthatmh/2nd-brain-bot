@@ -44,6 +44,12 @@ NOTION_PERFORMANCE_LOG_DB = os.environ.get("NOTION_PERFORMANCE_LOG_DB", "").stri
 NOTION_SPORTS_LOG_DB = os.environ.get("NOTION_SPORTS_LOG_DB", os.environ.get("NOTION_SPORTS_DB", "")).strip()
 NOTION_FAVE_DB = os.environ.get("NOTION_FAVE_DB", "").strip()
 
+ASANA_PAT = os.environ.get("ASANA_PAT", "")
+ASANA_PROJECT_GID = os.environ.get("ASANA_PROJECT_GID", "")
+ASANA_WORKSPACE_GID = os.environ.get("ASANA_WORKSPACE_GID", "")
+ASANA_SYNC_SOURCE = os.environ.get("ASANA_SYNC_SOURCE", "project").strip().lower()
+ASANA_ARCHIVE_ORPHANS = os.environ.get("ASANA_ARCHIVE_ORPHANS", "0").strip().lower() in {"1", "true", "yes", "on"}
+
 NOTION_WATCHLIST_DB = os.environ.get("NOTION_WATCHLIST_DB", "")
 NOTION_WANTSLIST_V2_DB = os.environ.get("NOTION_WANTSLIST_V2_DB", "")
 NOTION_PHOTO_DB = os.environ.get("NOTION_PHOTO_DB", "")
