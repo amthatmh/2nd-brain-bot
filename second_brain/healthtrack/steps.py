@@ -33,11 +33,7 @@ State (in-memory, per date key "YYYY-MM-DD"):
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass
+from datetime import datetime, timedelta
 
 log = logging.getLogger(__name__)
 
@@ -275,10 +271,43 @@ async def handle_steps_final_stamp(
     - Always runs; creates or updates entries for both today and yesterday if needed
     """
     results = {}
-    today = _local_today(tz)
+    today_str = _local_today(tz)
+    if _steps_state.get(today_str, {}).get("last_steps", 0) == 0:
+        habit_page_id = _find_steps_habit_page_id(
+            notion, habit_db_id, habit_name
+        )
+        if habit_page_id:
+            existing_id = _find_existing_log_entry(
+                notion, log_db_id, habit_page_id, today_str
+            )
+            if existing_id:
+                try:
+                    page = notion.pages.retrieve(page_id=existing_id)
+                    steps_raw = (
+                        page.get("properties", {})
+                        .get("Steps Count", {})
+                        .get("number")
+                        or 0
+                    )
+                    if steps_raw > 0:
+                        state = _date_state(today_str)
+                        state["last_steps"] = steps_raw
+                        state["notion_page_id"] = existing_id
+                        log.info(
+                            "steps final stamp: recovered %d steps for %s",
+                            steps_raw,
+                            today_str,
+                        )
+                except Exception as e:
+                    log.warning(
+                        "steps final stamp: Notion recovery failed %s: %s",
+                        today_str,
+                        e,
+                    )
+
     yesterday = _yesterday(tz)
 
-    for date_str in (today, yesterday):
+    for date_str in (today_str, yesterday):
         state = _steps_state.get(date_str)
         steps = state["last_steps"] if state else 0
 
@@ -305,6 +334,46 @@ async def handle_steps_final_stamp(
         results[date_str] = result
 
     return results
+
+
+async def backfill_steps_state_from_notion(
+    *,
+    notion,
+    habit_db_id: str,
+    log_db_id: str,
+    habit_name: str,
+    tz,
+) -> None:
+    """Called at bot startup to pre-populate _steps_state from Notion,
+    so redeploys don't cause the 23:59 stamp to write 0.
+    """
+    habit_page_id = _find_steps_habit_page_id(notion, habit_db_id, habit_name)
+    if not habit_page_id:
+        log.warning("steps backfill: habit '%s' not found, skipping", habit_name)
+        return
+    today = _local_today(tz)
+    yesterday = _yesterday(tz)
+    for date_str in (today, yesterday):
+        try:
+            existing_id = _find_existing_log_entry(
+                notion, log_db_id, habit_page_id, date_str
+            )
+            if not existing_id:
+                continue
+            page = notion.pages.retrieve(page_id=existing_id)
+            steps = (
+                page.get("properties", {})
+                .get("Steps Count", {})
+                .get("number")
+                or 0
+            )
+            state = _date_state(date_str)
+            if steps > state["last_steps"]:
+                state["last_steps"] = steps
+                state["notion_page_id"] = existing_id
+                log.info("steps backfill: %s → %d steps", date_str, steps)
+        except Exception as e:
+            log.error("steps backfill: error for %s: %s", date_str, e)
 
 
 def get_steps_state_summary() -> dict:

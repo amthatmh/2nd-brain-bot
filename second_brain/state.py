@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 from second_brain.utils import ExpiringDict
 
@@ -14,7 +14,7 @@ class BotState:
     done_picker_map: ExpiringDict = field(default_factory=lambda: ExpiringDict(ttl_seconds=3600))
     notes_pending: set[int] = field(default_factory=set)
     habit_cache: dict[str, dict] = field(default_factory=dict)
-    started_at: datetime = field(default_factory=datetime.utcnow)
+    started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 STATE = BotState()

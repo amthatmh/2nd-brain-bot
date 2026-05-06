@@ -9,6 +9,7 @@ from second_brain.healthtrack.routes import _parse_health_export_payload
 from second_brain.healthtrack.steps import (
     _date_state,
     _steps_state,
+    backfill_steps_state_from_notion,
     get_steps_state_summary,
     handle_steps_sync,
     handle_steps_final_stamp,
@@ -372,6 +373,65 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
         props = notion.pages.create.call_args.kwargs["properties"]
         self.assertEqual(props["Steps Count"]["number"], 1018)
         self.assertFalse(props["Completed"]["checkbox"])
+
+    async def test_final_stamp_recovers_today_steps_from_notion_when_state_empty(self):
+        notion = MagicMock()
+        notion.pages.retrieve.return_value = {
+            "properties": {"Steps Count": {"number": 9000}}
+        }
+        notion.pages.update.return_value = {}
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/Chicago")
+
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._yesterday", return_value="2026-04-27"), \
+             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"), \
+             patch("second_brain.healthtrack.steps._find_existing_log_entry", return_value="existing-pid"):
+            results = await handle_steps_final_stamp(
+                notion=notion,
+                habit_db_id="h", log_db_id="l", habit_name="Steps",
+                threshold=10000, source_label="📱 Apple Watch", tz=tz,
+                write_intraday_below_threshold=True,
+            )
+
+        self.assertEqual(_steps_state["2026-04-28"]["last_steps"], 9000)
+        self.assertEqual(_steps_state["2026-04-28"]["notion_page_id"], "existing-pid")
+        self.assertEqual(results["2026-04-28"]["action"], "updated")
+        props = notion.pages.update.call_args.kwargs["properties"]
+        self.assertEqual(props["Steps Count"]["number"], 9000)
+
+
+class TestBackfillStepsStateFromNotion(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        _steps_state.clear()
+
+    async def test_backfill_loads_today_steps_from_existing_notion_page(self):
+        notion = MagicMock()
+        notion.pages.retrieve.return_value = {
+            "properties": {"Steps Count": {"number": 8500}}
+        }
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/Chicago")
+
+        def find_existing(_notion, _log_db_id, _habit_page_id, date_str):
+            if date_str == "2026-04-28":
+                return "today-pid"
+            return None
+
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._yesterday", return_value="2026-04-27"), \
+             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"), \
+             patch("second_brain.healthtrack.steps._find_existing_log_entry", side_effect=find_existing):
+            await backfill_steps_state_from_notion(
+                notion=notion,
+                habit_db_id="h",
+                log_db_id="l",
+                habit_name="Steps",
+                tz=tz,
+            )
+
+        self.assertEqual(_steps_state["2026-04-28"]["last_steps"], 8500)
+        self.assertEqual(_steps_state["2026-04-28"]["notion_page_id"], "today-pid")
 
 
 class TestGetStepsStateSummary(unittest.TestCase):

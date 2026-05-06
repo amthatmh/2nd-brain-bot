@@ -3631,6 +3631,19 @@ async def post_init(app: Application) -> None:
     _app_bot = app.bot
     await start_http_server()
     scheduler = AsyncIOScheduler(timezone=TZ)
+    from second_brain.healthtrack.steps import backfill_steps_state_from_notion
+    from second_brain.healthtrack.config import STEPS_HABIT_NAME
+    try:
+        await backfill_steps_state_from_notion(
+            notion=notion,
+            habit_db_id=NOTION_HABIT_DB,
+            log_db_id=NOTION_LOG_DB,
+            habit_name=STEPS_HABIT_NAME,
+            tz=TZ,
+        )
+        log.info("Steps state backfill complete")
+    except Exception as e:
+        log.warning("Steps state backfill failed (non-fatal): %s", e)
     if FEATURES.get("FEATURE_RECURRING", True):
         scheduler.add_job(run_recurring_check, "cron", hour=_rc_h, minute=_rc_m, args=[app.bot])
     # Register digest cron jobs only. Do not queue missed digest slots on startup;
