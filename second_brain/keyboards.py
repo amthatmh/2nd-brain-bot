@@ -138,7 +138,15 @@ def tmdb_candidates_keyboard(key: str, candidates: list[dict], notion_type_from_
 
 def field_work_keyboard(key: str, trip_map: dict[str, dict]) -> InlineKeyboardMarkup:
     selected = trip_map[key].get("field_work_types", [])
-    types = [("sw", "Site Walk"), ("st", "Site Testing"), ("it", "Isolation Testing"), ("hm", "24hr Monitoring"), ("nn", "None")]
+    types = [
+        ("sw", "Site Walk"),
+        ("nm", "Noise Measurements"),
+        ("vm", "Vibration Measurements"),
+        ("rt", "RT Measurements"),
+        ("it", "Isolation Testing"),
+        ("hm", "24hr Monitoring"),
+        ("nn", "None"),
+    ]
     rows, row = [], []
     for slug, label in types:
         prefix = "✅ " if label in selected else ""
