@@ -33,11 +33,7 @@ State (in-memory, per date key "YYYY-MM-DD"):
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass
+from datetime import datetime, timedelta
 
 log = logging.getLogger(__name__)
 
@@ -275,34 +271,43 @@ async def handle_steps_final_stamp(
     - Always runs; creates or updates entries for both today and yesterday if needed
     """
     results = {}
-    today = _local_today(tz)
-    yesterday = _yesterday(tz)
-
-    # Guard: if we have no cached data at all for today, query Notion first
-    # (handles redeploy case where _steps_state was wiped)
     today_str = _local_today(tz)
     if _steps_state.get(today_str, {}).get("last_steps", 0) == 0:
-        # Attempt live Notion lookup to avoid writing 0
-        habit_page_id = _find_steps_habit_page_id(notion, habit_db_id, habit_name)
+        habit_page_id = _find_steps_habit_page_id(
+            notion, habit_db_id, habit_name
+        )
         if habit_page_id:
-            existing_id = _find_existing_log_entry(notion, log_db_id, habit_page_id, today_str)
+            existing_id = _find_existing_log_entry(
+                notion, log_db_id, habit_page_id, today_str
+            )
             if existing_id:
                 try:
                     page = notion.pages.retrieve(page_id=existing_id)
-                    steps_raw = page.get("properties", {}).get("Steps Count", {}).get("number") or 0
+                    steps_raw = (
+                        page.get("properties", {})
+                        .get("Steps Count", {})
+                        .get("number")
+                        or 0
+                    )
                     if steps_raw > 0:
                         state = _date_state(today_str)
                         state["last_steps"] = steps_raw
                         state["notion_page_id"] = existing_id
                         log.info(
-                            "steps final stamp: recovered %d steps for %s from Notion",
+                            "steps final stamp: recovered %d steps for %s",
                             steps_raw,
                             today_str,
                         )
                 except Exception as e:
-                    log.warning("steps final stamp: Notion recovery failed for %s: %s", today_str, e)
+                    log.warning(
+                        "steps final stamp: Notion recovery failed %s: %s",
+                        today_str,
+                        e,
+                    )
 
-    for date_str in (today, yesterday):
+    yesterday = _yesterday(tz)
+
+    for date_str in (today_str, yesterday):
         state = _steps_state.get(date_str)
         steps = state["last_steps"] if state else 0
 
@@ -339,33 +344,34 @@ async def backfill_steps_state_from_notion(
     habit_name: str,
     tz,
 ) -> None:
-    """
-    Called once at bot startup. Queries Notion for existing Steps log entries
-    for today and yesterday, and pre-populates _steps_state so that a redeploy
-    mid-day doesn't cause the 23:59 stamp to write 0.
+    """Called at bot startup to pre-populate _steps_state from Notion,
+    so redeploys don't cause the 23:59 stamp to write 0.
     """
     habit_page_id = _find_steps_habit_page_id(notion, habit_db_id, habit_name)
     if not habit_page_id:
         log.warning("steps backfill: habit '%s' not found, skipping", habit_name)
         return
-
     today = _local_today(tz)
     yesterday = _yesterday(tz)
-
     for date_str in (today, yesterday):
         try:
-            existing_id = _find_existing_log_entry(notion, log_db_id, habit_page_id, date_str)
+            existing_id = _find_existing_log_entry(
+                notion, log_db_id, habit_page_id, date_str
+            )
             if not existing_id:
                 continue
-            # Fetch the page to read its Steps Count
             page = notion.pages.retrieve(page_id=existing_id)
-            steps_prop = page.get("properties", {}).get("Steps Count", {})
-            steps = steps_prop.get("number") or 0
+            steps = (
+                page.get("properties", {})
+                .get("Steps Count", {})
+                .get("number")
+                or 0
+            )
             state = _date_state(date_str)
-            if steps > state["last_steps"]:  # don't downgrade if webhook already updated
+            if steps > state["last_steps"]:
                 state["last_steps"] = steps
                 state["notion_page_id"] = existing_id
-                log.info("steps backfill: %s → %d steps (page %s)", date_str, steps, existing_id)
+                log.info("steps backfill: %s → %d steps", date_str, steps)
         except Exception as e:
             log.error("steps backfill: error for %s: %s", date_str, e)
 
