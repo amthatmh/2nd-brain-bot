@@ -1213,7 +1213,6 @@ async def cmd_refresh(message, context: ContextTypes.DEFAULT_TYPE | None = None)
     del context
     if message.chat_id != MY_CHAT_ID:
         return
-    notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB); _refresh_habit_cache_refs()
     config = None
     try:
         slots = load_digest_slots()
@@ -2568,7 +2567,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def run_recurring_check(bot) -> None:
-    notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB); _refresh_habit_cache_refs()
+    """
+    Daily morning job — two responsibilities:
+    1. Spawn recurring task instances from To-Do DB templates
+    2. Record weekly habit streaks (Mondays only)
+    Habit cache refresh is handled separately by digest_schedule_refresh.
+    """
     if datetime.now(TZ).weekday() == 0:
         notified_goals_this_week.clear()
         await record_weekly_streaks(
@@ -2770,8 +2774,14 @@ async def rebuild_digest_schedule_job(bot, scheduler) -> None:
 
 
 async def refresh_digest_schedule_job(bot, scheduler) -> None:
-    """Periodic silent rebuild so new/edited Digest Selector rows take effect quickly."""
+    """
+    Periodic silent refresh — two responsibilities:
+    1. Rebuild digest schedule so new/edited Digest Selector rows take effect
+    2. Refresh habit cache so in-memory state stays current with Notion edits
+    """
     build_digest_schedule(scheduler, bot)
+    notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB)
+    _refresh_habit_cache_refs()
 
 
 async def generate_daily_log(bot) -> None:
@@ -3775,13 +3785,8 @@ async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     """/sync — manual catch-up trigger for core sync pipelines."""
     if update.effective_chat.id != MY_CHAT_ID:
         return
-    args = [a.strip().lower() for a in (context.args or []) if a.strip()]
-    cinema_only = args[:1] == ["cinema"]
-    status = await update.message.reply_text(
-        "🔄 Running cinema sync…" if cinema_only else "🔄 Running sync (Cinema + Habit cache)…"
-    )
+    status = await update.message.reply_text("🔄 Running cinema sync…")
     try:
-        notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB); _refresh_habit_cache_refs()
         cinema_stats = await run_cinema_sync(context.bot)
         await status.edit_text(
             "✅ Sync finished.\n"
