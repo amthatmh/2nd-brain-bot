@@ -94,7 +94,7 @@ Required (add to Railway environment variables):
 
 Optional:
   HEALTH_STEPS_FINAL_TIME=23:59      # default already set
-  HEALTH_WEBHOOK_SECRET=your-secret  # recommended — use any random string
+  STEPS_WEBHOOK_SECRET=your-secret  # recommended — use any random string
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CHANGE 5 — Add to GitHub Actions test env (python-package.yml)

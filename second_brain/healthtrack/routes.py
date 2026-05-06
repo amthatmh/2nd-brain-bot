@@ -1,45 +1,60 @@
 """
-HTTP route for Health Auto Export → steps sync.
+HTTP route for Steps Auto Export → steps sync.
 
-Health Auto Export sends a POST to /api/v1/steps-sync with JSON:
+Endpoint: POST /api/v1/steps-sync
+Header: X-Health-Secret: {STEPS_WEBHOOK_SECRET from Railway ENV}
+
+Request payload (from iOS Health Auto Export):
   {
-    "data": [
-      {
-        "name": "Step Count",
-        "data": [
-          {
-            "date": "2026-04-28 23:00:00 +0000",   ← or "YYYY-MM-DD" format
-            "qty": 11247
-          }
-        ],
-        "units": "count"
-      }
-    ]
+    "steps": 11247,
+    "date": "2026-05-06"
+  }
+  or
+  {
+    "data": {
+      "metrics": [
+        {
+          "name": "Step Count",
+          "data": [{"date": "2026-05-06", "qty": 11247}],
+          "units": "count"
+        }
+      ]
+    }
   }
 
-Health Auto Export can also be configured to send a simpler format via
-the "REST API" automation. We handle both shapes.
+Response:
+  {"ok": true, "result": {"action": "created"|"updated"|"skipped", ...}}
+  or
+  {"ok": false, "error": "...", "received_keys": [...]}
+
+Observability:
+  - Last sync timestamp logged to Notion ENV DB (HEALTH_STEPS_THRESHOLD → Last Sync Time)
+  - Failures logged to Railway logs with full error details
+  - Threshold notifications sent to Telegram (10,000 steps reached)
 
 Registration
 ────────────
-In second_brain/main.py → start_http_server(), add:
+In second_brain/main.py → start_http_server(), call:
 
-    from second_brain.healthtrack.routes import register_health_routes
-    register_health_routes(app, bot_ref)
-
-Then in post_init(), after the scheduler is started, add the nightly stamp job:
-
-    from second_brain.healthtrack.steps import handle_steps_final_stamp
-    from second_brain.healthtrack.config import STEPS_FINAL_HOUR, STEPS_FINAL_MIN, STEPS_HABIT_NAME, STEPS_THRESHOLD, STEPS_SOURCE_LABEL
-
-    scheduler.add_job(
-        _run_steps_final_stamp,
-        "cron",
-        hour=STEPS_FINAL_HOUR,
-        minute=STEPS_FINAL_MIN,
-        args=[app.bot],
-        id="steps_final_stamp",
+    register_health_routes(
+        app,
+        notion=notion,
+        habit_db_id=NOTION_HABIT_DB,
+        log_db_id=NOTION_LOG_DB,
+        tz=TZ,
+        bot_getter=lambda: _app_bot,
+        chat_id=TELEGRAM_CHAT_ID,
+        on_sync_result=lambda result: asyncio.create_task(
+            _persist_sync_result_to_env_db(notion, result)
+        ),
     )
+
+Future
+──────
+When adding generic health metrics (/api/v1/health/export for UV, metrics, etc.):
+- Create separate register_health_export_routes() with same pattern
+- Use HEALTH_EXPORT_WEBHOOK_SECRET for different secret
+- Update ENV DB with HEALTH_UV_THRESHOLD, HEALTH_METRICS_SYNC_TIME, etc.
 """
 
 from __future__ import annotations
@@ -221,22 +236,35 @@ def register_health_routes(
         if request.method == "OPTIONS":
             return web.Response(status=204, headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"))
 
-        # Optional shared secret auth
-        if WEBHOOK_SECRET:
-            incoming = request.headers.get("X-Health-Secret", "")
-            if incoming != WEBHOOK_SECRET:
-                log.warning("steps_sync: rejected request — invalid secret")
-                _record_steps_webhook(request, status="unauthorized")
-                return web.Response(
-                    status=401,
-                    text=json.dumps({"ok": False, "error": "unauthorized"}),
-                    content_type="application/json",
-                    headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
-                )
+        incoming_secret = request.headers.get("X-Health-Secret", "").strip()
+        if not incoming_secret:
+            log.warning("steps_sync: missing X-Health-Secret header")
+            _record_steps_webhook(request, status="missing_secret")
+            return web.Response(
+                status=401,
+                text=json.dumps({"ok": False, "error": "Missing X-Health-Secret header"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+
+        if WEBHOOK_SECRET and incoming_secret != WEBHOOK_SECRET:
+            log.warning(
+                "steps_sync: invalid secret (expected %s..., got %s...)",
+                WEBHOOK_SECRET[:8],
+                incoming_secret[:8],
+            )
+            _record_steps_webhook(request, status="unauthorized")
+            return web.Response(
+                status=401,
+                text=json.dumps({"ok": False, "error": "Invalid X-Health-Secret"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
 
         try:
             body = await request.json()
-        except Exception:
+        except Exception as e:
+            log.warning("steps_sync: invalid JSON payload: %s", e)
             _record_steps_webhook(request, status="invalid_json")
             return web.Response(
                 status=400,
@@ -248,7 +276,8 @@ def register_health_routes(
         parsed = _parse_health_export_payload(body)
         if parsed is None:
             summary = _payload_summary(body)
-            log.warning("steps_sync: could not parse payload: %s", body)
+            received_keys = list(body.keys()) if isinstance(body, dict) else []
+            log.warning("steps_sync: could not parse payload. Body keys: %s", received_keys)
             _record_steps_webhook(
                 request,
                 status="parse_error",
@@ -256,7 +285,23 @@ def register_health_routes(
             )
             return web.Response(
                 status=422,
-                text=json.dumps({"ok": False, "error": "could not parse step count from payload"}),
+                text=json.dumps(
+                    {
+                        "ok": False,
+                        "error": "Could not parse step count from payload",
+                        "received_keys": received_keys,
+                        "expected_format": {
+                            "simple": {"steps": 1234, "date": "YYYY-MM-DD"},
+                            "v2": {
+                                "data": {
+                                    "metrics": [
+                                        {"name": "Step Count", "data": [{"date": "YYYY-MM-DD", "qty": 1234}]}
+                                    ]
+                                }
+                            },
+                        },
+                    }
+                ),
                 content_type="application/json",
                 headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
             )
