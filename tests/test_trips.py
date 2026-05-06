@@ -238,3 +238,125 @@ def test_refresh_upcoming_trip_weather_updates_rows():
     )
     assert count == 1
     assert updated_pages
+
+
+def test_generate_packing_checklist_queries_matching_items(monkeypatch):
+    monkeypatch.setattr(trips, "NOTION_PACKING_ITEMS_DB", "packing-db")
+    calls = {"queries": [], "pages": []}
+
+    class _NotionDatabases:
+        def query(self, **kwargs):
+            calls["queries"].append(kwargs)
+            return {
+                "results": [
+                    {
+                        "properties": {
+                            "Item": {"title": [{"plain_text": "Sound level meter"}]},
+                            "Category": {"select": {"name": "Field Gear"}},
+                        }
+                    },
+                    {
+                        "properties": {
+                            "Item": {"title": [{"plain_text": "Socks"}]},
+                            "Category": {"select": {"name": "Clothes"}},
+                        }
+                    },
+                ]
+            }
+
+    class _NotionPages:
+        def create(self, **kwargs):
+            calls["pages"].append(kwargs)
+            return {"id": "checklist-1"}
+
+    notion = type("Notion", (), {"databases": _NotionDatabases(), "pages": _NotionPages()})()
+
+    checklist_id = asyncio.run(
+        trips._generate_packing_checklist(
+            notion=notion,
+            trip_page_id="trip-1",
+            trip_title="Austin — 14–17 Jun 2026",
+            field_work_types=["Noise Measurements"],
+            duration="2-3 Days",
+            multiple_sites=True,
+            multiple_cities=False,
+            checked_luggage=True,
+            purpose="Work",
+        )
+    )
+
+    assert checklist_id == "checklist-1"
+    assert calls["queries"][0]["database_id"] == "packing-db"
+    query_filter = calls["queries"][0]["filter"]
+    assert {"property": "Noise Measurements", "checkbox": {"equals": True}} in query_filter["or"]
+    assert {"property": "Always", "checkbox": {"equals": True}} in query_filter["or"]
+    assert {"property": "2-3 Days", "checkbox": {"equals": True}} in query_filter["or"]
+    assert {"property": "Multiple Sites", "checkbox": {"equals": True}} in query_filter["or"]
+    assert {"property": "Checked Luggage", "checkbox": {"equals": True}} in query_filter["or"]
+    assert {"property": "Work", "checkbox": {"equals": True}} in query_filter["or"]
+    page = calls["pages"][0]
+    assert page["parent"] == {"page_id": "trip-1"}
+    content = page["children"][0]["paragraph"]["rich_text"][0]["text"]["content"]
+    assert "## Clothes" in content
+    assert "- [ ] Socks" in content
+    assert "## Field Gear" in content
+    assert "- [ ] Sound level meter" in content
+
+
+def test_generate_packing_checklist_skips_when_db_unset(monkeypatch, caplog):
+    monkeypatch.setattr(trips, "NOTION_PACKING_ITEMS_DB", "")
+
+    class _NotionDatabases:
+        def query(self, **kwargs):
+            raise AssertionError("Packing DB should not be queried")
+
+    notion = type("Notion", (), {"databases": _NotionDatabases()})()
+
+    checklist_id = asyncio.run(
+        trips._generate_packing_checklist(
+            notion=notion,
+            trip_page_id="trip-1",
+            trip_title="Austin",
+            field_work_types=["Noise Measurements"],
+            duration=None,
+            multiple_sites=False,
+            multiple_cities=False,
+            checked_luggage=False,
+            purpose=None,
+        )
+    )
+
+    assert checklist_id is None
+    assert "NOTION_PACKING_ITEMS_DB is not set" in caplog.text
+
+
+def test_generate_packing_checklist_returns_none_for_no_items(monkeypatch, caplog):
+    caplog.set_level("INFO", logger="second_brain.trips")
+    monkeypatch.setattr(trips, "NOTION_PACKING_ITEMS_DB", "packing-db")
+
+    class _NotionDatabases:
+        def query(self, **kwargs):
+            return {"results": []}
+
+    class _NotionPages:
+        def create(self, **kwargs):
+            raise AssertionError("Checklist should not be created when no items match")
+
+    notion = type("Notion", (), {"databases": _NotionDatabases(), "pages": _NotionPages()})()
+
+    checklist_id = asyncio.run(
+        trips._generate_packing_checklist(
+            notion=notion,
+            trip_page_id="trip-1",
+            trip_title="Austin",
+            field_work_types=["None"],
+            duration=None,
+            multiple_sites=False,
+            multiple_cities=False,
+            checked_luggage=False,
+            purpose="Personal",
+        )
+    )
+
+    assert checklist_id is None
+    assert "No packing items matched filters for trip trip-1" in caplog.text
