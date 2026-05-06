@@ -3642,6 +3642,19 @@ async def post_init(app: Application) -> None:
         # Notion loaded successfully — sync back to local JSON cache
         wx.save_location_state(wx.current_location)
     notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB); _refresh_habit_cache_refs()
+    # Backfill steps state from Notion so redeploys don't zero out the 23:59 stamp
+    from second_brain.healthtrack.steps import backfill_steps_state_from_notion
+    from second_brain.healthtrack.config import STEPS_HABIT_NAME
+    try:
+        await backfill_steps_state_from_notion(
+            notion=notion,
+            habit_db_id=NOTION_HABIT_DB,
+            log_db_id=NOTION_LOG_DB,
+            habit_name=STEPS_HABIT_NAME,
+            tz=TZ,
+        )
+    except Exception as e:
+        log.warning("Steps state backfill failed (non-fatal): %s", e)
     global _app_bot
     _app_bot = app.bot
     await start_http_server()
