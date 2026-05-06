@@ -38,6 +38,12 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import anthropic
 from notion_client import Client as NotionClient
 
+from second_brain.asana.sync import (
+    reconcile,
+    AsanaSyncError,
+    validate_notion_schema,
+    startup_smoke_test,
+)
 from second_brain.cinema.sync import sync_cinema_log_to_notion
 from second_brain.cinema.config import (
     CINEMA_DB_ID,
@@ -64,7 +70,14 @@ from second_brain.healthtrack.config import (
     STEPS_THRESHOLD,
     STEPS_SOURCE_LABEL,
 )
-from second_brain.config import FEATURES
+from second_brain.config import (
+    FEATURES,
+    ASANA_PAT,
+    ASANA_PROJECT_GID,
+    ASANA_WORKSPACE_GID,
+    ASANA_SYNC_SOURCE,
+    ASANA_ARCHIVE_ORPHANS,
+)
 from second_brain.notion import notion_call
 from second_brain.notion import habits as notion_habits
 from second_brain.notion import tasks as notion_tasks
@@ -2946,6 +2959,43 @@ async def send_daily_habits_list(bot) -> None:
 
 
 
+async def run_asana_sync(bot) -> None:
+    """
+    Bi-directional Asana <-> Notion reconcile.
+    Offloads blocking I/O to thread pool so Telegram event loop stays responsive.
+    """
+    if not ASANA_PAT:
+        return  # Sync disabled — bot still works without Asana
+    loop = asyncio.get_event_loop()
+    sync_status["asana"]["last_run"] = utc_now_iso()
+    try:
+        stats = await loop.run_in_executor(
+            None,
+            lambda: reconcile(
+                notion=notion,
+                notion_db_id=NOTION_DB_ID,
+                asana_token=ASANA_PAT,
+                asana_project_gid=ASANA_PROJECT_GID,
+                asana_workspace_gid=ASANA_WORKSPACE_GID,
+                source_mode=ASANA_SYNC_SOURCE,
+                archive_orphans=ASANA_ARCHIVE_ORPHANS,
+            ),
+        )
+        if any(v for k, v in stats.items() if k != "skipped"):
+            log.info(f"Asana sync: {stats}")
+        sync_status["asana"]["ok"] = True
+        sync_status["asana"]["error"] = None
+        sync_status["asana"]["stats"] = stats
+    except AsanaSyncError as e:
+        log.error(f"Asana sync config error: {e}")
+        sync_status["asana"]["ok"] = False
+        sync_status["asana"]["error"] = str(e)
+    except Exception as e:
+        log.exception(f"Asana sync failed: {e}")
+        sync_status["asana"]["ok"] = False
+        sync_status["asana"]["error"] = str(e)
+
+
 async def run_cinema_sync(bot, *, force: bool = False) -> dict[str, int]:
     """Background sync for Cinema Log → Favourite Shows."""
     if not CINEMA_DB_ID:
@@ -3452,6 +3502,7 @@ def _build_utility_job_dispatch(bot) -> dict[str, Callable]:
         "trip_weather_refresh": _utility_async_handler(lambda: handle_trip_weather_refresh(bot)),
         "process_pending_programmes": _utility_async_handler(lambda: process_pending_programmes(bot)),
         "cinema_sync": _utility_async_handler(lambda: run_cinema_sync(bot)),
+        "asana_sync": _utility_async_handler(lambda: run_asana_sync(bot)),
         "steps_final_stamp": _utility_async_handler(lambda: _run_steps_final_stamp_dispatch(bot)),
         "daily_log_generate": _utility_async_handler(lambda: generate_daily_log(bot)),
         "run_recurring_check": _utility_async_handler(lambda: run_recurring_check(bot)),
