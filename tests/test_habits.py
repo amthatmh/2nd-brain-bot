@@ -94,5 +94,51 @@ class TestLoadHabitCacheFrequency(unittest.TestCase):
         self.assertEqual(cached["frequency_label"], "5x/week")
 
 
+class TestShowAfterGating(unittest.TestCase):
+    def _load_single_habit(self, main, *, show_after):
+        props = {
+            "Habit": {"title": [{"text": {"content": "Read"}}]},
+            "Active": {"checkbox": True},
+            "Time": {"select": {"name": "🌅 Morning"}},
+            "Color": {"select": {"name": "Blue"}},
+            "Description": {"rich_text": [{"text": {"content": "Read a few pages"}}]},
+            "Sort": {"number": 1},
+        }
+        if show_after is not None:
+            props["Show After"] = {"rich_text": [{"text": {"content": show_after}}]}
+        else:
+            props["Show After"] = {"rich_text": []}
+
+        fake_habit = {
+            "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "properties": props,
+        }
+        main.notion.databases.query = MagicMock(return_value={"results": [fake_habit]})
+        main.notion_habits.load_habit_cache(notion=main.notion, notion_habit_db=main.NOTION_HABIT_DB)
+        main._refresh_habit_cache_refs()
+
+    def _pending_names(self, *, show_after, time_str):
+        main = load_main_module()
+        self._load_single_habit(main, show_after=show_after)
+        with patch.object(main, "already_logged_today", return_value=False), \
+            patch.object(main, "is_on_pace", return_value=False):
+            return [habit["name"] for habit in main.pending_habits_for_digest(time_str=time_str)]
+
+    def test_habit_excluded_before_show_after(self):
+        self.assertNotIn("Read", self._pending_names(show_after="18:00", time_str="08:00"))
+
+    def test_habit_included_after_show_after(self):
+        self.assertIn("Read", self._pending_names(show_after="05:00", time_str="08:00"))
+
+    def test_habit_included_when_show_after_is_none(self):
+        self.assertIn("Read", self._pending_names(show_after=None, time_str="08:00"))
+
+    def test_habit_included_at_exact_show_after_time(self):
+        self.assertIn("Read", self._pending_names(show_after="08:00", time_str="08:00"))
+
+    def test_manual_habits_list_bypasses_show_after(self):
+        self.assertIn("Read", self._pending_names(show_after="18:00", time_str=None))
+
+
 if __name__ == "__main__":
     unittest.main()

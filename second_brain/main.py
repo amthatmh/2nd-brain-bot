@@ -1089,6 +1089,22 @@ def pending_habits_for_digest(time_str: str | None = None) -> list[dict]:
     )
 
 
+def _habit_visible_after_show_after(habit: dict, time_str: str | None) -> bool:
+    """Return whether a habit is allowed by its Show After gate for a digest slot."""
+    if time_str is None or not re.fullmatch(r"\d{2}:\d{2}", time_str):
+        return True
+
+    show_after = habit.get("show_after")
+    if not show_after:
+        return True
+
+    def _to_minutes(t: str) -> int:
+        h, m = t.split(":")
+        return int(h) * 60 + int(m)
+
+    return _to_minutes(time_str) >= _to_minutes(show_after)
+
+
 
 
 
@@ -2948,9 +2964,14 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         habits_enabled, include_habits, config.get("include_habits") if config else None
     )
     if habits_enabled:
+        now_str = datetime.now(TZ).strftime("%H:%M")
         morning_habits_all = notion_habits.get_habits_by_time(time_filter="🌅 Morning", notion_query_all=notion_query_all, notion_habit_db=NOTION_HABIT_DB, parse_time_to_minutes=_parse_time_to_minutes, count_habit_completions_this_week=_count_habit_completions_this_week, habit_capped_this_week=habit_capped_this_week) + notion_habits.get_habits_by_time(time_filter="🕐 Anytime", notion_query_all=notion_query_all, notion_habit_db=NOTION_HABIT_DB, parse_time_to_minutes=_parse_time_to_minutes, count_habit_completions_this_week=_count_habit_completions_this_week, habit_capped_this_week=habit_capped_this_week)
         if not morning_habits_all:
-            cached_morning_habits = pending_habits_for_digest("🌅 Morning") + pending_habits_for_digest("🕐 Anytime")
+            cached_pending_habits = pending_habits_for_digest(time_str=now_str)
+            cached_morning_habits = [
+                h for h in cached_pending_habits
+                if h.get("time") in {"🌅 Morning", "🕐 Anytime"}
+            ]
             if cached_morning_habits:
                 log.warning(
                     "Digest habits direct Notion query returned no morning/anytime habits; using %d cached pending habit(s)",
@@ -2962,6 +2983,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
             for h in morning_habits_all
             if not already_logged_today(h["page_id"])
             and not is_on_pace(h)
+            and _habit_visible_after_show_after(h, now_str)
             and (h.get("name") or "").strip().lower() != STEPS_HABIT_NAME.strip().lower()
         ]
         uv_max = uvi_data.get("max") if isinstance(uvi_data, dict) else None
@@ -3026,7 +3048,8 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
 
 async def send_evening_checkin(bot) -> None:
     """Evening habit check-in with time display and frequency status."""
-    evening_habits = pending_habits_for_digest()
+    now_str = datetime.now(TZ).strftime("%H:%M")
+    evening_habits = pending_habits_for_digest(time_str=now_str)
     if not evening_habits:
         return
 

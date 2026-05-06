@@ -109,6 +109,8 @@ def load_habit_cache(*, notion: Any, notion_habit_db: str) -> None:
 
             parsed_frequency = extract_habit_frequency(p)
             frequency_label = txt("Frequency Label")
+            show_after_raw = txt("Show After")
+            show_after = show_after_raw if (show_after_raw and re.match(r"^\d{2}:\d{2}$", show_after_raw)) else None
             if not frequency_label and parsed_frequency:
                 frequency_label = f"{parsed_frequency}x/week"
             page_icon = page.get("icon") or {}
@@ -122,6 +124,7 @@ def load_habit_cache(*, notion: Any, notion_habit_db: str) -> None:
                 "freq_per_week": parsed_frequency,
                 "frequency_label": frequency_label,
                 "description": txt("Description"),
+                "show_after": show_after,
                 "sort": num("Sort") or 99,
             }
         log.info("Habit cache loaded: %s", sorted(habit_cache.keys()))
@@ -160,6 +163,8 @@ def get_active_habits_for_trigger(
             time_str = time_str.strip() or "—"
             time_minutes = parse_time_to_minutes(time_str if time_str != "—" else None)
             frequency = extract_habit_frequency(props)
+            show_after_raw = _plain_text_from_property(props.get("Show After"))
+            show_after = show_after_raw if (show_after_raw and re.match(r"^\d{2}:\d{2}$", show_after_raw)) else None
             completion_count = count_habit_completions_this_week(page["id"])
             if frequency and frequency > 0 and completion_count >= frequency:
                 continue
@@ -171,6 +176,7 @@ def get_active_habits_for_trigger(
                     "time_str": time_str,
                     "frequency": frequency,
                     "completion_count": completion_count,
+                    "show_after": show_after,
                     "weather_gated": props.get("Weather Gated", {}).get("checkbox", False),
                 }
             )
