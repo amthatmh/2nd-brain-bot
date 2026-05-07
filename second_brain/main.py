@@ -268,14 +268,14 @@ _rc_h, _rc_m = main_helpers.parse_hhmm_env("RECURRING_CHECK_TIME", "7:00", log)
 CLAUDE_MODEL   = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
 CLAUDE_PARSE_MAX_TOKENS = int(os.environ.get("CLAUDE_PARSE_MAX_TOKENS", "4000"))
-NOTION_MOVEMENTS_DB = os.environ.get("NOTION_MOVEMENTS_DB", "")
+NOTION_MOVEMENTS_DB = os.environ.get("NOTION_MOVEMENTS_DB", "ecf5ac8381ce41a98fa804a1694977bb").strip()
 NOTION_CYCLES_DB = os.environ.get("NOTION_CYCLES_DB", "")
 NOTION_WORKOUT_PROGRAM_DB = os.environ.get("NOTION_WORKOUT_PROGRAM_DB", "")
 NOTION_WORKOUT_DAYS_DB = os.environ.get("NOTION_WORKOUT_DAYS_DB", "")
 NOTION_WORKOUT_LOG_DB = os.environ.get("NOTION_WORKOUT_LOG_DB", "")
 NOTION_SUBS_DB = os.environ.get("NOTION_SUBS_DB", "")
 NOTION_PRS_DB = os.environ.get("NOTION_PRS_DB", "")
-NOTION_WOD_LOG_DB = os.environ.get("NOTION_WOD_LOG_DB", "")
+NOTION_WOD_LOG_DB = os.environ.get("NOTION_WOD_LOG_DB", "f94bd9bc79384b53b18bf3d2afaf9881").strip()
 NOTION_PROGRESSIONS_DB = os.environ.get("NOTION_PROGRESSIONS_DB", "")
 NOTION_DAILY_READINESS_DB = os.environ.get("NOTION_DAILY_READINESS_DB", "")
 HTTP_PORT      = int(os.environ.get("PORT", "8080"))
@@ -2098,9 +2098,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # twd/tms/tcl:{key}      — trip flow steps
     # wl_save/wl_cancel      — wantslist confirm
     # tmdb_pick/skip/cancel  — watchlist TMDB picker
+    print(f"[DEBUG] Callback received: {q.data}")
     parts = q.data.split(":")
     if len(parts) == 1 and q.data.startswith("cf_"):
         parts = ["cf", q.data.removeprefix("cf_")]
+        print(f"[DEBUG] Normalized CrossFit callback to: {':'.join(parts)}")
     if parts[0] == "hl":
         parts[0] = "hc"
     if await handle_v10_callback(q, parts):
@@ -3938,9 +3940,16 @@ async def post_init(app: Application) -> None:
 
     try:
         if NOTION_MOVEMENTS_DB:
+            print("[STARTUP] Loading movements cache...")
             loaded_movements = await load_movements_cache(notion, NOTION_MOVEMENTS_DB)
             MOVEMENTS_CACHE.clear()
             MOVEMENTS_CACHE.update(loaded_movements)
+            print(f"[STARTUP] Loaded {len(MOVEMENTS_CACHE)} movements")
+            if "Hang Squat Clean" in MOVEMENTS_CACHE:
+                print("[STARTUP] ✓ 'Hang Squat Clean' found in cache")
+            else:
+                print("[STARTUP] ✗ 'Hang Squat Clean' NOT in cache - BUG!")
+                print(f"[STARTUP] Available movements: {list(MOVEMENTS_CACHE.keys())}")
             log.info("Loaded %d CrossFit movements into cache", len(MOVEMENTS_CACHE))
     except Exception as e:
         log.warning("CrossFit movement cache load failed at startup: %s", e)
