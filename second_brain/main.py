@@ -8,6 +8,7 @@ import re
 import logging
 import calendar
 import subprocess
+import time
 import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from collections import defaultdict
@@ -34,6 +35,7 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import anthropic
 from notion_client import Client as NotionClient
@@ -95,6 +97,15 @@ from second_brain.http_utils import cors_headers
 from second_brain.services import task_parsing as task_parsing_service
 from second_brain.services import note_utils as note_utils_service
 from second_brain.handlers.commands import CommandHandlers
+from second_brain.handlers.admin_commands import test_alert_command
+from second_brain.monitoring.health_checks import check_scheduler_health
+from second_brain.monitoring.metrics import generate_weekly_summary
+from utils.alert_handlers import (
+    alert_cinema_sync_complete,
+    alert_digest_sent,
+    alert_scheduler_event,
+    alert_startup,
+)
 
 from second_brain.crossfit.classify import classify_workout_message, parse_programme
 from second_brain.crossfit.handlers import (
@@ -2772,8 +2783,9 @@ async def send_digest_for_slot(bot, slot: dict) -> None:
     await send_daily_digest(
         bot,
         include_habits=bool(config.get("include_habits")),
-        config=config,
+        config={**config, "slot_name": f"{slot.get('time')} ({'weekday' if slot.get('is_weekday') else 'weekend'})"},
     )
+    alert_digest_sent(f"{slot.get('time')} ({'weekday' if slot.get('is_weekday') else 'weekend'})")
     _digest_slot_sent_today.add(slot_key)
 
 
@@ -3233,6 +3245,7 @@ async def run_cinema_sync(bot, *, force: bool = False) -> dict[str, int]:
         return {"scanned": 0, "updated": 0, "skipped": 0, "failed": 0, "tmdb_found": 0, "tmdb_missing": 0, "added_to_fave": 0}
 
     sync_status["cinema"]["last_run"] = utc_now_iso()
+    started_at = time.monotonic()
     try:
         stats = await sync_cinema_log_to_notion(
             notion=notion,
@@ -3254,6 +3267,12 @@ async def run_cinema_sync(bot, *, force: bool = False) -> dict[str, int]:
         sync_status["cinema"]["ok"] = True
         sync_status["cinema"]["error"] = None
         sync_status["cinema"]["stats"] = stats
+        alert_cinema_sync_complete(
+            stats.get("updated", 0) + stats.get("added_to_fave", 0),
+            stats.get("skipped", 0),
+            time.monotonic() - started_at,
+            None,
+        )
     except Exception as e:
         log.exception("Cinema sync failed: %s", e)
         await _try_send_telegram(
@@ -3948,6 +3967,14 @@ def _update_utility_job_status(notion, page_id: str, status: str, loaded_at: str
 # STARTUP
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+
+def _scheduler_event_listener(event) -> None:
+    if getattr(event, "exception", None):
+        alert_scheduler_event(getattr(event, "job_id", "unknown"), "error", str(event.exception))
+    else:
+        alert_scheduler_event(getattr(event, "job_id", "unknown"), "missed")
+
 async def post_init(app: Application) -> None:
     global _scheduler, UV_THRESHOLD, WEEKS_HISTORY, TZ
     try:
@@ -4020,6 +4047,7 @@ async def post_init(app: Application) -> None:
     _app_bot = app.bot
     await start_http_server()
     scheduler = AsyncIOScheduler(timezone=TZ)
+    scheduler.add_listener(_scheduler_event_listener, EVENT_JOB_ERROR | EVENT_JOB_MISSED)
     _scheduler = scheduler
     try:
         await backfill_steps_state_from_notion(
@@ -4125,10 +4153,11 @@ async def post_init(app: Application) -> None:
         boot_status = "warn"
         boot_notes_parts.append(f"Smoke: {smoke_status}")
 
+    boot_sha = _git_sha()
     await write_boot_log(
         bot=app.bot,
         version=APP_VERSION,
-        sha=_git_sha(),
+        sha=boot_sha,
         asana_status=f"{asana_status} smoke={smoke_status}",
         features=v10_feature_flags(),
         status=boot_status,
@@ -4149,6 +4178,7 @@ async def post_init(app: Application) -> None:
         BotCommand("unmute", "Resume scheduled digests"),
         BotCommand("location", "Set weather location"),
     ]
+    alert_startup(APP_VERSION, boot_sha, boot_status)
     await app.bot.set_my_commands(commands, scope=BotCommandScopeDefault())
     await app.bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=MY_CHAT_ID))
 
@@ -4370,6 +4400,7 @@ def main() -> None:
         cmd_signoff=cmd_signoff,
         handle_message_text=handle_message_text,
         handle_callback=handle_callback,
+        test_alert_command=test_alert_command,
     )
     log.info(f"🤖 Second Brain bot starting ({APP_VERSION})...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

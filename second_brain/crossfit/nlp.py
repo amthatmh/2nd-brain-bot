@@ -14,6 +14,8 @@ import re
 from typing import Dict, List, Optional, Tuple
 
 import anthropic
+
+from utils.alert_handlers import alert_claude_auth_failure
 try:
     from rapidfuzz import fuzz
 except ImportError:  # pragma: no cover - fallback for minimal test envs
@@ -108,6 +110,7 @@ Example: ["Wall Walks", "Hang Clean", "Burpee Over Bar", "V-Up"]
             raise ValueError("movement extraction did not return a JSON list")
         return [str(m).strip() for m in movements if str(m).strip()]
     except Exception as e:
+        alert_claude_auth_failure(str(e))
         print(f"Movement extraction error: {e}")
         return [log_message.strip()]
 

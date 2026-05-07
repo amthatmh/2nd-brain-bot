@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from second_brain.notion import tasks as notion_tasks
+from utils.alert_handlers import alert_claude_auth_failure
 
 log = logging.getLogger(__name__)
 
@@ -291,6 +292,7 @@ Rules:
         key_learnings      = (result.get("key_learnings") or "").strip()
         carried_forward    = (result.get("carried_forward") or "").strip()
     except Exception as e:
+        alert_claude_auth_failure(str(e))
         log.error("generate_daily_log: Claude call failed: %s", e)
         summary = ""; completed_text = ""; code_logic = ""
         testing = ""; issues = ""; key_learnings = ""
