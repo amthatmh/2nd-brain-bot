@@ -98,10 +98,10 @@ from second_brain.services import task_parsing as task_parsing_service
 from second_brain.services import note_utils as note_utils_service
 from second_brain.handlers.commands import CommandHandlers
 from second_brain.handlers.admin_commands import test_alert_command, test_channel_send
+from second_brain.monitoring import track_job_execution
 from second_brain.monitoring.health_checks import check_scheduler_health
 from second_brain.monitoring.metrics import generate_weekly_summary
 from utils.alert_handlers import (
-    alert_cinema_sync_complete,
     alert_digest_sent,
     alert_scheduler_event,
     alert_startup,
@@ -2687,7 +2687,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # SCHEDULED JOBS
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def run_recurring_check(bot) -> None:
+async def run_recurring_check(bot) -> dict:
     """
     Daily morning job — two responsibilities:
     1. Spawn recurring task instances from To-Do DB templates
@@ -2708,9 +2708,10 @@ async def run_recurring_check(bot) -> None:
         )
     if _is_muted():
         log.info("Recurring check skipped (muted)")
-        return
+        return {"action": "skipped", "reason": "muted"}
     spawned = notion_tasks.process_recurring_tasks(notion, NOTION_DB_ID)
     log.info(f"Recurring check: {spawned} task(s) spawned")
+    return {"action": "spawned", "tasks_spawned": spawned}
 
 
 async def get_digest_config(slot_time: str, weekday: bool) -> dict:
@@ -2885,7 +2886,7 @@ def build_digest_schedule(scheduler, bot, queue_catchup: bool = False) -> int:
     return len(_digest_jobs)
 
 
-async def rebuild_digest_schedule_job(bot, scheduler) -> None:
+async def rebuild_digest_schedule_job(bot, scheduler) -> dict:
     was_last_success = _digest_slots_last_load_succeeded
     result = build_digest_schedule(scheduler, bot)
     if result == 0 and was_last_success:
@@ -2893,20 +2894,22 @@ async def rebuild_digest_schedule_job(bot, scheduler) -> None:
             chat_id=MY_CHAT_ID,
             text="⚠️ Digest schedule rebuild returned 0 slots. Check Digest Selector.",
         )
+    return {"action": "rebuilt", "slots_registered": result}
 
 
-async def refresh_digest_schedule_job(bot, scheduler) -> None:
+async def refresh_digest_schedule_job(bot, scheduler) -> dict:
     """
     Periodic silent refresh — two responsibilities:
     1. Rebuild digest schedule so new/edited Digest Selector rows take effect
     2. Refresh habit cache so in-memory state stays current with Notion edits
     """
-    build_digest_schedule(scheduler, bot)
+    slots_registered = build_digest_schedule(scheduler, bot)
     notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB)
     _refresh_habit_cache_refs()
+    return {"action": "refreshed", "slots_registered": slots_registered}
 
 
-async def generate_daily_log(bot) -> None:
+async def generate_daily_log(bot) -> dict:
     """
     Generates end-of-day narrative log and writes it to 📓 Daily Log Notion DB.
     Triggered by the Utility Scheduler daily_log_generate job.
@@ -2926,6 +2929,7 @@ async def generate_daily_log(bot) -> None:
         signoff_note=get_and_clear_signoff_note(),
         claude_activity=get_and_clear_claude_activity(),
     )
+    return {"action": "generated", "has_url": bool(_last_daily_log_url)}
 
 
 async def send_daily_digest(bot, include_habits: bool = True, config: dict | None = None) -> None:
@@ -3203,13 +3207,13 @@ async def send_daily_habits_list(bot) -> None:
 
 
 
-async def run_asana_sync(bot) -> None:
+async def run_asana_sync(bot) -> dict:
     """
     Bi-directional Asana <-> Notion reconcile.
     Offloads blocking I/O to thread pool so Telegram event loop stays responsive.
     """
     if not ASANA_PAT:
-        return  # Sync disabled — bot still works without Asana
+        return {"ok": True, "action": "disabled"}  # Sync disabled — bot still works without Asana
     loop = asyncio.get_event_loop()
     sync_status["asana"]["last_run"] = utc_now_iso()
     try:
@@ -3230,23 +3234,34 @@ async def run_asana_sync(bot) -> None:
         sync_status["asana"]["ok"] = True
         sync_status["asana"]["error"] = None
         sync_status["asana"]["stats"] = stats
+        return {**stats, "action": "synced"}
     except AsanaSyncError as e:
         log.error(f"Asana sync config error: {e}")
         sync_status["asana"]["ok"] = False
         sync_status["asana"]["error"] = str(e)
+        return {"ok": False, "action": "error", "reason": str(e)}
     except Exception as e:
         log.exception(f"Asana sync failed: {e}")
         sync_status["asana"]["ok"] = False
         sync_status["asana"]["error"] = str(e)
+        return {"ok": False, "action": "error", "reason": str(e)}
 
 
-async def run_cinema_sync(bot, *, force: bool = False) -> dict[str, int]:
+async def run_cinema_sync(bot, *, force: bool = False) -> dict[str, int | str]:
     """Background sync for Cinema Log → Favourite Shows."""
     if not CINEMA_DB_ID:
-        return {"scanned": 0, "updated": 0, "skipped": 0, "failed": 0, "tmdb_found": 0, "tmdb_missing": 0, "added_to_fave": 0}
+        return {
+            "scanned": 0,
+            "updated": 0,
+            "skipped": 0,
+            "failed": 0,
+            "tmdb_found": 0,
+            "tmdb_missing": 0,
+            "added_to_fave": 0,
+            "action": "disabled",
+        }
 
     sync_status["cinema"]["last_run"] = utc_now_iso()
-    started_at = time.monotonic()
     try:
         stats = await sync_cinema_log_to_notion(
             notion=notion,
@@ -3268,12 +3283,7 @@ async def run_cinema_sync(bot, *, force: bool = False) -> dict[str, int]:
         sync_status["cinema"]["ok"] = True
         sync_status["cinema"]["error"] = None
         sync_status["cinema"]["stats"] = stats
-        alert_cinema_sync_complete(
-            stats.get("updated", 0) + stats.get("added_to_fave", 0),
-            stats.get("skipped", 0),
-            time.monotonic() - started_at,
-            None,
-        )
+        return {**stats, "action": "synced"}
     except Exception as e:
         log.exception("Cinema sync failed: %s", e)
         await _try_send_telegram(
@@ -3283,8 +3293,18 @@ async def run_cinema_sync(bot, *, force: bool = False) -> dict[str, int]:
         )
         sync_status["cinema"]["ok"] = False
         sync_status["cinema"]["error"] = str(e)
-        return {"scanned": 0, "updated": 0, "skipped": 0, "failed": 1, "tmdb_found": 0, "tmdb_missing": 0, "added_to_fave": 0}
-    return stats
+        return {
+            "scanned": 0,
+            "updated": 0,
+            "skipped": 0,
+            "failed": 1,
+            "tmdb_found": 0,
+            "tmdb_missing": 0,
+            "added_to_fave": 0,
+            "action": "error",
+            "reason": str(e),
+        }
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3800,7 +3820,7 @@ async def handle_trip_weather_refresh(bot) -> dict:
     return await _run_trip_weather_refresh(bot)
 
 
-async def _run_steps_sync_check_dispatch(bot) -> None:
+async def _run_steps_sync_check_dispatch(bot) -> dict:
     result = await check_and_create_steps_entry(
         notion=notion,
         habit_db_id=NOTION_HABIT_DB,
@@ -3814,9 +3834,10 @@ async def _run_steps_sync_check_dispatch(bot) -> None:
     sync_status["steps"]["ok"] = bool(result.get("ok"))
     sync_status["steps"]["error"] = None if result.get("ok") else result.get("reason")
     sync_status["steps"]["stats"] = result
+    return result
 
 
-async def _run_steps_final_stamp_dispatch(bot) -> None:
+async def _run_steps_final_stamp_dispatch(bot) -> dict:
     result = await handle_steps_final_stamp(
         notion=notion,
         habit_db_id=NOTION_HABIT_DB,
@@ -3832,16 +3853,26 @@ async def _run_steps_final_stamp_dispatch(bot) -> None:
     sync_status["steps"]["ok"] = True
     sync_status["steps"]["error"] = None
     sync_status["steps"]["stats"] = result
+    return result
 
 
 UTILITY_JOB_DISPATCH: dict[str, Callable] = {}
 
 
-def _utility_async_handler(coro_factory: Callable):
-    async def _handler() -> None:
-        await coro_factory()
+def _utility_async_handler(job_key: str, coro_factory: Callable):
+    @track_job_execution(job_key)
+    async def _utility_dispatch_handler() -> object:
+        return await coro_factory()
 
-    return _handler
+    return _utility_dispatch_handler
+
+
+def _tracked_utility_manager_handler(job_key: str, coro_factory: Callable):
+    @track_job_execution(job_key)
+    async def _utility_manager_dispatch_handler(bot) -> object:
+        return await coro_factory(bot)
+
+    return _utility_manager_dispatch_handler
 
 
 def _build_utility_job_dispatch(bot) -> dict[str, Callable]:
@@ -3852,17 +3883,17 @@ def _build_utility_job_dispatch(bot) -> dict[str, Callable]:
     captured via closure).
     """
     dispatch = {
-        "digest_schedule_rebuild": _utility_async_handler(lambda: rebuild_digest_schedule_job(bot, _scheduler)),
-        "digest_schedule_refresh": _utility_async_handler(lambda: refresh_digest_schedule_job(bot, _scheduler)),
-        "weather_cache_refresh": _utility_async_handler(lambda: wx.fetch_weather_cache(bot)),
-        "trip_weather_refresh": _utility_async_handler(lambda: handle_trip_weather_refresh(bot)),
-        "process_pending_programmes": _utility_async_handler(lambda: process_pending_programmes(bot)),
-        "cinema_sync": _utility_async_handler(lambda: run_cinema_sync(bot)),
-        "asana_sync": _utility_async_handler(lambda: run_asana_sync(bot)),
-        "steps_final_stamp": _utility_async_handler(lambda: _run_steps_final_stamp_dispatch(bot)),
-        "steps_sync_check": _utility_async_handler(lambda: _run_steps_sync_check_dispatch(bot)),
-        "daily_log_generate": _utility_async_handler(lambda: generate_daily_log(bot)),
-        "run_recurring_check": _utility_async_handler(lambda: run_recurring_check(bot)),
+        "digest_schedule_rebuild": _utility_async_handler("digest_schedule_rebuild", lambda: rebuild_digest_schedule_job(bot, _scheduler)),
+        "digest_schedule_refresh": _utility_async_handler("digest_schedule_refresh", lambda: refresh_digest_schedule_job(bot, _scheduler)),
+        "weather_cache_refresh": _utility_async_handler("weather_cache_refresh", lambda: wx.fetch_weather_cache(bot)),
+        "trip_weather_refresh": _utility_async_handler("trip_weather_refresh", lambda: handle_trip_weather_refresh(bot)),
+        "process_pending_programmes": _utility_async_handler("process_pending_programmes", lambda: process_pending_programmes(bot)),
+        "cinema_sync": _utility_async_handler("cinema_sync", lambda: run_cinema_sync(bot)),
+        "asana_sync": _utility_async_handler("asana_sync", lambda: run_asana_sync(bot)),
+        "steps_final_stamp": _utility_async_handler("steps_final_stamp", lambda: _run_steps_final_stamp_dispatch(bot)),
+        "steps_sync_check": _utility_async_handler("steps_sync_check", lambda: _run_steps_sync_check_dispatch(bot)),
+        "daily_log_generate": _utility_async_handler("daily_log_generate", lambda: generate_daily_log(bot)),
+        "run_recurring_check": _utility_async_handler("run_recurring_check", lambda: run_recurring_check(bot)),
     }
     UTILITY_JOB_DISPATCH.clear()
     UTILITY_JOB_DISPATCH.update(dispatch)
@@ -4108,13 +4139,25 @@ async def post_init(app: Application) -> None:
 
         utility_manager.register_handler(
             "digest_schedule_rebuild",
-            lambda bot: rebuild_digest_schedule_job(bot, scheduler),
+            _tracked_utility_manager_handler(
+                "digest_schedule_rebuild",
+                lambda bot: rebuild_digest_schedule_job(bot, scheduler),
+            ),
         )
         utility_manager.register_handler(
             "digest_schedule_refresh",
-            lambda bot: refresh_digest_schedule_job(bot, scheduler),
+            _tracked_utility_manager_handler(
+                "digest_schedule_refresh",
+                lambda bot: refresh_digest_schedule_job(bot, scheduler),
+            ),
         )
-        utility_manager.register_handler("run_recurring_check", lambda bot: run_recurring_check(bot))
+        utility_manager.register_handler(
+            "run_recurring_check",
+            _tracked_utility_manager_handler(
+                "run_recurring_check",
+                lambda bot: run_recurring_check(bot),
+            ),
+        )
 
         await utility_manager.initialize()
         log.info("Utility Scheduler Manager initialized ✓")
@@ -4125,7 +4168,7 @@ async def post_init(app: Application) -> None:
     # TEST: Verify scheduler log shows "digest_refresh=5min"
     # TEST: Verify digest schedule refreshes every 5 minutes (check Railway logs)
     scheduler.add_job(
-        refresh_digest_schedule_job,
+        track_job_execution("digest_schedule_refresh")(refresh_digest_schedule_job),
         "interval",
         minutes=UTILITY_SCHEDULER_RELOAD_MINUTES,
         args=[app.bot, scheduler],

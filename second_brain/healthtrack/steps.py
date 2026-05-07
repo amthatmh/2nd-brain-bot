@@ -35,6 +35,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
+from second_brain.monitoring import track_job_execution
+
 log = logging.getLogger(__name__)
 
 # In-memory state keyed by date string "YYYY-MM-DD"
@@ -396,6 +398,7 @@ def get_steps_state_summary() -> dict:
     }
 
 
+@track_job_execution("steps_sync_check")
 async def handle_steps_sync_check(bot=None) -> dict:
     """Utility Scheduler job: ensure today's Steps entry exists."""
     from second_brain.main import MY_CHAT_ID, NOTION_HABIT_DB, NOTION_LOG_DB, TZ, notion
@@ -413,6 +416,7 @@ async def handle_steps_sync_check(bot=None) -> dict:
     )
 
 
+@track_job_execution("steps_final_stamp")
 async def handle_steps_final_stamp_job(bot=None) -> dict:
     """Utility Scheduler job wrapper for the nightly Steps final stamp."""
     from second_brain.main import MY_CHAT_ID, NOTION_HABIT_DB, NOTION_LOG_DB, TZ, notion

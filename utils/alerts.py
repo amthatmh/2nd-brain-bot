@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 import httpx
@@ -13,10 +13,10 @@ ALERT_EMOJIS = {
     "DEPLOY": "🚀",
     "INFO": "ℹ️",
     "WARN": "⚠️",
+    "WARNING": "⚠️",
     "ERROR": "🚨",
     "CRITICAL": "🔥",
 }
-_COOLDOWNS: dict[str, datetime] = {}
 
 
 def _alert_channel_id() -> str:
@@ -27,34 +27,25 @@ def _alert_channel_id() -> str:
     )
 
 
-def _check_cooldown(cooldown_key: str, cooldown_hours: int) -> bool:
-    last_alert = _COOLDOWNS.get(cooldown_key)
-    if last_alert is None:
-        return True
-    return datetime.now(timezone.utc) - last_alert >= timedelta(hours=cooldown_hours)
-
-
-def _set_cooldown(cooldown_key: str) -> None:
-    _COOLDOWNS[cooldown_key] = datetime.now(timezone.utc)
-
-
-def send_alert(
-    message: str,
-    level: str = "INFO",
-    cooldown_key: Optional[str] = None,
-    cooldown_hours: int = 24,
-) -> bool:
+def send_alert(message: str, level: str = "INFO", cooldown_key: Optional[str] = None) -> bool:
     """
-    Send alert to the configured channel with optional rate limiting.
+    Send alert to System logs channel.
 
-    ALERT_CHANNEL_ID/TELEGRAM_ALERT_CHAT_ID are the only alert destinations;
-    TELEGRAM_CHAT_ID is intentionally not used as a fallback to avoid routing
-    operational alerts to the bot owner's personal DM.
+    Args:
+        message: Alert message content
+        level: Alert level (CRITICAL, WARNING, INFO, METRICS, DEPLOY)
+        cooldown_key: Optional cooldown key (6h default cooldown if provided)
+
+    Returns:
+        True if sent successfully, False if skipped due to cooldown
     """
+    from second_brain.monitoring import check_alert_cooldown, set_alert_cooldown
+
     logger = logging.getLogger(__name__)
     token = os.environ.get("TELEGRAM_TOKEN", "").strip()
     alert_channel_id = _alert_channel_id()
     thread_id = os.environ.get("TELEGRAM_ALERT_THREAD_ID", "").strip()
+    cooldown_hours = 6
 
     # DEBUG: Trace execution
     logger.info("[ALERT_DEBUG] send_alert() called")
@@ -64,15 +55,16 @@ def send_alert(
     logger.info("[ALERT_DEBUG] Level: %s, Cooldown key: %s", level, cooldown_key)
     logger.info("[ALERT_DEBUG] Message preview: %s...", message[:100])
 
+    if cooldown_key and level != "CRITICAL":
+        if not check_alert_cooldown(cooldown_key, cooldown_hours=cooldown_hours):
+            logger.info("[ALERT_DEBUG] Skipping alert due to cooldown: %s", cooldown_key)
+            return False
+
     if not token:
         logger.error("[ALERT_DEBUG] TELEGRAM_TOKEN is None/empty - SKIPPING")
         return False
     if not alert_channel_id:
         logger.error("[ALERT_DEBUG] ALERT_CHANNEL_ID is None/empty - SKIPPING")
-        return False
-
-    if cooldown_key and not _check_cooldown(cooldown_key, cooldown_hours):
-        logger.info("[ALERT_DEBUG] Skipped due to cooldown: %s", cooldown_key)
         return False
 
     if level == "DEPLOY":
@@ -82,7 +74,7 @@ def send_alert(
         header = f"{emoji} {level}\n\n"
 
     footer = ""
-    if cooldown_key:
+    if cooldown_key and level != "CRITICAL":
         next_alert = datetime.now() + timedelta(hours=cooldown_hours)
         footer = f"\n\n_Cooldown: {cooldown_hours}h (next alert: {next_alert.strftime('%b %d, %I:%M %p %Z')})_"
 
@@ -106,8 +98,8 @@ def send_alert(
         result = response.json()
         message_id = result.get("result", {}).get("message_id", "unknown")
         logger.info("[ALERT_DEBUG] ✅ Successfully sent! Message ID: %s", message_id)
-        if cooldown_key:
-            _set_cooldown(cooldown_key)
+        if cooldown_key and level != "CRITICAL":
+            set_alert_cooldown(cooldown_key)
         return True
     except Exception as exc:  # noqa: BLE001 - alerts must never crash callers
         logger.error("[ALERT_DEBUG] ❌ FAILED to send alert: %s: %s", type(exc).__name__, exc)
