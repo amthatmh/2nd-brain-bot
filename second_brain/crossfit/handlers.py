@@ -19,16 +19,26 @@ log = logging.getLogger(__name__)
 
 # Global movement cache loaded lazily and refreshed at bot startup.
 MOVEMENTS_CACHE: dict[str, str] = {}
+DEFAULT_WOD_LOG_DB_ID = "f94bd9bc79384b53b18bf3d2afaf9881"
+DEFAULT_MOVEMENTS_DB_ID = "ecf5ac8381ce41a98fa804a1694977bb"
 
 
 def _cf_config(config: dict, name: str, default: str = "") -> str:
-    return (config or {}).get(name) or os.environ.get(name, default)
+    defaults = {
+        "NOTION_MOVEMENTS_DB": DEFAULT_MOVEMENTS_DB_ID,
+        "NOTION_WOD_LOG_DB": DEFAULT_WOD_LOG_DB_ID,
+    }
+    fallback = default or defaults.get(name, "")
+    return str((config or {}).get(name) or os.environ.get(name) or fallback).strip()
 
 
 async def _ensure_movements_cache(notion, config: dict) -> dict[str, str]:
-    global MOVEMENTS_CACHE
     if not MOVEMENTS_CACHE:
-        MOVEMENTS_CACHE = await load_movements_cache(notion, _cf_config(config, "NOTION_MOVEMENTS_DB"))
+        print("[DEBUG] Movement cache empty; loading lazily")
+        loaded_movements = await load_movements_cache(notion, _cf_config(config, "NOTION_MOVEMENTS_DB"))
+        MOVEMENTS_CACHE.clear()
+        MOVEMENTS_CACHE.update(loaded_movements)
+        print(f"[DEBUG] Lazy-loaded {len(MOVEMENTS_CACHE)} movements into cache")
     return MOVEMENTS_CACHE
 
 
@@ -282,7 +292,9 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
 
 
 async def handle_cf_wod_flow(message, workout_result, notion, config, cf_pending):
+    print("[DEBUG] Starting WOD log flow")
     target_wod_db = _cf_config(config, "NOTION_WOD_LOG_DB")
+    print(f"[DEBUG] WOD Log DB configured as: {target_wod_db}")
     if not target_wod_db:
         await message.reply_text("⚠️ CrossFit WOD Log isn't configured yet.", parse_mode="Markdown")
         return
@@ -451,12 +463,15 @@ async def _prompt_readiness_field(message, key: str, field: str):
 
 
 async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
+    print(f"[DEBUG] CrossFit callback parts: {parts}")
     if len(parts) < 2:
         await q.answer("Action unavailable.", show_alert=False)
         return
     if parts[1] == "log_strength":
+        print("[DEBUG] Routing to handle_cf_strength_flow")
         await handle_cf_strength_flow(q.message, {}, claude, notion, config, cf_pending)
     elif parts[1] == "log_wod":
+        print("[DEBUG] Routing to handle_cf_wod_flow")
         await handle_cf_wod_flow(q.message, {}, notion, config, cf_pending)
     elif parts[1] == "upload_programme":
         prompt = (

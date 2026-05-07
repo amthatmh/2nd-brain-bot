@@ -253,6 +253,22 @@ def test_fuzzy_match_movements_uses_extracted_canonical_name_for_weighted_db_ent
     assert matches == [("Hang Clean", "Hang Cleans (115/85)", 1.0)]
 
 
+
+def test_fuzzy_match_movements_prefers_hang_squat_clean_over_sandbag_clean():
+    from second_brain.crossfit.nlp import fuzzy_match_movements
+
+    cache = {
+        "Hang Squat Clean": "mov-hang-squat-clean",
+        "Squat Clean": "mov-squat-clean",
+        "Sandbag Clean": "mov-sandbag-clean",
+    }
+
+    matches = asyncio.run(fuzzy_match_movements(["Hang Clean"], cache))
+
+    assert matches[0][1] == "Hang Squat Clean"
+    assert matches[0][2] > 0.80
+
+
 def test_resolve_movement_ids_extracts_before_fuzzy_matching():
     from second_brain.crossfit.handlers import MOVEMENTS_CACHE, _resolve_movement_ids
 
