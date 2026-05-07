@@ -10,11 +10,12 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import re
 from typing import Dict, List, Optional, Tuple
 
 import anthropic
 try:
-    from rapidfuzz import fuzz, process
+    from rapidfuzz import fuzz
 except ImportError:  # pragma: no cover - fallback for minimal test envs
     from difflib import SequenceMatcher
 
@@ -24,14 +25,6 @@ except ImportError:  # pragma: no cover - fallback for minimal test envs
             a_tokens = " ".join(sorted(str(a).lower().split()))
             b_tokens = " ".join(sorted(str(b).lower().split()))
             return SequenceMatcher(None, a_tokens, b_tokens).ratio() * 100
-
-    class process:  # type: ignore[no-redef]
-        @staticmethod
-        def extractOne(query, choices, scorer):
-            if not choices:
-                return None
-            best = max(choices, key=lambda choice: scorer(query, choice))
-            return (best, scorer(query, best), 0)
 
 from second_brain.notion import notion_call
 
@@ -107,6 +100,18 @@ Example: ["Wall Walks", "Hang Clean", "Burpee Over Bar", "V-Up"]
         return [log_message.strip()]
 
 
+def _normalise_movement_for_match(name: str) -> str:
+    """Return a comparison-friendly movement name for fuzzy matching."""
+    normalised = re.sub(r"\([^)]*\)", " ", str(name or ""))
+    normalised = re.sub(r"[^a-zA-Z0-9]+", " ", normalised).strip().lower()
+    tokens = []
+    for token in normalised.split():
+        if len(token) > 3 and token.endswith("s"):
+            token = token[:-1]
+        tokens.append(token)
+    return " ".join(tokens)
+
+
 async def fuzzy_match_movements(
     extracted_movements: List[str],
     movements_db_cache: Dict[str, str],
@@ -132,12 +137,25 @@ async def fuzzy_match_movements(
         movement = (movement or "").strip()
         if not movement:
             continue
-        match_result = process.extractOne(movement, movement_names, scorer=fuzz.token_sort_ratio)
-        if match_result:
-            matched_name, score = match_result[0], match_result[1] / 100.0
-            matched_results.append((movement, matched_name, score))
-        else:
+        if not movement_names:
             matched_results.append((movement, None, 0.0))
+            continue
+
+        normalised_movement = _normalise_movement_for_match(movement)
+        best_name: Optional[str] = None
+        best_score = 0.0
+        for candidate in movement_names:
+            raw_score = fuzz.token_sort_ratio(movement, candidate) / 100.0
+            normalised_score = fuzz.token_sort_ratio(
+                normalised_movement,
+                _normalise_movement_for_match(candidate),
+            ) / 100.0
+            score = max(raw_score, normalised_score)
+            if score > best_score:
+                best_name = candidate
+                best_score = score
+
+        matched_results.append((movement, best_name, best_score))
 
     return matched_results
 

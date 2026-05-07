@@ -243,3 +243,101 @@ def test_wod_rx_callback_moves_to_result_notes_prompt():
     assert cf_pending[key]["stage"] == "notes"
     assert cf_pending[key]["rx_scaled"] == "Scaled"
     assert "time" in q.message.replies[-1][0].lower()
+
+
+def test_fuzzy_match_movements_uses_extracted_canonical_name_for_weighted_db_entry():
+    from second_brain.crossfit.nlp import fuzzy_match_movements
+
+    matches = asyncio.run(fuzzy_match_movements(["Hang Clean"], {"Hang Cleans (115/85)": "mov-hang-clean"}))
+
+    assert matches == [("Hang Clean", "Hang Cleans (115/85)", 1.0)]
+
+
+def test_resolve_movement_ids_extracts_before_fuzzy_matching():
+    from second_brain.crossfit.handlers import MOVEMENTS_CACHE, _resolve_movement_ids
+
+    MOVEMENTS_CACHE.clear()
+    MOVEMENTS_CACHE["Hang Cleans (115/85)"] = "mov-hang-clean"
+    claude = _FakeClaude('["Hang Clean"]')
+
+    movement_ids, names = asyncio.run(
+        _resolve_movement_ids(
+            "4xHang squat and clean, did 6 sets at 115lb",
+            claude,
+            None,
+            {"NOTION_MOVEMENTS_DB": "movements"},
+        )
+    )
+
+    assert movement_ids == ["mov-hang-clean"]
+    assert names == ["Hang Cleans (115/85)"]
+
+
+def test_wod_callback_starts_wod_flow_prompt():
+    from second_brain.crossfit.handlers import handle_cf_callback
+
+    class _DummyQuery:
+        def __init__(self):
+            self.message = _DummyMessage()
+
+        async def answer(self, *args, **kwargs):
+            pass
+
+        async def edit_message_text(self, *args, **kwargs):
+            pass
+
+    q = _DummyQuery()
+    cf_pending = {}
+    notion = SimpleNamespace(databases=SimpleNamespace(query=lambda **kwargs: {"results": []}))
+
+    asyncio.run(handle_cf_callback(q, ["cf", "log_wod"], None, notion, {"NOTION_WOD_LOG_DB": "wod"}, cf_pending))
+
+    assert cf_pending[str(q.message.chat_id)]["mode"] == "wod"
+    assert "Which movement(s) were in the WOD?" in q.message.replies[-1][0]
+    assert "configured yet" not in q.message.replies[-1][0]
+
+
+def test_readiness_final_score_writes_and_clears_pending(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    class _DummyQuery:
+        def __init__(self):
+            self.message = _DummyMessage()
+            self.edits = []
+
+        async def answer(self, *args, **kwargs):
+            pass
+
+        async def edit_message_text(self, text, **kwargs):
+            self.edits.append((text, kwargs))
+
+    calls = []
+
+    async def fake_log_daily_readiness(notion, **kwargs):
+        calls.append((notion, kwargs))
+        return {"id": "readiness-page"}
+
+    monkeypatch.setattr(handlers, "log_daily_readiness", fake_log_daily_readiness)
+    q = _DummyQuery()
+    key = str(q.message.chat_id)
+    cf_pending = {
+        key: {
+            "mode": "readiness",
+            "stage": "soreness",
+            "readiness": {"sleep_quality": "4", "energy": "5", "mood": "4", "stress": "2"},
+        }
+    }
+    notion = SimpleNamespace()
+
+    asyncio.run(handlers.handle_cf_callback(q, ["cf", "ready", key, "soreness", "3"], None, notion, {"NOTION_DAILY_READINESS_DB": "ready-db"}, cf_pending))
+
+    assert key not in cf_pending
+    assert q.edits[-1][0] == "✅ Readiness logged!"
+    assert calls[0][1] == {
+        "sleep_quality": "4",
+        "energy": "5",
+        "mood": "4",
+        "stress": "2",
+        "soreness": "3",
+        "daily_readiness_db_id": "ready-db",
+    }

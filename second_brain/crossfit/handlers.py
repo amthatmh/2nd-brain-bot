@@ -35,9 +35,19 @@ async def _ensure_movements_cache(notion, config: dict) -> dict[str, str]:
 async def _resolve_movement_ids(text: str, claude, notion, config: dict, message=None) -> tuple[list[str], list[str]]:
     """Extract canonical movement names and resolve them to Notion page IDs."""
     movements_db_id = _cf_config(config, "NOTION_MOVEMENTS_DB")
-    extracted = await extract_movements_from_log(text, claude)
+    try:
+        extracted = await extract_movements_from_log(text, claude)
+        if not extracted:
+            raise ValueError("movement extraction returned no movements")
+        print(f"[DEBUG] Extracted movements: {extracted}")
+    except Exception as e:
+        print(f"[ERROR] Movement extraction failed: {e}")
+        log.exception("Movement extraction failed; falling back to raw input")
+        extracted = [text.strip()] if text and text.strip() else []
     cache = await _ensure_movements_cache(notion, config)
     matches = await fuzzy_match_movements(extracted, cache)
+    for extracted_name, matched_name, score in matches:
+        print(f"[DEBUG] Fuzzy match score: {score:.2f} for {extracted_name!r} -> {matched_name!r}")
     movement_ids: list[str] = []
     canonical_names: list[str] = []
 
@@ -483,17 +493,26 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
             next_field = order[order.index(field) + 1]
         except (ValueError, IndexError):
             scores = state.get("readiness", {})
-            await log_daily_readiness(
-                notion,
-                sleep_quality=scores.get("sleep_quality", value),
-                energy=scores.get("energy", value),
-                mood=scores.get("mood", value),
-                stress=scores.get("stress", value),
-                soreness=scores.get("soreness", value),
-                daily_readiness_db_id=_cf_config(config, "NOTION_DAILY_READINESS_DB"),
-            )
+            print(f"[DEBUG] All readiness scores collected: {scores}")
+            print("[DEBUG] Calling log_daily_readiness...")
+            try:
+                await log_daily_readiness(
+                    notion,
+                    sleep_quality=scores.get("sleep_quality", value),
+                    energy=scores.get("energy", value),
+                    mood=scores.get("mood", value),
+                    stress=scores.get("stress", value),
+                    soreness=scores.get("soreness", value),
+                    daily_readiness_db_id=_cf_config(config, "NOTION_DAILY_READINESS_DB"),
+                )
+            except Exception as e:
+                print(f"[ERROR] Readiness logging failed: {e}")
+                log.exception("Readiness logging failed")
+                await q.edit_message_text(f"❌ Error logging readiness: {e}")
+                return
+            print("[DEBUG] Readiness logged successfully")
             cf_pending.pop(key, None)
-            await q.edit_message_text("✅ Daily readiness logged!")
+            await q.edit_message_text("✅ Readiness logged!")
             return
         state["stage"] = next_field
         cf_pending[key] = state
