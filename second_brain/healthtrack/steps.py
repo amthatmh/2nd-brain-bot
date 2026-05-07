@@ -126,7 +126,7 @@ def _create_log_entry(
             parent={"database_id": log_db_id},
             properties={
                 "Entry": {
-                    "title": [{"text": {"content": f"Steps — {date_str}"}}]
+                    "title": [{"text": {"content": "Steps"}}]
                 },
                 "Habit": {"relation": [{"id": habit_page_id}]},
                 "Completed": {"checkbox": completed},

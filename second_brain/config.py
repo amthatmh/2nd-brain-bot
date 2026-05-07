@@ -37,7 +37,8 @@ NOTION_LOG_DB = os.environ["NOTION_LOG_DB"]
 NOTION_NOTES_DB = os.environ["NOTION_NOTES_DB"]
 NOTION_DIGEST_SELECTOR_DB = os.environ["NOTION_DIGEST_SELECTOR_DB"]
 NOTION_UTILITY_SCHEDULER_DB = os.environ.get("NOTION_UTILITY_SCHEDULER_DB", "").strip()
-UTILITY_SCHEDULER_RELOAD_MINUTE = int(os.environ.get("UTILITY_SCHEDULER_RELOAD_MINUTE", "15"))
+# Utility scheduler reload interval (minutes) — how often to refresh digest schedule from Notion
+UTILITY_SCHEDULER_RELOAD_MINUTES: int = int(os.environ.get("UTILITY_SCHEDULER_RELOAD_MINUTES", "10"))
 NOTION_DAILY_LOG_DB = os.environ.get("NOTION_DAILY_LOG_DB", "")
 NOTION_PACKING_ITEMS_DB = os.environ.get("NOTION_PACKING_ITEMS_DB", "")
 NOTION_TRIPS_DB = os.environ.get("NOTION_TRIPS_DB", "")

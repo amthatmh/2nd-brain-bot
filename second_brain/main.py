@@ -67,12 +67,9 @@ from second_brain.healthtrack.steps import (
     handle_steps_final_stamp,
 )
 from second_brain.healthtrack.scheduler import check_and_create_steps_entry
-from second_brain.healthtrack.config import (
-    STEPS_THRESHOLD,
-    STEPS_SOURCE_LABEL,
-)
 from second_brain.config import (
     FEATURES,
+    UTILITY_SCHEDULER_RELOAD_MINUTES,
     ASANA_PAT,
     ASANA_PROJECT_GID,
     ASANA_WORKSPACE_GID,
@@ -258,7 +255,6 @@ NOTION_FAVE_DB = os.environ.get("NOTION_FAVE_DB", "").strip()
 NOTION_NOTES_DB = os.environ["NOTION_NOTES_DB"]    # 📒 Notes
 NOTION_DIGEST_SELECTOR_DB = os.environ["NOTION_DIGEST_SELECTOR_DB"]
 NOTION_UTILITY_SCHEDULER_DB = os.environ.get("NOTION_UTILITY_SCHEDULER_DB", "").strip()
-UTILITY_SCHEDULER_RELOAD_MINUTE = int(os.environ.get("UTILITY_SCHEDULER_RELOAD_MINUTE", "15"))
 ASANA_SYNC_INTERVAL = int(os.environ.get("ASANA_SYNC_INTERVAL", "60"))
 NOTION_DAILY_LOG_DB = os.environ.get("NOTION_DAILY_LOG_DB", "")
 NOTION_PACKING_ITEMS_DB = os.environ.get("NOTION_PACKING_ITEMS_DB", "")
@@ -3803,8 +3799,8 @@ async def _run_steps_final_stamp_dispatch(bot) -> None:
         habit_db_id=NOTION_HABIT_DB,
         log_db_id=NOTION_LOG_DB,
         habit_name=health_config.STEPS_HABIT_NAME,
-        threshold=STEPS_THRESHOLD,
-        source_label=STEPS_SOURCE_LABEL,
+        threshold=health_config.STEPS_THRESHOLD,
+        source_label=health_config.STEPS_SOURCE_LABEL,
         tz=TZ,
         bot=bot,
         chat_id=MY_CHAT_ID,
@@ -3953,7 +3949,7 @@ def _update_utility_job_status(notion, page_id: str, status: str, loaded_at: str
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def post_init(app: Application) -> None:
-    global _scheduler, UV_THRESHOLD, STEPS_THRESHOLD, WEEKS_HISTORY, TZ
+    global _scheduler, UV_THRESHOLD, WEEKS_HISTORY, TZ
     try:
         startup_notion_health_check()
     except RuntimeError as e:
@@ -3983,13 +3979,6 @@ async def post_init(app: Application) -> None:
     except Exception as e:
         log.warning("CrossFit movement cache load failed at startup: %s", e)
 
-    # ── Load dynamic config from Notion ENV DB ──
-    await health_config.load_config_from_env_db(
-        notion=notion,
-        env_db_id=NOTION_ENV_DB,
-    )
-    log.info("main: config loaded from Notion ENV DB")
-
     env_config = load_notion_env_config()
 
     if "UV_THRESHOLD" in env_config:
@@ -3998,13 +3987,6 @@ async def post_init(app: Application) -> None:
             log.info("UV_THRESHOLD loaded from Notion ENV: %s", UV_THRESHOLD)
         except ValueError:
             log.warning("Invalid UV_THRESHOLD in Notion ENV: %s", env_config["UV_THRESHOLD"])
-
-    if "HEALTH_STEPS_THRESHOLD" in env_config:
-        try:
-            STEPS_THRESHOLD = int(env_config["HEALTH_STEPS_THRESHOLD"])
-            log.info("STEPS_THRESHOLD loaded from Notion ENV: %s", STEPS_THRESHOLD)
-        except ValueError:
-            log.warning("Invalid HEALTH_STEPS_THRESHOLD in Notion ENV: %s", env_config["HEALTH_STEPS_THRESHOLD"])
 
     if "WEEKS_HISTORY" in env_config:
         try:
@@ -4031,6 +4013,9 @@ async def post_init(app: Application) -> None:
         # Notion loaded successfully — sync back to local JSON cache
         wx.save_location_state(wx.current_location)
     notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB); _refresh_habit_cache_refs()
+    # Load steps config from Notion ENV DB
+    health_config.load_steps_threshold_from_notion_env(notion=notion, notion_env_db=NOTION_ENV_DB)
+    health_config.load_steps_config_from_notion_env(notion=notion, notion_env_db=NOTION_ENV_DB)
     global _app_bot
     _app_bot = app.bot
     await start_http_server()
@@ -4071,7 +4056,7 @@ async def post_init(app: Application) -> None:
             bot=app.bot,
             chat_id=MY_CHAT_ID,
             tz=TZ,
-            reload_minutes=UTILITY_SCHEDULER_RELOAD_MINUTE,
+            reload_minutes=UTILITY_SCHEDULER_RELOAD_MINUTES,
             env_fallbacks={"asana_sync": ASANA_SYNC_INTERVAL},
         )
 
@@ -4104,10 +4089,23 @@ async def post_init(app: Application) -> None:
     else:
         log.warning("NOTION_UTILITY_SCHEDULER_DB not set — Utility Scheduler disabled")
 
+    # TEST: Set UTILITY_SCHEDULER_RELOAD_MINUTES=5 in Railway
+    # TEST: Verify scheduler log shows "digest_refresh=5min"
+    # TEST: Verify digest schedule refreshes every 5 minutes (check Railway logs)
+    scheduler.add_job(
+        refresh_digest_schedule_job,
+        "interval",
+        minutes=UTILITY_SCHEDULER_RELOAD_MINUTES,
+        args=[app.bot, scheduler],
+        id="digest_schedule_refresh",
+        replace_existing=True,
+    )
+
     log.info(
         f"Scheduler started ✓  TZ={TZ}  "
         f"utility_scheduler={'enabled' if NOTION_UTILITY_SCHEDULER_DB else 'disabled'}  "
         f"recurring={_rc_h:02d}:{_rc_m:02d}  "
+        f"digest_refresh={UTILITY_SCHEDULER_RELOAD_MINUTES}min  "
         f"v10_flags=[{v10_feature_flags()}]"
     )
     asana_status = (
