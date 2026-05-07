@@ -119,7 +119,6 @@ def load_habit_cache(*, notion: Any, notion_habit_db: str) -> None:
                 "page_id": page["id"],
                 "name": name,
                 "icon": icon_emoji,
-                "time": sel("Time"),
                 "color": sel("Color"),
                 "freq_per_week": parsed_frequency,
                 "frequency_label": frequency_label,
@@ -139,6 +138,11 @@ def get_active_habits_for_trigger(
     parse_time_to_minutes: Any,
     count_habit_completions_this_week: Any,
 ) -> list[dict]:
+    """
+    DEPRECATED: Legacy function for evening check-in that reads Time Select field.
+    Replaced by pending_habits_for_digest(time_str) with show_after filtering.
+    Can be removed in v11 after confirming send_evening_checkin() works correctly.
+    """
     try:
         results = notion_query_all(
             database_id=notion_habit_db,
@@ -195,6 +199,11 @@ def get_habits_by_time(
     count_habit_completions_this_week: Any,
     habit_capped_this_week: Any,
 ) -> list[dict]:
+    """
+    DEPRECATED: Legacy function that filtered by Time Select field (🌅 Morning / 🌙 Evening).
+    Replaced by pending_habits_for_digest(time_str) with show_after Text field.
+    Kept for potential evening check-in migration, but should be removed in v11.
+    """
     habits = get_active_habits_for_trigger(
         notion_query_all=notion_query_all,
         notion_habit_db=notion_habit_db,

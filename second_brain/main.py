@@ -1094,23 +1094,6 @@ def pending_habits_for_digest(time_str: str | None = None) -> list[dict]:
     )
 
 
-def _habit_visible_after_show_after(habit: dict, time_str: str | None) -> bool:
-    """Return whether a habit is allowed by its Show After gate for a digest slot."""
-    if time_str is None or not re.fullmatch(r"\d{2}:\d{2}", time_str):
-        return True
-
-    show_after = habit.get("show_after")
-    if not show_after:
-        return True
-
-    def _to_minutes(t: str) -> int:
-        h, m = t.split(":")
-        return int(h) * 60 + int(m)
-
-    return _to_minutes(time_str) >= _to_minutes(show_after)
-
-
-
 
 
 
@@ -2431,7 +2414,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if parts[0] == "hpag" and len(parts) == 3:
         _, prefix, page_str = parts
-        all_habits = notion_habits.get_active_habits_for_trigger(notion_query_all=notion_query_all, notion_habit_db=NOTION_HABIT_DB, parse_time_to_minutes=_parse_time_to_minutes, count_habit_completions_this_week=_count_habit_completions_this_week)
+        page_time = datetime.now(TZ).strftime("%H:%M") if prefix == "evening" else None
+        all_habits = pending_habits_for_digest(time_str=page_time)
         try:
             await q.edit_message_reply_markup(
                 reply_markup=kb.habit_buttons(all_habits, prefix, page=int(page_str))
@@ -2957,8 +2941,6 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         lines.append(f"📓 [{log_date_label} Log]({_last_daily_log_url})")
         lines.append("")
     include_weather = True if config is None else bool(config.get("include_weather"))
-    include_uvi = bool(config.get("include_uvi")) if config else False
-    uvi_data = wx.fetch_uvi_data() if include_uvi else None
     if include_weather:
         weather_block = fmt.format_digest_weather_card()
         if weather_block:
@@ -2977,45 +2959,14 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         habits_enabled, include_habits, config.get("include_habits") if config else None
     )
     if habits_enabled:
+        # Use current digest time for show_after filtering.
         now_str = datetime.now(TZ).strftime("%H:%M")
-        morning_habits_all = notion_habits.get_habits_by_time(time_filter="🌅 Morning", notion_query_all=notion_query_all, notion_habit_db=NOTION_HABIT_DB, parse_time_to_minutes=_parse_time_to_minutes, count_habit_completions_this_week=_count_habit_completions_this_week, habit_capped_this_week=habit_capped_this_week) + notion_habits.get_habits_by_time(time_filter="🕐 Anytime", notion_query_all=notion_query_all, notion_habit_db=NOTION_HABIT_DB, parse_time_to_minutes=_parse_time_to_minutes, count_habit_completions_this_week=_count_habit_completions_this_week, habit_capped_this_week=habit_capped_this_week)
-        if not morning_habits_all:
-            cached_pending_habits = pending_habits_for_digest(time_str=now_str)
-            cached_morning_habits = [
-                h for h in cached_pending_habits
-                if h.get("time") in {"🌅 Morning", "🕐 Anytime"}
-            ]
-            if cached_morning_habits:
-                log.warning(
-                    "Digest habits direct Notion query returned no morning/anytime habits; using %d cached pending habit(s)",
-                    len(cached_morning_habits),
-                )
-                morning_habits_all = cached_morning_habits
         habits = [
             h
-            for h in morning_habits_all
-            if not already_logged_today(h["page_id"])
-            and not is_on_pace(h)
-            and _habit_visible_after_show_after(h, now_str)
-            and (h.get("name") or "").strip().lower()
+            for h in pending_habits_for_digest(time_str=now_str)
+            if (h.get("name") or "").strip().lower()
             != health_config.STEPS_HABIT_NAME.strip().lower()
         ]
-        uv_max = uvi_data.get("max") if isinstance(uvi_data, dict) else None
-        log.info(
-            "Digest habits: morning_habits_all=%d after_filter=%d uv_max=%s uv_threshold=%s",
-            len(morning_habits_all) if morning_habits_all else 0,
-            len(habits) if 'habits' in locals() else 0,
-            uv_max, UV_THRESHOLD
-        )
-        if uv_max is not None:
-            habits = [
-                h for h in habits
-                if not h.get("weather_gated") or uv_max >= UV_THRESHOLD
-            ]
-            log.info(f"UV max today: {uv_max} — threshold: {UV_THRESHOLD}")
-        else:
-            # UV fetch failed — fail open so weather-gated habits are not silently dropped
-            log.warning("UV fetch failed — showing all habits including weather-gated ones")
         log.info("Digest habits final: count=%d habit_names=%s", len(habits), [h.get("name") for h in habits[:5]])
 
     if overdue:
@@ -3203,8 +3154,11 @@ async def send_evening_checkin(bot) -> None:
 
     habit_text = "🌙 *Evening check-in* — did you do these today?\n\n"
     for h in evening_habits[:5]:
-        freq_tag = f" _{h['completion_count']}/{h['frequency']}_" if h.get("frequency") else ""
-        habit_text += f"⏰ {h['time_str']} — {h['name']}{freq_tag}\n"
+        frequency = h.get("frequency") or h.get("freq_per_week")
+        completion_count = h.get("completion_count")
+        freq_tag = f" _{completion_count}/{frequency}_" if frequency and completion_count is not None else ""
+        time_label = h.get("time_str") or h.get("show_after") or "—"
+        habit_text += f"⏰ {time_label} — {h['name']}{freq_tag}\n"
     if len(evening_habits) > 5:
         habit_text += f"\n_+{len(evening_habits) - 5} more_"
 

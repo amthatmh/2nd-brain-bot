@@ -2,7 +2,7 @@ import unittest
 import importlib
 import os
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from second_brain.notion.habits import extract_habit_frequency
 
@@ -77,7 +77,6 @@ class TestLoadHabitCacheFrequency(unittest.TestCase):
             "properties": {
                 "Habit": {"title": [{"text": {"content": "Protein Shake"}}]},
                 "Active": {"checkbox": True},
-                "Time": {"select": {"name": "20:00"}},
                 "Color": {"select": {"name": "Blue"}},
                 "Frequency": {"type": "number", "number": 5},
                 "Description": {"rich_text": [{"text": {"content": "Post-workout"}}]},
@@ -99,7 +98,6 @@ class TestShowAfterGating(unittest.TestCase):
         props = {
             "Habit": {"title": [{"text": {"content": "Read"}}]},
             "Active": {"checkbox": True},
-            "Time": {"select": {"name": "🌅 Morning"}},
             "Color": {"select": {"name": "Blue"}},
             "Description": {"rich_text": [{"text": {"content": "Read a few pages"}}]},
             "Sort": {"number": 1},
@@ -138,6 +136,54 @@ class TestShowAfterGating(unittest.TestCase):
 
     def test_manual_habits_list_bypasses_show_after(self):
         self.assertIn("Read", self._pending_names(show_after="18:00", time_str=None))
+
+
+class TestSendDailyDigestHabitsIntegration(unittest.IsolatedAsyncioTestCase):
+    async def test_send_daily_digest_uses_pending_habits_for_digest_with_show_after(self):
+        main = load_main_module()
+        real_datetime = main.datetime
+
+        main.habit_cache = {
+            "Early Habit": {
+                "page_id": "habit1",
+                "name": "Early Habit",
+                "show_after": "05:00",
+                "sort": 1,
+                "freq_per_week": 7,
+            },
+            "Late Habit": {
+                "page_id": "habit2",
+                "name": "Late Habit",
+                "show_after": "18:00",
+                "sort": 2,
+                "freq_per_week": 7,
+            },
+        }
+
+        bot_mock = MagicMock()
+        sent = MagicMock(message_id=99)
+        bot_mock.send_message = AsyncMock(return_value=sent)
+
+        with patch.object(main, "already_logged_today", return_value=False), \
+            patch.object(main, "is_on_pace", return_value=False), \
+            patch.object(main.notion_tasks, "get_today_and_overdue_tasks", return_value=[]), \
+            patch.object(main.fmt, "format_digest_weather_card", return_value=None), \
+            patch("second_brain.main.datetime") as mock_dt:
+            mock_dt.now.return_value = real_datetime(2026, 5, 7, 8, 0, tzinfo=main.TZ)
+
+            await main.send_daily_digest(bot_mock, include_habits=True, config=None)
+
+        bot_mock.send_message.assert_awaited()
+        call_kwargs = bot_mock.send_message.await_args.kwargs
+        button_labels = [
+            button.text
+            for row in call_kwargs["reply_markup"].inline_keyboard
+            for button in row
+        ]
+
+        self.assertIn("*Habits:* tap to log:", call_kwargs.get("text", ""))
+        self.assertIn("Early Habit", button_labels)
+        self.assertNotIn("Late Habit", button_labels)
 
 
 if __name__ == "__main__":
