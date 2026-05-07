@@ -257,7 +257,7 @@ class UtilitySchedulerManager:
             "cron_day_of_week": self._extract_text(props.get("Cron Day Of Week", {})),
             "cron_hour": self._extract_int_from_text_or_number(props.get("Cron Hour", {})),
             "cron_minute": self._extract_int_from_text_or_number(props.get("Cron Minute", {})),
-            "run_on_start": self._extract_checkbox(props.get("Run On Start", {}), default=False),
+            "run_on_start": self._extract_checkbox(props.get("Run On Startup", {}), default=False),
             "max_instances": int(self._extract_int_from_text_or_number(props.get("Max Instances", {})) or 1),
             "misfire_grace_seconds": int(self._extract_int_from_text_or_number(props.get("Misfire Grace Seconds", {})) or 300),
             "coalesce": self._extract_checkbox(props.get("Coalesce", {}), default=True),
