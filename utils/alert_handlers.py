@@ -101,3 +101,31 @@ def alert_weekly_summary(summary: str) -> bool:
 
 def utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def alert_job_success(job_key: str, duration: float, result: Any = None) -> bool:
+    """Alert that a tracked job completed successfully."""
+    lines = [
+        "*Job completed*",
+        f"Job: `{_truncate(job_key, 120)}`",
+        f"Duration: `{duration:.2f}s`",
+    ]
+    if result is not None:
+        lines.append(f"Result: `{_truncate(result, 800)}`")
+    return send_alert("\n".join(lines), level="INFO")
+
+
+def alert_job_failure(job_key: str, error: str, consecutive_failures: int = 1) -> bool:
+    """Alert that a tracked job failed."""
+    lines = [
+        "*Job failed*",
+        f"Job: `{_truncate(job_key, 120)}`",
+        f"Consecutive failures: `{consecutive_failures}`",
+        f"Error: `{_truncate(error)}`",
+    ]
+    return send_alert(
+        "\n".join(lines),
+        level="ERROR",
+        cooldown_key=f"job_failure:{job_key}",
+        cooldown_hours=1,
+    )
