@@ -60,3 +60,62 @@ def test_extract_job_config_uses_interval_env_fallback_when_notion_is_blank() ->
     assert config["interval_seconds"] == 60
     assert config["interval_minutes"] is None
     assert config["interval_hours"] is None
+
+
+class _FakeScheduler:
+    timezone = timezone.utc
+
+    def __init__(self) -> None:
+        self.calls = []
+
+    def add_job(self, fn, trigger, **kwargs):
+        self.calls.append({"fn": fn, "trigger": trigger, "kwargs": kwargs})
+
+
+def _manager_with_scheduler(scheduler: _FakeScheduler) -> UtilitySchedulerManager:
+    return UtilitySchedulerManager(
+        notion=None,
+        db_id="db",
+        scheduler=scheduler,
+        bot=None,
+        chat_id="chat",
+        tz=timezone.utc,
+    )
+
+
+def _interval_config(*, run_on_start: bool) -> dict:
+    return {
+        "trigger_type": "interval",
+        "interval_seconds": 60,
+        "interval_minutes": None,
+        "interval_hours": None,
+        "cron_day_of_week": None,
+        "cron_hour": None,
+        "cron_minute": None,
+        "run_on_start": run_on_start,
+        "max_instances": 1,
+        "misfire_grace_seconds": 300,
+        "coalesce": True,
+    }
+
+
+def test_add_job_sets_next_run_time_when_run_on_start_enabled() -> None:
+    scheduler = _FakeScheduler()
+    manager = _manager_with_scheduler(scheduler)
+
+    manager._add_job("asana_sync", _interval_config(run_on_start=True), "page-id")
+
+    assert len(scheduler.calls) == 1
+    kwargs = scheduler.calls[0]["kwargs"]
+    assert "next_run_time" in kwargs
+    assert kwargs["next_run_time"].tzinfo == timezone.utc
+
+
+def test_add_job_omits_next_run_time_when_run_on_start_disabled() -> None:
+    scheduler = _FakeScheduler()
+    manager = _manager_with_scheduler(scheduler)
+
+    manager._add_job("asana_sync", _interval_config(run_on_start=False), "page-id")
+
+    assert len(scheduler.calls) == 1
+    assert "next_run_time" not in scheduler.calls[0]["kwargs"]

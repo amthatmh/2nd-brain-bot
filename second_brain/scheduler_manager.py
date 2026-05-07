@@ -190,8 +190,9 @@ class UtilitySchedulerManager:
             "kwargs": {"job_key": job_key, "page_id": page_id},
         }
 
-        if config["run_on_start"]:
-            add_kwargs["next_run_time"] = datetime.now(self._tz)
+        run_on_start = config.get("run_on_start", False)
+        if run_on_start:
+            add_kwargs["next_run_time"] = datetime.now(self._scheduler.timezone)
 
         if trigger_type == "interval":
             trigger_kwargs = self._build_interval_kwargs(config)
