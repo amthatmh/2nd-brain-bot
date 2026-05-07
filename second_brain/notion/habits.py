@@ -5,19 +5,7 @@ from __future__ import annotations
 import re
 import logging
 from typing import Any
-import logging
 
-
-log = logging.getLogger(__name__)
-
-log = logging.getLogger(__name__)
-habit_cache: dict[str, dict[str, Any]] = {}
-
-log = logging.getLogger(__name__)
-habit_cache: dict[str, dict[str, Any]] = {}
-
-log = logging.getLogger(__name__)
-habit_cache: dict[str, dict[str, Any]] = {}
 
 log = logging.getLogger(__name__)
 habit_cache: dict[str, dict[str, Any]] = {}
@@ -109,8 +97,13 @@ def load_habit_cache(*, notion: Any, notion_habit_db: str) -> None:
 
             parsed_frequency = extract_habit_frequency(p)
             frequency_label = txt("Frequency Label")
+            # Read Show After time (HH:MM format). Empty or invalid values are ignored.
             show_after_raw = txt("Show After")
-            show_after = show_after_raw if (show_after_raw and re.match(r"^\d{2}:\d{2}$", show_after_raw)) else None
+            show_after = None
+            if show_after_raw:
+                show_after_raw = show_after_raw.strip()
+                if re.match(r"^\d{2}:\d{2}$", show_after_raw):
+                    show_after = show_after_raw
             if not frequency_label and parsed_frequency:
                 frequency_label = f"{parsed_frequency}x/week"
             page_icon = page.get("icon") or {}
@@ -126,7 +119,11 @@ def load_habit_cache(*, notion: Any, notion_habit_db: str) -> None:
                 "show_after": show_after,
                 "sort": num("Sort") or 99,
             }
-        log.info("Habit cache loaded: %s", sorted(habit_cache.keys()))
+        log.info(
+            "Habit cache loaded: %s show_after=%s",
+            sorted(habit_cache.keys()),
+            {habit["name"]: habit.get("show_after") for habit in habit_cache.values()},
+        )
     except Exception as e:
         log.error("Failed to load habit cache: %s", e)
 
