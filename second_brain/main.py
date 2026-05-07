@@ -4183,7 +4183,7 @@ async def post_init(app: Application) -> None:
         BotCommand("location", "Set weather location"),
     ]
     log.info("[MAIN] Calling alert_startup with version=%s, commit=%s", APP_VERSION, boot_sha)
-    alert_startup(APP_VERSION, boot_sha, boot_status)
+    alert_startup(APP_VERSION, boot_sha)
     log.info("[MAIN] alert_startup() completed")
     await app.bot.set_my_commands(commands, scope=BotCommandScopeDefault())
     await app.bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=MY_CHAT_ID))
