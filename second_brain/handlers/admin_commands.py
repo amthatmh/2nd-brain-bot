@@ -11,20 +11,20 @@ from utils.alert_handlers import send_alert
 
 
 async def test_alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send a test operational alert; requires TELEGRAM_ADMIN_USER_ID."""
-    admin_id_raw = os.environ.get("TELEGRAM_ADMIN_USER_ID", "").strip()
-    if not admin_id_raw:
-        await update.message.reply_text("⚠️ TELEGRAM_ADMIN_USER_ID is not configured.")
+    """Send a test operational alert; requires TELEGRAM_CHAT_ID."""
+    telegram_chat_id_raw = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    if not telegram_chat_id_raw:
+        await update.message.reply_text("⚠️ TELEGRAM_CHAT_ID is not configured.")
         return
 
     try:
-        admin_id = int(admin_id_raw)
+        telegram_chat_id = int(telegram_chat_id_raw)
     except ValueError:
-        await update.message.reply_text("⚠️ TELEGRAM_ADMIN_USER_ID must be an integer Telegram user ID.")
+        await update.message.reply_text("⚠️ TELEGRAM_CHAT_ID must be an integer Telegram chat ID.")
         return
 
     user_id = update.effective_user.id if update.effective_user else None
-    if user_id != admin_id:
+    if user_id != telegram_chat_id:
         return
 
     ok = send_alert("🧪 *Test alert*\nOperational alert delivery is configured correctly.")
