@@ -8,8 +8,17 @@ from __future__ import annotations
 
 import inspect
 import logging
+import time
 from datetime import datetime, timezone as dt_timezone
 from typing import Any, Callable
+
+from second_brain.monitoring import (
+    get_baseline_duration,
+    get_consecutive_failures,
+    send_duration_alert_if_slow,
+)
+from second_brain.monitoring.job_tracker import update_job_metrics
+from utils.alert_handlers import alert_job_failure, alert_job_success
 
 log = logging.getLogger(__name__)
 
@@ -148,13 +157,26 @@ class UtilitySchedulerManager:
             log.error("scheduler_manager: %s", error)
             return
 
+        handler_tracks_itself = getattr(handler, "_job_tracker_key", None) == job_key
+        start = time.time()
+        baseline = None if handler_tracks_itself else get_baseline_duration(job_key)
+
         try:
             result = handler(self._bot)
             if inspect.isawaitable(result):
                 result = await result
+            duration = time.time() - start
+            if not handler_tracks_itself:
+                update_job_metrics(job_key, duration, "success")
+                alert_job_success(job_key, duration, result)
+                send_duration_alert_if_slow(job_key, baseline, duration)
             log.info("scheduler_manager: job_key=%s completed: %s", job_key, result)
             self._update_notion_run_result(page_id=page_id, ran_at=ran_at, status="ok", error=None)
         except Exception as exc:
+            duration = time.time() - start
+            if not handler_tracks_itself:
+                update_job_metrics(job_key, duration, "failed")
+                alert_job_failure(job_key, str(exc), get_consecutive_failures(job_key))
             log.exception("scheduler_manager: job_key=%s FAILED", job_key)
             self._update_notion_run_result(page_id=page_id, ran_at=ran_at, status="error", error=str(exc))
             await self._send_failure_alert(job_key, exc)

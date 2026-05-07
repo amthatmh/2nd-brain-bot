@@ -211,6 +211,24 @@ def get_most_recent_job_time() -> Optional[datetime]:
     return most_recent
 
 
+def send_duration_alert_if_slow(job_key: str, baseline: Optional[float], duration: float) -> bool:
+    """Alert when a job runs meaningfully slower than its in-memory baseline."""
+    if baseline is None:
+        return False
+
+    overlap_amount = duration - baseline
+    if overlap_amount <= 0:
+        return False
+
+    try:
+        from utils.alert_handlers import alert_job_overlap
+
+        return alert_job_overlap(job_key, baseline, duration, overlap_amount)
+    except Exception as exc:  # noqa: BLE001 - monitoring alerts must never break jobs
+        logger.warning("[JOB_TRACKER] Slow-run alert failed for %s: %s", job_key, exc)
+        return False
+
+
 def track_job_execution(job_key: str):
     """
     Decorator to automatically track job execution and send alerts.
@@ -239,11 +257,14 @@ def track_job_execution(job_key: str):
                 result = await func(*args, **kwargs)
                 duration = time.time() - start
 
+                baseline = get_baseline_duration(job_key)
+
                 # Update metrics
                 update_job_metrics(job_key, duration, "success")
 
-                # Send success alert
+                # Send success and slow-run alerts
                 alert_job_success(job_key, duration, result)
+                send_duration_alert_if_slow(job_key, baseline, duration)
 
                 logger.info("[JOB_TRACKER] %s completed in %.2fs", job_key, duration)
                 return result
@@ -273,8 +294,10 @@ def track_job_execution(job_key: str):
                 result = func(*args, **kwargs)
                 duration = time.time() - start
 
+                baseline = get_baseline_duration(job_key)
                 update_job_metrics(job_key, duration, "success")
                 alert_job_success(job_key, duration, result)
+                send_duration_alert_if_slow(job_key, baseline, duration)
 
                 logger.info("[JOB_TRACKER] %s completed in %.2fs", job_key, duration)
                 return result
@@ -290,8 +313,10 @@ def track_job_execution(job_key: str):
 
         # Return appropriate wrapper based on function type
         if asyncio.iscoroutinefunction(func):
+            async_wrapper._job_tracker_key = job_key  # type: ignore[attr-defined]
             return async_wrapper
-        else:
-            return sync_wrapper
+
+        sync_wrapper._job_tracker_key = job_key  # type: ignore[attr-defined]
+        return sync_wrapper
 
     return decorator
