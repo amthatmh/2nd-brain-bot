@@ -122,6 +122,7 @@ def _create_log_entry(
     """Create a new Habit Log entry for steps. Returns the new page_id."""
     try:
         page = notion.pages.create(
+            # Steps entries belong in NOTION_LOG_DB (Habits Log), not the Habits DB.
             parent={"database_id": log_db_id},
             properties={
                 "Entry": {
