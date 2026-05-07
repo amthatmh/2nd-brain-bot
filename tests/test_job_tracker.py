@@ -121,3 +121,29 @@ def test_track_job_execution_wraps_async_function():
     assert asyncio.run(sample(7)) == {"value": 7}
     assert job_tracker._job_metrics["async_unit"]["last_status"] == "success"
     assert job_tracker.get_consecutive_failures("async_unit") == 0
+
+
+def test_send_duration_alert_if_slow_delegates_overlap_alert(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        alert_handlers,
+        "alert_job_overlap",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or True,
+    )
+
+    assert job_tracker.send_duration_alert_if_slow("slow", 10.0, 250.0) is True
+
+    assert calls == [(('slow', 10.0, 250.0, 240.0), {})]
+
+
+def test_send_duration_alert_if_slow_skips_without_baseline_or_extra_duration(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        alert_handlers,
+        "alert_job_overlap",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or True,
+    )
+
+    assert job_tracker.send_duration_alert_if_slow("fast", None, 250.0) is False
+    assert job_tracker.send_duration_alert_if_slow("fast", 300.0, 250.0) is False
+    assert calls == []

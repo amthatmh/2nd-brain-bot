@@ -147,3 +147,81 @@ def test_add_job_omits_next_run_time_when_run_on_start_disabled() -> None:
 
     assert len(scheduler.calls) == 1
     assert "next_run_time" not in scheduler.calls[0]["kwargs"]
+
+
+def _reset_job_tracker_state() -> None:
+    from second_brain.monitoring import job_tracker
+
+    job_tracker._job_metrics.clear()
+    job_tracker._weekly_counters["executions"] = 0
+    job_tracker._weekly_counters["failures"] = 0
+    job_tracker._alert_cooldowns.clear()
+
+
+class _FakePages:
+    def __init__(self) -> None:
+        self.updated = []
+
+    def update(self, **kwargs):
+        self.updated.append(kwargs)
+
+
+class _FakeNotion:
+    def __init__(self) -> None:
+        self.pages = _FakePages()
+
+
+def test_execute_job_tracks_plain_handler_success(monkeypatch) -> None:
+    import asyncio
+    import second_brain.scheduler_manager as scheduler_manager
+    from second_brain.monitoring import job_tracker
+
+    _reset_job_tracker_state()
+    monkeypatch.setattr(scheduler_manager, "alert_job_success", lambda *args, **kwargs: True)
+    monkeypatch.setattr(scheduler_manager, "send_duration_alert_if_slow", lambda *args, **kwargs: False)
+
+    manager = UtilitySchedulerManager(
+        notion=_FakeNotion(),
+        db_id="db",
+        scheduler=None,
+        bot=None,
+        chat_id="chat",
+        tz=timezone.utc,
+    )
+    manager.register_handler("plain_job", lambda bot: {"ok": True})
+
+    asyncio.run(manager._execute_job("plain_job", "page-id"))
+
+    assert job_tracker._job_metrics["plain_job"]["last_status"] == "success"
+    assert job_tracker.get_weekly_metrics()["total_executions"] == 1
+
+
+def test_execute_job_does_not_double_track_decorated_handler(monkeypatch) -> None:
+    import asyncio
+    import second_brain.scheduler_manager as scheduler_manager
+    from second_brain.monitoring import job_tracker, track_job_execution
+
+    _reset_job_tracker_state()
+    monkeypatch.setattr("utils.alert_handlers.alert_job_success", lambda *args, **kwargs: True)
+    monkeypatch.setattr("utils.alert_handlers.alert_job_failure", lambda *args, **kwargs: True)
+    monkeypatch.setattr(scheduler_manager, "alert_job_success", lambda *args, **kwargs: True)
+    monkeypatch.setattr(scheduler_manager, "send_duration_alert_if_slow", lambda *args, **kwargs: False)
+
+    @track_job_execution("decorated_job")
+    async def decorated(bot):
+        return {"ok": True}
+
+    manager = UtilitySchedulerManager(
+        notion=_FakeNotion(),
+        db_id="db",
+        scheduler=None,
+        bot=None,
+        chat_id="chat",
+        tz=timezone.utc,
+    )
+    manager.register_handler("decorated_job", decorated)
+
+    asyncio.run(manager._execute_job("decorated_job", "page-id"))
+
+    assert job_tracker._job_metrics["decorated_job"]["last_status"] == "success"
+    assert job_tracker.get_weekly_metrics()["total_executions"] == 1
