@@ -23,6 +23,7 @@ def register_core_handlers(
     handle_message_text,
     handle_callback,
     test_alert_command=None,
+    test_channel_send=None,
 ) -> None:
     """Attach all bot command/message/callback handlers to the application."""
     app.add_handler(CommandHandler("start", handle_start_command))
@@ -42,5 +43,7 @@ def register_core_handlers(
     app.add_handler(CommandHandler("signoff", cmd_signoff))
     if test_alert_command is not None:
         app.add_handler(CommandHandler("testalert", test_alert_command))
+    if test_channel_send is not None:
+        app.add_handler(CommandHandler("testchannelsend", test_channel_send))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message_text))
     app.add_handler(CallbackQueryHandler(handle_callback))

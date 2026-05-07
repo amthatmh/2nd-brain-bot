@@ -7,11 +7,10 @@ send_alert so callers do not need to know Telegram delivery details.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any
 
-import httpx
+from utils.alerts import send_alert
 
 log = logging.getLogger(__name__)
 
@@ -23,83 +22,78 @@ def _truncate(value: Any, limit: int = 1000) -> str:
     return f"{text[: limit - 1]}…"
 
 
-def send_alert(message: str) -> bool:
-    """Send an operational alert to the configured Telegram alert chat."""
-    token = os.environ.get("TELEGRAM_TOKEN", "").strip()
-    chat_id = os.environ.get("TELEGRAM_ALERT_CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID", "")
-    thread_id = os.environ.get("TELEGRAM_ALERT_THREAD_ID", "").strip()
-    if not token or not chat_id:
-        log.warning("send_alert skipped: TELEGRAM_TOKEN or TELEGRAM_CHAT_ID is not configured")
-        return False
+def alert_startup(version: str, commit: str, status: str = "ok") -> bool:
+    """Send deployment alert on startup."""
+    logger = logging.getLogger(__name__)
+    logger.info("[ALERT_HANDLER] alert_startup() called")
 
-    payload: dict[str, Any] = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True,
-    }
-    if thread_id:
-        payload["message_thread_id"] = thread_id
-
-    try:
-        response = httpx.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json=payload,
-            timeout=10,
-        )
-        response.raise_for_status()
-        return True
-    except Exception as exc:  # noqa: BLE001 - alerts must never crash callers
-        log.error("send_alert failed: %s", exc)
-        return False
-
-
-def alert_startup(version: str, sha: str, status: str = "ok") -> bool:
-    return send_alert(
-        "✅ *Second Brain bot started*\n"
-        f"Status: `{status}`\n"
-        f"Version: `{version}`\n"
-        f"SHA: `{sha}`"
+    message = (
+        "*Deployment*\n\n"
+        f"Status: {status}\n"
+        f"Version: {version}\n"
+        f"Commit: {commit}\n"
+        f"Time: {datetime.now().strftime('%b %d, %I:%M %p %Z')}\n\n"
+        "All systems operational ✓"
     )
+
+    result = send_alert(message, level="DEPLOY")
+    logger.info("[ALERT_HANDLER] alert_startup() send_alert returned: %s", result)
+    return result
 
 
 def alert_notion_auth_failure(error: str) -> bool:
-    return send_alert("🚨 *Notion auth failure*\n" f"Error: `{_truncate(error)}`")
+    return send_alert("*Notion auth failure*\n" f"Error: `{_truncate(error)}`", level="ERROR")
 
 
 def alert_claude_auth_failure(error: str) -> bool:
-    return send_alert("🚨 *Claude API/auth failure*\n" f"Error: `{_truncate(error)}`")
+    return send_alert("*Claude API/auth failure*\n" f"Error: `{_truncate(error)}`", level="ERROR")
 
 
-def alert_cinema_sync_complete(synced_count: int, duplicates: int, duration: float, next_run: str | None = None) -> bool:
-    lines = [
-        "🎬 *Cinema sync complete*",
-        f"Synced: `{synced_count}`",
-        f"Duplicates/skipped: `{duplicates}`",
-        f"Duration: `{duration:.1f}s`",
-    ]
-    if next_run:
-        lines.append(f"Next run: `{next_run}`")
-    return send_alert("\n".join(lines))
+def alert_cinema_sync_complete(
+    synced_count: int,
+    duplicates_skipped: int,
+    duration: float,
+    next_run: datetime | str | None = None,
+) -> bool:
+    """Alert on cinema sync completion."""
+    logger = logging.getLogger(__name__)
+    logger.info("[ALERT_HANDLER] alert_cinema_sync_complete() called")
+
+    if isinstance(next_run, datetime):
+        next_run_text = next_run.strftime("%b %d, %I:%M %p %Z")
+    else:
+        next_run_text = next_run or "not scheduled"
+
+    message = (
+        "*Cinema Sync Completed*\n\n"
+        f"✓ {synced_count} new favourites synced\n"
+        f"✓ Duplicate guard: {duplicates_skipped} skipped\n\n"
+        f"Duration: {duration:.1f}s\n"
+        f"Next sync: {next_run_text}"
+    )
+
+    result = send_alert(message, level="INFO")
+    logger.info("[ALERT_HANDLER] alert_cinema_sync_complete() send_alert returned: %s", result)
+    return result
 
 
 def alert_digest_sent(slot_name: str) -> bool:
-    return send_alert("📰 *Digest sent*\n" f"Slot: `{_truncate(slot_name, 120)}`")
+    return send_alert("*Digest sent*\n" f"Slot: `{_truncate(slot_name, 120)}`", level="INFO")
 
 
 def alert_scheduler_event(job_id: str, event_type: str, error: str | None = None) -> bool:
     lines = [
-        "⚠️ *Scheduler event*",
+        "*Scheduler event*",
         f"Job: `{_truncate(job_id, 120)}`",
         f"Type: `{_truncate(event_type, 80)}`",
     ]
     if error:
         lines.append(f"Error: `{_truncate(error)}`")
-    return send_alert("\n".join(lines))
+    return send_alert("\n".join(lines), level="WARN")
 
 
 def alert_weekly_summary(summary: str) -> bool:
-    return send_alert("📊 *Weekly summary*\n" f"{_truncate(summary, 3000)}")
+    return send_alert("*Weekly summary*\n" f"{_truncate(summary, 3000)}", level="INFO")
 
 
 def utc_timestamp() -> str:

@@ -97,7 +97,7 @@ from second_brain.http_utils import cors_headers
 from second_brain.services import task_parsing as task_parsing_service
 from second_brain.services import note_utils as note_utils_service
 from second_brain.handlers.commands import CommandHandlers
-from second_brain.handlers.admin_commands import test_alert_command
+from second_brain.handlers.admin_commands import test_alert_command, test_channel_send
 from second_brain.monitoring.health_checks import check_scheduler_health
 from second_brain.monitoring.metrics import generate_weekly_summary
 from utils.alert_handlers import (
@@ -251,7 +251,8 @@ def _resolve_state_dir() -> Path:
 # ── Config ───────────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
 MY_CHAT_ID      = int(os.environ["TELEGRAM_CHAT_ID"])
-ALERT_CHAT_ID   = int(os.environ.get("TELEGRAM_ALERT_CHAT_ID", str(MY_CHAT_ID)))
+ALERT_CHAT_ID_RAW = (os.environ.get("ALERT_CHANNEL_ID", "").strip() or os.environ.get("TELEGRAM_ALERT_CHAT_ID", "").strip())
+ALERT_CHAT_ID   = int(ALERT_CHAT_ID_RAW) if ALERT_CHAT_ID_RAW else None
 ALERT_THREAD_ID = int(os.environ["TELEGRAM_ALERT_THREAD_ID"]) if os.environ.get("TELEGRAM_ALERT_THREAD_ID") else None
 ANTHROPIC_KEY   = os.environ["ANTHROPIC_API_KEY"]
 NOTION_TOKEN    = os.environ["NOTION_TOKEN"]
@@ -3569,6 +3570,9 @@ async def _try_send_telegram(bot, text: str) -> None:
             "text": text,
             "parse_mode": "Markdown",
         }
+        if ALERT_CHAT_ID is None:
+            log.error("Could not send operational alert via Telegram: ALERT_CHANNEL_ID/TELEGRAM_ALERT_CHAT_ID is not configured")
+            return
         if ALERT_THREAD_ID is not None:
             kwargs["message_thread_id"] = ALERT_THREAD_ID
         await bot.send_message(**kwargs)
@@ -4178,7 +4182,9 @@ async def post_init(app: Application) -> None:
         BotCommand("unmute", "Resume scheduled digests"),
         BotCommand("location", "Set weather location"),
     ]
+    log.info("[MAIN] Calling alert_startup with version=%s, commit=%s", APP_VERSION, boot_sha)
     alert_startup(APP_VERSION, boot_sha, boot_status)
+    log.info("[MAIN] alert_startup() completed")
     await app.bot.set_my_commands(commands, scope=BotCommandScopeDefault())
     await app.bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=MY_CHAT_ID))
 
@@ -4401,6 +4407,7 @@ def main() -> None:
         handle_message_text=handle_message_text,
         handle_callback=handle_callback,
         test_alert_command=test_alert_command,
+        test_channel_send=test_channel_send,
     )
     log.info(f"🤖 Second Brain bot starting ({APP_VERSION})...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
