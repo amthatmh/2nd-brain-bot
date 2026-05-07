@@ -191,6 +191,8 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result["action"], "created")
+        create_kwargs = notion.pages.create.call_args.kwargs
+        self.assertEqual(create_kwargs["parent"], {"database_id": "log_db"})
         bot.send_message.assert_awaited_once()
         msg = bot.send_message.await_args.kwargs["text"]
         self.assertIn("10,000 steps hit", msg)
