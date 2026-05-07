@@ -26,6 +26,10 @@ def _select(value: str) -> dict:
     return {"select": {"name": value}}
 
 
+def _checkbox(value: bool) -> dict:
+    return {"checkbox": value}
+
+
 def test_extract_job_config_reads_rich_text_cron_zeroes() -> None:
     config = _manager()._extract_job_config(
         {
@@ -38,6 +42,30 @@ def test_extract_job_config_reads_rich_text_cron_zeroes() -> None:
 
     assert config["cron_hour"] == 0
     assert config["cron_minute"] == 0
+
+
+def test_extract_job_config_reads_run_on_startup_checkbox() -> None:
+    config = _manager()._extract_job_config(
+        {
+            "Job Key": _title("asana_sync"),
+            "Trigger Type": _select("interval"),
+            "Run On Startup": _checkbox(True),
+        }
+    )
+
+    assert config["run_on_start"] is True
+
+
+def test_extract_job_config_ignores_old_run_on_start_checkbox_name() -> None:
+    config = _manager()._extract_job_config(
+        {
+            "Job Key": _title("asana_sync"),
+            "Trigger Type": _select("interval"),
+            "Run On Start": _checkbox(True),
+        }
+    )
+
+    assert config["run_on_start"] is False
 
 
 def test_build_cron_kwargs_defaults_minute_to_zero_when_hour_is_set() -> None:
