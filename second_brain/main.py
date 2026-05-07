@@ -2116,6 +2116,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # wl_save/wl_cancel      — wantslist confirm
     # tmdb_pick/skip/cancel  — watchlist TMDB picker
     parts = q.data.split(":")
+    if len(parts) == 1 and q.data.startswith("cf_"):
+        parts = ["cf", q.data.removeprefix("cf_")]
     if parts[0] == "hl":
         parts[0] = "hc"
     if await handle_v10_callback(q, parts):
