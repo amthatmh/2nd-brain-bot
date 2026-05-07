@@ -65,6 +65,7 @@ from second_brain.healthtrack.steps import (
     backfill_steps_state_from_notion,
     handle_steps_final_stamp,
 )
+from second_brain.healthtrack.scheduler import check_and_create_steps_entry
 from second_brain.healthtrack.config import (
     STEPS_HABIT_NAME,
     STEPS_THRESHOLD,
@@ -3783,6 +3784,22 @@ async def handle_trip_weather_refresh(bot) -> None:
     await update_trip_weather_job(bot)
 
 
+async def _run_steps_sync_check_dispatch(bot) -> None:
+    result = await check_and_create_steps_entry(
+        notion=notion,
+        habit_db_id=NOTION_HABIT_DB,
+        log_db_id=NOTION_LOG_DB,
+        habit_name=STEPS_HABIT_NAME,
+        tz=TZ,
+        bot=bot,
+        chat_id=MY_CHAT_ID,
+    )
+    sync_status["steps"]["last_run"] = utc_now_iso()
+    sync_status["steps"]["ok"] = bool(result.get("ok"))
+    sync_status["steps"]["error"] = None if result.get("ok") else result.get("reason")
+    sync_status["steps"]["stats"] = result
+
+
 async def _run_steps_final_stamp_dispatch(bot) -> None:
     result = await handle_steps_final_stamp(
         notion=notion,
@@ -3827,6 +3844,7 @@ def _build_utility_job_dispatch(bot) -> dict[str, Callable]:
         "cinema_sync": _utility_async_handler(lambda: run_cinema_sync(bot)),
         "asana_sync": _utility_async_handler(lambda: run_asana_sync(bot)),
         "steps_final_stamp": _utility_async_handler(lambda: _run_steps_final_stamp_dispatch(bot)),
+        "steps_sync_check": _utility_async_handler(lambda: _run_steps_sync_check_dispatch(bot)),
         "daily_log_generate": _utility_async_handler(lambda: generate_daily_log(bot)),
         "run_recurring_check": _utility_async_handler(lambda: run_recurring_check(bot)),
     }
