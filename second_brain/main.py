@@ -259,6 +259,7 @@ NOTION_NOTES_DB = os.environ["NOTION_NOTES_DB"]    # 📒 Notes
 NOTION_DIGEST_SELECTOR_DB = os.environ["NOTION_DIGEST_SELECTOR_DB"]
 NOTION_UTILITY_SCHEDULER_DB = os.environ.get("NOTION_UTILITY_SCHEDULER_DB", "").strip()
 UTILITY_SCHEDULER_RELOAD_MINUTE = int(os.environ.get("UTILITY_SCHEDULER_RELOAD_MINUTE", "15"))
+ASANA_SYNC_INTERVAL = int(os.environ.get("ASANA_SYNC_INTERVAL", "60"))
 NOTION_DAILY_LOG_DB = os.environ.get("NOTION_DAILY_LOG_DB", "")
 NOTION_PACKING_ITEMS_DB = os.environ.get("NOTION_PACKING_ITEMS_DB", "")
 NOTION_TRIPS_DB         = os.environ.get("NOTION_TRIPS_DB", "")
@@ -3750,8 +3751,34 @@ async def refresh_trip_weather_job(bot) -> None:
     await update_trip_weather_job(bot)
 
 
-async def handle_trip_weather_refresh(bot) -> None:
-    await update_trip_weather_job(bot)
+async def _run_trip_weather_refresh(bot) -> dict:
+    """Utility Scheduler job: refresh weather for upcoming trips."""
+    _ = bot
+    if not NOTION_TRIPS_DB:
+        log.info("trip_weather_refresh: NOTION_TRIPS_DB is not set")
+        return {"action": "error", "reason": "NOTION_TRIPS_DB is not set"}
+
+    try:
+        updated = trips_mod.refresh_upcoming_trip_weather(
+            notion,
+            NOTION_TRIPS_DB,
+            fetch_trip_weather_range=wx.fetch_trip_weather_range,
+            lookahead_days=7,
+        )
+    except Exception as exc:
+        log.error("trip_weather_refresh: unexpected error: %s", exc)
+        return {"action": "error", "reason": str(exc)}
+
+    if not updated:
+        log.info("trip_weather_refresh: no upcoming trips required weather updates")
+        return {"action": "no_trips", "updated": 0}
+
+    log.info("trip_weather_refresh: updated %d upcoming trip(s)", updated)
+    return {"action": "ok", "updated": updated}
+
+
+async def handle_trip_weather_refresh(bot) -> dict:
+    return await _run_trip_weather_refresh(bot)
 
 
 async def _run_steps_sync_check_dispatch(bot) -> None:
@@ -4021,7 +4048,7 @@ async def post_init(app: Application) -> None:
     except Exception as e:
         log.warning("Steps state backfill failed (non-fatal): %s", e)
     if FEATURES.get("FEATURE_RECURRING", True):
-        scheduler.add_job(run_recurring_check, "cron", hour=_rc_h, minute=_rc_m, args=[app.bot])
+        log.info("Recurring check is managed by Utility Scheduler when configured")
     # Register digest cron jobs only. Do not queue missed digest slots on startup;
     # restarting the bot should not send an immediate digest.
     build_digest_schedule(scheduler, app.bot)
@@ -4045,6 +4072,7 @@ async def post_init(app: Application) -> None:
             chat_id=MY_CHAT_ID,
             tz=TZ,
             reload_minutes=UTILITY_SCHEDULER_RELOAD_MINUTE,
+            env_fallbacks={"asana_sync": ASANA_SYNC_INTERVAL},
         )
 
         from second_brain.healthtrack.scheduler import register_handlers as healthtrack_register
@@ -4060,6 +4088,16 @@ async def post_init(app: Application) -> None:
         tasks_register(utility_manager)
         trips_register(utility_manager)
         daily_log_register(utility_manager)
+
+        utility_manager.register_handler(
+            "digest_schedule_rebuild",
+            lambda bot: rebuild_digest_schedule_job(bot, scheduler),
+        )
+        utility_manager.register_handler(
+            "digest_schedule_refresh",
+            lambda bot: refresh_digest_schedule_job(bot, scheduler),
+        )
+        utility_manager.register_handler("run_recurring_check", lambda bot: run_recurring_check(bot))
 
         await utility_manager.initialize()
         log.info("Utility Scheduler Manager initialized ✓")

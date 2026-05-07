@@ -1,8 +1,7 @@
 """Notion-driven Utility Scheduler manager.
 
 Reads the Utility Scheduler database, registers APScheduler jobs dynamically, and
-keeps load/run status columns in Notion up to date. Digest, recurring, and other
-core bot jobs intentionally remain outside this manager.
+keeps load/run status columns in Notion up to date.
 """
 
 from __future__ import annotations
@@ -31,6 +30,7 @@ class UtilitySchedulerManager:
         chat_id: str | int,
         tz: Any,
         reload_minutes: int = 15,
+        env_fallbacks: dict[str, int] | None = None,
     ) -> None:
         self._notion = notion
         self._db_id = db_id
@@ -39,6 +39,7 @@ class UtilitySchedulerManager:
         self._chat_id = chat_id
         self._tz = tz
         self._reload_minutes = max(int(reload_minutes or 15), 1)
+        self._env_fallbacks = env_fallbacks or {}
         self._handlers: dict[str, Callable[..., Any]] = {}
         self._known_jobs: set[str] = set()
         self._applied_configs: dict[str, tuple[Any, ...]] = {}
@@ -107,7 +108,7 @@ class UtilitySchedulerManager:
                     )
                     continue
 
-                config = self._extract_job_config(props)
+                config = self._extract_job_config(props, env_fallbacks=self._env_fallbacks)
                 signature = self._config_signature(config)
                 apscheduler_id = self._apscheduler_id(job_key)
                 existing_job = self._scheduler.get_job(apscheduler_id)
@@ -218,19 +219,46 @@ class UtilitySchedulerManager:
         self._known_jobs.discard(job_key)
         self._applied_configs.pop(job_key, None)
 
-    def _extract_job_config(self, props: dict[str, Any]) -> dict[str, Any]:
-        trigger_type = (self._extract_select(props.get("Trigger Type", {})) or "interval").lower()
+    def _extract_job_config(
+        self,
+        props: dict[str, Any],
+        env_fallbacks: dict[str, int] | None = None,
+    ) -> dict[str, Any]:
+        """Extract job configuration from Notion row properties."""
+        trigger_type_raw = self._extract_select(props.get("Trigger Type", {}))
+        trigger_type = (trigger_type_raw or "interval").lower()
+        job_key = self._extract_text(props.get("Job Key", {})) or ""
+
+        interval_seconds = self._extract_int_from_text_or_number(props.get("Interval Seconds", {}))
+        interval_minutes = self._extract_int_from_text_or_number(props.get("Interval Minutes", {}))
+        interval_hours = self._extract_int_from_text_or_number(props.get("Interval Hours", {}))
+
+        if (
+            trigger_type == "interval"
+            and interval_seconds is None
+            and interval_minutes is None
+            and interval_hours is None
+            and env_fallbacks
+            and job_key in env_fallbacks
+        ):
+            interval_seconds = env_fallbacks[job_key]
+            log.info(
+                "scheduler_manager: using env fallback interval for %s: %ds",
+                job_key,
+                interval_seconds,
+            )
+
         return {
             "trigger_type": trigger_type,
-            "interval_seconds": self._extract_number(props.get("Interval Seconds", {})),
-            "interval_minutes": self._extract_number(props.get("Interval Minutes", {})),
-            "interval_hours": self._extract_number(props.get("Interval Hours", {})),
+            "interval_seconds": interval_seconds,
+            "interval_minutes": interval_minutes,
+            "interval_hours": interval_hours,
             "cron_day_of_week": self._extract_text(props.get("Cron Day Of Week", {})),
-            "cron_hour": self._extract_number(props.get("Cron Hour", {})),
-            "cron_minute": self._extract_number(props.get("Cron Minute", {})),
+            "cron_hour": self._extract_int_from_text_or_number(props.get("Cron Hour", {})),
+            "cron_minute": self._extract_int_from_text_or_number(props.get("Cron Minute", {})),
             "run_on_start": self._extract_checkbox(props.get("Run On Start", {}), default=False),
-            "max_instances": int(self._extract_number(props.get("Max Instances", {})) or 1),
-            "misfire_grace_seconds": int(self._extract_number(props.get("Misfire Grace Seconds", {})) or 300),
+            "max_instances": int(self._extract_int_from_text_or_number(props.get("Max Instances", {})) or 1),
+            "misfire_grace_seconds": int(self._extract_int_from_text_or_number(props.get("Misfire Grace Seconds", {})) or 300),
             "coalesce": self._extract_checkbox(props.get("Coalesce", {}), default=True),
         }
 
@@ -251,13 +279,50 @@ class UtilitySchedulerManager:
         kwargs: dict[str, Any] = {}
         if config.get("cron_day_of_week"):
             kwargs["day_of_week"] = config["cron_day_of_week"]
-        if config.get("cron_hour") is not None:
-            kwargs["hour"] = int(config["cron_hour"])
-        if config.get("cron_minute") is not None:
-            kwargs["minute"] = int(config["cron_minute"])
-        if "hour" not in kwargs or "minute" not in kwargs:
-            raise ValueError("Cron jobs must set Cron Hour and Cron Minute")
+
+        cron_hour = config.get("cron_hour")
+        if cron_hour is not None:
+            kwargs["hour"] = int(cron_hour)
+
+        cron_minute = config.get("cron_minute")
+        if cron_minute is not None:
+            kwargs["minute"] = int(cron_minute)
+        elif "hour" in kwargs:
+            kwargs["minute"] = 0
+
+        if "hour" not in kwargs:
+            raise ValueError("Cron jobs must set Cron Hour")
         return kwargs
+
+    @staticmethod
+    def _extract_int_from_text_or_number(prop: dict[str, Any]) -> int | None:
+        """Extract an integer from a Notion number, rich_text, or title property."""
+        val = prop.get("number")
+        if val is not None:
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                pass
+
+        items = prop.get("rich_text", [])
+        if items:
+            text = items[0].get("plain_text", "").strip()
+            if text:
+                try:
+                    return int(text)
+                except (ValueError, TypeError):
+                    pass
+
+        items = prop.get("title", [])
+        if items:
+            text = items[0].get("plain_text", "").strip()
+            if text:
+                try:
+                    return int(text)
+                except (ValueError, TypeError):
+                    pass
+
+        return None
 
     @staticmethod
     def _config_signature(config: dict[str, Any]) -> tuple[Any, ...]:
