@@ -108,18 +108,14 @@ def load_digest_slots(*, rows: list[dict], logger) -> list[dict]:
 
 def pending_habits_for_digest(*, habit_cache: dict[str, dict], time_str: str | None, already_logged_today, is_on_pace) -> list[dict]:
     is_digest_slot_time = bool(time_str and re.fullmatch(r"\d{2}:\d{2}", time_str))
-    habits = (
-        habit_cache.values()
-        if time_str is None or is_digest_slot_time
-        else [h for h in habit_cache.values() if h.get("time") == time_str]
-    )
+    habits = habit_cache.values()
     pending: list[dict] = []
     for habit in sorted(habits, key=lambda h: h["sort"]):
         pid = habit["page_id"]
         if already_logged_today(pid) or is_on_pace(habit):
             continue
 
-        # Show After gate — only apply when called from a scheduled digest (time_str is not None).
+        # Show After gate — only apply when called with a valid scheduled digest time.
         if is_digest_slot_time:
             show_after = habit.get("show_after")
             if show_after:

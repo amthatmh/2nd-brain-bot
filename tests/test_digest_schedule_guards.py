@@ -199,25 +199,26 @@ class TestManualDigestConfig(unittest.TestCase):
 
 
 class TestDailyDigestHabits(unittest.IsolatedAsyncioTestCase):
-    async def test_send_daily_digest_renders_cached_morning_habit_when_direct_query_empty(self):
+    async def test_send_daily_digest_renders_cached_habit_after_show_after_gate(self):
         main = load_main_module()
+        real_datetime = main.datetime
         test_habit = {
             "page_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-            "name": "Test Morning Habit",
-            "time": "🌅 Morning",
+            "name": "Test Digest Habit",
+            "show_after": "05:00",
             "sort": 1,
             "freq_per_week": None,
-            "weather_gated": False,
         }
-        main.habit_cache = {"Test Morning Habit": test_habit}
+        main.habit_cache = {"Test Digest Habit": test_habit}
         bot = MagicMock()
         sent = MagicMock(message_id=42)
         bot.send_message = AsyncMock(return_value=sent)
 
         with patch.object(main.notion_tasks, "get_today_and_overdue_tasks", return_value=[]), \
-            patch.object(main.notion_habits, "get_habits_by_time", return_value=[]), \
             patch.object(main, "already_logged_today", return_value=False), \
-            patch.object(main, "is_on_pace", return_value=False):
+            patch.object(main, "is_on_pace", return_value=False), \
+            patch("second_brain.main.datetime") as mock_dt:
+            mock_dt.now.return_value = real_datetime(2026, 5, 7, 8, 0, tzinfo=main.TZ)
             await main.send_daily_digest(
                 bot,
                 include_habits=True,
@@ -232,30 +233,35 @@ class TestDailyDigestHabits(unittest.IsolatedAsyncioTestCase):
 
         bot.send_message.assert_awaited_once()
         kwargs = bot.send_message.await_args.kwargs
+        button_labels = [
+            button.text
+            for row in kwargs["reply_markup"].inline_keyboard
+            for button in row
+        ]
         self.assertIn("*Habits:* tap to log:", kwargs["text"])
-        self.assertIsNotNone(kwargs["reply_markup"])
+        self.assertIn("Test Digest Habit", button_labels)
 
-    async def test_send_daily_digest_fail_opens_weather_gated_habits_without_uvi(self):
+    async def test_send_daily_digest_filters_habits_before_show_after_gate(self):
         main = load_main_module()
-        habit = {
-            "page_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "name": "Test Morning Habit",
-            "time_str": "🌅 Morning",
-            "frequency": None,
-            "completion_count": 0,
-            "weather_gated": True,
+        real_datetime = main.datetime
+        main.habit_cache = {
+            "Late Digest Habit": {
+                "page_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "name": "Late Digest Habit",
+                "show_after": "18:00",
+                "sort": 1,
+                "freq_per_week": None,
+            }
         }
         bot = MagicMock()
         sent = MagicMock(message_id=43)
         bot.send_message = AsyncMock(return_value=sent)
 
-        def habits_by_time(*, time_filter, **_kwargs):
-            return [habit] if time_filter == "🌅 Morning" else []
-
         with patch.object(main.notion_tasks, "get_today_and_overdue_tasks", return_value=[]), \
-            patch.object(main.notion_habits, "get_habits_by_time", side_effect=habits_by_time), \
             patch.object(main, "already_logged_today", return_value=False), \
-            patch.object(main, "is_on_pace", return_value=False):
+            patch.object(main, "is_on_pace", return_value=False), \
+            patch("second_brain.main.datetime") as mock_dt:
+            mock_dt.now.return_value = real_datetime(2026, 5, 7, 8, 0, tzinfo=main.TZ)
             await main.send_daily_digest(
                 bot,
                 include_habits=True,
@@ -269,8 +275,8 @@ class TestDailyDigestHabits(unittest.IsolatedAsyncioTestCase):
             )
 
         kwargs = bot.send_message.await_args.kwargs
-        self.assertIn("*Habits:* tap to log:", kwargs["text"])
-        self.assertIsNotNone(kwargs["reply_markup"])
+        self.assertNotIn("*Habits:* tap to log:", kwargs["text"])
+        self.assertIsNone(kwargs["reply_markup"])
 
 
 class TestTripReminderIntegration(unittest.IsolatedAsyncioTestCase):
