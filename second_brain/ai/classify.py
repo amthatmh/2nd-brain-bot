@@ -7,6 +7,8 @@ from typing import Any
 
 import anthropic
 
+from utils.alert_handlers import alert_claude_auth_failure
+
 
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?|```$", re.MULTILINE)
 
@@ -40,6 +42,7 @@ async def claude_classify(
             last_error = exc
             transient = any(token in str(exc).lower() for token in ("rate", "529", "timeout", "tempor"))
             if not transient or attempt == retries:
+                alert_claude_auth_failure(str(exc))
                 break
             await asyncio.sleep(delay)
             delay *= 2
@@ -103,11 +106,15 @@ If NOTE: {{"type":"note","content":"clean note content","confidence":"high|low"}
 If HABIT: {{"type":"habit","habit_name":"exact name from {habit_names} or null","confidence":"high|low"}}
 If ENTERTAINMENT_LOG: {{"type":"entertainment_log","log_type":"cinema|performance|sport","title":"extracted name of film/show/event","venue":"venue if mentioned, else null","date":"{today_local.isoformat()}","notes":"extra detail if mentioned, else null","favourite":false,"confidence":"high|low"}}
 If TASK: {{"type":"task","task_name":"clean concise action","deadline_days":<integer or null>,"context":"one of: 💼 Work | 🏠 Personal | 🏃 Health | 🤝 Collab","confidence":"high|low","recurring":"None|🔁 Daily|📅 Weekly|🗓️ Monthly|📆 Quarterly","repeat_day":"Mon|Tue|Wed|Thu|Fri|Sat|Sun|1st..31st|Last or null"}}"""
-    resp = claude.messages.create(
-        model=claude_model,
-        max_tokens=250,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    try:
+        resp = claude.messages.create(
+            model=claude_model,
+            max_tokens=250,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception as exc:
+        alert_claude_auth_failure(str(exc))
+        raise
     raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
     return json.loads(raw)
 
@@ -138,5 +145,6 @@ Return ONLY valid JSON, no markdown:
         result = json.loads(raw)
         valid_topics = [t for t in result.get("topics", []) if t in topic_options]
         return {"title": result.get("title", title or url)[:200], "topics": valid_topics or ["💡 Ideas"]}
-    except Exception:
+    except Exception as exc:
+        alert_claude_auth_failure(str(exc))
         return {"title": title or url[:200], "topics": ["💡 Ideas"]}

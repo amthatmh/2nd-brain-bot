@@ -6,6 +6,8 @@ import random
 import time
 from typing import Any, Callable
 
+from utils.alert_handlers import alert_notion_auth_failure
+
 log = logging.getLogger(__name__)
 
 
@@ -30,6 +32,8 @@ def notion_call(
             return fn(*args, **kwargs)
         except Exception as exc:
             msg = str(exc).lower()
+            if "401" in msg or "unauthorized" in msg:
+                alert_notion_auth_failure(str(exc))
             is_transient = any(code in msg for code in ("429", "500", "502", "503", "504")) or "rate limited" in msg
             if is_transient and attempt < retries - 1:
                 wait = min(max_backoff, backoff * (2 ** attempt)) + random.uniform(0.05, 0.35)

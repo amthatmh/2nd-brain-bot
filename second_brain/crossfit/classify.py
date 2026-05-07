@@ -5,6 +5,8 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 
+from utils.alert_handlers import alert_claude_auth_failure
+
 log = logging.getLogger(__name__)
 
 
@@ -97,7 +99,11 @@ PROGRAMME — user pasting a full weekly gym programme.
   should be classified as PROGRAMME even if day count is unclear.
 NONE ...
 Return ONLY valid JSON with fields exactly as requested.'''
-    resp = claude_client.messages.create(model=model, max_tokens=max_tokens, messages=[{"role": "user", "content": prompt}])
+    try:
+        resp = claude_client.messages.create(model=model, max_tokens=max_tokens, messages=[{"role": "user", "content": prompt}])
+    except Exception as e:
+        alert_claude_auth_failure(str(e))
+        raise
     return _extract_json(resp.content[0].text)
 
 
@@ -140,11 +146,15 @@ Rules:
 - Thursday and Saturday are often partner WODs (is_partner: true)
 - Keep descriptions concise — movement names + rep counts only, skip coaching notes
 """
-    resp = claude_client.messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    try:
+        resp = claude_client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception as e:
+        alert_claude_auth_failure(str(e))
+        raise
     result = _extract_json(resp.content[0].text)
     result["week_label"] = f"Week of {monday}"
     return result
