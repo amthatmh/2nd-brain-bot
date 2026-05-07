@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Dict
 
 from utils.alerts import send_alert
 
@@ -93,6 +93,80 @@ def alert_scheduler_event(job_id: str, event_type: str, error: str | None = None
     if error:
         lines.append(f"Error: `{_truncate(error)}`")
     return send_alert("\n".join(lines), level="WARN")
+
+
+def alert_scheduler_health(status: str, last_job_time: str, active_jobs: int) -> bool:
+    """Send an alert when scheduler health is degraded."""
+    logger = logging.getLogger(__name__)
+    logger.info("[ALERT_HANDLER] alert_scheduler_health() called")
+
+    message = (
+        "🚨 **SCHEDULER HEALTH ALERT**\n"
+        f"Status: {status.upper()}\n"
+        f"Last job execution: {last_job_time}\n"
+        f"Active jobs configured: {active_jobs}\n"
+        f"Detected: {datetime.now().strftime('%b %d, %I:%M %p')}"
+    )
+
+    result = send_alert(
+        message,
+        level="ERROR",
+        cooldown_key="scheduler_health",
+        cooldown_hours=1,
+    )
+    logger.info("[ALERT_HANDLER] alert_scheduler_health() returned: %s", result)
+    return result
+
+
+def alert_weekly_system_health(metrics: Dict[str, Any]) -> bool:
+    """
+    Send weekly system health metrics report.
+
+    Args:
+        metrics: Dict with executions, failures, success_rate, job_performance.
+
+    Returns:
+        True if alert sent successfully.
+    """
+    logger = logging.getLogger(__name__)
+
+    logger.info("[ALERT_HANDLER] alert_weekly_system_health() called")
+
+    perf_lines = []
+    for job in metrics.get("job_performance", [])[:8]:
+        job_name = job["job"].replace("_", " ").title()
+
+        current = job["current"]
+        baseline = job["baseline"]
+
+        if current < 1:
+            current_str = f"{current * 1000:.0f}ms"
+            baseline_str = f"{baseline * 1000:.0f}ms"
+        else:
+            current_str = f"{current:.1f}s"
+            baseline_str = f"{baseline:.1f}s"
+
+        trend = job["trend"]
+        perf_lines.append(f"• {job_name}: {current_str} (baseline: {baseline_str}) {trend}")
+
+    perf_section = "\n".join(perf_lines) if perf_lines else "No performance data yet"
+
+    message = f"""📊 **WEEKLY SYSTEM HEALTH**
+Week ending {metrics['week_ending']}
+
+⚙️ **SCHEDULER RELIABILITY**
+- Total executions: {metrics['total_executions']:,}
+- Success rate: {metrics['success_rate']:.1f}%
+- Failed jobs: {metrics['total_failures']}
+
+🔧 **JOB PERFORMANCE**
+{perf_section}
+
+Generated: {datetime.now().strftime('%b %d, %I:%M %p')}"""
+
+    result = send_alert(message, level="METRICS")
+    logger.info("[ALERT_HANDLER] alert_weekly_system_health() returned: %s", result)
+    return result
 
 
 def alert_weekly_summary(summary: str) -> bool:

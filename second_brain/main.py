@@ -98,6 +98,11 @@ from second_brain.services import task_parsing as task_parsing_service
 from second_brain.services import note_utils as note_utils_service
 from second_brain.handlers.commands import CommandHandlers
 from second_brain.handlers.admin_commands import test_alert_command, test_channel_send
+from second_brain.monitoring import track_job_execution
+from second_brain.monitoring.health_check import (
+    check_scheduler_health as check_scheduler_execution_health,
+    generate_weekly_system_health,
+)
 from second_brain.monitoring.health_checks import check_scheduler_health
 from second_brain.monitoring.metrics import generate_weekly_summary
 from utils.alert_handlers import (
@@ -136,6 +141,18 @@ _extract_cinema_visit_details = ent_log._extract_cinema_visit_details
 _entertainment_save_error_text = ent_log._entertainment_save_error_text
 _build_sport_competition_props = ent_log._build_sport_competition_props
 _ent_log_create_entertainment_log_entry = ent_log.create_entertainment_log_entry
+
+
+@track_job_execution("system_health_check", alert_on_success=False)
+async def run_health_check() -> dict:
+    """Scheduled health check job; alerts only when scheduler activity is stale."""
+    return check_scheduler_execution_health()
+
+
+@track_job_execution("weekly_system_health", alert_on_success=False)
+async def run_weekly_metrics() -> dict:
+    """Scheduled weekly system metrics report job."""
+    return generate_weekly_system_health()
 
 
 def _sync_ent_log_runtime() -> None:
@@ -4079,6 +4096,25 @@ async def post_init(app: Application) -> None:
         log.info("Cinema sync config validated ✓")
 
     scheduler.start()
+
+    scheduler.add_job(
+        run_health_check,
+        "interval",
+        minutes=10,
+        id="system_health_check",
+        replace_existing=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        run_weekly_metrics,
+        "cron",
+        day_of_week="sun",
+        hour=21,
+        minute=0,
+        id="weekly_system_health",
+        replace_existing=True,
+        max_instances=1,
+    )
 
     if NOTION_UTILITY_SCHEDULER_DB:
         utility_manager = UtilitySchedulerManager(

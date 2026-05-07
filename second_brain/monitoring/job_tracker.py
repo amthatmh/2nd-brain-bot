@@ -211,7 +211,7 @@ def get_most_recent_job_time() -> Optional[datetime]:
     return most_recent
 
 
-def track_job_execution(job_key: str):
+def track_job_execution(job_key: str, *, alert_on_success: bool = True):
     """
     Decorator to automatically track job execution and send alerts.
 
@@ -224,7 +224,7 @@ def track_job_execution(job_key: str):
     This will:
     - Track execution time
     - Store metrics in memory
-    - Send success/failure alerts
+    - Send failure alerts and optionally success alerts
     - Calculate baselines automatically
     """
 
@@ -242,8 +242,8 @@ def track_job_execution(job_key: str):
                 # Update metrics
                 update_job_metrics(job_key, duration, "success")
 
-                # Send success alert
-                alert_job_success(job_key, duration, result)
+                if alert_on_success:
+                    alert_job_success(job_key, duration, result)
 
                 logger.info("[JOB_TRACKER] %s completed in %.2fs", job_key, duration)
                 return result
@@ -274,7 +274,8 @@ def track_job_execution(job_key: str):
                 duration = time.time() - start
 
                 update_job_metrics(job_key, duration, "success")
-                alert_job_success(job_key, duration, result)
+                if alert_on_success:
+                    alert_job_success(job_key, duration, result)
 
                 logger.info("[JOB_TRACKER] %s completed in %.2fs", job_key, duration)
                 return result

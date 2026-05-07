@@ -15,6 +15,7 @@ ALERT_EMOJIS = {
     "WARN": "⚠️",
     "ERROR": "🚨",
     "CRITICAL": "🔥",
+    "METRICS": "📊",
 }
 _COOLDOWNS: dict[str, datetime] = {}
 
