@@ -107,27 +107,37 @@ def load_digest_slots(*, rows: list[dict], logger) -> list[dict]:
 
 
 def pending_habits_for_digest(*, habit_cache: dict[str, dict], time_str: str | None, already_logged_today, is_on_pace) -> list[dict]:
-    is_digest_slot_time = bool(time_str and re.fullmatch(r"\d{2}:\d{2}", time_str))
-    habits = habit_cache.values()
+    """Return pending habits, applying Show After gates only for timed digests.
+
+    ``time_str`` is the current digest time in HH:MM format. When it is
+    ``None``, callers such as /habits receive the full pending habit list
+    without time-of-day filtering.
+    """
+
+    def _to_minutes(t: str) -> int:
+        """Convert HH:MM to minutes since midnight."""
+        try:
+            hours, minutes = t.split(":")
+            return int(hours) * 60 + int(minutes)
+        except (AttributeError, ValueError):
+            return 0
+
+    habits = list(habit_cache.values())
+
+    if time_str is not None:
+        current_minutes = _to_minutes(time_str)
+        habits = [
+            habit
+            for habit in habits
+            if not habit.get("show_after") or current_minutes >= _to_minutes(habit["show_after"])
+        ]
+
     pending: list[dict] = []
     for habit in sorted(habits, key=lambda h: h["sort"]):
         pid = habit["page_id"]
-        if already_logged_today(pid) or is_on_pace(habit):
+        if already_logged_today(pid):
             continue
-
-        # Show After gate — only apply when called with a valid scheduled digest time.
-        if is_digest_slot_time:
-            show_after = habit.get("show_after")
-            if show_after:
-                # Convert both to minutes-since-midnight for comparison.
-                def _to_minutes(t: str) -> int:
-                    h, m = t.split(":")
-                    return int(h) * 60 + int(m)
-
-                current_minutes = _to_minutes(time_str)
-                gate_minutes = _to_minutes(show_after)
-                if current_minutes < gate_minutes:
-                    continue
-
+        if is_on_pace(habit):
+            continue
         pending.append(habit)
     return pending
