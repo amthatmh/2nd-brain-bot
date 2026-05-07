@@ -39,6 +39,22 @@ def test_send_alert_does_not_fallback_to_owner_chat(monkeypatch):
     assert calls == []
 
 
+def test_send_alert_deploy_omits_legacy_header(monkeypatch):
+    calls = []
+    monkeypatch.setenv("TELEGRAM_TOKEN", "token")
+    monkeypatch.setenv("ALERT_CHANNEL_ID", "-1003840996802")
+
+    def fake_post(url, json, timeout):
+        calls.append({"url": url, "json": json, "timeout": timeout})
+        return FakeResponse()
+
+    monkeypatch.setattr(alerts.httpx, "post", fake_post)
+
+    assert alerts.send_alert("**Deployment**", level="DEPLOY") is True
+    assert calls[0]["json"]["text"] == "**Deployment**"
+    assert "🚀 DEPLOY" not in calls[0]["json"]["text"]
+
+
 def test_startup_handler_calls_send_alert(monkeypatch):
     calls = []
     monkeypatch.setattr(
@@ -49,7 +65,10 @@ def test_startup_handler_calls_send_alert(monkeypatch):
     assert alert_startup("v1", "abc123") is True
     assert calls
     assert calls[0][1] == "DEPLOY"
-    assert "Deployment" in calls[0][0]
+    assert "**Deployment**" in calls[0][0]
+    assert "Version: v1" in calls[0][0]
+    assert "Commit: abc123" in calls[0][0]
+    assert "Status: ok" not in calls[0][0]
 
 
 def test_cinema_handler_calls_send_alert(monkeypatch):

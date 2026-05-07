@@ -75,8 +75,11 @@ def send_alert(
         logger.info("[ALERT_DEBUG] Skipped due to cooldown: %s", cooldown_key)
         return False
 
-    emoji = ALERT_EMOJIS.get(level, "ℹ️")
-    header = f"{emoji} {level}\n\n"
+    if level == "DEPLOY":
+        header = ""
+    else:
+        emoji = ALERT_EMOJIS.get(level, "ℹ️")
+        header = f"{emoji} {level}\n\n"
 
     footer = ""
     if cooldown_key:

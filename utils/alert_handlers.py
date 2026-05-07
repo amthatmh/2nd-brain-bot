@@ -22,22 +22,25 @@ def _truncate(value: Any, limit: int = 1000) -> str:
     return f"{text[: limit - 1]}…"
 
 
-def alert_startup(version: str, commit: str, status: str = "ok") -> bool:
-    """Send deployment alert on startup."""
+def alert_startup(version: str, commit: str) -> bool:
+    """Send deployment alert on startup"""
+    import logging
+    from datetime import datetime
+
     logger = logging.getLogger(__name__)
+
     logger.info("[ALERT_HANDLER] alert_startup() called")
 
-    message = (
-        "*Deployment*\n\n"
-        f"Status: {status}\n"
-        f"Version: {version}\n"
-        f"Commit: {commit}\n"
-        f"Time: {datetime.now().strftime('%b %d, %I:%M %p %Z')}\n\n"
-        "All systems operational ✓"
-    )
+    message = f"""**Deployment**
+
+Version: {version}
+Commit: {commit}
+Time: {datetime.now().strftime('%b %d, %I:%M %p %Z')}
+
+All systems operational ✓"""
 
     result = send_alert(message, level="DEPLOY")
-    logger.info("[ALERT_HANDLER] alert_startup() send_alert returned: %s", result)
+    logger.info(f"[ALERT_HANDLER] alert_startup() returned: {result}")
     return result
 
 
