@@ -100,6 +100,7 @@ from second_brain.handlers.commands import CommandHandlers
 
 from second_brain.crossfit.classify import classify_workout_message, parse_programme
 from second_brain.crossfit.handlers import (
+    MOVEMENTS_CACHE,
     handle_cf_callback,
     handle_cf_strength_flow,
     handle_cf_text_reply,
@@ -107,6 +108,8 @@ from second_brain.crossfit.handlers import (
     handle_cf_wod_flow,
 )
 from second_brain.crossfit.keyboards import crossfit_submenu_keyboard
+from second_brain.crossfit.nlp import load_movements_cache
+from second_brain.crossfit.readiness import check_readiness_logged_today
 from second_brain.crossfit.notion import save_programme_from_notion_row
 from second_brain.entertainment import log as ent_log
 
@@ -274,6 +277,7 @@ NOTION_SUBS_DB = os.environ.get("NOTION_SUBS_DB", "")
 NOTION_PRS_DB = os.environ.get("NOTION_PRS_DB", "")
 NOTION_WOD_LOG_DB = os.environ.get("NOTION_WOD_LOG_DB", "")
 NOTION_PROGRESSIONS_DB = os.environ.get("NOTION_PROGRESSIONS_DB", "")
+NOTION_DAILY_READINESS_DB = os.environ.get("NOTION_DAILY_READINESS_DB", "")
 HTTP_PORT      = int(os.environ.get("PORT", "8080"))
 WEEKS_HISTORY  = int(os.environ.get("WEEKS_HISTORY", "52"))
 APP_VERSION    = os.environ.get("APP_VERSION", "v13.3.0")
@@ -1394,7 +1398,12 @@ async def cmd_crossfit(message, context=None) -> None:
     if not (NOTION_WORKOUT_LOG_DB or NOTION_WOD_LOG_DB):
         await message.reply_text("⚠️ CrossFit module isn't configured yet — add the workout DB env vars to Railway.", parse_mode="Markdown")
         return
-    await message.reply_text("💪 *CrossFit*\n\nWhat would you like to do?", parse_mode="Markdown", reply_markup=crossfit_submenu_keyboard())
+    readiness_logged = await check_readiness_logged_today(notion, NOTION_DAILY_READINESS_DB)
+    await message.reply_text(
+        "💪 *CrossFit*\n\nWhat would you like to do?",
+        parse_mode="Markdown",
+        reply_markup=crossfit_submenu_keyboard(readiness_logged),
+    )
 
 
 async def cmd_notes_text(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
@@ -1525,9 +1534,9 @@ async def route_classified_message_v10(message, text: str) -> None:
         if workout_result.get("type") in ("strength", "conditioning") and workout_result.get("confidence") == "high":
             await thinking.delete()
             if workout_result.get("type") == "strength":
-                await handle_cf_strength_flow(message, workout_result, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_PRS_DB": NOTION_PRS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB}, cf_pending)
+                await handle_cf_strength_flow(message, workout_result, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_PRS_DB": NOTION_PRS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB, "NOTION_DAILY_READINESS_DB": NOTION_DAILY_READINESS_DB}, cf_pending)
             else:
-                await handle_cf_wod_flow(message, workout_result, notion, {"NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB}, cf_pending)
+                await handle_cf_wod_flow(message, workout_result, notion, {"NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_DAILY_READINESS_DB": NOTION_DAILY_READINESS_DB}, cf_pending)
             return
     if await wl.handle_photo_followup(notion, message, text):
         await thinking.delete()
@@ -2069,7 +2078,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     cf_flow_key = context.user_data.get("cf_flow_key")
     if cf_flow_key and cf_flow_key in cf_pending:
-        await handle_cf_text_reply(message, text, cf_flow_key, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_PRS_DB": NOTION_PRS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB, "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB}, cf_pending)
+        await handle_cf_text_reply(message, text, cf_flow_key, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_PRS_DB": NOTION_PRS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB, "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB, "NOTION_DAILY_READINESS_DB": NOTION_DAILY_READINESS_DB}, cf_pending)
         return
 
     match_force = re.match(r"force:\s*(.+)$", text, re.IGNORECASE)
@@ -2192,7 +2201,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         else:
             context.user_data["cf_flow_key"] = str(q.message.chat_id)
-        await handle_cf_callback(q, parts, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_PRS_DB": NOTION_PRS_DB, "NOTION_SUBS_DB": NOTION_SUBS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB, "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS, "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB}, cf_pending)
+        await handle_cf_callback(q, parts, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_PRS_DB": NOTION_PRS_DB, "NOTION_SUBS_DB": NOTION_SUBS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB, "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS, "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB, "NOTION_DAILY_READINESS_DB": NOTION_DAILY_READINESS_DB}, cf_pending)
         return
 
     if parts[0] == "kind_task" and len(parts) == 2:
@@ -3970,6 +3979,15 @@ async def post_init(app: Application) -> None:
         ent_log.load_entertainment_schemas(notion)
     except Exception as e:
         log.warning("Entertainment schema load failed at startup: %s", e)
+
+    try:
+        if NOTION_MOVEMENTS_DB:
+            loaded_movements = await load_movements_cache(notion, NOTION_MOVEMENTS_DB)
+            MOVEMENTS_CACHE.clear()
+            MOVEMENTS_CACHE.update(loaded_movements)
+            log.info("Loaded %d CrossFit movements into cache", len(MOVEMENTS_CACHE))
+    except Exception as e:
+        log.warning("CrossFit movement cache load failed at startup: %s", e)
 
     # ── Load dynamic config from Notion ENV DB ──
     await health_config.load_config_from_env_db(

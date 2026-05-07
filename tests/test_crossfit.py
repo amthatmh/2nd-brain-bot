@@ -178,3 +178,25 @@ def test_rich_text_chunks_short_text():
     chunks = _rich_text_chunks("hello")
     assert len(chunks) == 1
     assert chunks[0]["text"]["content"] == "hello"
+
+def test_infer_primary_patterns_olympic_for_hang_clean():
+    from second_brain.crossfit.notion import infer_primary_patterns
+
+    assert infer_primary_patterns("Hang Clean") == ["Olympic"]
+
+
+def test_get_or_create_movement_sets_primary_pattern_on_create():
+    from second_brain.crossfit.notion import get_or_create_movement
+
+    calls = []
+    notion = SimpleNamespace(
+        databases=SimpleNamespace(query=lambda **kwargs: {"results": []}),
+        pages=SimpleNamespace(create=lambda **kwargs: calls.append(kwargs) or {"id": "new-movement"}),
+    )
+
+    page_id = get_or_create_movement(notion, "movements", "Hang Clean")
+
+    assert page_id == "new-movement"
+    props = calls[0]["properties"]
+    assert props["Category"] == {"select": {"name": "Compound"}}
+    assert props["Primary Pattern"] == {"multi_select": [{"name": "Olympic"}]}

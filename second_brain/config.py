@@ -77,6 +77,7 @@ NOTION_SUBS_DB = os.environ.get("NOTION_SUBS_DB", "")
 NOTION_PRS_DB = os.environ.get("NOTION_PRS_DB", "")
 NOTION_WOD_LOG_DB = os.environ.get("NOTION_WOD_LOG_DB", "")
 NOTION_PROGRESSIONS_DB = os.environ.get("NOTION_PROGRESSIONS_DB", "")
+NOTION_DAILY_READINESS_DB = os.environ.get("NOTION_DAILY_READINESS_DB", "")
 
 FEATURES = {
     "FEATURE_HABITS": _flag("FEATURE_HABITS", "1"),

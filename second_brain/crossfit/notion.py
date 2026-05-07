@@ -12,6 +12,29 @@ def _title(props, key="Name"):
     try:return props[key]["title"][0]["plain_text"]
     except Exception:return ""
 
+
+def infer_primary_patterns(movement_name: str) -> list[str]:
+    """Infer Movements DB Primary Pattern values from a movement name.
+
+    The Notion property is a multi-select, but Phase 1 defaults to one strong
+    primary pattern so newly created movements avoid blank metadata.
+    """
+    name = (movement_name or "").lower()
+    rules = [
+        ("Olympic", ["clean", "snatch", "jerk", "olympic"]),
+        ("Squat", ["squat", "lunge", "step-up", "step up", "wall ball", "thruster"]),
+        ("Hinge", ["deadlift", "hinge", "kettlebell swing", "kb swing", "good morning"]),
+        ("Push", ["press", "push-up", "push up", "dip", "bench", "wall walk", "handstand"]),
+        ("Pull", ["pull-up", "pull up", "chin-up", "chin up", "row", "muscle-up", "muscle up", "rope climb"]),
+        ("Core", ["toes to bar", "v-up", "v up", "sit-up", "sit up", "hollow", "plank", "gdh"]),
+        ("Monostructural", ["run", "bike", "ski", "double under", "single under", "burpee", "box jump"]),
+        ("Carry", ["carry", "farmer", "sandbag", "yoke"]),
+    ]
+    for pattern, needles in rules:
+        if any(needle in name for needle in needles):
+            return [pattern]
+    return ["Other"]
+
 # existing functions unchanged ...
 def find_movement_by_name(notion, movements_db_id: str, name: str):
     res = notion_call(notion.databases.query, database_id=movements_db_id).get("results", [])
@@ -26,8 +49,15 @@ def find_movement_by_name(notion, movements_db_id: str, name: str):
 
 def get_or_create_movement(notion, movements_db_id: str, name: str) -> str:
     found = find_movement_by_name(notion, movements_db_id, name)
-    if found: return found["page_id"]
-    page = notion_call(notion.pages.create, parent={"database_id": movements_db_id}, properties={"Name": {"title": [{"text": {"content": name}}]}, "Category": {"select": {"name": "Compound"}}})
+    if found:
+        return found["page_id"]
+    primary_patterns = infer_primary_patterns(name)
+    properties = {
+        "Name": {"title": [{"text": {"content": name}}]},
+        "Category": {"select": {"name": "Compound"}},
+        "Primary Pattern": {"multi_select": [{"name": pattern} for pattern in primary_patterns]},
+    }
+    page = notion_call(notion.pages.create, parent={"database_id": movements_db_id}, properties=properties)
     return page["id"]
 
 
@@ -328,16 +358,65 @@ def create_pr_entry(notion, prs_db_id, cycles_db_id, movement_page_id, movement_
     page=notion_call(notion.pages.create,parent={"database_id":prs_db_id},properties=props); return page["id"]
 
 def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_name, load_lbs, effort_sets, effort_reps, is_max_attempt, weekly_program_page_id, cycle_page_id, readiness):
-    props={"Name":{"title":[{"text":{"content":f"{movement_name} — {datetime.now(timezone.utc).date().isoformat()}"}}]},"Date":{"date":{"start":datetime.now(timezone.utc).date().isoformat()}},"Movement":{"relation":[{"id":movement_page_id}]},"load_lbs":{"number":load_lbs},"effort_sets":{"number":effort_sets},"effort_reps":{"number":effort_reps},"is_max_attempt":{"checkbox":bool(is_max_attempt)}}
-    page=notion_call(notion.pages.create,parent={"database_id":workout_log_db_id},properties=props); return page["id"]
+    """Create a Section B strength/accessory log in Workout Log v2.
+
+    Readiness is intentionally ignored in Phase 1 because readiness now lives
+    in the Daily Readiness database.
+    """
+    del readiness
+    today = datetime.now(timezone.utc).date().isoformat()
+    movement_ids = movement_page_id if isinstance(movement_page_id, list) else [movement_page_id]
+    props = {
+        "Name": {"title": [{"text": {"content": f"{movement_name} — {today}"}}]},
+        "Date": {"date": {"start": today}},
+        "Movement": {"relation": [{"id": mid} for mid in movement_ids if mid]},
+        "load_lbs": {"number": load_lbs},
+        "effort_sets": {"number": effort_sets},
+        "effort_reps": {"number": effort_reps},
+        "is_max_attempt": {"checkbox": bool(is_max_attempt)},
+    }
+    if weekly_program_page_id:
+        props["weekly_program_ref"] = {"relation": [{"id": weekly_program_page_id}]}
+    if cycle_page_id:
+        props["Cycle"] = {"relation": [{"id": cycle_page_id}]}
+    page = notion_call(notion.pages.create, parent={"database_id": workout_log_db_id}, properties=props)
+    return page["id"]
+
 
 def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mins, result_type, result_seconds, result_rounds, result_reps, rx_scaled, scaling_notes, is_partner, wod_name, movement_page_ids, weekly_program_page_id, readiness):
-    props={"Name":{"title":[{"text":{"content":f"{(wod_name or wod_format)} — {datetime.now(timezone.utc).date().isoformat()}"}}]},"Date":{"date":{"start":datetime.now(timezone.utc).date().isoformat()}},"Format":{"select":{"name":wod_format}},"Result Type":{"select":{"name":result_type}},"Rx / Scaled":{"select":{"name":rx_scaled}},"Partner?":{"checkbox":bool(is_partner)}}
-    if result_seconds is not None: props["Result (seconds)"]={"number":result_seconds}
-    if result_rounds is not None: props["Result (rounds)"]={"number":result_rounds}
-    if result_reps is not None: props["Result (reps)"]={"number":result_reps}
-    if scaling_notes: props["Scaling Notes"]={"rich_text":[{"text":{"content":str(scaling_notes)}}]}
-    page=notion_call(notion.pages.create,parent={"database_id":wod_log_db_id},properties=props); return page["id"]
+    """Create a Section C WOD log in the dedicated WOD Log database.
+
+    Readiness is intentionally ignored in Phase 1 because readiness now lives
+    in the Daily Readiness database.
+    """
+    del readiness
+    today = datetime.now(timezone.utc).date().isoformat()
+    props = {
+        "Name": {"title": [{"text": {"content": f"{(wod_name or wod_format)} — {today}"}}]},
+        "Date": {"date": {"start": today}},
+        "Format": {"select": {"name": wod_format}},
+        "Result Type": {"select": {"name": result_type}},
+        "Rx / Scaled": {"select": {"name": rx_scaled}},
+        "Partner?": {"checkbox": bool(is_partner)},
+    }
+    if duration_mins is not None:
+        props["Duration Mins"] = {"number": duration_mins}
+    if time_cap_mins is not None:
+        props["Time Cap Mins"] = {"number": time_cap_mins}
+    if result_seconds is not None:
+        props["Result (seconds)"] = {"number": result_seconds}
+    if result_rounds is not None:
+        props["Result (rounds)"] = {"number": result_rounds}
+    if result_reps is not None:
+        props["Result (reps)"] = {"number": result_reps}
+    if movement_page_ids:
+        props["Movements"] = {"relation": [{"id": mid} for mid in movement_page_ids if mid]}
+    if weekly_program_page_id:
+        props["Weekly Program"] = {"relation": [{"id": weekly_program_page_id}]}
+    if scaling_notes:
+        props["Scaling Notes"] = {"rich_text": [{"text": {"content": str(scaling_notes)}}]}
+    page = notion_call(notion.pages.create, parent={"database_id": wod_log_db_id}, properties=props)
+    return page["id"]
 
 def query_subs(notion, subs_db_id, movements_db_id, movement_name, sub_type):
     m=find_movement_by_name(notion,movements_db_id,movement_name)
