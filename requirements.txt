@@ -5,3 +5,5 @@ apscheduler==3.11.0
 python-dotenv==1.1.0
 aiohttp==3.11.18
 httpx==0.28.1
+
+rapidfuzz==3.13.0
