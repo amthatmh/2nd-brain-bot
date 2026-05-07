@@ -394,3 +394,39 @@ def get_steps_state_summary() -> dict:
         }
         for date_str, s in _steps_state.items()
     }
+
+
+async def handle_steps_sync_check(bot=None) -> dict:
+    """Utility Scheduler job: ensure today's Steps entry exists."""
+    from second_brain.main import MY_CHAT_ID, NOTION_HABIT_DB, NOTION_LOG_DB, TZ, notion
+    from second_brain.healthtrack import config as health_config
+    from second_brain.healthtrack.scheduler import check_and_create_steps_entry
+
+    return await check_and_create_steps_entry(
+        notion=notion,
+        habit_db_id=NOTION_HABIT_DB,
+        log_db_id=NOTION_LOG_DB,
+        habit_name=health_config.STEPS_HABIT_NAME,
+        tz=TZ,
+        bot=bot,
+        chat_id=MY_CHAT_ID,
+    )
+
+
+async def handle_steps_final_stamp_job(bot=None) -> dict:
+    """Utility Scheduler job wrapper for the nightly Steps final stamp."""
+    from second_brain.main import MY_CHAT_ID, NOTION_HABIT_DB, NOTION_LOG_DB, TZ, notion
+    from second_brain.healthtrack import config as health_config
+    from second_brain.healthtrack.config import STEPS_SOURCE_LABEL, STEPS_THRESHOLD
+
+    return await handle_steps_final_stamp(
+        notion=notion,
+        habit_db_id=NOTION_HABIT_DB,
+        log_db_id=NOTION_LOG_DB,
+        habit_name=health_config.STEPS_HABIT_NAME,
+        threshold=STEPS_THRESHOLD,
+        source_label=STEPS_SOURCE_LABEL,
+        tz=TZ,
+        bot=bot,
+        chat_id=MY_CHAT_ID,
+    )

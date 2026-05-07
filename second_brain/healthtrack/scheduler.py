@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from second_brain.healthtrack.steps import (
     _find_existing_log_entry,
     _find_steps_habit_page_id,
 )
+
+if TYPE_CHECKING:
+    from second_brain.scheduler_manager import UtilitySchedulerManager
 
 log = logging.getLogger(__name__)
 
@@ -139,3 +142,15 @@ async def check_and_create_steps_entry(
     except Exception as exc:
         log.error("steps_sync_check: unexpected error: %s", exc)
         return {"ok": False, "action": "error", "reason": str(exc)}
+
+
+def register_handlers(manager: "UtilitySchedulerManager") -> None:
+    """Register health tracking jobs with the Utility Scheduler Manager."""
+    from second_brain.healthtrack.steps import (
+        handle_steps_final_stamp_job,
+        handle_steps_sync_check,
+    )
+
+    manager.register_handler("steps_sync_check", handle_steps_sync_check)
+    manager.register_handler("steps_final_stamp", handle_steps_final_stamp_job)
+    log.info("healthtrack: registered scheduler handlers (steps_sync_check, steps_final_stamp)")

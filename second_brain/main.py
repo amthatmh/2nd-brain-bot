@@ -91,6 +91,7 @@ from second_brain import weather as wx
 from second_brain import watchlist as wl
 from second_brain import trips as trips_mod
 from second_brain.handler_registry import register_core_handlers
+from second_brain.scheduler_manager import UtilitySchedulerManager
 from second_brain.state import STATE
 from second_brain.utils import ExpiringDict, reply_notion_error
 from second_brain.http_utils import cors_headers
@@ -257,6 +258,7 @@ NOTION_FAVE_DB = os.environ.get("NOTION_FAVE_DB", "").strip()
 NOTION_NOTES_DB = os.environ["NOTION_NOTES_DB"]    # 📒 Notes
 NOTION_DIGEST_SELECTOR_DB = os.environ["NOTION_DIGEST_SELECTOR_DB"]
 NOTION_UTILITY_SCHEDULER_DB = os.environ.get("NOTION_UTILITY_SCHEDULER_DB", "").strip()
+UTILITY_SCHEDULER_RELOAD_MINUTE = int(os.environ.get("UTILITY_SCHEDULER_RELOAD_MINUTE", "15"))
 NOTION_DAILY_LOG_DB = os.environ.get("NOTION_DAILY_LOG_DB", "")
 NOTION_PACKING_ITEMS_DB = os.environ.get("NOTION_PACKING_ITEMS_DB", "")
 NOTION_TRIPS_DB         = os.environ.get("NOTION_TRIPS_DB", "")
@@ -4014,16 +4016,6 @@ async def post_init(app: Application) -> None:
     # Register digest cron jobs only. Do not queue missed digest slots on startup;
     # restarting the bot should not send an immediate digest.
     build_digest_schedule(scheduler, app.bot)
-    scheduler.add_job(
-        update_trip_weather_job,
-        "cron",
-        hour=6,
-        minute=0,
-        args=[app],
-        id="trip_weather_daily",
-        replace_existing=True,
-    )
-
     # ── Cinema sync — validate config before Utility Scheduler can enable it ──
     cinema_ok, cinema_problems = validate_cinema_config()
     if not cinema_ok:
@@ -4033,12 +4025,41 @@ async def post_init(app: Application) -> None:
     elif CINEMA_DB_ID:
         log.info("Cinema sync config validated ✓")
 
-    load_and_register_utility_jobs(scheduler, app.bot)
-
     scheduler.start()
+
+    if NOTION_UTILITY_SCHEDULER_DB:
+        utility_manager = UtilitySchedulerManager(
+            notion=notion,
+            db_id=NOTION_UTILITY_SCHEDULER_DB,
+            scheduler=scheduler,
+            bot=app.bot,
+            chat_id=MY_CHAT_ID,
+            tz=TZ,
+            reload_minutes=UTILITY_SCHEDULER_RELOAD_MINUTE,
+        )
+
+        from second_brain.healthtrack.scheduler import register_handlers as healthtrack_register
+        from second_brain.cinema.scheduler import register_handlers as cinema_register
+        from second_brain.weather_scheduler import register_handlers as weather_register
+        from second_brain.tasks.scheduler import register_handlers as tasks_register
+        from second_brain.trips_scheduler import register_handlers as trips_register
+        from second_brain.daily_log_scheduler import register_handlers as daily_log_register
+
+        healthtrack_register(utility_manager)
+        cinema_register(utility_manager)
+        weather_register(utility_manager)
+        tasks_register(utility_manager)
+        trips_register(utility_manager)
+        daily_log_register(utility_manager)
+
+        await utility_manager.initialize()
+        log.info("Utility Scheduler Manager initialized ✓")
+    else:
+        log.warning("NOTION_UTILITY_SCHEDULER_DB not set — Utility Scheduler disabled")
+
     log.info(
         f"Scheduler started ✓  TZ={TZ}  "
-        f"weather=hourly  "
+        f"utility_scheduler={'enabled' if NOTION_UTILITY_SCHEDULER_DB else 'disabled'}  "
         f"recurring={_rc_h:02d}:{_rc_m:02d}  "
         f"v10_flags=[{v10_feature_flags()}]"
     )
