@@ -61,13 +61,13 @@ from second_brain.notes.flow import (
 )
 from second_brain.ai import classify as ai_classify
 from second_brain.healthtrack.routes import register_health_routes
+from second_brain.healthtrack import config as health_config
 from second_brain.healthtrack.steps import (
     backfill_steps_state_from_notion,
     handle_steps_final_stamp,
 )
 from second_brain.healthtrack.scheduler import check_and_create_steps_entry
 from second_brain.healthtrack.config import (
-    STEPS_HABIT_NAME,
     STEPS_THRESHOLD,
     STEPS_SOURCE_LABEL,
 )
@@ -2986,7 +2986,8 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
             if not already_logged_today(h["page_id"])
             and not is_on_pace(h)
             and _habit_visible_after_show_after(h, now_str)
-            and (h.get("name") or "").strip().lower() != STEPS_HABIT_NAME.strip().lower()
+            and (h.get("name") or "").strip().lower()
+            != health_config.STEPS_HABIT_NAME.strip().lower()
         ]
         uv_max = uvi_data.get("max") if isinstance(uvi_data, dict) else None
         log.info(
@@ -3789,7 +3790,7 @@ async def _run_steps_sync_check_dispatch(bot) -> None:
         notion=notion,
         habit_db_id=NOTION_HABIT_DB,
         log_db_id=NOTION_LOG_DB,
-        habit_name=STEPS_HABIT_NAME,
+        habit_name=health_config.STEPS_HABIT_NAME,
         tz=TZ,
         bot=bot,
         chat_id=MY_CHAT_ID,
@@ -3805,7 +3806,7 @@ async def _run_steps_final_stamp_dispatch(bot) -> None:
         notion=notion,
         habit_db_id=NOTION_HABIT_DB,
         log_db_id=NOTION_LOG_DB,
-        habit_name=STEPS_HABIT_NAME,
+        habit_name=health_config.STEPS_HABIT_NAME,
         threshold=STEPS_THRESHOLD,
         source_label=STEPS_SOURCE_LABEL,
         tz=TZ,
@@ -3971,6 +3972,12 @@ async def post_init(app: Application) -> None:
         log.warning("Entertainment schema load failed at startup: %s", e)
 
     # ── Load dynamic config from Notion ENV DB ──
+    await health_config.load_config_from_env_db(
+        notion=notion,
+        env_db_id=NOTION_ENV_DB,
+    )
+    log.info("main: config loaded from Notion ENV DB")
+
     env_config = load_notion_env_config()
 
     if "UV_THRESHOLD" in env_config:
@@ -4022,7 +4029,7 @@ async def post_init(app: Application) -> None:
             notion=notion,
             habit_db_id=NOTION_HABIT_DB,
             log_db_id=NOTION_LOG_DB,
-            habit_name=STEPS_HABIT_NAME,
+            habit_name=health_config.STEPS_HABIT_NAME,
             tz=TZ,
         )
         log.info("Steps state backfill complete")

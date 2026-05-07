@@ -20,6 +20,75 @@ from second_brain.healthtrack.steps import (
     backfill_steps_state_from_notion,
 )
 
+# ── Dynamic config loading ───────────────────────────────────────────────────
+
+
+class TestLoadConfigFromEnvDb(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        from second_brain.healthtrack import config as health_config
+        self.health_config = health_config
+        self.health_config.STEPS_HABIT_NAME = "Steps"
+
+    def tearDown(self):
+        self.health_config.STEPS_HABIT_NAME = "Steps"
+
+    async def test_loads_steps_habit_name_from_notion_env_db(self):
+        notion = MagicMock()
+        notion.databases.query.return_value = {
+            "results": [
+                {
+                    "properties": {
+                        "Value": {
+                            "rich_text": [
+                                {"plain_text": "Daily Steps"},
+                            ]
+                        }
+                    }
+                }
+            ]
+        }
+
+        await self.health_config.load_config_from_env_db(notion, "env-db")
+
+        self.assertEqual(self.health_config.STEPS_HABIT_NAME, "Daily Steps")
+        notion.databases.query.assert_called_once_with(
+            database_id="env-db",
+            filter={"property": "Name", "title": {"equals": "STEPS_HABIT_NAME"}},
+        )
+
+    async def test_falls_back_to_steps_when_row_missing(self):
+        notion = MagicMock()
+        notion.databases.query.return_value = {"results": []}
+        self.health_config.STEPS_HABIT_NAME = "Old Value"
+
+        await self.health_config.load_config_from_env_db(notion, "env-db")
+
+        self.assertEqual(self.health_config.STEPS_HABIT_NAME, "Steps")
+
+    async def test_falls_back_to_rich_text_name_filter_if_title_filter_fails(self):
+        notion = MagicMock()
+        notion.databases.query.side_effect = [
+            Exception("title filter unsupported"),
+            {
+                "results": [
+                    {
+                        "properties": {
+                            "Value": {
+                                "rich_text": [
+                                    {"plain_text": "Steps"},
+                                ]
+                            }
+                        }
+                    }
+                ]
+            },
+        ]
+
+        await self.health_config.load_config_from_env_db(notion, "env-db")
+
+        self.assertEqual(self.health_config.STEPS_HABIT_NAME, "Steps")
+        self.assertEqual(notion.databases.query.call_count, 2)
+
 
 # ── Payload parsing ───────────────────────────────────────────────────────────
 

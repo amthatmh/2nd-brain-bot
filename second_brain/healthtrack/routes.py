@@ -66,8 +66,8 @@ from datetime import datetime, timezone
 
 from aiohttp import web
 
+from second_brain.healthtrack import config as health_config
 from second_brain.healthtrack.config import (
-    STEPS_HABIT_NAME,
     STEPS_SOURCE_LABEL,
     STEPS_THRESHOLD,
     STEPS_WRITE_INTRADAY_BELOW_THRESHOLD,
@@ -325,7 +325,7 @@ def register_health_routes(
             notion=notion,
             habit_db_id=habit_db_id,
             log_db_id=log_db_id,
-            habit_name=STEPS_HABIT_NAME,
+            habit_name=health_config.STEPS_HABIT_NAME,
             threshold=STEPS_THRESHOLD,
             source_label=STEPS_SOURCE_LABEL,
             tz=tz,
@@ -356,7 +356,7 @@ def register_health_routes(
             text=json.dumps({
                 "ok": True,
                 "threshold": STEPS_THRESHOLD,
-                "habit_name": STEPS_HABIT_NAME,
+                "habit_name": health_config.STEPS_HABIT_NAME,
                 "last_webhook": dict(_last_steps_webhook),
                 "state": get_steps_state_summary(),
             }),
@@ -372,5 +372,5 @@ def register_health_routes(
         "Health routes registered: POST /api/v1/steps-sync, GET /api/v1/steps-status "
         "(threshold=%d, habit='%s')",
         STEPS_THRESHOLD,
-        STEPS_HABIT_NAME,
+        health_config.STEPS_HABIT_NAME,
     )
