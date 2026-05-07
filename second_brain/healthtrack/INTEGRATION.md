@@ -13,11 +13,11 @@ CHANGE 1 — Add imports near the top of main.py
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     from second_brain.healthtrack.routes import register_health_routes
+    from second_brain.healthtrack import config as health_config
     from second_brain.healthtrack.steps import handle_steps_final_stamp
     from second_brain.healthtrack.config import (
         STEPS_FINAL_HOUR,
         STEPS_FINAL_MIN,
-        STEPS_HABIT_NAME,
         STEPS_THRESHOLD,
         STEPS_SOURCE_LABEL,
     )
@@ -57,7 +57,7 @@ Add BEFORE scheduler.start():
             notion=notion,
             habit_db_id=NOTION_HABIT_DB,
             log_db_id=NOTION_LOG_DB,
-            habit_name=STEPS_HABIT_NAME,
+            habit_name=health_config.STEPS_HABIT_NAME,
             threshold=STEPS_THRESHOLD,
             source_label=STEPS_SOURCE_LABEL,
             tz=TZ,
@@ -88,13 +88,13 @@ And at module level (near the other globals like `mute_until`), add:
 CHANGE 4 — Add env vars to Railway (or .env)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Required (add to Railway environment variables):
-  HEALTH_STEPS_THRESHOLD=10000
-  HEALTH_HABIT_NAME=Steps
+Required:
+  - Add `STEPS_HABIT_NAME` = `Steps` to the Notion ENV DB.
+  - Keep `STEPS_WEBHOOK_SECRET=your-secret` in Railway.
 
-Optional:
+Optional Railway environment variables:
+  HEALTH_STEPS_THRESHOLD=10000
   HEALTH_STEPS_FINAL_TIME=23:59      # default already set
-  STEPS_WEBHOOK_SECRET=your-secret  # recommended — use any random string
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CHANGE 5 — Add to GitHub Actions test env (python-package.yml)
@@ -103,7 +103,6 @@ CHANGE 5 — Add to GitHub Actions test env (python-package.yml)
 In .github/workflows/python-package.yml, under the `env:` block for pytest, add:
 
   HEALTH_STEPS_THRESHOLD: "10000"
-  HEALTH_HABIT_NAME: "Steps"
 """
 
 # This file is documentation only — not imported at runtime.
