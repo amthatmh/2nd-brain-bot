@@ -1219,3 +1219,97 @@ def test_strength_date_pick_resolves_date_and_prompts_for_notes(monkeypatch):
     assert "raw_date_a" not in pending[key]
     assert "raw_date_b" not in pending[key]
     assert "Any notes" in message.replies[-1][0]
+
+
+def test_crossfit_callback_collapses_skip_before_routing(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+    from unittest.mock import AsyncMock
+
+    async def fake_finalize(message, key, notion, config, cf_pending, notes):
+        cf_pending.pop(key, None)
+        await message.reply_text(f"finalized {key} notes={notes}")
+
+    monkeypatch.setattr(handlers, "_finalize_flow", fake_finalize)
+    message = _DummyMessage()
+    key = str(message.chat_id)
+    q = SimpleNamespace(
+        message=message,
+        edit_message_reply_markup=AsyncMock(),
+        edit_message_text=AsyncMock(),
+    )
+    cf_pending = {key: {"mode": "strength", "stage": "notes"}}
+
+    asyncio.run(handlers.handle_cf_callback(q, ["cf", "skip", key], None, SimpleNamespace(), {}, cf_pending))
+
+    q.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
+    assert key not in cf_pending
+    assert message.replies[-1][0] == f"finalized {key} notes=None"
+
+
+def test_crossfit_callback_collapses_date_pick_before_routing():
+    import second_brain.crossfit.handlers as handlers
+    from unittest.mock import AsyncMock
+
+    message = _DummyMessage()
+    key = str(message.chat_id)
+    q = SimpleNamespace(
+        message=message,
+        edit_message_reply_markup=AsyncMock(),
+        edit_message_text=AsyncMock(),
+    )
+    cf_pending = {
+        key: {
+            "mode": "strength",
+            "stage": "date_pick",
+            "_date_option_a": "2026-05-06",
+            "_date_option_b": "2026-06-05",
+        }
+    }
+
+    asyncio.run(handlers.handle_cf_callback(q, ["cf", "date_pick", "a", key], None, SimpleNamespace(), {}, cf_pending))
+
+    q.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
+    assert cf_pending[key]["workout_date"] == "2026-05-06"
+    assert cf_pending[key]["stage"] == "notes"
+    assert "Any notes" in message.replies[-1][0]
+
+
+def test_crossfit_callback_collapses_feel_before_routing():
+    import second_brain.crossfit.handlers as handlers
+    from unittest.mock import AsyncMock
+
+    message = _DummyMessage()
+    key = str(message.chat_id)
+    q = SimpleNamespace(
+        message=message,
+        edit_message_reply_markup=AsyncMock(),
+        edit_message_text=AsyncMock(),
+    )
+    cf_pending = {key: {"mode": "wod", "stage": "awaiting_feel"}}
+
+    asyncio.run(handlers.handle_cf_callback(q, ["cf", "feel", "5", key], None, SimpleNamespace(), {}, cf_pending))
+
+    q.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
+    q.edit_message_text.assert_awaited_once_with("✅ Session feel logged: 5/5", parse_mode="Markdown")
+    assert key not in cf_pending
+
+
+def test_crossfit_callback_collapses_menu_button_before_routing(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+    from unittest.mock import AsyncMock
+
+    async def fake_strength_flow(message, parsed, claude, notion, config, cf_pending):
+        await message.reply_text("strength flow started")
+
+    monkeypatch.setattr(handlers, "handle_cf_strength_flow", fake_strength_flow)
+    message = _DummyMessage()
+    q = SimpleNamespace(
+        message=message,
+        edit_message_reply_markup=AsyncMock(),
+        edit_message_text=AsyncMock(),
+    )
+
+    asyncio.run(handlers.handle_cf_callback(q, ["cf", "log_strength"], None, SimpleNamespace(), {}, {}))
+
+    q.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
+    assert message.replies[-1][0] == "strength flow started"
