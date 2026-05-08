@@ -116,16 +116,22 @@ def _rx_scaled_label(value: str | None) -> str:
 async def _prompt_wod_result_notes(message, key: str, state: dict) -> None:
     result_type = _infer_result_type(state.get("format"))
     if result_type == "Time":
-        prompt = "⏱ What was your time? (mm:ss)\nAdd any notes too, or tap Skip."
+        prompt = "⏱ What was your time? (mm:ss)\nExample: 12:34 for 12 minutes 34 seconds.\nAdd any notes too, or tap Skip."
     elif result_type == "Reps":
-        prompt = "💪 How many reps did you complete?\nAdd any notes too, or tap Skip."
+        prompt = "💪 How many total reps did you complete?\nAdd any notes too, or tap Skip."
     else:
-        prompt = "🔄 How many rounds/reps did you complete?\nAdd any notes too, or tap Skip."
+        prompt = "🔄 How many rounds + reps did you complete?\nExamples: 5 rounds + 12 reps, or 5 for full rounds.\nAdd any notes too, or tap Skip."
     await message.reply_text(
         prompt,
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]),
     )
+
+
+async def _prompt_wod_result_before_rx(message, key: str, state: dict) -> None:
+    """Ask for the WOD result before presenting Rx/Scaled choices."""
+    state["stage"] = "result"
+    await _prompt_wod_result_notes(message, key, state)
 
 
 def _restore_pid(pid: str) -> str:
@@ -461,13 +467,18 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
         state["movements"] = names
         state["movement_page_ids"] = movement_ids
         if state.get("format"):
-            state["stage"] = "rx_scaled"
             cf_pending[cf_flow_key] = state
-            await message.reply_text("Rx or Scaled?", parse_mode="Markdown", reply_markup=rx_scaled_keyboard(cf_flow_key))
+            await _prompt_wod_result_before_rx(message, cf_flow_key, state)
         else:
             state["stage"] = "format"
             cf_pending[cf_flow_key] = state
             await message.reply_text("Select WOD format:", parse_mode="Markdown", reply_markup=wod_format_keyboard(cf_flow_key))
+        return
+    if state.get("mode") == "wod" and state.get("stage") == "result":
+        state["result_notes"] = text
+        state["stage"] = "rx_scaled"
+        cf_pending[cf_flow_key] = state
+        await message.reply_text("Rx or Scaled?", parse_mode="Markdown", reply_markup=rx_scaled_keyboard(cf_flow_key))
         return
     if state.get("mode") == "subs" and state.get("stage") == "movement":
         state["movement"] = text
@@ -567,17 +578,26 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         key = parts[2]
         state = cf_pending.get(key, {"mode": "wod"})
         state["format"] = parts[3]
-        state["stage"] = "rx_scaled"
         cf_pending[key] = state
-        await q.edit_message_text("Rx or Scaled?", parse_mode="Markdown", reply_markup=rx_scaled_keyboard(key))
+        await q.edit_message_text(f"✅ Format: {_format_label(parts[3])}", parse_mode="Markdown")
+        if state.get("movement_page_ids"):
+            await _prompt_wod_result_before_rx(q.message, key, state)
+        else:
+            state["stage"] = "movement"
+            cf_pending[key] = state
+            await q.message.reply_text("🏋️ Which movement(s) were in the WOD? (comma-separated)", parse_mode="Markdown")
     elif parts[1] == "rx" and len(parts) >= 4:
         key = parts[2]
         state = cf_pending.get(key, {"mode": "wod"})
         state["rx_scaled"] = _rx_scaled_label(parts[3])
-        state["stage"] = "notes"
         cf_pending[key] = state
         await q.edit_message_text(f"✅ {_rx_scaled_label(parts[3])}", parse_mode="Markdown")
-        await _prompt_wod_result_notes(q.message, key, state)
+        if state.get("result_notes") is not None:
+            await _finalize_flow(q.message, key, notion, config, cf_pending, state.get("result_notes"))
+        else:
+            state["stage"] = "result"
+            cf_pending[key] = state
+            await _prompt_wod_result_notes(q.message, key, state)
     elif parts[1] == "subtype" and len(parts) >= 4:
         key = parts[2]
         state = cf_pending.get(key, {})

@@ -186,7 +186,9 @@ EXTRACTION RULES:
 1. MOVEMENTS: Extract canonical movement names only; remove sets/reps/weight/date words.
    - "4x hang clean squat at 115lb" -> "Hang Clean"
    - "6 sets of 4x hang clean squat" -> "Hang Clean"
-   - Standardize "hang squat clean" and "hang clean squat" -> "Hang Clean"
+   - Standardize "hang squat clean" and "hang clean squat" -> "Hang Squat Clean"
+   - When user says "hang clean" or "hang cleans" without specifying variation, default to "Hang Power Clean".
+   - Only return "Hang Squat Clean" if the user explicitly says "squat".
 
 2. DATE: Parse date references relative to TODAY.
    - "on 5/6" -> use the current year unless another year is stated
@@ -220,8 +222,11 @@ OUTPUT FORMAT: Valid JSON object only, no explanation:
 }}
 
 EXAMPLE for TODAY {current_date.strftime('%Y-%m-%d')}:
-Input: "Did 6 sets of 4x hang clean squat at 115lbs on 5/6"
-Output: {{"movements":["Hang Clean"],"date":"{current_date.year}-05-06","sets":6,"reps":4,"weight_lbs":115.0,"weight_kg":52.2,"scheme":"6x4","notes":null}}
+Input: "Did 6 sets of 4x hang squat clean at 115lbs on 5/6"
+Output: {{"movements":["Hang Squat Clean"],"date":"{current_date.year}-05-06","sets":6,"reps":4,"weight_lbs":115.0,"weight_kg":52.2,"scheme":"6x4","notes":null}}
+
+Input: "3x Wall walks, 6 hang cleans, 9 burpees, 12 v-ups"
+Output: {{"movements":["Wall Walks","Hang Power Clean","Burpee","V-Up"],"date":null,"sets":3,"reps":null,"weight_lbs":null,"weight_kg":null,"scheme":null,"notes":null}}
 """
 
     try:
@@ -309,16 +314,11 @@ async def fuzzy_match_movements(
     """
     Fuzzy match extracted movement names against the Movements DB cache.
 
-    Args:
-        extracted_movements: canonical names returned from NLP.
-        movements_db_cache: mapping of movement name -> Notion page ID.
-        threshold: documented decision threshold; all best scores are returned
-            so callers can decide whether to auto-link, confirm, or create.
-
-    Returns:
-        Tuples of (extracted_name, matched_name, score). Scores are 0.0-1.0.
+    When several candidates score effectively the same, prefer the shortest
+    normalized movement name. For ambiguous "Hang Clean" inputs with no exact
+    alias row, prefer "Hang Power Clean" over "Hang Squat Clean" unless the
+    input explicitly includes "squat".
     """
-    del threshold  # callers use score bands; retain arg for API clarity.
     matched_results: List[Tuple[str, Optional[str], float]] = []
     normalized_cache: Dict[str, Tuple[str, str]] = {}
     for name, page_id in movements_db_cache.items():
@@ -339,20 +339,39 @@ async def fuzzy_match_movements(
 
         normalized_input = normalize_movement_name(movement)
         print(f"[DEBUG] Matching {normalized_input!r} against cache...")
-        best_normalized_name: Optional[str] = None
-        best_score = 0.0
+        scored_candidates = []
         for normalized_candidate in normalized_cache:
             score = _movement_match_score(normalized_input, normalized_candidate)
-            if score > best_score:
-                best_normalized_name = normalized_candidate
-                best_score = score
+            if score >= threshold:
+                scored_candidates.append((normalized_candidate, score))
 
-        if best_normalized_name:
-            original_name, _url = normalized_cache[best_normalized_name]
-            print(f"[DEBUG] Best match: {original_name!r} (score: {best_score:.2f})")
-            matched_results.append((movement, original_name, best_score))
-        else:
+        if not scored_candidates:
             matched_results.append((movement, None, 0.0))
+            continue
+
+        scored_candidates.sort(key=lambda item: item[1], reverse=True)
+        best_score = scored_candidates[0][1]
+        tied_candidates = [item for item in scored_candidates if abs(item[1] - best_score) < 0.05]
+
+        if len(tied_candidates) > 1:
+            def tie_break_key(item):
+                normalized_candidate, _score = item
+                hang_power_default = (
+                    normalized_input == "hang clean"
+                    and normalized_candidate == "hang power clean"
+                    and "squat" not in normalized_input.split()
+                )
+                return (0 if hang_power_default else 1, len(normalized_candidate), normalized_candidate)
+
+            tied_candidates.sort(key=tie_break_key)
+            best_normalized_name, best_score = tied_candidates[0]
+            print(f"[DEBUG] Multiple tied matches for {movement!r}, preferring: {best_normalized_name!r}")
+        else:
+            best_normalized_name, best_score = scored_candidates[0]
+
+        original_name, _url = normalized_cache[best_normalized_name]
+        print(f"[DEBUG] Best match: {original_name!r} (score: {best_score:.2f})")
+        matched_results.append((movement, original_name, best_score))
 
     return matched_results
 
