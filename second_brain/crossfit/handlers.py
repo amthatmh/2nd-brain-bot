@@ -9,7 +9,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from .classify import parse_programme
 from .keyboards import level_confirm_keyboard, my_level_keyboard, rx_scaled_keyboard, sub_type_keyboard, wod_format_keyboard
 from .notion import create_strength_log, create_wod_log, get_movement_category, get_or_create_movement, get_progressions_for_movement, query_subs, save_programme, set_current_level
-from .nlp import extract_movements_from_log, fuzzy_match_movements, load_movements_cache
+from .nlp import extract_movements_from_log, extract_workout_data, fuzzy_match_movements, load_movements_cache
 from .readiness import check_readiness_logged_today, log_daily_readiness
 from .weekly_program import get_current_week_program_url, get_todays_workout_day
 
@@ -270,14 +270,29 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
         await message.reply_text("⚠️ CrossFit module isn't configured yet.", parse_mode="Markdown")
         return
     key = str(message.chat_id)
-    movement_text = (workout_result.get("movement") or "").strip()
+    raw_text = (workout_result.get("raw_text") or workout_result.get("message") or workout_result.get("text") or "").strip()
+    workout_data = {}
+    if raw_text:
+        workout_data = await extract_workout_data(raw_text, claude)
+        print(f"[DEBUG] Extracted workout data: {workout_data}")
+
+    extracted_movements = workout_data.get("movements") or []
+    movement_text = ", ".join(extracted_movements) if extracted_movements else (workout_result.get("movement") or "").strip()
+    sets = workout_data.get("sets") if workout_data.get("sets") is not None else workout_result.get("sets")
+    reps = workout_data.get("reps") if workout_data.get("reps") is not None else workout_result.get("reps")
+    load_lbs = workout_data.get("weight_lbs") if workout_data.get("weight_lbs") is not None else workout_result.get("load_lbs")
+    scheme = workout_data.get("scheme") or (f"{sets}x{reps}" if sets and reps else None)
+
     cf_pending[key] = {
         "mode": "strength",
         "stage": "movement" if not movement_text else "notes",
         "movement": movement_text,
-        "load_lbs": workout_result.get("load_lbs") or 0,
-        "sets": workout_result.get("sets") or 1,
-        "reps": workout_result.get("reps") or 1,
+        "load_lbs": load_lbs or 0,
+        "sets": sets or 1,
+        "reps": reps or 1,
+        "workout_date": workout_data.get("date"),
+        "effort_scheme": scheme,
+        "notes": workout_data.get("notes"),
     }
     if not movement_text:
         await message.reply_text("🏋️ Which movement did you train?", parse_mode="Markdown")
@@ -287,6 +302,10 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
     cf_pending[key]["movement_page_id"] = movement_ids[0] if movement_ids else None
     cf_pending[key]["movement"] = ", ".join(names) if names else movement_text
     if movement_ids and await handle_gymnastics_level_check(message, movement_ids[0], cf_pending[key]["movement"], notion, config, cf_pending, key):
+        return
+    has_complete_extraction = bool(raw_text and sets is not None and reps is not None and load_lbs is not None)
+    if has_complete_extraction:
+        await _finalize_flow(message, key, notion, config, cf_pending, cf_pending[key].get("notes"))
         return
     await message.reply_text("📝 Any notes about this session?\n(Reply with text, or tap Skip)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]))
 
@@ -358,9 +377,20 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 weekly_program_id,
                 None,
                 None,
+                state.get("workout_date"),
+                state.get("effort_scheme"),
             ),
         )
-        await message.reply_text("✅ Strength logged to Workout Log v2!", parse_mode="Markdown")
+        confirm_msg = "✅ Strength logged to Workout Log v2!"
+        if state.get("workout_date"):
+            confirm_msg += f"\n📅 Date: {state['workout_date']}"
+        if state.get("movement"):
+            confirm_msg += f"\n💪 Movement: {state['movement']}"
+        if state.get("effort_scheme"):
+            confirm_msg += f"\n📊 Scheme: {state['effort_scheme']}"
+        if state.get("load_lbs"):
+            confirm_msg += f"\n⚖️ Weight: {state['load_lbs']}lbs"
+        await message.reply_text(confirm_msg, parse_mode="Markdown")
     elif state.get("mode") == "wod":
         target_wod_db = _cf_config(config, "NOTION_WOD_LOG_DB")
         result_type = _infer_result_type(state.get("format"))

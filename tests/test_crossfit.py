@@ -357,3 +357,149 @@ def test_readiness_final_score_writes_and_clears_pending(monkeypatch):
         "soreness": "3",
         "daily_readiness_db_id": "ready-db",
     }
+
+
+def test_extract_workout_data_parses_complete_claude_payload():
+    from datetime import datetime
+    from second_brain.crossfit.nlp import extract_workout_data
+
+    payload = '{"movements":["Hang Clean"],"date":"2026-05-06","sets":6,"reps":4,"weight_lbs":115,"weight_kg":52.2,"scheme":"6x4","notes":null}'
+    out = asyncio.run(
+        extract_workout_data(
+            "Did 6 sets of 4x hang clean squat at 115lbs on 5/6",
+            _FakeClaude(payload),
+            datetime(2026, 5, 8),
+        )
+    )
+
+    assert out == {
+        "movements": ["Hang Clean"],
+        "date": "2026-05-06",
+        "sets": 6,
+        "reps": 4,
+        "weight_lbs": 115.0,
+        "weight_kg": 52.2,
+        "scheme": "6x4",
+        "notes": None,
+    }
+
+
+def test_extract_workout_data_fallback_parses_common_metadata_without_claude():
+    from datetime import datetime
+    from second_brain.crossfit.nlp import extract_workout_data
+
+    out = asyncio.run(
+        extract_workout_data(
+            "5x5 back squat at 225# yesterday",
+            None,
+            datetime(2026, 5, 8),
+        )
+    )
+
+    assert out["date"] == "2026-05-07"
+    assert out["sets"] == 5
+    assert out["reps"] == 5
+    assert out["weight_lbs"] == 225.0
+    assert out["weight_kg"] == 102.1
+    assert out["scheme"] == "5x5"
+
+
+def test_create_strength_log_accepts_extracted_date_and_scheme():
+    from second_brain.crossfit.notion import create_strength_log
+
+    calls = []
+    notion = SimpleNamespace(pages=SimpleNamespace(create=lambda **kwargs: calls.append(kwargs) or {"id": "log"}))
+
+    page_id = create_strength_log(
+        notion,
+        "workout-log",
+        ["mov-hang-clean"],
+        "Hang Squat Clean",
+        115,
+        6,
+        4,
+        False,
+        "week-1",
+        None,
+        None,
+        "2026-05-06",
+        "6x4",
+    )
+
+    assert page_id == "log"
+    props = calls[0]["properties"]
+    assert props["Date"] == {"date": {"start": "2026-05-06"}}
+    assert props["effort_sets"] == {"number": 6}
+    assert props["effort_reps"] == {"number": 4}
+    assert props["effort_scheme"] == {"rich_text": [{"text": {"content": "6x4"}}]}
+    assert props["load_lbs"] == {"number": 115}
+    assert props["weekly_program_ref"] == {"relation": [{"id": "week-1"}]}
+
+
+def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    created = {}
+
+    async def fake_resolve(text, claude, notion, config, message=None):
+        del claude, notion, config, message
+        assert text == "Hang Clean"
+        return ["mov-hang-clean"], ["Hang Squat Clean"]
+
+    async def fake_level_check(message, movement_id, movement_name, notion, config, cf_pending, key):
+        del message, movement_id, movement_name, notion, config, cf_pending, key
+        return False
+
+    async def fake_week(notion):
+        del notion
+        return "week-1"
+
+    def fake_create_strength_log(notion, workout_log_db_id, movement_ids, movement_name, load_lbs, sets, reps, is_max_attempt, weekly_program_id, cycle_id, readiness, workout_date=None, effort_scheme=None):
+        del notion, is_max_attempt, cycle_id, readiness
+        created.update(
+            workout_log_db_id=workout_log_db_id,
+            movement_ids=movement_ids,
+            movement_name=movement_name,
+            load_lbs=load_lbs,
+            sets=sets,
+            reps=reps,
+            weekly_program_id=weekly_program_id,
+            workout_date=workout_date,
+            effort_scheme=effort_scheme,
+        )
+        return "log-1"
+
+    monkeypatch.setattr(handlers, "_resolve_movement_ids", fake_resolve)
+    monkeypatch.setattr(handlers, "handle_gymnastics_level_check", fake_level_check)
+    monkeypatch.setattr(handlers, "get_current_week_program_url", fake_week)
+    monkeypatch.setattr(handlers, "create_strength_log", fake_create_strength_log)
+
+    payload = '{"movements":["Hang Clean"],"date":"2026-05-06","sets":6,"reps":4,"weight_lbs":115,"weight_kg":52.2,"scheme":"6x4","notes":null}'
+    message = _DummyMessage()
+
+    asyncio.run(
+        handlers.handle_cf_strength_flow(
+            message,
+            {"raw_text": "Did 6 sets of 4x hang clean squat at 115lbs on 5/6"},
+            _FakeClaude(payload),
+            SimpleNamespace(),
+            {"NOTION_WORKOUT_LOG_DB": "workout-log", "NOTION_MOVEMENTS_DB": "movements"},
+            {},
+        )
+    )
+
+    assert created == {
+        "workout_log_db_id": "workout-log",
+        "movement_ids": ["mov-hang-clean"],
+        "movement_name": "Hang Squat Clean",
+        "load_lbs": 115.0,
+        "sets": 6,
+        "reps": 4,
+        "weekly_program_id": "week-1",
+        "workout_date": "2026-05-06",
+        "effort_scheme": "6x4",
+    }
+    assert "Strength logged" in message.replies[-1][0]
+    assert "Date: 2026-05-06" in message.replies[-1][0]
+    assert "Scheme: 6x4" in message.replies[-1][0]
+    assert not any("Any notes" in reply[0] for reply in message.replies)
