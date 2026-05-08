@@ -156,6 +156,13 @@ def _store_extracted_strength_state(cf_pending: dict, key: str, extracted: dict 
     return state
 
 
+def _has_complete_strength_metadata(state: dict) -> bool:
+    return all(
+        state.get(field) is not None
+        for field in ("movement_page_id", "sets", "reps", "weight_lbs", "workout_date")
+    )
+
+
 def _format_lbs(value) -> str:
     if value is None:
         return "N/A"
@@ -419,6 +426,7 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
         "sets": sets,
         "reps": reps,
         "workout_date": workout_date,
+        "raw_workout_date": state.get("raw_workout_date"),
         "effort_scheme": scheme,
         "is_max_attempt": workout_result.get("is_max_attempt", False),
         "notes": state.get("notes"),
@@ -533,6 +541,13 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         state_snapshot = dict(state)
         print(f"[DEBUG] Finalizing strength flow state before create_strength_log: {state_snapshot}")
         log.debug("Finalizing strength flow state before create_strength_log: %r", state_snapshot)
+        log.info(
+            "[CF_STATE] sets=%s reps=%s weight=%s date=%s",
+            state.get("sets"),
+            state.get("reps"),
+            state.get("weight_lbs"),
+            state.get("workout_date"),
+        )
         await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: create_strength_log(

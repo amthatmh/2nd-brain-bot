@@ -96,7 +96,9 @@ class _FakeScheduler:
     def __init__(self) -> None:
         self.calls = []
 
-    def add_job(self, fn, trigger, **kwargs):
+    def add_job(self, fn=None, trigger=None, **kwargs):
+        if "func" in kwargs:
+            fn = kwargs.pop("func")
         self.calls.append({"fn": fn, "trigger": trigger, "kwargs": kwargs})
 
 
@@ -109,6 +111,41 @@ def _manager_with_scheduler(scheduler: _FakeScheduler) -> UtilitySchedulerManage
         chat_id="chat",
         tz=timezone.utc,
     )
+
+
+def test_initialize_registers_reload_job_with_misfire_controls() -> None:
+    import asyncio
+
+    scheduler = _FakeScheduler()
+    manager = UtilitySchedulerManager(
+        notion=None,
+        db_id="db",
+        scheduler=scheduler,
+        bot=None,
+        chat_id="chat",
+        tz=timezone.utc,
+        reload_minutes=10,
+    )
+
+    async def reload_stub() -> None:
+        return None
+
+    manager.reload = reload_stub
+
+    asyncio.run(manager.initialize())
+
+    assert len(scheduler.calls) == 1
+    call = scheduler.calls[0]
+    assert call["fn"] is reload_stub
+    assert call["trigger"] == "interval"
+    assert call["kwargs"] == {
+        "minutes": 10,
+        "id": "utility_scheduler_reload",
+        "misfire_grace_time": 300,
+        "max_instances": 1,
+        "coalesce": True,
+        "replace_existing": True,
+    }
 
 
 def _interval_config(*, run_on_start: bool) -> dict:

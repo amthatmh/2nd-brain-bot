@@ -912,3 +912,124 @@ def test_wod_format_callback_prompts_result_before_rx_when_movements_exist():
     assert cf_pending[key]["stage"] == "result"
     assert "What was your time" in q.message.replies[-1][0]
     assert "Rx or Scaled?" not in q.message.replies[-1][0]
+
+
+def test_strength_flow_prompts_for_ambiguous_raw_date_and_preserves_metadata(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    async def fake_resolve(text, claude, notion, config, message=None):
+        del claude, notion, config, message
+        assert text == "Hang Squat Clean"
+        return ["mov-hang-clean"], ["Hang Squat Clean"]
+
+    async def fake_level_check(message, movement_id, movement_name, notion, config, cf_pending, key):
+        del message, movement_id, movement_name, notion, config, cf_pending, key
+        return False
+
+    monkeypatch.setattr(handlers, "_resolve_movement_ids", fake_resolve)
+    monkeypatch.setattr(handlers, "handle_gymnastics_level_check", fake_level_check)
+
+    payload = '{"movements":["Hang Squat Clean"],"date":"2026-05-06","sets":6,"reps":4,"weight_lbs":115,"weight_kg":52.2,"scheme":"6x4","notes":null}'
+    message = _DummyMessage()
+    pending = {}
+
+    asyncio.run(
+        handlers.handle_cf_strength_flow(
+            message,
+            {"raw_text": "Did 6 sets of 4x hang clean squat at 115lbs on 5/6"},
+            _FakeClaude(payload),
+            SimpleNamespace(),
+            {"NOTION_WORKOUT_LOG_DB": "workout-log", "NOTION_MOVEMENTS_DB": "movements"},
+            pending,
+        )
+    )
+
+    state = pending["123"]
+    assert state["stage"] == "date_pick"
+    assert state["sets"] == 6
+    assert state["reps"] == 4
+    assert state["weight_lbs"] == 115.0
+    assert state["workout_date"] == "2026-05-06"
+    assert state["raw_workout_date"] == "5/6"
+    assert "Which date did you mean?" in message.replies[-1][0]
+
+
+def test_strength_date_pick_resolves_movement_and_auto_logs_complete_state(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    created = {}
+
+    async def fake_resolve(text, claude, notion, config, message=None):
+        del claude, notion, config, message
+        assert text == "Hang Squat Clean"
+        return ["mov-hang-clean"], ["Hang Squat Clean"]
+
+    async def fake_level_check(message, movement_id, movement_name, notion, config, cf_pending, key):
+        del message, movement_id, movement_name, notion, config, cf_pending, key
+        return False
+
+    async def fake_week(notion):
+        del notion
+        return "week-1"
+
+    def fake_create_strength_log(**kwargs):
+        created.update(kwargs)
+        return "log-1"
+
+    class _DummyQuery:
+        def __init__(self, message):
+            self.message = message
+            self.edits = []
+
+        async def answer(self, *args, **kwargs):
+            pass
+
+        async def edit_message_text(self, text, **kwargs):
+            self.edits.append((text, kwargs))
+
+    monkeypatch.setattr(handlers, "_resolve_movement_ids", fake_resolve)
+    monkeypatch.setattr(handlers, "handle_gymnastics_level_check", fake_level_check)
+    monkeypatch.setattr(handlers, "get_current_week_program_url", fake_week)
+    monkeypatch.setattr(handlers, "create_strength_log", fake_create_strength_log)
+
+    message = _DummyMessage()
+    key = str(message.chat_id)
+    pending = {
+        key: {
+            "mode": "strength",
+            "stage": "date_pick",
+            "stage_before_date_pick": "notes",
+            "movement": "Hang Squat Clean",
+            "movement_name": "Hang Squat Clean",
+            "sets": 6,
+            "reps": 4,
+            "weight_lbs": 115.0,
+            "weight_kg": 52.2,
+            "effort_scheme": "6x4",
+            "workout_date": "2026-05-06",
+            "raw_date_a": "2026-05-06",
+            "raw_date_b": "2026-06-05",
+        }
+    }
+
+    q = _DummyQuery(message)
+    asyncio.run(
+        handlers.handle_cf_callback(
+            q,
+            ["cf", "date_pick", "a", key],
+            None,
+            SimpleNamespace(),
+            {"NOTION_WORKOUT_LOG_DB": "workout-log", "NOTION_MOVEMENTS_DB": "movements"},
+            pending,
+        )
+    )
+
+    assert created["load_lbs"] == 115.0
+    assert created["effort_sets"] == 6
+    assert created["effort_reps"] == 4
+    assert created["workout_date"] == "2026-05-06"
+    assert created["movement_page_id"] == ["mov-hang-clean"]
+    assert key not in pending
+    assert "Strength logged" in message.replies[-1][0]
+    assert "Scheme: 6x4" in message.replies[-1][0]
+    assert "Weight: 115lbs" in message.replies[-1][0]
