@@ -155,6 +155,7 @@ def field_work_keyboard(key: str, trip_map: dict[str, dict]) -> InlineKeyboardMa
             rows.append(row); row = []
     if row: rows.append(row)
     rows.append([InlineKeyboardButton("✅ Done", callback_data=f"twd:{key}")])
+    rows.append([InlineKeyboardButton("❌ Cancel", callback_data=f"tcancel:{key}")])
     return InlineKeyboardMarkup(rows)
 
 def format_command_palette() -> InlineKeyboardMarkup:
