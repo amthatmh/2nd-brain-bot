@@ -59,8 +59,9 @@ class TestCheckAndCreateStepsEntry(IsolatedAsyncioTestCase):
         self.assertEqual(props["Date"], {"date": {"start": "2026-05-07"}})
         self.assertEqual(props["Habit"], {"relation": [{"id": "habit-page"}]})
         self.assertEqual(props["Source"], {"select": {"name": "Scheduler"}})
+        self.assertEqual(props["Entry"], {"title": [{"text": {"content": "Steps"}}]})
         self.assertNotIn("Steps Count", props)
-        bot.send_message.assert_awaited_once()
+        bot.send_message.assert_not_awaited()
 
     async def test_returns_error_when_steps_habit_cannot_be_resolved(self):
         notion = MagicMock()

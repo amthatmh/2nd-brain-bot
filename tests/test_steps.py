@@ -17,7 +17,7 @@ from second_brain.healthtrack.steps import (
     get_steps_state_summary,
     handle_steps_sync,
     handle_steps_final_stamp,
-    backfill_steps_state_from_notion,
+    migrate_steps_entry_titles,
 )
 
 # ── Dynamic config loading ───────────────────────────────────────────────────
@@ -88,6 +88,41 @@ class TestLoadConfigFromEnvDb(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.health_config.STEPS_HABIT_NAME, "Steps")
         self.assertEqual(notion.databases.query.call_count, 2)
+
+
+class TestMigrateStepsEntryTitles(unittest.TestCase):
+    def test_migrates_legacy_and_blank_steps_titles(self):
+        notion = MagicMock()
+        notion.databases.query.return_value = {
+            "results": [
+                {
+                    "id": "legacy-page",
+                    "properties": {
+                        "Entry": {"title": [{"plain_text": "Steps — 2026-05-06"}]},
+                    },
+                },
+                {
+                    "id": "current-page",
+                    "properties": {"Entry": {"title": [{"plain_text": "Steps"}]}},
+                },
+                {"id": "blank-page", "properties": {"Entry": {"title": []}}},
+            ],
+            "has_more": False,
+        }
+
+        result = migrate_steps_entry_titles(notion, "log-db", "habit-page")
+
+        self.assertEqual(result, {"renamed": 2, "skipped": 1})
+        self.assertEqual(notion.pages.update.call_count, 2)
+        updated_page_ids = [
+            call.kwargs["page_id"] for call in notion.pages.update.call_args_list
+        ]
+        self.assertEqual(updated_page_ids, ["legacy-page", "blank-page"])
+        for call in notion.pages.update.call_args_list:
+            self.assertEqual(
+                call.kwargs["properties"],
+                {"Entry": {"title": [{"text": {"content": "Steps"}}]}},
+            )
 
 
 # ── Payload parsing ───────────────────────────────────────────────────────────
@@ -207,6 +242,7 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
             "results": [{"id": existing_page_id}] if existing_page_id else []
         }
         notion.pages.create.return_value = {"id": "new-page-id"}
+        notion.pages.retrieve.return_value = {"properties": {"Completed": {"checkbox": False}}}
         notion.pages.update.return_value = {}
         return notion
 
@@ -387,6 +423,27 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
         notion.pages.create.assert_not_called()
         notion.pages.update.assert_called_once()
 
+    async def test_late_correction_preserves_completed_true(self):
+        notion = self._make_notion(existing_page_id="existing-page-abc")
+        notion.pages.retrieve.return_value = {"properties": {"Completed": {"checkbox": True}}}
+        tz = self._make_tz()
+
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._yesterday", return_value="2026-04-27"), \
+             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"):
+            result = await handle_steps_sync(
+                steps=9500,
+                date_str="2026-04-27",
+                notion=notion,
+                habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
+                threshold=10000, source_label="📱 Apple Watch", tz=tz,
+            )
+
+        self.assertEqual(result["action"], "updated")
+        props = notion.pages.update.call_args.kwargs["properties"]
+        self.assertEqual(props["Steps Count"], {"number": 9500})
+        self.assertTrue(props["Completed"]["checkbox"])
+
     async def test_completed_false_when_below_threshold(self):
         notion = self._make_notion()
         tz = self._make_tz()
@@ -523,6 +580,7 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
             "notion_page_id": "today-page",
         }
         notion = MagicMock()
+        notion.pages.retrieve.return_value = {"properties": {"Completed": {"checkbox": True}}}
         notion.pages.update.return_value = {}
         from zoneinfo import ZoneInfo
         tz = ZoneInfo("America/Chicago")
@@ -538,7 +596,7 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(results["2026-04-28"]["steps"], 12000)
-        notion.pages.retrieve.assert_not_called()
+        notion.pages.retrieve.assert_called_once_with(page_id="today-page")
         find_existing.assert_not_called()
 
     async def test_nightly_stamp_can_write_below_threshold_today(self):

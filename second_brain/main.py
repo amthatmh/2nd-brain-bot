@@ -65,8 +65,10 @@ from second_brain.ai import classify as ai_classify
 from second_brain.healthtrack.routes import register_health_routes
 from second_brain.healthtrack import config as health_config
 from second_brain.healthtrack.steps import (
+    _find_steps_habit_page_id,
     backfill_steps_state_from_notion,
     handle_steps_final_stamp,
+    migrate_steps_entry_titles,
 )
 from second_brain.healthtrack.scheduler import check_and_create_steps_entry
 from second_brain.config import (
@@ -471,6 +473,7 @@ _signoff_note_today: str = ""
 _claude_activity_today: list[str] = []
 _last_daily_log_url: str = ""
 _app_bot = None  # set during post_init for health route bot access
+_steps_title_migration_ran = False
 STATE_DIR = _resolve_state_dir()
 mute_state_file = STATE_DIR / "mute_state.json"
 
@@ -4044,7 +4047,7 @@ def _scheduler_event_listener(event) -> None:
         alert_scheduler_event(getattr(event, "job_id", "unknown"), "missed")
 
 async def post_init(app: Application) -> None:
-    global _scheduler, UV_THRESHOLD, WEEKS_HISTORY, TZ
+    global _scheduler, _steps_title_migration_ran, UV_THRESHOLD, WEEKS_HISTORY, TZ
     try:
         startup_notion_health_check()
     except RuntimeError as e:
@@ -4196,6 +4199,27 @@ async def post_init(app: Application) -> None:
         log.info("Utility Scheduler Manager initialized ✓")
     else:
         log.warning("NOTION_UTILITY_SCHEDULER_DB not set — Utility Scheduler disabled")
+
+    if NOTION_LOG_DB and NOTION_HABIT_DB and not _steps_title_migration_ran:
+        _steps_title_migration_ran = True
+        try:
+            habit_page_id = _find_steps_habit_page_id(
+                notion,
+                NOTION_HABIT_DB,
+                health_config.STEPS_HABIT_NAME,
+            )
+            if habit_page_id:
+                result = await asyncio.to_thread(
+                    migrate_steps_entry_titles,
+                    notion,
+                    NOTION_LOG_DB,
+                    habit_page_id,
+                )
+                log.info("steps: title migration result: %s", result)
+            else:
+                log.warning("steps: title migration skipped — Steps habit page not found")
+        except Exception as e:
+            log.warning("steps: title migration error (non-blocking): %s", e)
 
     # TEST: Set UTILITY_SCHEDULER_RELOAD_MINUTES=5 in Railway
     # TEST: Verify scheduler log shows "digest_refresh=5min"

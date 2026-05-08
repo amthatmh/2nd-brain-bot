@@ -107,7 +107,7 @@ async def check_and_create_steps_entry(
         new_entry = notion.pages.create(
             parent={"database_id": target_log_db_id},
             properties={
-                "Entry": {"title": [{"text": {"content": f"Steps — {today_str}"}}]},
+                "Entry": {"title": [{"text": {"content": "Steps"}}]},
                 "Habit": {"relation": [{"id": habit_page_id}]},
                 "Date": {"date": {"start": today_str}},
                 "Source": {"select": {"name": "Scheduler"}},
@@ -120,18 +120,11 @@ async def check_and_create_steps_entry(
             page_id,
         )
 
-        if bot and chat_id:
-            try:
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=(
-                        f"⚠️ Steps entry missing for {today_str}. "
-                        "Created placeholder. Check Auto Export."
-                    ),
-                    parse_mode="HTML",
-                )
-            except Exception as exc:
-                log.error("steps_sync_check: failed to send Telegram alert: %s", exc)
+        log.warning(
+            "steps_sync_check: placeholder created for %s — "
+            "Auto Export has not synced yet. Will correct when data arrives.",
+            today_str,
+        )
 
         return {
             "ok": True,
