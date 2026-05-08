@@ -54,7 +54,7 @@ def get_or_create_movement(notion, movements_db_id: str, name: str) -> str:
     primary_patterns = infer_primary_patterns(name)
     properties = {
         "Name": {"title": [{"text": {"content": name}}]},
-        "Category": {"select": {"name": "Compound"}},
+        "Category": {"multi_select": [{"name": "Compound"}]},
         "Primary Pattern": {"multi_select": [{"name": pattern} for pattern in primary_patterns]},
     }
     page = notion_call(notion.pages.create, parent={"database_id": movements_db_id}, properties=properties)
@@ -461,7 +461,11 @@ def get_movement_category(notion, movements_db_id, movement_page_id) -> str:
     del movements_db_id
     page = notion_call(notion.pages.retrieve, page_id=movement_page_id)
     props = page.get("properties", {})
-    return ((props.get("Category", {}).get("select") or {}).get("name") or "")
+    category = props.get("Category", {})
+    multi_select = category.get("multi_select") or []
+    if multi_select:
+        return multi_select[0].get("name") or ""
+    return ((category.get("select") or {}).get("name") or "")
 
 
 def set_current_level(notion, progressions_db_id, movement_page_id, new_current_page_id):
