@@ -651,20 +651,32 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
 async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, config, cf_pending):
     state = cf_pending.get(cf_flow_key) or {}
     if state.get("mode") == "strength" and state.get("stage") == "movement":
-        movement_name = text.strip()
-        if not movement_name:
+        raw_input = text.strip()
+        if not raw_input:
             await message.reply_text("Please send a movement name first.")
             return
+
+        key = cf_flow_key
+        extracted = await extract_workout_data(raw_input, claude)
+        state["sets"] = extracted.get("sets")
+        state["reps"] = extracted.get("reps")
+        state["weight_lbs"] = extracted.get("weight_lbs")
+        state["weight_kg"] = extracted.get("weight_kg")
+        state["workout_date"] = extracted.get("date")
+        state["effort_scheme"] = extracted.get("scheme")
+
+        extracted_movements = extracted.get("movements") or []
+        movement_name = ", ".join(extracted_movements) if extracted_movements else raw_input
         movement_ids, names = await _resolve_movement_ids(movement_name, claude, notion, config, message)
         movement_id = movement_ids[0] if movement_ids else None
         state["movement"] = ", ".join(names) if names else movement_name
+        state["movement_name"] = state["movement"]
         state["movement_page_ids"] = movement_ids
         state["movement_page_id"] = movement_id
         state["stage"] = "notes"
-        cf_pending[cf_flow_key] = state
-        if movement_id and await handle_gymnastics_level_check(message, movement_id, state["movement"], notion, config, cf_pending, cf_flow_key):
-            return
-        await message.reply_text("📝 Any notes about this session?\n(Reply with text, or tap Skip)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{cf_flow_key}")]]))
+        cf_pending[key] = state
+        logger.info(f"[CF_STATE_A] WROTE key={key!r} sets={state.get('sets')} weight={state.get('weight_lbs')} date={state.get('workout_date')}")
+        await _send_notes_prompt(message, key, cf_pending)
         return
     if state.get("mode") == "wod" and state.get("stage") == "movement":
         if not state.get("format"):

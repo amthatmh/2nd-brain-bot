@@ -914,6 +914,91 @@ def test_wod_format_callback_prompts_result_before_rx_when_movements_exist():
     assert "Rx or Scaled?" not in q.message.replies[-1][0]
 
 
+def test_strength_pending_movement_stage_extracts_full_input_before_resolving(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    resolved = {}
+
+    async def fake_resolve(text, claude, notion, config, message=None):
+        del claude, notion, config, message
+        resolved["text"] = text
+        return ["mov-hang-squat-clean"], ["Hang Squat Clean"]
+
+    monkeypatch.setattr(handlers, "_resolve_movement_ids", fake_resolve)
+
+    payload = '{"movements":["Hang Squat Clean"],"date":"2026-05-06","sets":6,"reps":4,"weight_lbs":115.0,"weight_kg":52.2,"scheme":"6x4","notes":null}'
+    message = _DummyMessage()
+    key = str(message.chat_id)
+    pending = {key: {"mode": "strength", "stage": "movement"}}
+
+    asyncio.run(
+        handlers.handle_cf_text_reply(
+            message,
+            "Did 6 sets of 4x hang clean squat at 115lbs on 5/6",
+            key,
+            _FakeClaude(payload),
+            SimpleNamespace(),
+            {"NOTION_WORKOUT_LOG_DB": "workout-log", "NOTION_MOVEMENTS_DB": "movements"},
+            pending,
+        )
+    )
+
+    state = pending[key]
+    assert resolved["text"] == "Hang Squat Clean"
+    assert state["sets"] == 6
+    assert state["reps"] == 4
+    assert state["weight_lbs"] == 115.0
+    assert state["weight_kg"] == 52.2
+    assert state["workout_date"] == "2026-05-06"
+    assert state["effort_scheme"] == "6x4"
+    assert state["movement"] == "Hang Squat Clean"
+    assert state["movement_page_id"] == "mov-hang-squat-clean"
+    assert state["stage"] == "notes"
+    assert "Any notes" in message.replies[-1][0]
+
+
+def test_strength_pending_movement_stage_handles_movement_only(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    resolved = {}
+
+    async def fake_resolve(text, claude, notion, config, message=None):
+        del claude, notion, config, message
+        resolved["text"] = text
+        return ["mov-hang-squat-clean"], ["Hang Squat Clean"]
+
+    monkeypatch.setattr(handlers, "_resolve_movement_ids", fake_resolve)
+
+    payload = '{"movements":["Hang Squat Clean"],"date":null,"sets":null,"reps":null,"weight_lbs":null,"weight_kg":null,"scheme":null,"notes":null}'
+    message = _DummyMessage()
+    key = str(message.chat_id)
+    pending = {key: {"mode": "strength", "stage": "movement"}}
+
+    asyncio.run(
+        handlers.handle_cf_text_reply(
+            message,
+            "hang squat clean",
+            key,
+            _FakeClaude(payload),
+            SimpleNamespace(),
+            {"NOTION_WORKOUT_LOG_DB": "workout-log", "NOTION_MOVEMENTS_DB": "movements"},
+            pending,
+        )
+    )
+
+    state = pending[key]
+    assert resolved["text"] == "Hang Squat Clean"
+    assert state["sets"] is None
+    assert state["reps"] is None
+    assert state["weight_lbs"] is None
+    assert state["weight_kg"] is None
+    assert state["workout_date"] is None
+    assert state["effort_scheme"] is None
+    assert state["movement"] == "Hang Squat Clean"
+    assert state["stage"] == "notes"
+    assert "Any notes" in message.replies[-1][0]
+
+
 def test_strength_flow_prompts_for_ambiguous_raw_date_and_preserves_metadata(monkeypatch):
     import second_brain.crossfit.handlers as handlers
 
