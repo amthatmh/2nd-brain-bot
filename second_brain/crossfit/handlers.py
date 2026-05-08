@@ -593,7 +593,7 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
             state.get("weight_lbs"),
             state.get("workout_date"),
         )
-        await asyncio.get_running_loop().run_in_executor(
+        created_page_id = await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: create_strength_log(
                 notion=notion,
@@ -612,6 +612,8 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 load_kg=state.get("weight_kg"),
             ),
         )
+        state["last_workout_page_id"] = created_page_id
+        cf_pending[key] = state
         confirm_msg = "✅ Strength logged to Workout Log v2!\n"
         confirm_msg += f"💪 Movement: {movement_name}\n"
         confirm_msg += f"📅 Date: {state.get('workout_date') or datetime.now(timezone.utc).date().isoformat()}\n"
@@ -691,7 +693,11 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 **kwargs,
             )
 
-        await asyncio.get_running_loop().run_in_executor(None, _create_wod_log_with_optional_structure)
+        created_page_id = await asyncio.get_running_loop().run_in_executor(
+            None, _create_wod_log_with_optional_structure
+        )
+        state["last_wod_page_id"] = created_page_id
+        cf_pending[key] = state
         await message.reply_text("✅ WOD logged to WOD Log!", parse_mode="Markdown")
         await _prompt_session_feel(message, key, state, cf_pending)
         return
@@ -834,6 +840,14 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
     elif parts[1] == "log_wod":
         print("[DEBUG] Routing to handle_cf_wod_flow")
         await handle_cf_wod_flow(q.message, {}, notion, config, cf_pending)
+    elif parts[1] == "log_feel":
+        key = str(q.message.chat_id)
+        cf_pending[key] = {
+            "mode": "feel_only",
+            "stage": "awaiting_feel",
+            "workout_date": date.today().isoformat(),
+        }
+        await q.message.reply_text("💬 How did that session feel?", reply_markup=session_feel_keyboard(key))
     elif parts[1] == "date_pick" and len(parts) >= 4:
         choice = parts[2]   # "a" or "b"
         key = parts[3]
@@ -899,9 +913,9 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         except Exception:
             await q.message.reply_text(prompt, parse_mode="Markdown")
         return
-    elif parts[1] == "subs":
+    elif parts[1] in {"subs", "sub_addon"}:
         await handle_cf_subs_flow(q.message, notion, config, cf_pending)
-    elif parts[1] == "prs":
+    elif parts[1] in {"prs", "my_prs"}:
         await handle_cf_prs(q.message, notion, config)
     elif parts[1] == "log_readiness":
         if await check_readiness_logged_today(notion, _cf_config(config, "NOTION_DAILY_READINESS_DB")):

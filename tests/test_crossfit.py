@@ -736,6 +736,7 @@ def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
     assert "Scheme: 6x4" in message.replies[-2][0]
     assert "Weight: 115lbs" in message.replies[-2][0]
     assert pending[str(message.chat_id)]["stage"] == "awaiting_feel"
+    assert pending[str(message.chat_id)]["last_workout_page_id"] == "log-1"
     assert "How did that session feel?" in message.replies[-1][0]
     assert not any("Any notes" in reply[0] for reply in message.replies)
 
@@ -850,6 +851,7 @@ def test_finalize_flow_uses_nlp_pending_state_keys(monkeypatch):
     assert "Scheme: 6x4" in message.replies[-2][0]
     assert "Weight: 115lbs" in message.replies[-2][0]
     assert pending[str(message.chat_id)]["stage"] == "awaiting_feel"
+    assert pending[str(message.chat_id)]["last_workout_page_id"] == "log-1"
     assert "How did that session feel?" in message.replies[-1][0]
 
 
@@ -933,6 +935,7 @@ def test_wod_amrap_time_cap_and_workout_structure_logged(monkeypatch):
         "workout_structure": raw_structure,
     }
     assert cf_pending[key]["stage"] == "awaiting_feel"
+    assert cf_pending[key]["last_wod_page_id"] == "wod-log"
     assert "How did that session feel?" in message.replies[-1][0]
 
 
@@ -1004,6 +1007,7 @@ def test_wod_for_time_result_is_captured_before_rx_and_logged(monkeypatch):
         "weekly_program_id": "week-1",
     }
     assert cf_pending[key]["stage"] == "awaiting_feel"
+    assert cf_pending[key]["last_wod_page_id"] == "wod-log"
     assert "WOD logged" in message.replies[-2][0]
     assert "How did that session feel?" in message.replies[-1][0]
 

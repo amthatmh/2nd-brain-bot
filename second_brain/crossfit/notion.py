@@ -442,6 +442,36 @@ def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mi
     page = notion_call(notion.pages.create, parent={"database_id": wod_log_db_id}, properties=props)
     return page["id"]
 
+
+def upsert_training_log_feel(notion, daily_readiness_db_id: str, rating, workout_date: str | None = None) -> str | None:
+    """Upsert standalone workout feel onto the Daily Readiness entry for a date."""
+    workout_date = workout_date or datetime.now(timezone.utc).date().isoformat()
+    if not daily_readiness_db_id:
+        raise ValueError("NOTION_DAILY_READINESS_DB is not configured")
+    properties = {
+        "Workout Feel": {"select": {"name": str(rating)}},
+    }
+    results = notion_call(
+        notion.databases.query,
+        database_id=daily_readiness_db_id,
+        filter={"property": "Date", "date": {"equals": workout_date}},
+        page_size=1,
+    ).get("results", [])
+    if results:
+        page_id = results[0]["id"]
+        notion_call(notion.pages.update, page_id=page_id, properties=properties)
+        return page_id
+    page = notion_call(
+        notion.pages.create,
+        parent={"database_id": daily_readiness_db_id},
+        properties={
+            "Name": {"title": [{"text": {"content": f"Workout Feel — {workout_date}"}}]},
+            "Date": {"date": {"start": workout_date}},
+            **properties,
+        },
+    )
+    return page.get("id")
+
 def query_subs(notion, subs_db_id, movements_db_id, movement_name, sub_type):
     m=find_movement_by_name(notion,movements_db_id,movement_name)
     if not m: return []
