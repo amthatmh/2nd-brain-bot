@@ -369,15 +369,14 @@ def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_na
     movement_ids = movement_page_id if isinstance(movement_page_id, list) else [movement_page_id]
     props = {
         "Name": {"title": [{"text": {"content": f"{workout_date} — Strength"}}]},
-        "date:Date:start": {"type": "date", "date": {"start": workout_date}},
-        "date:Date:is_datetime": 0,
+        "date": {"date": {"start": workout_date}},
         "Movement": {"relation": [{"id": mid} for mid in movement_ids if mid]},
         "effort_sets": {"number": effort_sets} if effort_sets is not None else None,
         "effort_reps": {"number": effort_reps} if effort_reps is not None else None,
         "effort_scheme": {"rich_text": [{"text": {"content": effort_scheme}}]} if effort_scheme else None,
         "load_lbs": {"number": load_lbs} if load_lbs is not None else None,
         "load_kg": {"number": load_kg} if load_kg is not None else None,
-        "weekly_program_ref": {"relation": [{"id": weekly_program_page_id}] if weekly_program_page_id else []},
+        "weekly_program_ref": {"relation": [{"id": weekly_program_page_id}]} if weekly_program_page_id else None,
         "is_max_attempt": {"checkbox": bool(is_max_attempt)},
         "Cycle": {"relation": [{"id": cycle_page_id}]} if cycle_page_id else None,
     }
