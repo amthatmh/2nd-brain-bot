@@ -365,20 +365,21 @@ def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_na
     """
     del readiness
     del movement_name
+    del is_max_attempt
+    del cycle_page_id
+    del effort_scheme
+    del load_kg
     workout_date = workout_date or datetime.now(timezone.utc).date().isoformat()
     movement_ids = movement_page_id if isinstance(movement_page_id, list) else [movement_page_id]
     props = {
         "Name": {"title": [{"text": {"content": f"{workout_date} — Strength"}}]},
-        "date": {"date": {"start": workout_date}},
-        "Movement": {"relation": [{"id": mid} for mid in movement_ids if mid]},
+        "date:Date:start": workout_date,
+        "date:Date:is_datetime": 0,
         "effort_sets": {"number": effort_sets} if effort_sets is not None else None,
         "effort_reps": {"number": effort_reps} if effort_reps is not None else None,
-        "effort_scheme": {"rich_text": [{"text": {"content": effort_scheme}}]} if effort_scheme else None,
         "load_lbs": {"number": load_lbs} if load_lbs is not None else None,
-        "load_kg": {"number": load_kg} if load_kg is not None else None,
+        "Movement": {"relation": [{"id": mid} for mid in movement_ids if mid]},
         "weekly_program_ref": {"relation": [{"id": weekly_program_page_id}]} if weekly_program_page_id else None,
-        "is_max_attempt": {"checkbox": bool(is_max_attempt)},
-        "Cycle": {"relation": [{"id": cycle_page_id}]} if cycle_page_id else None,
     }
     props = {key: value for key, value in props.items() if value is not None}
     page = notion_call(notion.pages.create, parent={"database_id": workout_log_db_id}, properties=props)
