@@ -212,6 +212,7 @@ def register_health_routes(
     notion,
     habit_db_id: str,
     log_db_id: str,
+    env_db_id: str,
     tz,
     bot_getter,  # callable() → bot, evaluated at request time to avoid circular import
     chat_id: int,
@@ -227,6 +228,7 @@ def register_health_routes(
         notion      — NotionClient instance
         habit_db_id — NOTION_HABIT_DB env value
         log_db_id   — NOTION_LOG_DB env value
+        env_db_id   — ENV_DB_ID env value for persisted notification ids
         tz          — IANA timezone (ZoneInfo from config)
         bot_getter  — zero-arg callable returning the Telegram bot (avoids circular ref)
         chat_id     — MY_CHAT_ID to send threshold notifications
@@ -325,6 +327,7 @@ def register_health_routes(
             notion=notion,
             habit_db_id=habit_db_id,
             log_db_id=log_db_id,
+            env_db_id=env_db_id,
             habit_name=health_config.STEPS_HABIT_NAME,
             threshold=STEPS_THRESHOLD,
             source_label=STEPS_SOURCE_LABEL,
