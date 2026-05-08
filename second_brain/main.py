@@ -240,6 +240,7 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
 log = logging.getLogger(__name__)
+logger = log
 
 
 def _resolve_state_dir() -> Path:
@@ -1726,7 +1727,10 @@ async def handle_trip_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global _entertainment_counter
-    if update.effective_chat.id != MY_CHAT_ID:
+    user_id = update.effective_chat.id
+    if str(user_id) in cf_pending:
+        logger.info(f"[CF_ENTRY] function=handle_message_text user={user_id} stage={cf_pending.get(str(user_id), {}).get('stage')}")
+    if user_id != MY_CHAT_ID:
         return
     message = update.message
     text    = (message.text or "").strip()
