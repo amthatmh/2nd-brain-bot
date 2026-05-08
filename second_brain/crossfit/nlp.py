@@ -138,44 +138,65 @@ def _fallback_extract_workout_data(log_message: str, current_date: datetime) -> 
     data = _empty_workout_data([text] if text else [])
     lower = text.lower()
 
-    scheme = re.search(r"\b(\d+)\s*[x×]\s*(\d+)\b", lower)
-    if scheme:
-        data["sets"] = int(scheme.group(1))
-        data["reps"] = int(scheme.group(2))
+    sets_reps_pattern = re.search(
+        r"\b(\d+)\s+sets?\s+(?:of\s+)?(\d+)\s*(?:x|reps?)?\b",
+        lower,
+        re.IGNORECASE,
+    )
+    scheme_pattern = re.search(r"\b(\d+)\s*[x×]\s*(\d+)\b", lower, re.IGNORECASE)
+    if sets_reps_pattern:
+        data["sets"] = int(sets_reps_pattern.group(1))
+        data["reps"] = int(sets_reps_pattern.group(2))
         data["scheme"] = f"{data['sets']}x{data['reps']}"
+        print(f"[DEBUG] Fallback sets/reps: {data['sets']}x{data['reps']}")
+    elif scheme_pattern:
+        data["sets"] = int(scheme_pattern.group(1))
+        data["reps"] = int(scheme_pattern.group(2))
+        data["scheme"] = f"{data['sets']}x{data['reps']}"
+        print(f"[DEBUG] Fallback sets/reps: {data['sets']}x{data['reps']}")
     else:
-        sets_reps = re.search(r"\b(\d+)\s+sets?\s+(?:of\s+)?(\d+)\s*(?:x|reps?)?\b", lower)
-        if sets_reps:
-            data["sets"] = int(sets_reps.group(1))
-            data["reps"] = int(sets_reps.group(2))
-            data["scheme"] = f"{data['sets']}x{data['reps']}"
-        else:
-            rounds = re.search(r"\b(\d+)\s+rounds?\b", lower)
-            if rounds:
-                data["sets"] = int(rounds.group(1))
-                data["scheme"] = f"{data['sets']} rounds"
+        rounds = re.search(r"\b(\d+)\s+rounds?\b", lower, re.IGNORECASE)
+        if rounds:
+            data["sets"] = int(rounds.group(1))
+            data["scheme"] = f"{data['sets']} rounds"
+            print(f"[DEBUG] Fallback rounds: {data['sets']}")
 
-    weight = re.search(r"\b(\d+(?:\.\d+)?)\s*(lbs?|pounds?|kg|#)(?=\b|\s|$)", lower)
-    if weight:
-        amount = float(weight.group(1))
-        unit = weight.group(2)
+    weight_pattern = re.search(
+        r"\b(\d+(?:\.\d+)?)\s*(lbs?|pounds?|kg|#)(?:\b|\s|$)",
+        lower,
+        re.IGNORECASE,
+    )
+    if weight_pattern:
+        amount = float(weight_pattern.group(1))
+        unit = weight_pattern.group(2).lower()
         if unit == "kg":
             data["weight_kg"] = round(amount, 1)
             data["weight_lbs"] = round(amount / 0.453592, 1)
         else:
             data["weight_lbs"] = round(amount, 1)
             data["weight_kg"] = round(amount * 0.453592, 1)
+        print(f"[DEBUG] Fallback weight: {data['weight_lbs']}lbs")
 
-    if re.search(r"\byesterday\b", lower):
+    if re.search(r"\byesterday\b", lower, re.IGNORECASE):
         data["date"] = (current_date - timedelta(days=1)).strftime("%Y-%m-%d")
+        print(f"[DEBUG] Fallback date: {data['date']}")
     else:
-        md = re.search(r"\bon\s+(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b", lower)
-        if md:
-            month, day = int(md.group(1)), int(md.group(2))
-            year = int(md.group(3)) if md.group(3) else current_date.year
+        date_pattern = re.search(
+            r"\bon\s+(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b",
+            lower,
+            re.IGNORECASE,
+        )
+        if date_pattern:
+            month = int(date_pattern.group(1))
+            day = int(date_pattern.group(2))
+            year = int(date_pattern.group(3)) if date_pattern.group(3) else current_date.year
             if year < 100:
                 year += 2000
-            data["date"] = datetime(year, month, day).strftime("%Y-%m-%d")
+            try:
+                data["date"] = datetime(year, month, day).strftime("%Y-%m-%d")
+                print(f"[DEBUG] Fallback date: {data['date']}")
+            except ValueError:
+                data["date"] = None
 
     data["raw_input"] = text or None
     data["workout_structure"] = text or None
@@ -189,6 +210,17 @@ def _fallback_extract_workout_data(log_message: str, current_date: datetime) -> 
                 movements.append(cleaned)
         if movements:
             data["movements"] = movements
+    return data
+
+
+def _apply_fallback_workout_metadata(data: Dict, fallback: Dict) -> Dict:
+    """Fill missing Claude metadata with deterministic regex results."""
+    for key in ("date", "sets", "reps", "scheme"):
+        if data.get(key) is None and fallback.get(key) is not None:
+            data[key] = fallback[key]
+    for key in ("weight_lbs", "weight_kg"):
+        if data.get(key) in (None, 0) and fallback.get(key) is not None:
+            data[key] = fallback[key]
     return data
 
 
@@ -284,6 +316,8 @@ Output: {{"movements":["Wall Walks","Hang Power Clean","Burpee","V-Up"],"date":n
         workout_data_text = _strip_json_fence(response.content[0].text)
         parsed = json.loads(workout_data_text)
         workout_data = _normalise_workout_data(parsed, log_message)
+        fallback_data = _fallback_extract_workout_data(log_message, current_date)
+        workout_data = _apply_fallback_workout_metadata(workout_data, fallback_data)
         print(f"[DEBUG] Extracted workout data: {workout_data}")
         return workout_data
     except Exception as e:
