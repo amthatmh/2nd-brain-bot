@@ -12,7 +12,19 @@ from utils.date_parser import parse_date
 
 from .classify import parse_programme
 from .keyboards import level_confirm_keyboard, my_level_keyboard, rx_scaled_keyboard, session_feel_keyboard, sub_type_keyboard, wod_format_keyboard
-from .notion import create_strength_log, create_wod_log, get_movement_category, get_or_create_movement, get_progressions_for_movement, query_subs, save_programme, set_current_level
+from second_brain.notion import notion_call
+
+from .notion import (
+    create_strength_log,
+    create_wod_log,
+    get_movement_category,
+    get_or_create_movement,
+    get_progressions_for_movement,
+    query_subs,
+    save_programme,
+    set_current_level,
+    upsert_training_log_feel,
+)
 from .nlp import extract_movements_from_log, extract_workout_data, fuzzy_match_movements, load_movements_cache
 from .readiness import check_readiness_logged_today, log_daily_readiness
 from .weekly_program import get_current_week_program_url, get_todays_workout_day
@@ -568,7 +580,7 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
             state.get("weight_lbs"),
             state.get("workout_date"),
         )
-        await asyncio.get_running_loop().run_in_executor(
+        created_page_id = await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: create_strength_log(
                 notion=notion,
@@ -587,6 +599,8 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 load_kg=state.get("weight_kg"),
             ),
         )
+        state["last_workout_page_id"] = created_page_id
+        cf_pending[key] = state
         confirm_msg = "✅ Strength logged to Workout Log v2!\n"
         confirm_msg += f"💪 Movement: {movement_name}\n"
         confirm_msg += f"📅 Date: {state.get('workout_date') or datetime.now(timezone.utc).date().isoformat()}\n"
@@ -653,7 +667,11 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 **kwargs,
             )
 
-        await asyncio.get_running_loop().run_in_executor(None, _create_wod_log_with_optional_structure)
+        created_page_id = await asyncio.get_running_loop().run_in_executor(
+            None, _create_wod_log_with_optional_structure
+        )
+        state["last_wod_page_id"] = created_page_id
+        cf_pending[key] = state
         await message.reply_text("✅ WOD logged to WOD Log!", parse_mode="Markdown")
         await _prompt_session_feel(message, key, state, cf_pending)
         return
@@ -937,9 +955,49 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         value = parts[2]
         key = parts[3]
         state = cf_pending.get(key, {})
-        state["session_feel"] = int(value)
-        cf_pending.pop(key, None)
-        await q.edit_message_text(f"✅ Session feel logged: {value}/5", parse_mode="Markdown")
+        mode = state.get("mode")
+        page_id = None
+        try:
+            state["session_feel"] = int(value)
+            if mode == "strength":
+                page_id = state.get("last_workout_page_id")
+                if page_id and hasattr(notion, "pages"):
+                    await asyncio.get_running_loop().run_in_executor(
+                        None,
+                        lambda: notion_call(
+                            notion.pages.update,
+                            page_id=page_id,
+                            properties={"Strength Feel": {"select": {"name": value}}},
+                        ),
+                    )
+            elif mode == "wod":
+                page_id = state.get("last_wod_page_id")
+                if page_id and hasattr(notion, "pages"):
+                    await asyncio.get_running_loop().run_in_executor(
+                        None,
+                        lambda: notion_call(
+                            notion.pages.update,
+                            page_id=page_id,
+                            properties={"WOD Feel": {"select": {"name": value}}},
+                        ),
+                    )
+            elif mode == "feel_only":
+                page_id = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda: upsert_training_log_feel(
+                        notion=notion,
+                        daily_readiness_db_id=_cf_config(config, "NOTION_DAILY_READINESS_DB"),
+                        rating=value,
+                        workout_date=state.get("workout_date"),
+                    ),
+                )
+            log.info("[FEEL] mode=%s page_id=%s rating=%s key=%s", mode, page_id, value, key)
+            await q.edit_message_text(f"✅ Session feel logged: {value}/5", parse_mode="Markdown")
+        except Exception as e:
+            log.exception("[FEEL] failed mode=%s page_id=%s rating=%s key=%s", mode, page_id, value, key)
+            await q.edit_message_text(f"❌ Error logging session feel: {e}", parse_mode="Markdown")
+        finally:
+            cf_pending.pop(key, None)
     elif parts[1] == "skip" and len(parts) == 3:
         key = parts[2]
         logger.info(f"[CF_STATE_B] skip received key={key!r} type={type(key)} cf_pending_keys={list(cf_pending.keys())}")
