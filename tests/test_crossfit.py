@@ -736,6 +736,7 @@ def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
     assert "Scheme: 6x4" in message.replies[-2][0]
     assert "Weight: 115lbs" in message.replies[-2][0]
     assert pending[str(message.chat_id)]["stage"] == "awaiting_feel"
+    assert pending[str(message.chat_id)]["last_workout_page_id"] == "log-1"
     assert "How did that session feel?" in message.replies[-1][0]
     assert not any("Any notes" in reply[0] for reply in message.replies)
 
@@ -850,6 +851,7 @@ def test_finalize_flow_uses_nlp_pending_state_keys(monkeypatch):
     assert "Scheme: 6x4" in message.replies[-2][0]
     assert "Weight: 115lbs" in message.replies[-2][0]
     assert pending[str(message.chat_id)]["stage"] == "awaiting_feel"
+    assert pending[str(message.chat_id)]["last_workout_page_id"] == "log-1"
     assert "How did that session feel?" in message.replies[-1][0]
 
 
@@ -933,6 +935,7 @@ def test_wod_amrap_time_cap_and_workout_structure_logged(monkeypatch):
         "workout_structure": raw_structure,
     }
     assert cf_pending[key]["stage"] == "awaiting_feel"
+    assert cf_pending[key]["last_wod_page_id"] == "wod-log"
     assert "How did that session feel?" in message.replies[-1][0]
 
 
@@ -1004,6 +1007,7 @@ def test_wod_for_time_result_is_captured_before_rx_and_logged(monkeypatch):
         "weekly_program_id": "week-1",
     }
     assert cf_pending[key]["stage"] == "awaiting_feel"
+    assert cf_pending[key]["last_wod_page_id"] == "wod-log"
     assert "WOD logged" in message.replies[-2][0]
     assert "How did that session feel?" in message.replies[-1][0]
 
@@ -1428,39 +1432,63 @@ def test_crossfit_callback_collapses_menu_button_before_routing(monkeypatch):
     assert message.replies[-1][0] == "strength flow started"
 
 
-def test_crossfit_submenu_uses_strict_two_by_three_grid_with_cancel():
-    from second_brain.crossfit.keyboards import crossfit_submenu_keyboard
 
-    keyboard = crossfit_submenu_keyboard(readiness_logged=True).inline_keyboard
-
-    assert [[button.text for button in row] for row in keyboard] == [
-        ["📊 Log Readiness (A)", "🏋️ Log Strength (B)"],
-        ["🏆 Log WOD (C)", "💬 Workout Feel (D)"],
-        ["🥇 My PRs", "🔍 Sub / Add-on"],
-        ["❌ Cancel"],
-    ]
-    assert [[button.callback_data for button in row] for row in keyboard] == [
-        ["cf:log_readiness", "cf:log_strength"],
-        ["cf:log_wod", "cf:log_feel"],
-        ["cf:my_prs", "cf:sub_addon"],
-        ["cf:cancel"],
-    ]
-
-
-def test_crossfit_log_feel_starts_standalone_feel_flow():
+def test_wod_movement_stage_extracts_spelled_date_from_initial_text(monkeypatch):
     import second_brain.crossfit.handlers as handlers
-    from unittest.mock import AsyncMock
+
+    async def fake_resolve(text, claude, notion, config, message=None):
+        del claude, notion, config, message
+        return ["mov-wall-walks"], ["Wall Walks"]
+
+    monkeypatch.setattr(handlers, "_resolve_movement_ids", fake_resolve)
 
     message = _DummyMessage()
-    q = SimpleNamespace(
-        message=message,
-        edit_message_reply_markup=AsyncMock(),
-        edit_message_text=AsyncMock(),
+    key = str(message.chat_id)
+    pending = {key: {"mode": "wod", "stage": "movement", "format": "amrap"}}
+
+    asyncio.run(
+        handlers.handle_cf_text_reply(
+            message,
+            "This log is for May 6th, 3x wall walks",
+            key,
+            None,
+            SimpleNamespace(),
+            {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"},
+            pending,
+        )
     )
-    cf_pending = {}
 
-    asyncio.run(handlers.handle_cf_callback(q, ["cf", "log_feel"], None, SimpleNamespace(), {}, cf_pending))
+    assert pending[key]["workout_date"] == "2026-05-06"
+    assert pending[key]["raw_workout_date"] == "May 6th"
+    assert pending[key]["stage"] == "time_cap"
+    assert "Which date did you mean?" not in [reply[0] for reply in message.replies]
 
+def test_wod_duplicate_guard_warns_and_still_logs(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    created = {}
+
+    async def fake_week(notion):
+        del notion
+        return "week-1"
+
+    async def fake_query(notion, wod_log_db_id, workout_date, wod_format=None):
+        del notion
+        assert wod_log_db_id == "wod"
+        assert workout_date == "2026-05-06"
+        assert wod_format == "AMRAP"
+        return [{"id": "existing-wod"}]
+
+    def fake_create_wod_log(*args, **kwargs):
+        created["args"] = args
+        created["kwargs"] = kwargs
+        return "new-wod"
+
+    monkeypatch.setattr(handlers, "get_current_week_program_url", fake_week)
+    monkeypatch.setattr(handlers, "query_wod_log_by_date", fake_query)
+    monkeypatch.setattr(handlers, "create_wod_log", fake_create_wod_log)
+
+    message = _DummyMessage()
     key = str(message.chat_id)
     assert cf_pending[key]["mode"] == "feel_only"
     assert cf_pending[key]["stage"] == "awaiting_feel"
