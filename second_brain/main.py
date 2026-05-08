@@ -2107,6 +2107,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # cf:{action}            — crossfit flow
     # tw:{key}:{slug}        — trip field work picker
     # twd/tms/tcl:{key}      — trip flow steps
+    # tcancel:{key}          — trip flow cancel
     # wl_save/wl_cancel      — wantslist confirm
     # tmdb_pick/skip/cancel  — watchlist TMDB picker
     print(f"[DEBUG] Callback received: {q.data}")
@@ -2118,6 +2119,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         parts[0] = "hc"
     if await handle_v10_callback(q, parts):
         return
+    if parts[0] == "tcancel" and len(parts) == 2:
+        key = parts[1]
+        trip_map.pop(key, None)
+        await q.edit_message_reply_markup(reply_markup=None)
+        return
+
     if parts[0] == "tw" and len(parts) == 3:
         _, key, slug = parts
         if key not in trip_map:
@@ -2157,7 +2164,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         if not trip_map[key].get("field_work_types"):
             trip_map[key]["field_work_types"] = ["None"]
-        await q.message.reply_text("Multiple sites on this trip?", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Yes", callback_data=f"tms:{key}:y"), InlineKeyboardButton("No", callback_data=f"tms:{key}:n")]]))
+        selected = ", ".join(trip_map[key].get("field_work_types") or []) or "None"
+        await q.edit_message_text(f"🔬 Field work: {selected}", reply_markup=None)
+        await q.message.reply_text(
+            "Multiple sites on this trip?",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("Yes", callback_data=f"tms:{key}:y"),
+                    InlineKeyboardButton("No", callback_data=f"tms:{key}:n"),
+                ],
+                [InlineKeyboardButton("❌ Cancel", callback_data=f"tcancel:{key}")],
+            ]),
+        )
         return
 
     if parts[0] == "tms" and len(parts) == 3:
@@ -2166,7 +2184,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await q.edit_message_text("⚠️ Trip session expired. Use /trip again.")
             return
         trip_map[key]["multiple_sites"] = (ans == "y")
-        await q.message.reply_text("Checking a bag?", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Yes", callback_data=f"tcl:{key}:y"), InlineKeyboardButton("No", callback_data=f"tcl:{key}:n")]]))
+        summary = "Yes" if trip_map[key]["multiple_sites"] else "No"
+        await q.edit_message_text(f"🏗️ Multiple sites: {summary}", reply_markup=None)
+        await q.message.reply_text(
+            "Checking a bag?",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("Yes", callback_data=f"tcl:{key}:y"),
+                    InlineKeyboardButton("No", callback_data=f"tcl:{key}:n"),
+                ],
+                [InlineKeyboardButton("❌ Cancel", callback_data=f"tcancel:{key}")],
+            ]),
+        )
         return
 
     if parts[0] == "tcl" and len(parts) == 3:
@@ -2175,6 +2204,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await q.edit_message_text("⚠️ Trip session expired. Use /trip again.")
             return
         trip_map[key]["checked_luggage"] = (ans == "y")
+        summary = "Yes" if trip_map[key]["checked_luggage"] else "No"
+        await q.edit_message_text(f"🧳 Checked bag: {summary}", reply_markup=None)
         await q.message.reply_text("🧠 Building your packing list...")
         await trips_mod.execute_trip(
             key,
