@@ -774,6 +774,10 @@ async def _prompt_readiness_field(message, key: str, field: str):
 
 
 async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
+    try:
+        await q.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
     print(f"[DEBUG] CrossFit callback parts: {parts}")
     if len(parts) < 2:
         await q.answer("Action unavailable.", show_alert=False)
