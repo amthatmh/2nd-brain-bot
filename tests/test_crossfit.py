@@ -202,7 +202,7 @@ def test_get_or_create_movement_sets_primary_pattern_on_create():
     assert props["Primary Pattern"] == {"multi_select": [{"name": "Olympic"}]}
 
 
-def test_wod_flow_prompts_rx_scaled_before_result_notes():
+def test_wod_flow_prompts_result_before_rx_scaled():
     from second_brain.crossfit.handlers import MOVEMENTS_CACHE, handle_cf_text_reply, handle_cf_wod_flow
 
     MOVEMENTS_CACHE.clear()
@@ -215,11 +215,19 @@ def test_wod_flow_prompts_rx_scaled_before_result_notes():
     asyncio.run(handle_cf_text_reply(message, "Wall Walks", str(message.chat_id), None, notion, {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"}, cf_pending))
 
     state = cf_pending[str(message.chat_id)]
+    assert state["stage"] == "result"
+    assert "rounds + reps" in message.replies[-1][0]
+    assert "Rx or Scaled?" not in message.replies[-1][0]
+
+    asyncio.run(handle_cf_text_reply(message, "5 rounds + 12 reps", str(message.chat_id), None, notion, {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"}, cf_pending))
+
+    state = cf_pending[str(message.chat_id)]
     assert state["stage"] == "rx_scaled"
+    assert state["result_notes"] == "5 rounds + 12 reps"
     assert "Rx or Scaled?" in message.replies[-1][0]
 
 
-def test_wod_rx_callback_moves_to_result_notes_prompt():
+def test_wod_rx_callback_without_result_keeps_result_prompt_defensive():
     from second_brain.crossfit.handlers import handle_cf_callback
 
     class _DummyQuery:
@@ -240,7 +248,7 @@ def test_wod_rx_callback_moves_to_result_notes_prompt():
 
     asyncio.run(handle_cf_callback(q, ["cf", "rx", key, "scaled"], None, notion, {}, cf_pending))
 
-    assert cf_pending[key]["stage"] == "notes"
+    assert cf_pending[key]["stage"] == "result"
     assert cf_pending[key]["rx_scaled"] == "Scaled"
     assert "time" in q.message.replies[-1][0].lower()
 
@@ -254,19 +262,32 @@ def test_fuzzy_match_movements_uses_extracted_canonical_name_for_weighted_db_ent
 
 
 
-def test_fuzzy_match_movements_prefers_hang_squat_clean_over_sandbag_clean():
+def test_fuzzy_match_movements_prefers_hang_power_clean_for_ambiguous_hang_clean():
     from second_brain.crossfit.nlp import fuzzy_match_movements
 
     cache = {
         "Hang Squat Clean": "mov-hang-squat-clean",
-        "Squat Clean": "mov-squat-clean",
+        "Hang Power Clean": "mov-hang-power-clean",
         "Sandbag Clean": "mov-sandbag-clean",
     }
 
     matches = asyncio.run(fuzzy_match_movements(["Hang Clean"], cache))
 
-    assert matches[0][1] == "Hang Squat Clean"
+    assert matches[0][1] == "Hang Power Clean"
     assert matches[0][2] > 0.80
+
+
+def test_fuzzy_match_movements_still_respects_explicit_hang_squat_clean():
+    from second_brain.crossfit.nlp import fuzzy_match_movements
+
+    cache = {
+        "Hang Squat Clean": "mov-hang-squat-clean",
+        "Hang Power Clean": "mov-hang-power-clean",
+    }
+
+    matches = asyncio.run(fuzzy_match_movements(["Hang Squat Clean"], cache))
+
+    assert matches[0][1] == "Hang Squat Clean"
 
 
 def test_resolve_movement_ids_extracts_before_fuzzy_matching():
@@ -357,3 +378,245 @@ def test_readiness_final_score_writes_and_clears_pending(monkeypatch):
         "soreness": "3",
         "daily_readiness_db_id": "ready-db",
     }
+
+
+def test_extract_workout_data_parses_complete_claude_payload():
+    from datetime import datetime
+    from second_brain.crossfit.nlp import extract_workout_data
+
+    payload = '{"movements":["Hang Clean"],"date":"2026-05-06","sets":6,"reps":4,"weight_lbs":115,"weight_kg":52.2,"scheme":"6x4","notes":null}'
+    out = asyncio.run(
+        extract_workout_data(
+            "Did 6 sets of 4x hang clean squat at 115lbs on 5/6",
+            _FakeClaude(payload),
+            datetime(2026, 5, 8),
+        )
+    )
+
+    assert out == {
+        "movements": ["Hang Clean"],
+        "date": "2026-05-06",
+        "sets": 6,
+        "reps": 4,
+        "weight_lbs": 115.0,
+        "weight_kg": 52.2,
+        "scheme": "6x4",
+        "notes": None,
+    }
+
+
+def test_extract_workout_data_fallback_parses_common_metadata_without_claude():
+    from datetime import datetime
+    from second_brain.crossfit.nlp import extract_workout_data
+
+    out = asyncio.run(
+        extract_workout_data(
+            "5x5 back squat at 225# yesterday",
+            None,
+            datetime(2026, 5, 8),
+        )
+    )
+
+    assert out["date"] == "2026-05-07"
+    assert out["sets"] == 5
+    assert out["reps"] == 5
+    assert out["weight_lbs"] == 225.0
+    assert out["weight_kg"] == 102.1
+    assert out["scheme"] == "5x5"
+
+
+def test_create_strength_log_accepts_extracted_date_and_scheme():
+    from second_brain.crossfit.notion import create_strength_log
+
+    calls = []
+    notion = SimpleNamespace(pages=SimpleNamespace(create=lambda **kwargs: calls.append(kwargs) or {"id": "log"}))
+
+    page_id = create_strength_log(
+        notion,
+        "workout-log",
+        ["mov-hang-clean"],
+        "Hang Squat Clean",
+        115,
+        6,
+        4,
+        False,
+        "week-1",
+        None,
+        None,
+        "2026-05-06",
+        "6x4",
+    )
+
+    assert page_id == "log"
+    props = calls[0]["properties"]
+    assert props["Date"] == {"date": {"start": "2026-05-06"}}
+    assert props["effort_sets"] == {"number": 6}
+    assert props["effort_reps"] == {"number": 4}
+    assert props["effort_scheme"] == {"rich_text": [{"text": {"content": "6x4"}}]}
+    assert props["load_lbs"] == {"number": 115}
+    assert props["weekly_program_ref"] == {"relation": [{"id": "week-1"}]}
+
+
+def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    created = {}
+
+    async def fake_resolve(text, claude, notion, config, message=None):
+        del claude, notion, config, message
+        assert text == "Hang Clean"
+        return ["mov-hang-clean"], ["Hang Squat Clean"]
+
+    async def fake_level_check(message, movement_id, movement_name, notion, config, cf_pending, key):
+        del message, movement_id, movement_name, notion, config, cf_pending, key
+        return False
+
+    async def fake_week(notion):
+        del notion
+        return "week-1"
+
+    def fake_create_strength_log(notion, workout_log_db_id, movement_ids, movement_name, load_lbs, sets, reps, is_max_attempt, weekly_program_id, cycle_id, readiness, workout_date=None, effort_scheme=None):
+        del notion, is_max_attempt, cycle_id, readiness
+        created.update(
+            workout_log_db_id=workout_log_db_id,
+            movement_ids=movement_ids,
+            movement_name=movement_name,
+            load_lbs=load_lbs,
+            sets=sets,
+            reps=reps,
+            weekly_program_id=weekly_program_id,
+            workout_date=workout_date,
+            effort_scheme=effort_scheme,
+        )
+        return "log-1"
+
+    monkeypatch.setattr(handlers, "_resolve_movement_ids", fake_resolve)
+    monkeypatch.setattr(handlers, "handle_gymnastics_level_check", fake_level_check)
+    monkeypatch.setattr(handlers, "get_current_week_program_url", fake_week)
+    monkeypatch.setattr(handlers, "create_strength_log", fake_create_strength_log)
+
+    payload = '{"movements":["Hang Clean"],"date":"2026-05-06","sets":6,"reps":4,"weight_lbs":115,"weight_kg":52.2,"scheme":"6x4","notes":null}'
+    message = _DummyMessage()
+
+    asyncio.run(
+        handlers.handle_cf_strength_flow(
+            message,
+            {"raw_text": "Did 6 sets of 4x hang clean squat at 115lbs on 5/6"},
+            _FakeClaude(payload),
+            SimpleNamespace(),
+            {"NOTION_WORKOUT_LOG_DB": "workout-log", "NOTION_MOVEMENTS_DB": "movements"},
+            {},
+        )
+    )
+
+    assert created == {
+        "workout_log_db_id": "workout-log",
+        "movement_ids": ["mov-hang-clean"],
+        "movement_name": "Hang Squat Clean",
+        "load_lbs": 115.0,
+        "sets": 6,
+        "reps": 4,
+        "weekly_program_id": "week-1",
+        "workout_date": "2026-05-06",
+        "effort_scheme": "6x4",
+    }
+    assert "Strength logged" in message.replies[-1][0]
+    assert "Date: 2026-05-06" in message.replies[-1][0]
+    assert "Scheme: 6x4" in message.replies[-1][0]
+    assert not any("Any notes" in reply[0] for reply in message.replies)
+
+
+def test_wod_for_time_result_is_captured_before_rx_and_logged(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    created = {}
+
+    def fake_create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mins, result_type, result_seconds, result_rounds, result_reps, rx_scaled, scaling_notes, is_partner, wod_name, movement_page_ids, weekly_program_id, readiness):
+        del notion, duration_mins, time_cap_mins, result_rounds, result_reps, is_partner, wod_name, readiness
+        created.update(
+            wod_log_db_id=wod_log_db_id,
+            wod_format=wod_format,
+            result_type=result_type,
+            result_seconds=result_seconds,
+            rx_scaled=rx_scaled,
+            scaling_notes=scaling_notes,
+            movement_page_ids=movement_page_ids,
+            weekly_program_id=weekly_program_id,
+        )
+        return "wod-log"
+
+    async def fake_week(notion):
+        del notion
+        return "week-1"
+
+    monkeypatch.setattr(handlers, "create_wod_log", fake_create_wod_log)
+    monkeypatch.setattr(handlers, "get_current_week_program_url", fake_week)
+
+    class _DummyQuery:
+        def __init__(self, message):
+            self.message = message
+            self.edits = []
+
+        async def answer(self, *args, **kwargs):
+            pass
+
+        async def edit_message_text(self, text, **kwargs):
+            self.edits.append((text, kwargs))
+
+    message = _DummyMessage()
+    key = str(message.chat_id)
+    cf_pending = {
+        key: {
+            "mode": "wod",
+            "stage": "result",
+            "format": "for_time",
+            "movement_page_ids": ["mov-wall-walks", "mov-hang-power-clean"],
+        }
+    }
+
+    asyncio.run(handlers.handle_cf_text_reply(message, "12:34", key, None, SimpleNamespace(), {"NOTION_WOD_LOG_DB": "wod"}, cf_pending))
+
+    assert cf_pending[key]["stage"] == "rx_scaled"
+    assert cf_pending[key]["result_notes"] == "12:34"
+    assert "Rx or Scaled?" in message.replies[-1][0]
+
+    q = _DummyQuery(message)
+    asyncio.run(handlers.handle_cf_callback(q, ["cf", "rx", key, "rx"], None, SimpleNamespace(), {"NOTION_WOD_LOG_DB": "wod"}, cf_pending))
+
+    assert created == {
+        "wod_log_db_id": "wod",
+        "wod_format": "For Time",
+        "result_type": "Time",
+        "result_seconds": 754,
+        "rx_scaled": "Rx",
+        "scaling_notes": "12:34",
+        "movement_page_ids": ["mov-wall-walks", "mov-hang-power-clean"],
+        "weekly_program_id": "week-1",
+    }
+    assert key not in cf_pending
+    assert "WOD logged" in message.replies[-1][0]
+
+
+def test_wod_format_callback_prompts_result_before_rx_when_movements_exist():
+    from second_brain.crossfit.handlers import handle_cf_callback
+
+    class _DummyQuery:
+        def __init__(self):
+            self.message = _DummyMessage()
+            self.edits = []
+
+        async def answer(self, *args, **kwargs):
+            pass
+
+        async def edit_message_text(self, text, **kwargs):
+            self.edits.append((text, kwargs))
+
+    q = _DummyQuery()
+    key = str(q.message.chat_id)
+    cf_pending = {key: {"mode": "wod", "stage": "format", "movement_page_ids": ["mov-hang-power-clean"]}}
+
+    asyncio.run(handle_cf_callback(q, ["cf", "fmt", key, "for_time"], None, SimpleNamespace(), {}, cf_pending))
+
+    assert cf_pending[key]["stage"] == "result"
+    assert "What was your time" in q.message.replies[-1][0]
+    assert "Rx or Scaled?" not in q.message.replies[-1][0]

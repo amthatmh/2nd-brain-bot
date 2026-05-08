@@ -1529,6 +1529,7 @@ async def route_classified_message_v10(message, text: str) -> None:
             )
             return
         if workout_result.get("type") in ("strength", "conditioning") and workout_result.get("confidence") == "high":
+            workout_result["raw_text"] = text
             await thinking.delete()
             if workout_result.get("type") == "strength":
                 await handle_cf_strength_flow(message, workout_result, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_PRS_DB": NOTION_PRS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB, "NOTION_DAILY_READINESS_DB": NOTION_DAILY_READINESS_DB}, cf_pending)
