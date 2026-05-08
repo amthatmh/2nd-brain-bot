@@ -103,6 +103,7 @@ from second_brain.handlers.admin_commands import test_alert_command, test_channe
 from second_brain.monitoring import track_job_execution
 from second_brain.monitoring.health_checks import check_scheduler_health
 from second_brain.monitoring.metrics import generate_weekly_summary
+from utils.date_parser import parse_date
 from utils.alert_handlers import (
     alert_digest_sent,
     alert_scheduler_event,
@@ -123,6 +124,26 @@ from second_brain.crossfit.nlp import load_movements_cache
 from second_brain.crossfit.readiness import check_readiness_logged_today
 from second_brain.crossfit.notion import save_programme_from_notion_row
 from second_brain.entertainment import log as ent_log
+
+
+def _apply_shared_date_parse(payload: dict) -> object:
+    raw_date = payload.get("date")
+    if isinstance(raw_date, str) and "T" in raw_date:
+        return None
+    result = parse_date(raw_date)
+    if result.ambiguous:
+        payload["raw_date_a"] = result.option_a
+        payload["raw_date_b"] = result.option_b
+    else:
+        payload["date"] = result.resolved
+    return result
+
+
+def _date_pick_keyboard(scope: str, key: str, result) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(result.label_a or result.option_a or "Option A", callback_data=f"date_pick:{scope}:a:{key}"),
+        InlineKeyboardButton(result.label_b or result.option_b or "Option B", callback_data=f"date_pick:{scope}:b:{key}"),
+    ]])
 
 # Backward-compatible entertainment symbols for existing tests/patch targets.
 parse_explicit_entertainment_log = ent_log.parse_explicit_entertainment_log
@@ -1612,6 +1633,13 @@ async def route_classified_message_v10(message, text: str) -> None:
         title = (result.get("title") or "").strip()
         confidence = result.get("confidence", "low")
         result.setdefault("date", date.today().isoformat())
+        date_result = _apply_shared_date_parse(result)
+        if date_result and getattr(date_result, "ambiguous", False):
+            key = str(_entertainment_counter)
+            _entertainment_counter += 1
+            pending_map[key] = {"type": "entertainment_log", "payload": result, "raw_text": text}
+            await thinking.edit_text("📅 Which date did you mean?", reply_markup=_date_pick_keyboard("ent", key, date_result))
+            return
         if confidence == "high" and title:
             try:
                 await thinking.delete()
@@ -1697,6 +1725,7 @@ async def handle_trip_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await message.reply_text(f"✈️ {destination} — {trips_mod.format_trip_dates(dep, ret)} ({nights} night(s), {trip_map[key]['purpose']})\n\nWhat field work are you doing?\n(Tap all that apply, then tap ✅ Done)", reply_markup=kb.field_work_keyboard(key, trip_map))
 
 async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global _entertainment_counter
     if update.effective_chat.id != MY_CHAT_ID:
         return
     message = update.message
@@ -1962,6 +1991,13 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     explicit_entertainment = ent_log.parse_explicit_entertainment_log(text)
     if explicit_entertainment:
+        date_result = _apply_shared_date_parse(explicit_entertainment)
+        if date_result and getattr(date_result, "ambiguous", False):
+            key = str(_entertainment_counter)
+            _entertainment_counter += 1
+            pending_map[key] = {"type": "entertainment_log", "payload": explicit_entertainment, "raw_text": text}
+            await message.reply_text("📅 Which date did you mean?", reply_markup=_date_pick_keyboard("ent", key, date_result))
+            return
         try:
             prompted = await ent_log._maybe_prompt_explicit_venue(notion, message, explicit_entertainment, text)
             if prompted:
@@ -2122,6 +2158,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if parts[0] == "hl":
         parts[0] = "hc"
     if await handle_v10_callback(q, parts):
+        return
+    if parts[0] == "date_pick" and len(parts) == 4:
+        _, scope, choice, key = parts
+        entry = pending_map.pop(key, None)
+        if scope != "ent" or not entry or entry.get("type") != "entertainment_log":
+            await q.edit_message_text("⚠️ This date prompt expired — please send it again.")
+            return
+        payload = dict(entry.get("payload") or {})
+        payload["date"] = payload.get("raw_date_a") if choice == "a" else payload.get("raw_date_b")
+        if not payload.get("date"):
+            raw = parse_date(entry.get("raw_text"))
+            payload["date"] = raw.option_a if choice == "a" else raw.option_b
+        payload.pop("raw_date_a", None)
+        payload.pop("raw_date_b", None)
+        try:
+            await ent_log.handle_entertainment_log(notion, q.message, payload)
+            await q.edit_message_text(f"✅ Date: {payload.get('date')}")
+        except Exception as e:
+            log.error("Entertainment date-pick save error: %s", e)
+            await q.edit_message_text(_entertainment_save_error_text(e, payload))
         return
     if parts[0] == "tcancel" and len(parts) == 2:
         key = parts[1]
@@ -4471,6 +4527,13 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "/log performance ABBA Voyage at ABBA Arena\n"
             "/log sport Cubs vs Sox at Wrigley"
         )
+        return
+    date_result = _apply_shared_date_parse(parsed)
+    if date_result and getattr(date_result, "ambiguous", False):
+        key = str(_entertainment_counter)
+        _entertainment_counter += 1
+        pending_map[key] = {"type": "entertainment_log", "payload": parsed, "raw_text": f"/log {raw}"}
+        await update.message.reply_text("📅 Which date did you mean?", reply_markup=_date_pick_keyboard("ent", key, date_result))
         return
     try:
         prompted = await ent_log._maybe_prompt_explicit_venue(notion, update.message, parsed, f"/log {raw}")

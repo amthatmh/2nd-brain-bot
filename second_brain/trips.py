@@ -14,6 +14,7 @@ from second_brain.config import (
     NOTION_TRIPS_DB,
 )
 from second_brain.notion import notion_call
+from utils.date_parser import parse_date
 
 logger = logging.getLogger(__name__)
 
@@ -60,14 +61,23 @@ Return ONLY valid JSON, no markdown:
         parsed = json.loads(raw)
         return {
             "destinations": parsed.get("destinations") or fallback["destinations"],
-            "departure_date": parsed.get("departure_date"),
-            "return_date": parsed.get("return_date"),
+            "departure_date": _resolve_trip_date(parsed.get("departure_date")),
+            "return_date": _resolve_trip_date(parsed.get("return_date")),
             "purpose": parsed.get("purpose") or fallback["purpose"],
             "multiple_cities": bool(parsed.get("multiple_cities")),
         }
     except Exception as exc:
         logger.warning("Trip NLP parse failed, using fallback extraction: %s", exc)
         return fallback
+
+
+def _resolve_trip_date(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    parsed = parse_date(raw)
+    if parsed.ambiguous:
+        return None
+    return parsed.resolved
 
 
 def _extract_destinations(text: str) -> list[str]:
