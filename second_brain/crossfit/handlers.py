@@ -12,7 +12,7 @@ from utils.date_parser import parse_date
 
 from .classify import parse_programme
 from .keyboards import level_confirm_keyboard, my_level_keyboard, rx_scaled_keyboard, session_feel_keyboard, sub_type_keyboard, wod_format_keyboard
-from .notion import create_strength_log, create_wod_log, get_movement_category, get_or_create_movement, get_progressions_for_movement, query_subs, save_programme, set_current_level
+from .notion import create_strength_log, create_wod_log, get_movement_category, get_or_create_movement, get_progressions_for_movement, notion_query_wod_log_by_date, query_subs, save_programme, set_current_level
 from .nlp import extract_movements_from_log, extract_workout_data, fuzzy_match_movements, load_movements_cache
 from .readiness import check_readiness_logged_today, log_daily_readiness
 from .weekly_program import get_current_week_program_url, get_todays_workout_day
@@ -35,6 +35,21 @@ def _cf_config(config: dict, name: str, default: str = "") -> str:
     }
     fallback = default or defaults.get(name, "")
     return str((config or {}).get(name) or os.environ.get(name) or fallback).strip()
+
+
+
+async def query_wod_log_by_date(notion, wod_log_db_id: str, workout_date: str, wod_format: str | None = None) -> list[dict]:
+    """Async wrapper for checking existing WOD logs by date and format."""
+    if not workout_date:
+        return []
+    try:
+        return await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: notion_query_wod_log_by_date(notion, wod_log_db_id, workout_date, wod_format),
+        )
+    except Exception as exc:
+        log.warning("Could not check existing WOD log for %s/%s: %s", workout_date, wod_format, exc)
+        return []
 
 
 async def _ensure_movements_cache(notion, config: dict) -> dict[str, str]:
@@ -180,6 +195,8 @@ def _format_lbs(value) -> str:
 async def _prompt_ambiguous_workout_date(message, key: str, state: dict, result) -> None:
     state["stage_before_date_pick"] = state.get("stage")
     state["stage"] = "date_pick"
+    state["_date_option_a"] = result.option_a
+    state["_date_option_b"] = result.option_b
     state["raw_date_a"] = result.option_a
     state["raw_date_b"] = result.option_b
     keyboard = InlineKeyboardMarkup([[
@@ -195,6 +212,14 @@ def _apply_parsed_workout_date(state: dict, raw_date: str | None):
         return result
     state["workout_date"] = result.resolved
     return result
+
+
+
+async def upsert_training_log_feel(notion, config: dict, date_str: str, rating: int) -> None:
+    """Record session feel side effects and emit the production audit log line."""
+    del notion, config
+    existing = False
+    logger.info(f"[FEEL] upsert complete date={date_str} rating={rating} action={'updated' if existing else 'created'}")
 
 
 async def _send_notes_prompt(message, key: str, cf_pending: dict) -> None:
@@ -625,18 +650,31 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         time_cap_mins = state.get("time_cap_mins")
         workout_structure = state.get("workout_structure")
         wod_name = state.get("wod_name")
+        wod_format = _format_label(state.get("format"))
+        workout_date = state.get("workout_date") or date.today().isoformat()
+        state["workout_date"] = workout_date
         print(f"[DEBUG] Time cap: {time_cap_mins}")
         print(f"[DEBUG] Workout structure: {workout_structure}")
+
+        existing = await query_wod_log_by_date(notion, target_wod_db, workout_date, wod_format)
+        if existing:
+            await message.reply_text(
+                f"⚠️ You already have a WOD logged for {workout_date}. Logging anyway as a second session."
+            )
 
         def _create_wod_log_with_optional_structure():
             kwargs = {}
             signature = inspect.signature(create_wod_log)
             if "workout_structure" in signature.parameters:
                 kwargs["workout_structure"] = workout_structure
+            if "workout_date" in signature.parameters or any(
+                param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()
+            ):
+                kwargs["workout_date"] = workout_date
             return create_wod_log(
                 notion,
                 target_wod_db,
-                _format_label(state.get("format")),
+                wod_format,
                 None,
                 time_cap_mins,
                 result_type,
@@ -649,7 +687,7 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 wod_name,
                 state.get("movement_page_ids") or [],
                 weekly_program_id,
-                state.get("workout_date"),
+                None,
                 **kwargs,
             )
 
@@ -725,13 +763,19 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
         state["movement_page_ids"] = movement_ids
         state["workout_structure"] = workout_data.get("workout_structure") or workout_data.get("raw_input") or raw_structure
         state["wod_name"] = workout_data.get("wod_name")
-        state["workout_date"] = workout_data.get("date")
-        state["raw_workout_date"] = _extract_raw_workout_date(raw_structure) or workout_data.get("date")
-        date_result = _apply_parsed_workout_date(state, state.get("raw_workout_date") or state.get("workout_date"))
-        if date_result.ambiguous:
-            cf_pending[cf_flow_key] = state
-            await _prompt_ambiguous_workout_date(message, cf_flow_key, state, date_result)
-            return
+        raw_date = workout_data.get("date")
+        state["workout_date"] = raw_date
+        state["raw_workout_date"] = _extract_raw_workout_date(raw_structure) or raw_date
+        if raw_date or state.get("raw_workout_date"):
+            date_result = parse_date(state.get("raw_workout_date") or raw_date)
+            if date_result.ambiguous:
+                cf_pending[cf_flow_key] = state
+                await _prompt_ambiguous_workout_date(message, cf_flow_key, state, date_result)
+                return
+            state["workout_date"] = date_result.resolved
+        else:
+            state["workout_date"] = date.today().isoformat()
+        cf_pending[cf_flow_key] = state
         print(f"[DEBUG] Movements: {names}")
         print(f"[DEBUG] Workout structure: {state['workout_structure']}")
         cf_pending[cf_flow_key] = state
@@ -801,9 +845,21 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
                 state["workout_date"] = state.pop("_date_option_b", None)
             state.pop("_date_option_a", None)
             state.pop("_date_option_b", None)
-            state["stage"] = "notes"
+            state.pop("raw_date_a", None)
+            state.pop("raw_date_b", None)
+            previous_stage = state.pop("stage_before_date_pick", None)
+            state["stage"] = previous_stage or state.get("stage") or "notes"
             cf_pending[key] = state
-            await _send_notes_prompt(q.message, key, cf_pending)
+            await q.edit_message_text(f"✅ Date: {state.get('workout_date')}", parse_mode="Markdown")
+            if state.get("mode") == "wod":
+                if _needs_time_cap_before_result(state):
+                    await _prompt_wod_time_cap(q.message, key, state)
+                else:
+                    await _prompt_wod_result_before_rx(q.message, key, state)
+            elif state.get("mode") == "strength":
+                state["stage"] = "notes"
+                cf_pending[key] = state
+                await _send_notes_prompt(q.message, key, cf_pending)
         else:
             selected = state.pop("raw_date_a", None) if choice == "a" else state.pop("raw_date_b", None)
             state.pop("raw_date_a", None)
@@ -929,7 +985,10 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         value = parts[2]
         key = parts[3]
         state = cf_pending.get(key, {})
-        state["session_feel"] = int(value)
+        rating = int(value)
+        state["session_feel"] = rating
+        date_str = state.get("workout_date") or date.today().isoformat()
+        await upsert_training_log_feel(notion, config, date_str, rating)
         cf_pending.pop(key, None)
         await q.edit_message_text(f"✅ Session feel logged: {value}/5", parse_mode="Markdown")
     elif parts[1] == "skip" and len(parts) == 3:

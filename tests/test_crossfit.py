@@ -1426,3 +1426,117 @@ def test_crossfit_callback_collapses_menu_button_before_routing(monkeypatch):
 
     q.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
     assert message.replies[-1][0] == "strength flow started"
+
+
+
+def test_wod_movement_stage_extracts_spelled_date_from_initial_text(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    async def fake_resolve(text, claude, notion, config, message=None):
+        del claude, notion, config, message
+        return ["mov-wall-walks"], ["Wall Walks"]
+
+    monkeypatch.setattr(handlers, "_resolve_movement_ids", fake_resolve)
+
+    message = _DummyMessage()
+    key = str(message.chat_id)
+    pending = {key: {"mode": "wod", "stage": "movement", "format": "amrap"}}
+
+    asyncio.run(
+        handlers.handle_cf_text_reply(
+            message,
+            "This log is for May 6th, 3x wall walks",
+            key,
+            None,
+            SimpleNamespace(),
+            {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"},
+            pending,
+        )
+    )
+
+    assert pending[key]["workout_date"] == "2026-05-06"
+    assert pending[key]["raw_workout_date"] == "May 6th"
+    assert pending[key]["stage"] == "time_cap"
+    assert "Which date did you mean?" not in [reply[0] for reply in message.replies]
+
+def test_wod_duplicate_guard_warns_and_still_logs(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    created = {}
+
+    async def fake_week(notion):
+        del notion
+        return "week-1"
+
+    async def fake_query(notion, wod_log_db_id, workout_date, wod_format=None):
+        del notion
+        assert wod_log_db_id == "wod"
+        assert workout_date == "2026-05-06"
+        assert wod_format == "AMRAP"
+        return [{"id": "existing-wod"}]
+
+    def fake_create_wod_log(*args, **kwargs):
+        created["args"] = args
+        created["kwargs"] = kwargs
+        return "new-wod"
+
+    monkeypatch.setattr(handlers, "get_current_week_program_url", fake_week)
+    monkeypatch.setattr(handlers, "query_wod_log_by_date", fake_query)
+    monkeypatch.setattr(handlers, "create_wod_log", fake_create_wod_log)
+
+    message = _DummyMessage()
+    key = str(message.chat_id)
+    pending = {
+        key: {
+            "mode": "wod",
+            "format": "amrap",
+            "rx_scaled": "rx",
+            "workout_date": "2026-05-06",
+            "movement_page_ids": ["mov-wall-walks"],
+        }
+    }
+
+    asyncio.run(handlers._finalize_flow(message, key, SimpleNamespace(), {"NOTION_WOD_LOG_DB": "wod"}, pending, "6 rounds"))
+
+    assert "already have a WOD logged for 2026-05-06" in message.replies[-3][0]
+    assert "WOD logged" in message.replies[-2][0]
+    assert created["args"][2] == "AMRAP"
+    assert created["kwargs"]["workout_date"] == "2026-05-06"
+
+
+def test_create_wod_log_uses_workout_date_for_name_and_date(monkeypatch):
+    from second_brain.crossfit import notion as crossfit_notion
+
+    captured = {}
+
+    class _Pages:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return {"id": "wod-log"}
+
+    fake_notion = SimpleNamespace(pages=_Pages())
+
+    result = crossfit_notion.create_wod_log(
+        fake_notion,
+        "wod-db",
+        "AMRAP",
+        None,
+        14,
+        "Rounds",
+        None,
+        6,
+        None,
+        "Rx",
+        "6 rounds",
+        False,
+        None,
+        ["mov-wall-walks"],
+        "week-1",
+        None,
+        workout_date="2026-05-06",
+    )
+
+    assert result == "wod-log"
+    props = captured["properties"]
+    assert props["Name"]["title"][0]["text"]["content"] == "AMRAP — 2026-05-06"
+    assert props["Date"]["date"]["start"] == "2026-05-06"
