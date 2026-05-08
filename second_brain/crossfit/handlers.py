@@ -725,7 +725,9 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
         state["movement_page_ids"] = movement_ids
         state["workout_structure"] = workout_data.get("workout_structure") or workout_data.get("raw_input") or raw_structure
         state["wod_name"] = workout_data.get("wod_name")
-        date_result = _apply_parsed_workout_date(state, workout_data.get("date"))
+        state["workout_date"] = workout_data.get("date")
+        state["raw_workout_date"] = _extract_raw_workout_date(raw_structure) or workout_data.get("date")
+        date_result = _apply_parsed_workout_date(state, state.get("raw_workout_date") or state.get("workout_date"))
         if date_result.ambiguous:
             cf_pending[cf_flow_key] = state
             await _prompt_ambiguous_workout_date(message, cf_flow_key, state, date_result)
