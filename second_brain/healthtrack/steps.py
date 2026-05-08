@@ -155,18 +155,101 @@ def _update_log_entry_steps(
 ) -> bool:
     """Update Steps Count (and Completed) on an existing Habit Log entry."""
     try:
+        current_page = notion.pages.retrieve(page_id=page_id)
+        current_completed = (
+            current_page
+            .get("properties", {})
+            .get("Completed", {})
+            .get("checkbox", False)
+        )
+        final_completed = current_completed or completed
+
         notion.pages.update(
             page_id=page_id,
             properties={
                 "Steps Count": {"number": steps},
-                "Completed": {"checkbox": completed},
+                "Completed": {"checkbox": final_completed},
             },
         )
-        log.info("steps: updated log entry %s — %d steps, completed=%s", page_id, steps, completed)
+        log.info(
+            "steps: updated log entry %s — %d steps, completed=%s (was %s)",
+            page_id,
+            steps,
+            final_completed,
+            current_completed,
+        )
         return True
     except Exception as e:
         log.error("steps: error updating log entry %s: %s", page_id, e)
         return False
+
+
+def migrate_steps_entry_titles(
+    notion,
+    log_db_id: str,
+    habit_page_id: str,
+) -> dict:
+    """
+    One-time migration: rename legacy Steps entry titles to "Steps".
+
+    Safe to run multiple times. Entries already named "Steps" are skipped,
+    while legacy titles such as "Steps — YYYY-MM-DD" and blank Steps titles
+    are normalized.
+    """
+    try:
+        renamed = 0
+        skipped = 0
+        start_cursor = None
+
+        while True:
+            query_kwargs = {
+                "database_id": log_db_id,
+                "filter": {
+                    "property": "Habit",
+                    "relation": {"contains": habit_page_id},
+                },
+            }
+            if start_cursor:
+                query_kwargs["start_cursor"] = start_cursor
+
+            results = notion.databases.query(**query_kwargs)
+
+            for page in results.get("results", []):
+                props = page.get("properties", {})
+                title_items = props.get("Entry", {}).get("title", [])
+                current_title = title_items[0].get("plain_text", "") if title_items else ""
+
+                if current_title == "Steps":
+                    skipped += 1
+                    continue
+
+                if current_title.startswith("Steps") or not current_title:
+                    notion.pages.update(
+                        page_id=page["id"],
+                        properties={
+                            "Entry": {
+                                "title": [{"text": {"content": "Steps"}}],
+                            },
+                        },
+                    )
+                    renamed += 1
+                    log.info(
+                        "steps: renamed entry %s from %r to 'Steps'",
+                        page["id"],
+                        current_title,
+                    )
+                else:
+                    skipped += 1
+
+            if not results.get("has_more"):
+                break
+            start_cursor = results.get("next_cursor")
+
+        log.info("steps: migration complete — renamed=%d skipped=%d", renamed, skipped)
+        return {"renamed": renamed, "skipped": skipped}
+    except Exception as e:
+        log.error("steps: migration failed: %s", e)
+        return {"error": str(e)}
 
 
 def _persist_threshold_message_id(
