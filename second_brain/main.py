@@ -253,7 +253,7 @@ def _resolve_state_dir() -> Path:
 # ── Config ───────────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
 MY_CHAT_ID      = int(os.environ["TELEGRAM_CHAT_ID"])
-ALERT_CHAT_ID_RAW = (os.environ.get("ALERT_CHANNEL_ID", "").strip() or os.environ.get("TELEGRAM_ALERT_CHAT_ID", "").strip())
+ALERT_CHAT_ID_RAW = os.getenv("ALERT_CHANNEL_ID", "").strip()
 ALERT_CHAT_ID   = int(ALERT_CHAT_ID_RAW) if ALERT_CHAT_ID_RAW else None
 ALERT_THREAD_ID = int(os.environ["TELEGRAM_ALERT_THREAD_ID"]) if os.environ.get("TELEGRAM_ALERT_THREAD_ID") else None
 ANTHROPIC_KEY   = os.environ["ANTHROPIC_API_KEY"]
@@ -3627,7 +3627,7 @@ async def _try_send_telegram(bot, text: str) -> None:
             "parse_mode": "Markdown",
         }
         if ALERT_CHAT_ID is None:
-            log.error("Could not send operational alert via Telegram: ALERT_CHANNEL_ID/TELEGRAM_ALERT_CHAT_ID is not configured")
+            log.error("Could not send operational alert via Telegram: ALERT_CHANNEL_ID is not configured")
             return
         if ALERT_THREAD_ID is not None:
             kwargs["message_thread_id"] = ALERT_THREAD_ID

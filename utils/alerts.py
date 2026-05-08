@@ -21,10 +21,7 @@ ALERT_EMOJIS = {
 
 def _alert_channel_id() -> str:
     """Return the configured alert destination without falling back to owner DMs."""
-    return (
-        os.environ.get("ALERT_CHANNEL_ID", "").strip()
-        or os.environ.get("TELEGRAM_ALERT_CHAT_ID", "").strip()
-    )
+    return os.getenv("ALERT_CHANNEL_ID", "").strip()
 
 
 def send_alert(message: str, level: str = "INFO", cooldown_key: Optional[str] = None) -> bool:
@@ -50,7 +47,6 @@ def send_alert(message: str, level: str = "INFO", cooldown_key: Optional[str] = 
     # DEBUG: Trace execution
     logger.info("[ALERT_DEBUG] send_alert() called")
     logger.info("[ALERT_DEBUG] ALERT_CHANNEL_ID from env: %s", os.getenv("ALERT_CHANNEL_ID"))
-    logger.info("[ALERT_DEBUG] TELEGRAM_ALERT_CHAT_ID from env: %s", os.getenv("TELEGRAM_ALERT_CHAT_ID"))
     logger.info("[ALERT_DEBUG] ALERT_CHANNEL_ID variable: %s", alert_channel_id)
     logger.info("[ALERT_DEBUG] Level: %s, Cooldown key: %s", level, cooldown_key)
     logger.info("[ALERT_DEBUG] Message preview: %s...", message[:100])
