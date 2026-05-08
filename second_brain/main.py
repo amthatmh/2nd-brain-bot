@@ -2130,6 +2130,11 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q     = update.callback_query
+    # Collapse the keyboard that was tapped — applies universally to all inline keyboards
+    try:
+        await q.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass  # Message may already be edited or deleted — safe to ignore
     await q.answer()
     # Callback prefix registry
     # hc:{page_id}           — habit check-in (log habit); hl redirects here
