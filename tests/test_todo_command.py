@@ -122,6 +122,7 @@ def test_todo_cancel_callback_dismisses_picker():
         ]
         query = SimpleNamespace(data="tdc:0")
         query.answer = AsyncMock()
+        query.edit_message_reply_markup = AsyncMock()
         query.edit_message_text = AsyncMock()
         update = SimpleNamespace(callback_query=query)
 
@@ -129,6 +130,30 @@ def test_todo_cancel_callback_dismisses_picker():
             await main.handle_callback(update, None)
 
         assert "0" not in main.todo_picker_map
+        query.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
+        query.edit_message_text.assert_awaited_once_with("✖️ To Do picker canceled.")
+
+    asyncio.run(run())
+
+
+def test_callback_reply_markup_collapse_errors_are_ignored():
+    async def run():
+        main = load_main_module()
+        main.todo_picker_map.clear()
+        main.todo_picker_map["0"] = [
+            {"name": "Pay bill", "context": "Personal", "page_id": "page-1"},
+        ]
+        query = SimpleNamespace(data="tdc:0")
+        query.answer = AsyncMock()
+        query.edit_message_reply_markup = AsyncMock(side_effect=Exception("message too old"))
+        query.edit_message_text = AsyncMock()
+        update = SimpleNamespace(callback_query=query)
+
+        with patch.object(main, "handle_v10_callback", side_effect=_async_false):
+            await main.handle_callback(update, None)
+
+        assert "0" not in main.todo_picker_map
+        query.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
         query.edit_message_text.assert_awaited_once_with("✖️ To Do picker canceled.")
 
     asyncio.run(run())
