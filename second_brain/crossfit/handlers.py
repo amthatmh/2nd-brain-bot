@@ -317,23 +317,27 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
 
 
 async def handle_cf_wod_flow(message, workout_result, notion, config, cf_pending):
-    print("[DEBUG] Starting WOD log flow")
+    del workout_result
+    print("[DEBUG] WOD Log: Starting flow, showing format selection")
     target_wod_db = _cf_config(config, "NOTION_WOD_LOG_DB")
     print(f"[DEBUG] WOD Log DB configured as: {target_wod_db}")
     if not target_wod_db:
         await message.reply_text("⚠️ CrossFit WOD Log isn't configured yet.", parse_mode="Markdown")
         return
     todays_workout = await get_todays_workout_day(notion)
-    section_c_format = (todays_workout or {}).get("Section C Format") or workout_result.get("format")
     key = str(message.chat_id)
     cf_pending[key] = {
         "mode": "wod",
-        "stage": "movement",
-        "format": section_c_format,
+        "stage": "format",
+        "format": None,
         "todays_workout": todays_workout,
         "movements": [],
     }
-    await message.reply_text("🏋️ Which movement(s) were in the WOD? (comma-separated)", parse_mode="Markdown")
+    await message.reply_text(
+        "🏋️ What format was the WOD?",
+        parse_mode="Markdown",
+        reply_markup=wod_format_keyboard(key),
+    )
 
 
 async def handle_cf_subs_flow(message, notion, config, cf_pending):
@@ -399,6 +403,11 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         await message.reply_text(confirm_msg, parse_mode="Markdown")
     elif state.get("mode") == "wod":
         target_wod_db = _cf_config(config, "NOTION_WOD_LOG_DB")
+        if not state.get("format"):
+            await message.reply_text("❌ Error: WOD format not set. Please start over.", parse_mode="Markdown")
+            cf_pending.pop(key, None)
+            return
+        print(f"[DEBUG] Writing WOD log with format: {_format_label(state.get('format'))}")
         result_type = _infer_result_type(state.get("format"))
         result_seconds = None
         result_rounds = None
@@ -463,16 +472,20 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
         await message.reply_text("📝 Any notes about this session?\n(Reply with text, or tap Skip)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{cf_flow_key}")]]))
         return
     if state.get("mode") == "wod" and state.get("stage") == "movement":
+        if not state.get("format"):
+            state["stage"] = "format"
+            cf_pending[cf_flow_key] = state
+            await message.reply_text(
+                "❌ Error: WOD format not set. Please select the format before entering movements.",
+                parse_mode="Markdown",
+                reply_markup=wod_format_keyboard(cf_flow_key),
+            )
+            return
         movement_ids, names = await _resolve_movement_ids(text, claude, notion, config, message)
         state["movements"] = names
         state["movement_page_ids"] = movement_ids
-        if state.get("format"):
-            cf_pending[cf_flow_key] = state
-            await _prompt_wod_result_before_rx(message, cf_flow_key, state)
-        else:
-            state["stage"] = "format"
-            cf_pending[cf_flow_key] = state
-            await message.reply_text("Select WOD format:", parse_mode="Markdown", reply_markup=wod_format_keyboard(cf_flow_key))
+        cf_pending[cf_flow_key] = state
+        await _prompt_wod_result_before_rx(message, cf_flow_key, state)
         return
     if state.get("mode") == "wod" and state.get("stage") == "result":
         state["result_notes"] = text
@@ -579,13 +592,17 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         state = cf_pending.get(key, {"mode": "wod"})
         state["format"] = parts[3]
         cf_pending[key] = state
+        print(f"[DEBUG] WOD format selected: {_format_label(parts[3])}")
         await q.edit_message_text(f"✅ Format: {_format_label(parts[3])}", parse_mode="Markdown")
         if state.get("movement_page_ids"):
             await _prompt_wod_result_before_rx(q.message, key, state)
         else:
             state["stage"] = "movement"
             cf_pending[key] = state
-            await q.message.reply_text("🏋️ Which movement(s) were in the WOD? (comma-separated)", parse_mode="Markdown")
+            await q.message.reply_text(
+                "🏋️ Which movement(s) were in the WOD?\n(Enter in natural language or comma-separated)",
+                parse_mode="Markdown",
+            )
     elif parts[1] == "rx" and len(parts) >= 4:
         key = parts[2]
         state = cf_pending.get(key, {"mode": "wod"})

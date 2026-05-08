@@ -203,7 +203,7 @@ def test_get_or_create_movement_sets_primary_pattern_on_create():
 
 
 def test_wod_flow_prompts_result_before_rx_scaled():
-    from second_brain.crossfit.handlers import MOVEMENTS_CACHE, handle_cf_text_reply, handle_cf_wod_flow
+    from second_brain.crossfit.handlers import MOVEMENTS_CACHE, handle_cf_callback, handle_cf_text_reply, handle_cf_wod_flow
 
     MOVEMENTS_CACHE.clear()
     MOVEMENTS_CACHE["Wall Walks"] = "mov-wall-walks"
@@ -212,9 +212,30 @@ def test_wod_flow_prompts_result_before_rx_scaled():
     notion = SimpleNamespace(databases=SimpleNamespace(query=lambda **kwargs: {"results": []}))
 
     asyncio.run(handle_cf_wod_flow(message, {"format": "AMRAP"}, notion, {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"}, cf_pending))
-    asyncio.run(handle_cf_text_reply(message, "Wall Walks", str(message.chat_id), None, notion, {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"}, cf_pending))
+    key = str(message.chat_id)
+    assert cf_pending[key]["stage"] == "format"
+    assert "What format was the WOD?" in message.replies[-1][0]
 
-    state = cf_pending[str(message.chat_id)]
+    class _DummyQuery:
+        def __init__(self, message):
+            self.message = message
+            self.edits = []
+
+        async def answer(self, *args, **kwargs):
+            pass
+
+        async def edit_message_text(self, text, **kwargs):
+            self.edits.append((text, kwargs))
+
+    q = _DummyQuery(message)
+    asyncio.run(handle_cf_callback(q, ["cf", "fmt", key, "amrap"], None, notion, {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"}, cf_pending))
+    assert cf_pending[key]["format"] == "amrap"
+    assert cf_pending[key]["stage"] == "movement"
+    assert "Which movement(s)" in message.replies[-1][0]
+
+    asyncio.run(handle_cf_text_reply(message, "Wall Walks", key, None, notion, {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"}, cf_pending))
+
+    state = cf_pending[key]
     assert state["stage"] == "result"
     assert "rounds + reps" in message.replies[-1][0]
     assert "Rx or Scaled?" not in message.replies[-1][0]
@@ -330,7 +351,10 @@ def test_wod_callback_starts_wod_flow_prompt():
     asyncio.run(handle_cf_callback(q, ["cf", "log_wod"], None, notion, {"NOTION_WOD_LOG_DB": "wod"}, cf_pending))
 
     assert cf_pending[str(q.message.chat_id)]["mode"] == "wod"
-    assert "Which movement(s) were in the WOD?" in q.message.replies[-1][0]
+    assert cf_pending[str(q.message.chat_id)]["stage"] == "format"
+    assert "What format was the WOD?" in q.message.replies[-1][0]
+    assert q.message.replies[-1][1].get("reply_markup") is not None
+    assert "Which movement(s) were in the WOD?" not in q.message.replies[-1][0]
     assert "configured yet" not in q.message.replies[-1][0]
 
 

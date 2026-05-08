@@ -17,7 +17,7 @@ def crossfit_submenu_keyboard(readiness_logged: bool = True) -> InlineKeyboardMa
 
 
 def wod_format_keyboard(key: str) -> InlineKeyboardMarkup:
-    formats = [("For Time", "for_time"), ("AMRAP", "amrap"), ("EMOM", "emom"), ("Chipper", "chipper"), ("Max Reps", "max_reps"), ("Tabata", "tabata")]
+    formats = [("⏱️ For Time", "for_time"), ("🔢 AMRAP", "amrap"), ("⏰ EMOM", "emom"), ("🔥 Chipper", "chipper"), ("💪 Max Reps", "max_reps"), ("⚡ Tabata", "tabata")]
     rows = []
     for i in range(0, len(formats), 2):
         rows.append([InlineKeyboardButton(f[0], callback_data=f"cf:fmt:{key}:{f[1]}") for f in formats[i:i + 2]])
