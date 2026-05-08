@@ -790,6 +790,14 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
     elif parts[1] == "log_wod":
         print("[DEBUG] Routing to handle_cf_wod_flow")
         await handle_cf_wod_flow(q.message, {}, notion, config, cf_pending)
+    elif parts[1] == "log_feel":
+        key = str(q.message.chat_id)
+        cf_pending[key] = {
+            "mode": "feel_only",
+            "stage": "awaiting_feel",
+            "workout_date": date.today().isoformat(),
+        }
+        await q.message.reply_text("💬 How did that session feel?", reply_markup=session_feel_keyboard(key))
     elif parts[1] == "date_pick" and len(parts) >= 4:
         choice = parts[2]   # "a" or "b"
         key = parts[3]
@@ -843,9 +851,9 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         except Exception:
             await q.message.reply_text(prompt, parse_mode="Markdown")
         return
-    elif parts[1] == "subs":
+    elif parts[1] in {"subs", "sub_addon"}:
         await handle_cf_subs_flow(q.message, notion, config, cf_pending)
-    elif parts[1] == "prs":
+    elif parts[1] in {"prs", "my_prs"}:
         await handle_cf_prs(q.message, notion, config)
     elif parts[1] == "log_readiness":
         if await check_readiness_logged_today(notion, _cf_config(config, "NOTION_DAILY_READINESS_DB")):

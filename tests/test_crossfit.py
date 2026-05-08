@@ -1426,3 +1426,51 @@ def test_crossfit_callback_collapses_menu_button_before_routing(monkeypatch):
 
     q.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
     assert message.replies[-1][0] == "strength flow started"
+
+
+def test_crossfit_submenu_uses_strict_two_by_three_grid_with_cancel():
+    from second_brain.crossfit.keyboards import crossfit_submenu_keyboard
+
+    keyboard = crossfit_submenu_keyboard(readiness_logged=True).inline_keyboard
+
+    assert [[button.text for button in row] for row in keyboard] == [
+        ["📊 Log Readiness (A)", "🏋️ Log Strength (B)"],
+        ["🏆 Log WOD (C)", "💬 Workout Feel (D)"],
+        ["🥇 My PRs", "🔍 Sub / Add-on"],
+        ["❌ Cancel"],
+    ]
+    assert [[button.callback_data for button in row] for row in keyboard] == [
+        ["cf:log_readiness", "cf:log_strength"],
+        ["cf:log_wod", "cf:log_feel"],
+        ["cf:my_prs", "cf:sub_addon"],
+        ["cf:cancel"],
+    ]
+
+
+def test_crossfit_log_feel_starts_standalone_feel_flow():
+    import second_brain.crossfit.handlers as handlers
+    from unittest.mock import AsyncMock
+
+    message = _DummyMessage()
+    q = SimpleNamespace(
+        message=message,
+        edit_message_reply_markup=AsyncMock(),
+        edit_message_text=AsyncMock(),
+    )
+    cf_pending = {}
+
+    asyncio.run(handlers.handle_cf_callback(q, ["cf", "log_feel"], None, SimpleNamespace(), {}, cf_pending))
+
+    key = str(message.chat_id)
+    assert cf_pending[key]["mode"] == "feel_only"
+    assert cf_pending[key]["stage"] == "awaiting_feel"
+    assert cf_pending[key]["workout_date"] == handlers.date.today().isoformat()
+    assert message.replies[-1][0] == "💬 How did that session feel?"
+    feel_keyboard = message.replies[-1][1]["reply_markup"].inline_keyboard
+    assert [button.callback_data for button in feel_keyboard[0]] == [
+        f"cf:feel:1:{key}",
+        f"cf:feel:2:{key}",
+        f"cf:feel:3:{key}",
+        f"cf:feel:4:{key}",
+        f"cf:feel:5:{key}",
+    ]
