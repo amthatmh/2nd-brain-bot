@@ -394,6 +394,18 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
     workout_data = {}
     if raw_text:
         workout_data = await extract_workout_data(raw_text, claude)
+        extracted = workout_data
+        user_id = message.chat_id
+        state = cf_pending.get(str(user_id), cf_pending.get(key, {}))
+        state["sets"] = extracted.get("sets")
+        state["reps"] = extracted.get("reps")
+        state["weight_lbs"] = extracted.get("weight_lbs")
+        state["weight_kg"] = extracted.get("weight_kg")
+        state["workout_date"] = extracted.get("date")
+        state["effort_scheme"] = extracted.get("scheme")
+        cf_pending[str(user_id)] = state
+        cf_pending[key] = state
+        logger.info(f"[CF_STATE_A] WROTE key={key!r} uid={user_id!r} sets={state.get('sets')} weight={state.get('weight_lbs')} date={state.get('workout_date')}")
         print(f"[DEBUG] Extracted workout data: {workout_data}")
         state = _store_extracted_strength_state(cf_pending, key, workout_data, raw_text)
     else:
