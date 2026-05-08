@@ -11,6 +11,7 @@ import inspect
 import json
 import os
 import re
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 import anthropic
@@ -59,61 +60,202 @@ def _strip_json_fence(text: str) -> str:
     return text.strip()
 
 
-async def extract_movements_from_log(
+def _empty_workout_data(movements: Optional[List[str]] = None) -> Dict:
+    """Return the canonical workout extraction shape with optional movements."""
+    return {
+        "movements": movements or [],
+        "date": None,
+        "sets": None,
+        "reps": None,
+        "weight_lbs": None,
+        "weight_kg": None,
+        "scheme": None,
+        "notes": None,
+    }
+
+
+def _coerce_number(value):
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return int(number) if number.is_integer() else number
+
+
+def _normalise_workout_data(parsed, fallback_message: str) -> Dict:
+    """Validate Claude output and keep a stable schema for callers."""
+    if isinstance(parsed, list):
+        data = _empty_workout_data([str(m).strip() for m in parsed if str(m).strip()])
+    elif isinstance(parsed, dict):
+        movements = parsed.get("movements") or []
+        if isinstance(movements, str):
+            movements = [movements]
+        data = _empty_workout_data([str(m).strip() for m in movements if str(m).strip()])
+        data.update({k: parsed.get(k) for k in data.keys() if k != "movements"})
+    else:
+        raise ValueError("workout extraction did not return a JSON object")
+
+    if not data["movements"] and fallback_message:
+        data["movements"] = [fallback_message.strip()]
+    for key in ("sets", "reps"):
+        number = _coerce_number(data.get(key))
+        data[key] = int(number) if number is not None else None
+    for key in ("weight_lbs", "weight_kg"):
+        number = _coerce_number(data.get(key))
+        data[key] = round(float(number), 1) if number is not None else None
+    for key in ("date", "scheme", "notes"):
+        value = data.get(key)
+        data[key] = str(value).strip() if value not in (None, "") else None
+    return data
+
+
+def _fallback_extract_workout_data(log_message: str, current_date: datetime) -> Dict:
+    """Small deterministic fallback for common metadata when Claude is unavailable."""
+    text = (log_message or "").strip()
+    data = _empty_workout_data([text] if text else [])
+    lower = text.lower()
+
+    scheme = re.search(r"\b(\d+)\s*[x×]\s*(\d+)\b", lower)
+    if scheme:
+        data["sets"] = int(scheme.group(1))
+        data["reps"] = int(scheme.group(2))
+        data["scheme"] = f"{data['sets']}x{data['reps']}"
+    else:
+        sets_reps = re.search(r"\b(\d+)\s+sets?\s+(?:of\s+)?(\d+)\s*(?:x|reps?)?\b", lower)
+        if sets_reps:
+            data["sets"] = int(sets_reps.group(1))
+            data["reps"] = int(sets_reps.group(2))
+            data["scheme"] = f"{data['sets']}x{data['reps']}"
+        else:
+            rounds = re.search(r"\b(\d+)\s+rounds?\b", lower)
+            if rounds:
+                data["sets"] = int(rounds.group(1))
+                data["scheme"] = f"{data['sets']} rounds"
+
+    weight = re.search(r"\b(\d+(?:\.\d+)?)\s*(lbs?|pounds?|kg|#)(?=\b|\s|$)", lower)
+    if weight:
+        amount = float(weight.group(1))
+        unit = weight.group(2)
+        if unit == "kg":
+            data["weight_kg"] = round(amount, 1)
+            data["weight_lbs"] = round(amount / 0.453592, 1)
+        else:
+            data["weight_lbs"] = round(amount, 1)
+            data["weight_kg"] = round(amount * 0.453592, 1)
+
+    if re.search(r"\byesterday\b", lower):
+        data["date"] = (current_date - timedelta(days=1)).strftime("%Y-%m-%d")
+    else:
+        md = re.search(r"\bon\s+(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b", lower)
+        if md:
+            month, day = int(md.group(1)), int(md.group(2))
+            year = int(md.group(3)) if md.group(3) else current_date.year
+            if year < 100:
+                year += 2000
+            data["date"] = datetime(year, month, day).strftime("%Y-%m-%d")
+    return data
+
+
+async def extract_workout_data(
     log_message: str,
     claude_client: anthropic.Anthropic,
-) -> List[str]:
+    current_date: Optional[datetime] = None,
+) -> Dict:
     """
-    Extract canonical movement names from a workout log message.
+    Extract complete workout data from a natural-language CrossFit log.
 
-    Examples:
-    - "4xHang squat and clean, did 6 sets at 115lb" -> ["Hang Clean"]
-    - "Wall Walks, 6 Hang Cleans (115/85), 9 Burpees Over Bar, 12 V-Ups"
-      -> ["Wall Walks", "Hang Clean", "Burpee Over Bar", "V-Up"]
-
-    Returns a list of canonical movement names stripped of sets, reps, and
-    weight details. If Claude is unavailable or returns malformed JSON, the
-    original message is returned as a conservative fallback.
+    Returns movements plus optional date, sets, reps, weight, scheme, and notes.
+    If Claude is unavailable or malformed, a deterministic fallback extracts the
+    most common date/scheme/load patterns and preserves the raw text as movement.
     """
+    if current_date is None:
+        current_date = datetime.now()
     if not log_message:
-        return []
+        return _empty_workout_data()
     if claude_client is None:
-        return [log_message.strip()]
+        return _fallback_extract_workout_data(log_message, current_date)
 
-    system_prompt = """You are a CrossFit movement extraction expert. Extract canonical movement names from workout logs.
+    system_prompt = f"""You are a CrossFit workout log extraction expert. Extract ALL workout details from natural language messages.
 
-RULES:
-1. Remove ALL sets/reps/weight indicators (4x, 115lb, 6 sets, etc.)
-2. Standardize variants to canonical forms:
-   - "hang squat clean" -> "Hang Clean"
-   - "burpee over bar" -> "Burpee Over Bar"
-   - "toes to bar" -> "Toes to Bar"
-3. For compound descriptions, extract each movement separately
-4. Return ONLY movement names, no explanations
+TODAY'S DATE: {current_date.strftime('%Y-%m-%d')} ({current_date.strftime('%A, %B %d, %Y')})
 
-OUTPUT FORMAT: JSON array of strings
-Example: ["Wall Walks", "Hang Clean", "Burpee Over Bar", "V-Up"]
+EXTRACTION RULES:
+
+1. MOVEMENTS: Extract canonical movement names only; remove sets/reps/weight/date words.
+   - "4x hang clean squat at 115lb" -> "Hang Clean"
+   - "6 sets of 4x hang clean squat" -> "Hang Clean"
+   - Standardize "hang squat clean" and "hang clean squat" -> "Hang Clean"
+
+2. DATE: Parse date references relative to TODAY.
+   - "on 5/6" -> use the current year unless another year is stated
+   - "yesterday" -> subtract 1 day from TODAY
+   - "last Monday" -> most recent Monday before TODAY
+   - "Tuesday" -> most recent Tuesday on or before TODAY
+   - If no date is mentioned -> null
+
+3. SETS/REPS/SCHEME:
+   - "6 sets of 4x" -> sets 6, reps 4, scheme "6x4"
+   - "5x5" -> sets 5, reps 5, scheme "5x5"
+   - "3 rounds" -> sets 3, reps null, scheme "3 rounds"
+
+4. WEIGHT: Extract load and convert both directions using 1 lb = 0.453592 kg.
+   - "115lbs" or "225#" are pounds
+   - "100kg" is kilograms
+   - Round converted weights to 1 decimal.
+
+5. NOTES: Additional context that is not movement/date/scheme/load.
+
+OUTPUT FORMAT: Valid JSON object only, no explanation:
+{{
+  "movements": ["Movement 1"],
+  "date": "YYYY-MM-DD" or null,
+  "sets": integer or null,
+  "reps": integer or null,
+  "weight_lbs": float or null,
+  "weight_kg": float or null,
+  "scheme": "string" or null,
+  "notes": "string" or null
+}}
+
+EXAMPLE for TODAY {current_date.strftime('%Y-%m-%d')}:
+Input: "Did 6 sets of 4x hang clean squat at 115lbs on 5/6"
+Output: {{"movements":["Hang Clean"],"date":"{current_date.year}-05-06","sets":6,"reps":4,"weight_lbs":115.0,"weight_kg":52.2,"scheme":"6x4","notes":null}}
 """
 
     try:
         response = await _maybe_await(
             claude_client.messages.create(
                 model=CLAUDE_MODEL,
-                max_tokens=500,
+                max_tokens=1000,
                 system=system_prompt,
-                messages=[{"role": "user", "content": f"Extract movements from: {log_message}"}],
+                messages=[{"role": "user", "content": f"Extract workout data from: {log_message}"}],
             )
         )
-        movements_text = _strip_json_fence(response.content[0].text)
-        movements = json.loads(movements_text)
-        if not isinstance(movements, list):
-            raise ValueError("movement extraction did not return a JSON list")
-        return [str(m).strip() for m in movements if str(m).strip()]
+        workout_data_text = _strip_json_fence(response.content[0].text)
+        parsed = json.loads(workout_data_text)
+        workout_data = _normalise_workout_data(parsed, log_message)
+        print(f"[DEBUG] Extracted workout data: {workout_data}")
+        return workout_data
     except Exception as e:
         alert_claude_auth_failure(str(e))
-        print(f"Movement extraction error: {e}")
-        return [log_message.strip()]
+        print(f"[ERROR] Workout data extraction failed: {e}")
+        return _fallback_extract_workout_data(log_message, current_date)
 
+
+async def extract_movements_from_log(
+    log_message: str,
+    claude_client: anthropic.Anthropic,
+) -> List[str]:
+    """
+    DEPRECATED: Use extract_workout_data() instead.
+
+    This wrapper preserves the old movements-only API while using the enhanced
+    extractor so dates, sets/reps, and loads are stripped before fuzzy matching.
+    """
+    workout_data = await extract_workout_data(log_message, claude_client)
+    return workout_data.get("movements", [])
 
 def normalize_movement_name(name: str) -> str:
     """Normalize movement name for fuzzy matching.
