@@ -8,6 +8,8 @@ import os
 import re
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from utils.date_parser import parse_date
+
 from .classify import parse_programme
 from .keyboards import level_confirm_keyboard, my_level_keyboard, rx_scaled_keyboard, sub_type_keyboard, wod_format_keyboard
 from .notion import create_strength_log, create_wod_log, get_movement_category, get_or_create_movement, get_progressions_for_movement, query_subs, save_programme, set_current_level
@@ -113,6 +115,26 @@ def _rx_scaled_label(value: str | None) -> str:
         "scaled": "Scaled",
         "modified": "Modified",
     }.get((value or "").lower(), value or "Rx")
+
+
+async def _prompt_ambiguous_workout_date(message, key: str, state: dict, result) -> None:
+    state["stage_before_date_pick"] = state.get("stage")
+    state["stage"] = "date_pick"
+    state["raw_date_a"] = result.option_a
+    state["raw_date_b"] = result.option_b
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(result.label_a or result.option_a or "Option A", callback_data=f"cf:date_pick:a:{key}"),
+        InlineKeyboardButton(result.label_b or result.option_b or "Option B", callback_data=f"cf:date_pick:b:{key}"),
+    ]])
+    await message.reply_text("📅 Which date did you mean?", reply_markup=keyboard)
+
+
+def _apply_parsed_workout_date(state: dict, raw_date: str | None):
+    result = parse_date(raw_date)
+    if result.ambiguous:
+        return result
+    state["workout_date"] = result.resolved
+    return result
 
 
 async def _prompt_wod_result_notes(message, key: str, state: dict) -> None:
@@ -320,6 +342,7 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
     load_lbs = workout_data.get("weight_lbs") if workout_data.get("weight_lbs") is not None else workout_result.get("load_lbs")
     load_kg = workout_data.get("weight_kg") if workout_data.get("weight_kg") is not None else workout_result.get("load_kg")
     workout_date = workout_data.get("date")
+    date_result = parse_date(workout_date)
     scheme = workout_data.get("scheme") or (f"{sets}x{reps}" if sets and reps else None)
 
     print("[DEBUG] Using extracted data:")
@@ -344,6 +367,9 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
         "is_max_attempt": workout_result.get("is_max_attempt", False),
         "notes": workout_data.get("notes"),
     }
+    if date_result.ambiguous:
+        await _prompt_ambiguous_workout_date(message, key, cf_pending[key], date_result)
+        return
     if not movement_text:
         await message.reply_text("🏋️ Which movement did you train?", parse_mode="Markdown")
         return
@@ -506,7 +532,7 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 wod_name,
                 state.get("movement_page_ids") or [],
                 weekly_program_id,
-                None,
+                state.get("workout_date"),
                 **kwargs,
             )
 
@@ -552,6 +578,11 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
         state["movement_page_ids"] = movement_ids
         state["workout_structure"] = workout_data.get("workout_structure") or workout_data.get("raw_input") or raw_structure
         state["wod_name"] = workout_data.get("wod_name")
+        date_result = _apply_parsed_workout_date(state, workout_data.get("date"))
+        if date_result.ambiguous:
+            cf_pending[cf_flow_key] = state
+            await _prompt_ambiguous_workout_date(message, cf_flow_key, state, date_result)
+            return
         print(f"[DEBUG] Movements: {names}")
         print(f"[DEBUG] Workout structure: {state['workout_structure']}")
         cf_pending[cf_flow_key] = state
@@ -606,6 +637,33 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
     elif parts[1] == "log_wod":
         print("[DEBUG] Routing to handle_cf_wod_flow")
         await handle_cf_wod_flow(q.message, {}, notion, config, cf_pending)
+    elif parts[1] == "date_pick" and len(parts) >= 4:
+        choice = parts[2]
+        key = parts[3]
+        state = cf_pending.get(key, {})
+        selected = state.pop("raw_date_a", None) if choice == "a" else state.pop("raw_date_b", None)
+        state.pop("raw_date_a", None)
+        state.pop("raw_date_b", None)
+        if selected:
+            state["workout_date"] = selected
+        previous_stage = state.pop("stage_before_date_pick", None)
+        state["stage"] = previous_stage or state.get("stage") or "notes"
+        cf_pending[key] = state
+        await q.edit_message_text(f"✅ Date: {state.get('workout_date')}", parse_mode="Markdown")
+        if state.get("mode") == "wod":
+            if _needs_time_cap_before_result(state):
+                await _prompt_wod_time_cap(q.message, key, state)
+            else:
+                await _prompt_wod_result_before_rx(q.message, key, state)
+        elif state.get("mode") == "strength":
+            if not state.get("movement"):
+                state["stage"] = "movement"
+                cf_pending[key] = state
+                await q.message.reply_text("🏋️ Which movement did you train?", parse_mode="Markdown")
+            else:
+                state["stage"] = "notes"
+                cf_pending[key] = state
+                await q.message.reply_text("📝 Any notes about this session?\n(Reply with text, or tap Skip)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]))
     elif parts[1] == "upload_programme":
         prompt = (
             "📋 *Upload Weekly Programme*\n\n"
