@@ -117,19 +117,78 @@ def _rx_scaled_label(value: str | None) -> str:
     }.get((value or "").lower(), value or "Rx")
 
 
-def _store_extracted_strength_state(cf_pending: dict, key: str, extracted: dict | None) -> dict:
+def _first_present(*values):
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _extract_raw_workout_date(text: str | None) -> str | None:
+    """Return the user's original date token so ambiguous dates stay ambiguous."""
+    if not text:
+        return None
+    patterns = [
+        r"\b(?:on|for)\s+((?:\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)|(?:[A-Za-z]+\s+\d{1,2}(?:,?\s+\d{4})?)|(?:\d{1,2}\s+[A-Za-z]+(?:\s+\d{4})?))\b",
+        r"\b(yesterday|today|last\s+[A-Za-z]+)\b",
+        r"\b(\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def _store_extracted_strength_state(
+    cf_pending: dict,
+    key: str,
+    extracted: dict | None,
+    raw_text: str | None = None,
+) -> dict:
     """Persist all NLP-extracted strength metadata into pending state."""
     state = cf_pending.get(key, {})
     extracted = extracted or {}
-    state["sets"] = extracted.get("sets")
-    state["reps"] = extracted.get("reps")
-    state["weight_lbs"] = extracted.get("weight_lbs")
-    state["weight_kg"] = extracted.get("weight_kg")
-    state["workout_date"] = extracted.get("date")
-    state["effort_scheme"] = extracted.get("scheme")
-    state["notes"] = extracted.get("notes")
+
+    state["sets"] = _first_present(extracted.get("sets"), state.get("sets"))
+    state["reps"] = _first_present(extracted.get("reps"), state.get("reps"))
+    state["weight_lbs"] = _first_present(
+        extracted.get("weight_lbs"),
+        extracted.get("load_lbs"),
+        state.get("weight_lbs"),
+        state.get("load_lbs"),
+    )
+    state["weight_kg"] = _first_present(
+        extracted.get("weight_kg"),
+        extracted.get("load_kg"),
+        state.get("weight_kg"),
+        state.get("load_kg"),
+    )
+    state["workout_date"] = _first_present(
+        extracted.get("workout_date"),
+        extracted.get("date"),
+        state.get("workout_date"),
+    )
+    state["raw_workout_date"] = _first_present(
+        extracted.get("raw_workout_date"),
+        _extract_raw_workout_date(raw_text or extracted.get("raw_input")),
+        state.get("raw_workout_date"),
+    )
+    state["effort_scheme"] = _first_present(
+        extracted.get("effort_scheme"),
+        extracted.get("scheme"),
+        state.get("effort_scheme"),
+    )
+    state["notes"] = _first_present(extracted.get("notes"), state.get("notes"))
     cf_pending[key] = state
     return state
+
+
+def _has_complete_strength_metadata(state: dict) -> bool:
+    return all(
+        state.get(field) is not None
+        for field in ("movement_page_id", "sets", "reps", "weight_lbs", "workout_date")
+    )
 
 
 def _format_lbs(value) -> str:
@@ -361,7 +420,7 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
     if raw_text:
         workout_data = await extract_workout_data(raw_text, claude)
         print(f"[DEBUG] Extracted workout data: {workout_data}")
-        state = _store_extracted_strength_state(cf_pending, key, workout_data)
+        state = _store_extracted_strength_state(cf_pending, key, workout_data, raw_text)
     else:
         state = cf_pending.get(key, {})
 
@@ -372,7 +431,9 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
     load_lbs = state.get("weight_lbs") if state.get("weight_lbs") is not None else workout_result.get("load_lbs")
     load_kg = state.get("weight_kg") if state.get("weight_kg") is not None else workout_result.get("load_kg")
     workout_date = state.get("workout_date")
-    date_result = parse_date(workout_date)
+    date_result = parse_date(state.get("raw_workout_date") or workout_date)
+    if not date_result.ambiguous:
+        workout_date = date_result.resolved
     scheme = state.get("effort_scheme") or (f"{sets}x{reps}" if sets and reps else None)
 
     print("[DEBUG] Using extracted data:")
@@ -393,6 +454,7 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
         "sets": sets,
         "reps": reps,
         "workout_date": workout_date,
+        "raw_workout_date": state.get("raw_workout_date"),
         "effort_scheme": scheme,
         "is_max_attempt": workout_result.get("is_max_attempt", False),
         "notes": state.get("notes"),
@@ -489,6 +551,13 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         state_snapshot = dict(state)
         print(f"[DEBUG] Finalizing strength flow state before create_strength_log: {state_snapshot}")
         log.debug("Finalizing strength flow state before create_strength_log: %r", state_snapshot)
+        log.info(
+            "[CF_STATE] sets=%s reps=%s weight=%s date=%s",
+            state.get("sets"),
+            state.get("reps"),
+            state.get("weight_lbs"),
+            state.get("workout_date"),
+        )
         await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: create_strength_log(
@@ -692,14 +761,43 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
             else:
                 await _prompt_wod_result_before_rx(q.message, key, state)
         elif state.get("mode") == "strength":
-            if not state.get("movement"):
+            if state.get("movement") and not state.get("movement_page_id"):
+                movement_ids, names = await _resolve_movement_ids(
+                    state.get("movement"),
+                    claude,
+                    notion,
+                    config,
+                    q.message,
+                )
+                state["movement_page_ids"] = movement_ids
+                state["movement_page_id"] = movement_ids[0] if movement_ids else None
+                state["movement"] = ", ".join(names) if names else state.get("movement")
+                state["movement_name"] = state["movement"]
+                cf_pending[key] = state
+                if movement_ids and await handle_gymnastics_level_check(
+                    q.message,
+                    movement_ids[0],
+                    state["movement"],
+                    notion,
+                    config,
+                    cf_pending,
+                    key,
+                ):
+                    return
+            if _has_complete_strength_metadata(state):
+                await _finalize_flow(q.message, key, notion, config, cf_pending, state.get("notes"))
+            elif not state.get("movement"):
                 state["stage"] = "movement"
                 cf_pending[key] = state
                 await q.message.reply_text("🏋️ Which movement did you train?", parse_mode="Markdown")
             else:
                 state["stage"] = "notes"
                 cf_pending[key] = state
-                await q.message.reply_text("📝 Any notes about this session?\n(Reply with text, or tap Skip)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]))
+                await q.message.reply_text(
+                    "📝 Any notes about this session?\n(Reply with text, or tap Skip)",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]),
+                )
     elif parts[1] == "upload_programme":
         prompt = (
             "📋 *Upload Weekly Programme*\n\n"
