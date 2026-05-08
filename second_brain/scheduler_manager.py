@@ -64,14 +64,20 @@ class UtilitySchedulerManager:
         """Load jobs from Notion and schedule periodic reloads."""
         log.info("scheduler_manager: initializing (reload every %d min)", self._reload_minutes)
         await self.reload()
+        log.info(
+            "[SCHEDULER_INIT] Registering utility_scheduler_reload job: "
+            "interval=%dmin, misfire_grace=300s",
+            self._reload_minutes,
+        )
         self._scheduler.add_job(
-            self.reload,
-            "interval",
+            func=self.reload,
+            trigger="interval",
             minutes=self._reload_minutes,
             id=_RELOAD_JOB_ID,
-            replace_existing=True,
+            misfire_grace_time=300,
             max_instances=1,
             coalesce=True,
+            replace_existing=True,
         )
         log.info("scheduler_manager: initialized ✓ — %d handlers registered", len(self._handlers))
 
