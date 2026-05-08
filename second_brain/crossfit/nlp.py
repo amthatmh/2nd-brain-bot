@@ -44,6 +44,11 @@ from second_brain.notion import notion_call
 
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 EXPECTED_MOVEMENTS_DB_ID = "ecf5ac8381ce41a98fa804a1694977bb"
+BENCHMARK_WODS = [
+    "Fran", "Grace", "Helen", "Diane", "Elizabeth", "Karen", "Nancy", "Annie",
+    "Cindy", "Mary", "Chelsea", "Jackie", "Kelly", "Linda", "Eva", "Amanda",
+    "Barbara", "Murph", "DT", "Angie", "Fight Gone Bad", "The Seven", "Nicole",
+]
 
 
 async def _maybe_await(value):
@@ -71,7 +76,20 @@ def _empty_workout_data(movements: Optional[List[str]] = None) -> Dict:
         "weight_kg": None,
         "scheme": None,
         "notes": None,
+        "workout_structure": None,
+        "raw_input": None,
+        "wod_name": None,
     }
+
+
+def _detect_benchmark_wod(log_message: str) -> Optional[str]:
+    """Detect named benchmark WODs in the user's original text."""
+    text = log_message or ""
+    for wod_name in BENCHMARK_WODS:
+        pattern = r"(?<![A-Za-z0-9])" + re.escape(wod_name.lower()) + r"(?![A-Za-z0-9])"
+        if re.search(pattern, text.lower()):
+            return wod_name
+    return None
 
 
 def _coerce_number(value):
@@ -105,9 +123,12 @@ def _normalise_workout_data(parsed, fallback_message: str) -> Dict:
     for key in ("weight_lbs", "weight_kg"):
         number = _coerce_number(data.get(key))
         data[key] = round(float(number), 1) if number is not None else None
-    for key in ("date", "scheme", "notes"):
+    for key in ("date", "scheme", "notes", "workout_structure", "raw_input", "wod_name"):
         value = data.get(key)
         data[key] = str(value).strip() if value not in (None, "") else None
+    data["raw_input"] = data.get("raw_input") or (fallback_message.strip() if fallback_message else None)
+    data["workout_structure"] = data.get("workout_structure") or data["raw_input"]
+    data["wod_name"] = data.get("wod_name") or _detect_benchmark_wod(fallback_message)
     return data
 
 
@@ -155,6 +176,19 @@ def _fallback_extract_workout_data(log_message: str, current_date: datetime) -> 
             if year < 100:
                 year += 2000
             data["date"] = datetime(year, month, day).strftime("%Y-%m-%d")
+
+    data["raw_input"] = text or None
+    data["workout_structure"] = text or None
+    data["wod_name"] = _detect_benchmark_wod(text)
+    if text and "," in text:
+        movements = []
+        for part in text.split(","):
+            cleaned = re.sub(r"^\s*\d+\s*(?:[x×]|reps?|cal(?:ories)?s?)?\s*", "", part, flags=re.I)
+            cleaned = cleaned.strip(" -")
+            if cleaned:
+                movements.append(cleaned)
+        if movements:
+            data["movements"] = movements
     return data
 
 
@@ -218,15 +252,24 @@ OUTPUT FORMAT: Valid JSON object only, no explanation:
   "weight_lbs": float or null,
   "weight_kg": float or null,
   "scheme": "string" or null,
-  "notes": "string" or null
+  "notes": "string" or null,
+  "workout_structure": "original user input with rep scheme preserved" or null,
+  "raw_input": "original user input" or null,
+  "wod_name": "benchmark WOD name such as Fran" or null
 }}
+
+WORKOUT STRUCTURE PRESERVATION:
+- Preserve the user's original movement/rep scheme exactly in workout_structure.
+- Do not strip rep counts from workout_structure; keep text such as "3x Wall walks, 6 hang cleans, 9 burpee over bar, 12 v-ups".
+- Keep movements canonical and separate from workout_structure.
+- Only populate wod_name when the user mentions a benchmark WOD name (for example Fran, Grace, Cindy, Murph, DT, Fight Gone Bad). Otherwise use null.
 
 EXAMPLE for TODAY {current_date.strftime('%Y-%m-%d')}:
 Input: "Did 6 sets of 4x hang squat clean at 115lbs on 5/6"
-Output: {{"movements":["Hang Squat Clean"],"date":"{current_date.year}-05-06","sets":6,"reps":4,"weight_lbs":115.0,"weight_kg":52.2,"scheme":"6x4","notes":null}}
+Output: {{"movements":["Hang Squat Clean"],"date":"{current_date.year}-05-06","sets":6,"reps":4,"weight_lbs":115.0,"weight_kg":52.2,"scheme":"6x4","notes":null,"workout_structure":"Did 6 sets of 4x hang squat clean at 115lbs on 5/6","raw_input":"Did 6 sets of 4x hang squat clean at 115lbs on 5/6","wod_name":null}}
 
 Input: "3x Wall walks, 6 hang cleans, 9 burpees, 12 v-ups"
-Output: {{"movements":["Wall Walks","Hang Power Clean","Burpee","V-Up"],"date":null,"sets":3,"reps":null,"weight_lbs":null,"weight_kg":null,"scheme":null,"notes":null}}
+Output: {{"movements":["Wall Walks","Hang Power Clean","Burpee","V-Up"],"date":null,"sets":null,"reps":null,"weight_lbs":null,"weight_kg":null,"scheme":null,"notes":null,"workout_structure":"3x Wall walks, 6 hang cleans, 9 burpees, 12 v-ups","raw_input":"3x Wall walks, 6 hang cleans, 9 burpees, 12 v-ups","wod_name":null}}
 """
 
     try:
