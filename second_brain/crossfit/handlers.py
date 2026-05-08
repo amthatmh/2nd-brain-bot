@@ -117,6 +117,33 @@ def _rx_scaled_label(value: str | None) -> str:
     }.get((value or "").lower(), value or "Rx")
 
 
+def _store_extracted_strength_state(cf_pending: dict, key: str, extracted: dict | None) -> dict:
+    """Persist all NLP-extracted strength metadata into pending state."""
+    state = cf_pending.get(key, {})
+    extracted = extracted or {}
+    state["sets"] = extracted.get("sets")
+    state["reps"] = extracted.get("reps")
+    state["weight_lbs"] = extracted.get("weight_lbs")
+    state["weight_kg"] = extracted.get("weight_kg")
+    state["workout_date"] = extracted.get("date")
+    state["effort_scheme"] = extracted.get("scheme")
+    state["notes"] = extracted.get("notes")
+    cf_pending[key] = state
+    return state
+
+
+def _format_lbs(value) -> str:
+    if value is None:
+        return "N/A"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if numeric.is_integer():
+        return str(int(numeric))
+    return str(numeric)
+
+
 async def _prompt_ambiguous_workout_date(message, key: str, state: dict, result) -> None:
     state["stage_before_date_pick"] = state.get("stage")
     state["stage"] = "date_pick"
@@ -334,16 +361,19 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
     if raw_text:
         workout_data = await extract_workout_data(raw_text, claude)
         print(f"[DEBUG] Extracted workout data: {workout_data}")
+        state = _store_extracted_strength_state(cf_pending, key, workout_data)
+    else:
+        state = cf_pending.get(key, {})
 
     extracted_movements = workout_data.get("movements") or []
     movement_text = ", ".join(extracted_movements) if extracted_movements else (workout_result.get("movement") or "").strip()
-    sets = workout_data.get("sets") if workout_data.get("sets") is not None else workout_result.get("sets")
-    reps = workout_data.get("reps") if workout_data.get("reps") is not None else workout_result.get("reps")
-    load_lbs = workout_data.get("weight_lbs") if workout_data.get("weight_lbs") is not None else workout_result.get("load_lbs")
-    load_kg = workout_data.get("weight_kg") if workout_data.get("weight_kg") is not None else workout_result.get("load_kg")
-    workout_date = workout_data.get("date")
+    sets = state.get("sets") if state.get("sets") is not None else workout_result.get("sets")
+    reps = state.get("reps") if state.get("reps") is not None else workout_result.get("reps")
+    load_lbs = state.get("weight_lbs") if state.get("weight_lbs") is not None else workout_result.get("load_lbs")
+    load_kg = state.get("weight_kg") if state.get("weight_kg") is not None else workout_result.get("load_kg")
+    workout_date = state.get("workout_date")
     date_result = parse_date(workout_date)
-    scheme = workout_data.get("scheme") or (f"{sets}x{reps}" if sets and reps else None)
+    scheme = state.get("effort_scheme") or (f"{sets}x{reps}" if sets and reps else None)
 
     print("[DEBUG] Using extracted data:")
     print(f"  Date: {workout_date}")
@@ -351,7 +381,7 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
     print(f"  Weight: {load_lbs}lbs / {load_kg}kg")
     print(f"  Scheme: {scheme}")
 
-    cf_pending[key] = {
+    state.update({
         "mode": "strength",
         "stage": "movement" if not movement_text else "notes",
         "movement": movement_text,
@@ -365,8 +395,9 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
         "workout_date": workout_date,
         "effort_scheme": scheme,
         "is_max_attempt": workout_result.get("is_max_attempt", False),
-        "notes": workout_data.get("notes"),
-    }
+        "notes": state.get("notes"),
+    })
+    cf_pending[key] = state
     if date_result.ambiguous:
         await _prompt_ambiguous_workout_date(message, key, cf_pending[key], date_result)
         return
@@ -445,9 +476,14 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                     effort_reps = reps_only
         effort_sets = int(effort_sets) if effort_sets is not None else None
         effort_reps = int(effort_reps) if effort_reps is not None else None
-        weight_lbs = state.get("weight_lbs") if state.get("weight_lbs") is not None else state.get("load_lbs")
-        weight_kg = state.get("weight_kg") if state.get("weight_kg") is not None else state.get("load_kg")
-        effort_scheme = state.get("effort_scheme") or (f"{effort_sets}x{effort_reps}" if effort_sets is not None and effort_reps is not None else None)
+        if state.get("weight_lbs") is None and state.get("load_lbs") is not None:
+            state["weight_lbs"] = state.get("load_lbs")
+        if state.get("weight_kg") is None and state.get("load_kg") is not None:
+            state["weight_kg"] = state.get("load_kg")
+        state["sets"] = effort_sets
+        state["reps"] = effort_reps
+        if not state.get("effort_scheme") and effort_sets is not None and effort_reps is not None:
+            state["effort_scheme"] = f"{effort_sets}x{effort_reps}"
         weekly_program_id = state.get("weekly_program_page_id") or await get_current_week_program_url(notion)
         movement_ids = state.get("movement_page_ids") or [movement_id]
         state_snapshot = dict(state)
@@ -460,23 +496,23 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 workout_log_db_id=_cf_config(config, "NOTION_WORKOUT_LOG_DB"),
                 movement_page_id=movement_ids,
                 movement_name=movement_name,
-                load_lbs=float(weight_lbs) if weight_lbs is not None else None,
-                effort_sets=effort_sets,
-                effort_reps=effort_reps,
+                load_lbs=float(state.get("weight_lbs")) if state.get("weight_lbs") is not None else None,
+                effort_sets=state.get("sets"),
+                effort_reps=state.get("reps"),
                 is_max_attempt=state.get("is_max_attempt", False),
                 weekly_program_page_id=weekly_program_id,
                 cycle_page_id=state.get("cycle_page_id"),
                 readiness=state.get("readiness"),
                 workout_date=state.get("workout_date"),
-                effort_scheme=effort_scheme,
-                load_kg=weight_kg,
+                effort_scheme=state.get("effort_scheme"),
+                load_kg=state.get("weight_kg"),
             ),
         )
         confirm_msg = "✅ Strength logged to Workout Log v2!\n"
         confirm_msg += f"💪 Movement: {movement_name}\n"
         confirm_msg += f"📅 Date: {state.get('workout_date') or datetime.now(timezone.utc).date().isoformat()}\n"
-        confirm_msg += f"📊 Scheme: {effort_scheme or 'N/A'}\n"
-        confirm_msg += f"⚖️ Weight: {weight_lbs if weight_lbs is not None else 'N/A'}lbs\n"
+        confirm_msg += f"📊 Scheme: {state.get('effort_scheme') or 'N/A'}\n"
+        confirm_msg += f"⚖️ Weight: {_format_lbs(state.get('weight_lbs'))}lbs\n"
         await message.reply_text(confirm_msg, parse_mode="Markdown")
     elif state.get("mode") == "wod":
         target_wod_db = _cf_config(config, "NOTION_WOD_LOG_DB")
