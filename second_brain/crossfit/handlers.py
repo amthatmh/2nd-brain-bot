@@ -30,42 +30,49 @@ async def _maybe_await(value):
 
 async def upsert_training_log_field(notion, date_str: str, field_name: str, rating: str, daily_readiness_db_id: str | None = None):
     """Upsert a feel rating into the Training Log (Daily Readiness) database."""
-    daily_readiness_db_id = (daily_readiness_db_id or os.environ.get("NOTION_DAILY_READINESS_DB") or "").strip()
-    if not daily_readiness_db_id:
-        logger.warning("[FEEL] NOTION_DAILY_READINESS_DB is not configured; skipping %s=%s", field_name, rating)
-        return
+    db_id = (daily_readiness_db_id or os.environ.get("NOTION_DAILY_READINESS_DB") or "").strip()
     date_str = date_str or date.today().isoformat()
-    props = {"select": {"name": str(rating)}}
-    response = await _maybe_await(
-        notion_call(
-            notion.databases.query,
-            database_id=daily_readiness_db_id,
-            filter={"property": "Date", "date": {"equals": date_str}},
-            page_size=1,
-        )
-    )
-    results = response.get("results", [])
-    if results:
-        await _maybe_await(
+    logger.info(f"[FEEL_WRITE] db={db_id} date={date_str} field={field_name} rating={rating}")
+    if not db_id:
+        logger.error("[FEEL_WRITE_ERROR] NOTION_DAILY_READINESS_DB is not configured")
+        return
+
+    props = {field_name: {"select": {"name": str(rating)}}}
+    try:
+        response = await _maybe_await(
             notion_call(
-                notion.pages.update,
-                page_id=results[0]["id"],
-                properties={field_name: props},
+                notion.databases.query,
+                database_id=db_id,
+                filter={"property": "Date", "date": {"equals": date_str}},
+                page_size=1,
             )
         )
-    else:
-        await _maybe_await(
-            notion_call(
-                notion.pages.create,
-                parent={"database_id": daily_readiness_db_id},
-                properties={
-                    "Name": {"title": [{"text": {"content": f"{date_str} — Training"}}]},
-                    "Date": {"date": {"start": date_str}},
-                    field_name: props,
-                },
+        results = response.get("results", [])
+        if results:
+            page_id = results[0]["id"]
+            await _maybe_await(
+                notion_call(
+                    notion.pages.update,
+                    page_id=page_id,
+                    properties=props,
+                )
             )
-        )
-    logger.info("[FEEL] %s=%s date=%s", field_name, rating, date_str)
+            logger.info(f"[FEEL_WRITE] updated existing row {page_id}")
+        else:
+            created = await _maybe_await(
+                notion_call(
+                    notion.pages.create,
+                    parent={"database_id": db_id},
+                    properties={
+                        "Name": {"title": [{"text": {"content": f"{date_str} — Training"}}]},
+                        "Date": {"date": {"start": date_str}},
+                        **props,
+                    },
+                )
+            )
+            logger.info(f"[FEEL_WRITE] created new row {created['id']}")
+    except Exception as e:
+        logger.error(f"[FEEL_WRITE_ERROR] {e}", exc_info=True)
 
 
 # Global movement cache loaded lazily and refreshed at bot startup.
@@ -1044,6 +1051,7 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         key = parts[3]
         state = cf_pending.get(key, {})
         state["session_feel"] = int(rating)
+        cf_pending[key] = state
         mode = state.get("mode")
         workout_date = state.get("workout_date") or date.today().isoformat()
         daily_readiness_db_id = _cf_config(config, "NOTION_DAILY_READINESS_DB")
@@ -1058,6 +1066,9 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
                             properties={"Strength Feel": {"select": {"name": rating}}},
                         )
                     )
+                    logger.info(f"[FEEL_B] page_id={page_id} rating={rating}")
+                else:
+                    logger.warning("[FEEL_B] missing last_workout_page_id key=%r state=%r", key, state)
                 await upsert_training_log_field(notion, workout_date, "Strength Feel", rating, daily_readiness_db_id)
             elif mode == "wod":
                 page_id = state.get("last_wod_page_id")
@@ -1069,6 +1080,9 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
                             properties={"WOD Feel": {"select": {"name": rating}}},
                         )
                     )
+                    logger.info(f"[FEEL_C] page_id={page_id} rating={rating}")
+                else:
+                    logger.warning("[FEEL_C] missing last_wod_page_id key=%r state=%r", key, state)
                 await upsert_training_log_field(notion, workout_date, "WOD Feel", rating, daily_readiness_db_id)
             elif mode == "feel_only":
                 await upsert_training_log_field(notion, workout_date, "Workout Feel", rating, daily_readiness_db_id)
