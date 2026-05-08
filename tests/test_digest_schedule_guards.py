@@ -238,7 +238,8 @@ class TestDailyDigestHabits(unittest.IsolatedAsyncioTestCase):
             for row in kwargs["reply_markup"].inline_keyboard
             for button in row
         ]
-        self.assertIn("*Habits:* tap to log:", kwargs["text"])
+        self.assertIn("*HABITS:*", kwargs["text"])
+        self.assertNotIn("tap to log", kwargs["text"])
         self.assertIn("Test Digest Habit", button_labels)
 
     async def test_send_daily_digest_filters_habits_before_show_after_gate(self):
@@ -275,7 +276,7 @@ class TestDailyDigestHabits(unittest.IsolatedAsyncioTestCase):
             )
 
         kwargs = bot.send_message.await_args.kwargs
-        self.assertNotIn("*Habits:* tap to log:", kwargs["text"])
+        self.assertNotIn("*HABITS:*", kwargs["text"])
         self.assertIsNone(kwargs["reply_markup"])
 
 

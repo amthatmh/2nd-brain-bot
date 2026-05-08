@@ -38,11 +38,62 @@ def _plain_text_from_property(prop: dict[str, Any] | None) -> str:
             return (formula.get("string") or "").strip()
 
     # Legacy / loose payloads in tests and integrations.
+    if isinstance(prop.get("rich_text"), list):
+        return "".join(
+            (item.get("plain_text") or (item.get("text") or {}).get("content") or "")
+            for item in prop["rich_text"]
+            if isinstance(item, dict)
+        ).strip()
     if isinstance(prop.get("number"), (int, float)):
         return str(int(prop["number"]))
     if isinstance(prop.get("name"), str):
         return prop["name"].strip()
     return ""
+
+
+def _get_property_by_name(props: dict[str, Any], name: str) -> tuple[str | None, dict[str, Any] | None]:
+    """Return a Notion property by exact or whitespace/case-insensitive name."""
+    prop = props.get(name)
+    if prop is not None:
+        return name, prop
+
+    normalized_name = name.strip().casefold()
+    for key, value in props.items():
+        if key.strip().casefold() == normalized_name:
+            return key, value
+    return None, None
+
+
+def _parse_show_after(props: dict[str, Any], habit_name: str | None) -> str | None:
+    """Read and validate the Show After HH:MM text property from Notion habit properties."""
+    try:
+        available_props = list(props.keys())
+        log.info("DEBUG: Available properties for habit %s: %s", habit_name, available_props)
+
+        show_after_key, show_after_prop = _get_property_by_name(props, "Show After")
+        if not show_after_prop:
+            log.warning("DEBUG: 'Show After' property not found in props for habit %s", habit_name)
+            return None
+
+        log.info(
+            "DEBUG: Show After property found as %r, type=%s, value=%s",
+            show_after_key,
+            show_after_prop.get("type"),
+            show_after_prop,
+        )
+        show_after_raw = _plain_text_from_property(show_after_prop).strip()
+        if re.match(r"^\d{2}:\d{2}$", show_after_raw):
+            log.info("DEBUG: Parsed show_after=%s for habit %s", show_after_raw, habit_name)
+            return show_after_raw
+        if show_after_raw:
+            log.warning(
+                "DEBUG: Invalid Show After value %r for habit %s; expected HH:MM",
+                show_after_raw,
+                habit_name,
+            )
+    except Exception as e:
+        log.error("DEBUG: Error reading Show After: %s", e)
+    return None
 
 
 def extract_habit_frequency(props: dict[str, Any]) -> int | None:
@@ -97,13 +148,7 @@ def load_habit_cache(*, notion: Any, notion_habit_db: str) -> None:
 
             parsed_frequency = extract_habit_frequency(p)
             frequency_label = txt("Frequency Label")
-            # Read Show After time (HH:MM format). Empty or invalid values are ignored.
-            show_after_raw = txt("Show After")
-            show_after = None
-            if show_after_raw:
-                show_after_raw = show_after_raw.strip()
-                if re.match(r"^\d{2}:\d{2}$", show_after_raw):
-                    show_after = show_after_raw
+            show_after = _parse_show_after(p, name)
             if not frequency_label and parsed_frequency:
                 frequency_label = f"{parsed_frequency}x/week"
             page_icon = page.get("icon") or {}

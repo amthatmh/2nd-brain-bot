@@ -92,6 +92,46 @@ class TestLoadHabitCacheFrequency(unittest.TestCase):
         self.assertEqual(cached["freq_per_week"], 5)
         self.assertEqual(cached["frequency_label"], "5x/week")
 
+    def test_load_habit_cache_reads_show_after_plain_text_payload(self):
+        main = load_main_module()
+        fake_habit = {
+            "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "properties": {
+                "Habit": {"title": [{"text": {"content": "Walk"}}]},
+                "Active": {"checkbox": True},
+                "Show After": {
+                    "type": "rich_text",
+                    "rich_text": [{"plain_text": "11:00"}],
+                },
+            },
+        }
+
+        main.notion.databases.query = MagicMock(return_value={"results": [fake_habit]})
+        main.notion_habits.load_habit_cache(notion=main.notion, notion_habit_db=main.NOTION_HABIT_DB)
+        main._refresh_habit_cache_refs()
+
+        self.assertEqual(main.habit_cache["Walk"]["show_after"], "11:00")
+
+    def test_load_habit_cache_reads_show_after_with_extra_property_whitespace(self):
+        main = load_main_module()
+        fake_habit = {
+            "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "properties": {
+                "Habit": {"title": [{"text": {"content": "Meditate"}}]},
+                "Active": {"checkbox": True},
+                "Show After ": {
+                    "type": "rich_text",
+                    "rich_text": [{"text": {"content": "05:00"}}],
+                },
+            },
+        }
+
+        main.notion.databases.query = MagicMock(return_value={"results": [fake_habit]})
+        main.notion_habits.load_habit_cache(notion=main.notion, notion_habit_db=main.NOTION_HABIT_DB)
+        main._refresh_habit_cache_refs()
+
+        self.assertEqual(main.habit_cache["Meditate"]["show_after"], "05:00")
+
 
 class TestShowAfterGating(unittest.TestCase):
     def _load_single_habit(self, main, *, show_after):
@@ -181,7 +221,8 @@ class TestSendDailyDigestHabitsIntegration(unittest.IsolatedAsyncioTestCase):
             for button in row
         ]
 
-        self.assertIn("*Habits:* tap to log:", call_kwargs.get("text", ""))
+        self.assertIn("*HABITS:*", call_kwargs.get("text", ""))
+        self.assertNotIn("tap to log", call_kwargs.get("text", ""))
         self.assertIn("Early Habit", button_labels)
         self.assertNotIn("Late Habit", button_labels)
 
