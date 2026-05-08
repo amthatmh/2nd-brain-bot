@@ -227,6 +227,7 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
                 notion=notion,
                 habit_db_id="habit_db",
                 log_db_id="log_db",
+                env_db_id="",
                 habit_name="Steps",
                 threshold=10000,
                 source_label="📱 Apple Watch",
@@ -251,6 +252,7 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
                 notion=notion,
                 habit_db_id="habit_db",
                 log_db_id="log_db",
+                env_db_id="",
                 habit_name="Steps",
                 threshold=10000,
                 source_label="📱 Apple Watch",
@@ -277,7 +279,7 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
             # First sync above threshold
             await handle_steps_sync(
                 steps=10200, date_str="2026-04-28", notion=notion,
-                habit_db_id="h", log_db_id="l", habit_name="Steps",
+                habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
                 bot=bot, chat_id=12345,
             )
@@ -285,13 +287,48 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
             notion.databases.query.return_value = {"results": [{"id": "existing-pid"}]}
             await handle_steps_sync(
                 steps=11000, date_str="2026-04-28", notion=notion,
-                habit_db_id="h", log_db_id="l", habit_name="Steps",
+                habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
                 bot=bot, chat_id=12345,
             )
 
         # Notification sent exactly once
         self.assertEqual(bot.send_message.await_count, 1)
+
+    async def test_threshold_notification_edits_existing_message(self):
+        """Second sync above threshold edits existing message, does not send new."""
+        notion = self._make_notion()
+        bot = AsyncMock()
+        tz = self._make_tz()
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 12345
+        bot.send_message = AsyncMock(return_value=mock_msg)
+        bot.edit_message_text = AsyncMock()
+
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"):
+            await handle_steps_sync(
+                steps=10200, date_str="2026-04-28", notion=notion,
+                habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
+                threshold=10000, source_label="📱 Apple Watch", tz=tz,
+                bot=bot, chat_id=99,
+            )
+
+            notion.databases.query.return_value = {"results": [{"id": "existing-pid"}]}
+            await handle_steps_sync(
+                steps=11000, date_str="2026-04-28", notion=notion,
+                habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
+                threshold=10000, source_label="📱 Apple Watch", tz=tz,
+                bot=bot, chat_id=99,
+            )
+
+        bot.send_message.assert_awaited_once()
+        bot.edit_message_text.assert_awaited_once()
+
+        edit_kwargs = bot.edit_message_text.await_args.kwargs
+        self.assertEqual(edit_kwargs["message_id"], 12345)
+        self.assertIn("11,000", edit_kwargs["text"])
 
     async def test_yesterday_late_arrival_upserts_without_notification(self):
         notion = self._make_notion()
@@ -305,7 +342,7 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
                 steps=9350,
                 date_str="2026-04-27",  # yesterday
                 notion=notion,
-                habit_db_id="h", log_db_id="l", habit_name="Steps",
+                habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
                 bot=bot, chat_id=12345,
             )
@@ -325,7 +362,7 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
                 steps=8000,
                 date_str="2026-04-25",  # 3 days ago
                 notion=notion,
-                habit_db_id="h", log_db_id="l", habit_name="Steps",
+                habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
             )
 
@@ -342,7 +379,7 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
                 steps=12000,
                 date_str="2026-04-28",
                 notion=notion,
-                habit_db_id="h", log_db_id="l", habit_name="Steps",
+                habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
             )
 
@@ -361,7 +398,7 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
                 steps=7000,
                 date_str="2026-04-27",  # yesterday, below threshold
                 notion=notion,
-                habit_db_id="h", log_db_id="l", habit_name="Steps",
+                habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
             )
 
@@ -426,7 +463,7 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
              patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"):
             results = await handle_steps_final_stamp(
                 notion=notion,
-                habit_db_id="h", log_db_id="l", habit_name="Steps",
+                habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
             )
 
@@ -447,7 +484,7 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
              patch("second_brain.healthtrack.steps._yesterday", return_value="2026-04-27"):
             results = await handle_steps_final_stamp(
                 notion=notion,
-                habit_db_id="h", log_db_id="l", habit_name="Steps",
+                habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
             )
 
@@ -469,7 +506,7 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
              patch("second_brain.healthtrack.steps._find_existing_log_entry", return_value="today-page"):
             results = await handle_steps_final_stamp(
                 notion=notion,
-                habit_db_id="h", log_db_id="l", habit_name="Steps",
+                habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
                 write_intraday_below_threshold=True,
             )
@@ -496,7 +533,7 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
              patch("second_brain.healthtrack.steps._find_existing_log_entry") as find_existing:
             results = await handle_steps_final_stamp(
                 notion=notion,
-                habit_db_id="h", log_db_id="l", habit_name="Steps",
+                habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
             )
 
@@ -522,7 +559,7 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
              patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"):
             results = await handle_steps_final_stamp(
                 notion=notion,
-                habit_db_id="h", log_db_id="l", habit_name="Steps",
+                habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
                 write_intraday_below_threshold=True,
             )
@@ -547,7 +584,7 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
              patch("second_brain.healthtrack.steps._find_existing_log_entry", return_value="existing-pid"):
             results = await handle_steps_final_stamp(
                 notion=notion,
-                habit_db_id="h", log_db_id="l", habit_name="Steps",
+                habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
                 write_intraday_below_threshold=True,
             )
@@ -619,6 +656,7 @@ class TestStepsRoutes(unittest.IsolatedAsyncioTestCase):
             notion=MagicMock(),
             habit_db_id="h",
             log_db_id="l",
+            env_db_id="",
             tz=None,
             bot_getter=lambda: None,
             chat_id=123,
@@ -643,6 +681,7 @@ class TestStepsRoutes(unittest.IsolatedAsyncioTestCase):
             notion=MagicMock(),
             habit_db_id="h",
             log_db_id="l",
+            env_db_id="",
             tz=None,
             bot_getter=lambda: None,
             chat_id=123,
@@ -665,6 +704,7 @@ class TestStepsRoutes(unittest.IsolatedAsyncioTestCase):
             notion=MagicMock(),
             habit_db_id="h",
             log_db_id="l",
+            env_db_id="",
             tz=None,
             bot_getter=lambda: None,
             chat_id=123,

@@ -27,11 +27,13 @@ State (in-memory, per date key "YYYY-MM-DD"):
     "last_steps": int,
     "threshold_notified": bool,
     "notion_page_id": str | None,  # set after first Notion write for that date
+    "threshold_message_id": int | None,  # Telegram threshold message for edits
   }
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -52,6 +54,7 @@ def _date_state(date_str: str) -> dict:
             "last_steps": 0,
             "threshold_notified": False,
             "notion_page_id": None,
+            "threshold_message_id": None,
         }
     return _steps_state[date_str]
 
@@ -166,6 +169,67 @@ def _update_log_entry_steps(
         return False
 
 
+def _persist_threshold_message_id(
+    notion,
+    env_db_id: str,
+    date_str: str,
+    message_id: int,
+) -> None:
+    """Store the threshold notification message_id in Notion ENV DB."""
+    try:
+        row_name = f"steps_threshold_msg_{date_str}"
+        results = {"results": []}
+        for filter_type in ("title", "rich_text"):
+            results = notion.databases.query(
+                database_id=env_db_id,
+                filter={"property": "Name", filter_type: {"equals": row_name}},
+            )
+            if results.get("results"):
+                break
+
+        properties = {
+            "Value": {"rich_text": [{"text": {"content": str(message_id)}}]},
+        }
+        if results.get("results"):
+            notion.pages.update(
+                page_id=results["results"][0]["id"],
+                properties=properties,
+            )
+        else:
+            notion.pages.create(
+                parent={"database_id": env_db_id},
+                properties={
+                    "Name": {"title": [{"text": {"content": row_name}}]},
+                    **properties,
+                },
+            )
+        log.info("steps: persisted threshold_message_id=%s for %s", message_id, date_str)
+    except Exception as e:
+        log.warning("steps: could not persist threshold_message_id: %s", e)
+
+
+def _load_threshold_message_id(notion, env_db_id: str, date_str: str) -> int | None:
+    """Load the threshold notification message_id from Notion ENV DB."""
+    try:
+        row_name = f"steps_threshold_msg_{date_str}"
+        results = {"results": []}
+        for filter_type in ("title", "rich_text"):
+            results = notion.databases.query(
+                database_id=env_db_id,
+                filter={"property": "Name", filter_type: {"equals": row_name}},
+            )
+            if results.get("results"):
+                break
+        if results.get("results"):
+            value_prop = results["results"][0].get("properties", {}).get("Value", {})
+            items = value_prop.get("rich_text", [])
+            if items:
+                return int(items[0]["plain_text"])
+    except Exception as e:
+        log.warning("steps: could not load threshold_message_id: %s", e)
+    return None
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 async def handle_steps_sync(
@@ -175,6 +239,7 @@ async def handle_steps_sync(
     notion,
     habit_db_id: str,
     log_db_id: str,
+    env_db_id: str,
     habit_name: str,
     threshold: int,
     source_label: str,
@@ -213,17 +278,86 @@ async def handle_steps_sync(
             **extra,
         }
 
-    # ── Threshold notification (only for today, only once per day) ──
-    if is_today and completed and not state["threshold_notified"] and bot and chat_id:
-        try:
-            await bot.send_message(
-                chat_id=chat_id,
-                text=f"🎉 10,000 steps hit! 🚶 {steps:,} steps today",
-            )
+    if (
+        is_today
+        and completed
+        and state["threshold_notified"] is False
+        and state.get("threshold_message_id") is None
+        and env_db_id
+    ):
+        recovered_id = _load_threshold_message_id(notion, env_db_id, date_str)
+        if recovered_id:
             state["threshold_notified"] = True
-            log.info("steps: threshold notification sent (%d steps)", steps)
-        except Exception as e:
-            log.error("steps: failed to send Telegram notification: %s", e)
+            state["threshold_message_id"] = recovered_id
+            log.info(
+                "steps: recovered threshold_message_id=%s from ENV DB for %s",
+                recovered_id,
+                date_str,
+            )
+
+    # ── Threshold notification (send once, then edit with updated count) ──
+    if is_today and completed and bot and chat_id:
+        notification_text = f"🎉 10,000 steps hit! 🚶 {steps:,} steps today"
+
+        if not state["threshold_notified"]:
+            try:
+                sent = await bot.send_message(
+                    chat_id=chat_id,
+                    text=notification_text,
+                )
+                state["threshold_notified"] = True
+                state["threshold_message_id"] = sent.message_id
+                if env_db_id:
+                    asyncio.create_task(
+                        asyncio.to_thread(
+                            _persist_threshold_message_id,
+                            notion,
+                            env_db_id,
+                            date_str,
+                            sent.message_id,
+                        )
+                    )
+                log.info(
+                    "steps: threshold notification sent (msg_id=%s, %d steps)",
+                    sent.message_id,
+                    steps,
+                )
+            except Exception as e:
+                log.error("steps: failed to send threshold notification: %s", e)
+
+        elif state.get("threshold_message_id"):
+            try:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=state["threshold_message_id"],
+                    text=notification_text,
+                )
+                log.info(
+                    "steps: edited threshold notification (msg_id=%s, %d steps)",
+                    state["threshold_message_id"],
+                    steps,
+                )
+            except Exception as e:
+                log.warning("steps: edit failed (%s), sending new message", e)
+                try:
+                    sent = await bot.send_message(
+                        chat_id=chat_id,
+                        text=notification_text,
+                    )
+                    state["threshold_message_id"] = sent.message_id
+                    if env_db_id:
+                        asyncio.create_task(
+                            asyncio.to_thread(
+                                _persist_threshold_message_id,
+                                notion,
+                                env_db_id,
+                                date_str,
+                                sent.message_id,
+                            )
+                        )
+                    log.info("steps: fallback new message sent (msg_id=%s)", sent.message_id)
+                except Exception as e2:
+                    log.error("steps: fallback send also failed: %s", e2)
 
     # ── Intraday sub-threshold behavior (configurable) ──
     # Legacy mode only cached intraday counts until threshold/nightly stamp.
@@ -266,6 +400,7 @@ async def handle_steps_final_stamp(
     notion,
     habit_db_id: str,
     log_db_id: str,
+    env_db_id: str,
     habit_name: str,
     threshold: int,
     source_label: str,
@@ -333,6 +468,7 @@ async def handle_steps_final_stamp(
             notion=notion,
             habit_db_id=habit_db_id,
             log_db_id=log_db_id,
+            env_db_id=env_db_id,
             habit_name=habit_name,
             threshold=threshold,
             source_label=source_label,
@@ -419,7 +555,7 @@ async def handle_steps_sync_check(bot=None) -> dict:
 @track_job_execution("steps_final_stamp")
 async def handle_steps_final_stamp_job(bot=None) -> dict:
     """Utility Scheduler job wrapper for the nightly Steps final stamp."""
-    from second_brain.main import MY_CHAT_ID, NOTION_HABIT_DB, NOTION_LOG_DB, TZ, notion
+    from second_brain.main import MY_CHAT_ID, NOTION_ENV_DB, NOTION_HABIT_DB, NOTION_LOG_DB, TZ, notion
     from second_brain.healthtrack import config as health_config
     from second_brain.healthtrack.config import STEPS_SOURCE_LABEL, STEPS_THRESHOLD
 
@@ -427,6 +563,7 @@ async def handle_steps_final_stamp_job(bot=None) -> dict:
         notion=notion,
         habit_db_id=NOTION_HABIT_DB,
         log_db_id=NOTION_LOG_DB,
+        env_db_id=NOTION_ENV_DB,
         habit_name=health_config.STEPS_HABIT_NAME,
         threshold=STEPS_THRESHOLD,
         source_label=STEPS_SOURCE_LABEL,
