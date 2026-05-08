@@ -15,7 +15,6 @@ def test_send_alert_uses_alert_channel_id_not_owner_chat(monkeypatch):
     monkeypatch.setenv("TELEGRAM_TOKEN", "token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "42582324")
     monkeypatch.setenv("ALERT_CHANNEL_ID", "-1003840996802")
-    monkeypatch.delenv("TELEGRAM_ALERT_CHAT_ID", raising=False)
 
     def fake_post(url, json, timeout):
         calls.append({"url": url, "json": json, "timeout": timeout})
@@ -32,7 +31,6 @@ def test_send_alert_does_not_fallback_to_owner_chat(monkeypatch):
     monkeypatch.setenv("TELEGRAM_TOKEN", "token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "42582324")
     monkeypatch.delenv("ALERT_CHANNEL_ID", raising=False)
-    monkeypatch.delenv("TELEGRAM_ALERT_CHAT_ID", raising=False)
     monkeypatch.setattr(alerts.httpx, "post", lambda *args, **kwargs: calls.append((args, kwargs)))
 
     assert alerts.send_alert("hello") is False

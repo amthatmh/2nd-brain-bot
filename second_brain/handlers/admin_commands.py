@@ -52,14 +52,14 @@ async def test_channel_send(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text("❌ Unauthorized")
         return
 
-    channel_id = os.getenv("ALERT_CHANNEL_ID") or os.getenv("TELEGRAM_ALERT_CHAT_ID")
+    channel_id = os.getenv("ALERT_CHANNEL_ID")
     bot_token = os.getenv("TELEGRAM_TOKEN")
     token_preview = f"{bot_token[:10]}..." if bot_token else "missing"
 
     log.info("[TEST_CHANNEL] channel_id=%s, bot_token=%s", channel_id, token_preview)
 
     if not channel_id:
-        await update.message.reply_text("❌ ALERT_CHANNEL_ID/TELEGRAM_ALERT_CHAT_ID is not configured.")
+        await update.message.reply_text("❌ ALERT_CHANNEL_ID is not configured.")
         return
     if not bot_token:
         await update.message.reply_text("❌ TELEGRAM_TOKEN is not configured.")
