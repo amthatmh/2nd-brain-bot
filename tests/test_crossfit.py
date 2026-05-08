@@ -527,7 +527,9 @@ def test_create_strength_log_accepts_extracted_date_and_scheme():
 
     assert page_id == "log"
     props = calls[0]["properties"]
-    assert props["Date"] == {"date": {"start": "2026-05-06"}}
+    assert props["Name"] == {"title": [{"text": {"content": "2026-05-06 — Strength"}}]}
+    assert props["date:Date:start"] == {"type": "date", "date": {"start": "2026-05-06"}}
+    assert props["date:Date:is_datetime"] == 0
     assert props["effort_sets"] == {"number": 6}
     assert props["effort_reps"] == {"number": 4}
     assert props["effort_scheme"] == {"rich_text": [{"text": {"content": "6x4"}}]}
@@ -604,7 +606,7 @@ def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
     assert "Strength logged" in message.replies[-1][0]
     assert "Date: 2026-05-06" in message.replies[-1][0]
     assert "Scheme: 6x4" in message.replies[-1][0]
-    assert "115.0lbs (52.2kg)" in message.replies[-1][0]
+    assert "Weight: 115.0lbs" in message.replies[-1][0]
     assert not any("Any notes" in reply[0] for reply in message.replies)
 
 

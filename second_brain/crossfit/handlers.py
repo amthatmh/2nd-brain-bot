@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import inspect
 import logging
 import os
@@ -431,16 +432,11 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 state.get("load_kg"),
             ),
         )
-        confirm_msg = "✅ Strength logged to Workout Log v2!"
-        if state.get("workout_date"):
-            confirm_msg += f"\n📅 Date: {state['workout_date']}"
-        if state.get("movement"):
-            confirm_msg += f"\n💪 Movement: {state['movement']}"
-        if state.get("effort_scheme"):
-            confirm_msg += f"\n📊 Scheme: {state['effort_scheme']}"
-        if state.get("load_lbs"):
-            kg_suffix = f" ({state['load_kg']}kg)" if state.get("load_kg") is not None else ""
-            confirm_msg += f"\n⚖️ Weight: {state['load_lbs']}lbs{kg_suffix}"
+        confirm_msg = "✅ Strength logged to Workout Log v2!\n"
+        confirm_msg += f"💪 Movement: {state.get('movement') or 'N/A'}\n"
+        confirm_msg += f"📅 Date: {state.get('workout_date') or datetime.now(timezone.utc).date().isoformat()}\n"
+        confirm_msg += f"📊 Scheme: {state.get('effort_scheme') or 'N/A'}\n"
+        confirm_msg += f"⚖️ Weight: {state.get('load_lbs', 'N/A')}lbs\n"
         await message.reply_text(confirm_msg, parse_mode="Markdown")
     elif state.get("mode") == "wod":
         target_wod_db = _cf_config(config, "NOTION_WOD_LOG_DB")
