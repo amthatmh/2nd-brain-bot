@@ -551,6 +551,7 @@ def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
     import second_brain.crossfit.handlers as handlers
 
     created = {}
+    pending = {}
 
     async def fake_resolve(text, claude, notion, config, message=None):
         del claude, notion, config, message
@@ -577,6 +578,7 @@ def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
             workout_date=kwargs["workout_date"],
             effort_scheme=kwargs["effort_scheme"],
             load_kg=kwargs["load_kg"],
+            pending_state=dict(pending["123"]),
         )
         return "log-1"
 
@@ -595,10 +597,15 @@ def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
             _FakeClaude(payload),
             SimpleNamespace(),
             {"NOTION_WORKOUT_LOG_DB": "workout-log", "NOTION_MOVEMENTS_DB": "movements"},
-            {},
+            pending,
         )
     )
 
+    state = created.pop("pending_state")
+    assert state["sets"] == 6
+    assert state["reps"] == 4
+    assert state["weight_lbs"] == 115.0
+    assert state["workout_date"] == "2026-05-06"
     assert created == {
         "workout_log_db_id": "workout-log",
         "movement_ids": ["mov-hang-clean"],
@@ -614,7 +621,7 @@ def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
     assert "Strength logged" in message.replies[-1][0]
     assert "Date: 2026-05-06" in message.replies[-1][0]
     assert "Scheme: 6x4" in message.replies[-1][0]
-    assert "Weight: 115.0lbs" in message.replies[-1][0]
+    assert "Weight: 115lbs" in message.replies[-1][0]
     assert not any("Any notes" in reply[0] for reply in message.replies)
 
 
@@ -668,7 +675,7 @@ def test_finalize_flow_uses_nlp_pending_state_keys(monkeypatch):
     assert created["effort_scheme"] == "6x4"
     assert "Date: 2026-05-06" in message.replies[-1][0]
     assert "Scheme: 6x4" in message.replies[-1][0]
-    assert "Weight: 115.0lbs" in message.replies[-1][0]
+    assert "Weight: 115lbs" in message.replies[-1][0]
 
 
 def test_wod_amrap_time_cap_and_workout_structure_logged(monkeypatch):
