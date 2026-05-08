@@ -528,13 +528,16 @@ def test_create_strength_log_accepts_extracted_date_and_scheme():
     assert page_id == "log"
     props = calls[0]["properties"]
     assert props["Name"] == {"title": [{"text": {"content": "2026-05-06 — Strength"}}]}
-    assert props["date"] == {"date": {"start": "2026-05-06"}}
+    assert props["date:Date:start"] == "2026-05-06"
+    assert props["date:Date:is_datetime"] == 0
     assert props["effort_sets"] == {"number": 6}
     assert props["effort_reps"] == {"number": 4}
-    assert props["effort_scheme"] == {"rich_text": [{"text": {"content": "6x4"}}]}
     assert props["load_lbs"] == {"number": 115}
-    assert props["load_kg"] == {"number": 52.2}
+    assert props["Movement"] == {"relation": [{"id": "mov-hang-clean"}]}
     assert props["weekly_program_ref"] == {"relation": [{"id": "week-1"}]}
+    assert "effort_scheme" not in props
+    assert "load_kg" not in props
+    assert "is_max_attempt" not in props
 
 
 def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
