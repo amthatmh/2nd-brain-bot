@@ -373,8 +373,7 @@ def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_na
     movement_ids = movement_page_id if isinstance(movement_page_id, list) else [movement_page_id]
     props = {
         "Name": {"title": [{"text": {"content": f"{workout_date} — Strength"}}]},
-        "date:Date:start": workout_date,
-        "date:Date:is_datetime": 0,
+        "Date": {"date": {"start": workout_date}},
         "effort_sets": {"number": effort_sets} if effort_sets is not None else None,
         "effort_reps": {"number": effort_reps} if effort_reps is not None else None,
         "load_lbs": {"number": load_lbs} if load_lbs is not None else None,
