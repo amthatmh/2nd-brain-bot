@@ -565,19 +565,18 @@ def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
         del notion
         return "week-1"
 
-    def fake_create_strength_log(notion, workout_log_db_id, movement_ids, movement_name, load_lbs, sets, reps, is_max_attempt, weekly_program_id, cycle_id, readiness, workout_date=None, effort_scheme=None, load_kg=None):
-        del notion, is_max_attempt, cycle_id, readiness
+    def fake_create_strength_log(**kwargs):
         created.update(
-            workout_log_db_id=workout_log_db_id,
-            movement_ids=movement_ids,
-            movement_name=movement_name,
-            load_lbs=load_lbs,
-            sets=sets,
-            reps=reps,
-            weekly_program_id=weekly_program_id,
-            workout_date=workout_date,
-            effort_scheme=effort_scheme,
-            load_kg=load_kg,
+            workout_log_db_id=kwargs["workout_log_db_id"],
+            movement_ids=kwargs["movement_page_id"],
+            movement_name=kwargs["movement_name"],
+            load_lbs=kwargs["load_lbs"],
+            sets=kwargs["effort_sets"],
+            reps=kwargs["effort_reps"],
+            weekly_program_id=kwargs["weekly_program_page_id"],
+            workout_date=kwargs["workout_date"],
+            effort_scheme=kwargs["effort_scheme"],
+            load_kg=kwargs["load_kg"],
         )
         return "log-1"
 
@@ -617,6 +616,59 @@ def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
     assert "Scheme: 6x4" in message.replies[-1][0]
     assert "Weight: 115.0lbs" in message.replies[-1][0]
     assert not any("Any notes" in reply[0] for reply in message.replies)
+
+
+def test_finalize_flow_uses_nlp_pending_state_keys(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    created = {}
+
+    async def fake_week(notion):
+        del notion
+        return "week-1"
+
+    def fake_create_strength_log(**kwargs):
+        created.update(kwargs)
+        return "log-1"
+
+    monkeypatch.setattr(handlers, "get_current_week_program_url", fake_week)
+    monkeypatch.setattr(handlers, "create_strength_log", fake_create_strength_log)
+
+    message = _DummyMessage()
+    pending = {
+        "123": {
+            "mode": "strength",
+            "movement_page_id": "mov-hang-clean",
+            "movement_name": "Hang Squat Clean",
+            "workout_date": "2026-05-06",
+            "sets": 6,
+            "reps": 4,
+            "weight_lbs": 115.0,
+            "is_max_attempt": False,
+        }
+    }
+
+    asyncio.run(
+        handlers._finalize_flow(
+            message,
+            "123",
+            SimpleNamespace(),
+            {"NOTION_WORKOUT_LOG_DB": "workout-log", "NOTION_MOVEMENTS_DB": "movements"},
+            pending,
+        )
+    )
+
+    assert created["workout_log_db_id"] == "workout-log"
+    assert created["movement_page_id"] == ["mov-hang-clean"]
+    assert created["movement_name"] == "Hang Squat Clean"
+    assert created["load_lbs"] == 115.0
+    assert created["effort_sets"] == 6
+    assert created["effort_reps"] == 4
+    assert created["workout_date"] == "2026-05-06"
+    assert created["effort_scheme"] == "6x4"
+    assert "Date: 2026-05-06" in message.replies[-1][0]
+    assert "Scheme: 6x4" in message.replies[-1][0]
+    assert "Weight: 115.0lbs" in message.replies[-1][0]
 
 
 def test_wod_amrap_time_cap_and_workout_structure_logged(monkeypatch):
