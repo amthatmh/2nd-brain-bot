@@ -317,6 +317,7 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
     sets = workout_data.get("sets") if workout_data.get("sets") is not None else workout_result.get("sets")
     reps = workout_data.get("reps") if workout_data.get("reps") is not None else workout_result.get("reps")
     load_lbs = workout_data.get("weight_lbs") if workout_data.get("weight_lbs") is not None else workout_result.get("load_lbs")
+    load_kg = workout_data.get("weight_kg") if workout_data.get("weight_kg") is not None else workout_result.get("load_kg")
     scheme = workout_data.get("scheme") or (f"{sets}x{reps}" if sets and reps else None)
 
     cf_pending[key] = {
@@ -324,6 +325,7 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
         "stage": "movement" if not movement_text else "notes",
         "movement": movement_text,
         "load_lbs": load_lbs or 0,
+        "load_kg": load_kg,
         "sets": sets or 1,
         "reps": reps or 1,
         "workout_date": workout_data.get("date"),
@@ -419,6 +421,7 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 None,
                 state.get("workout_date"),
                 state.get("effort_scheme"),
+                state.get("load_kg"),
             ),
         )
         confirm_msg = "✅ Strength logged to Workout Log v2!"
@@ -429,7 +432,8 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         if state.get("effort_scheme"):
             confirm_msg += f"\n📊 Scheme: {state['effort_scheme']}"
         if state.get("load_lbs"):
-            confirm_msg += f"\n⚖️ Weight: {state['load_lbs']}lbs"
+            kg_suffix = f" ({state['load_kg']}kg)" if state.get("load_kg") is not None else ""
+            confirm_msg += f"\n⚖️ Weight: {state['load_lbs']}lbs{kg_suffix}"
         await message.reply_text(confirm_msg, parse_mode="Markdown")
     elif state.get("mode") == "wod":
         target_wod_db = _cf_config(config, "NOTION_WOD_LOG_DB")

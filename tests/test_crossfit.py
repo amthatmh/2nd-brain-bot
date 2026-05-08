@@ -480,6 +480,7 @@ def test_create_strength_log_accepts_extracted_date_and_scheme():
         None,
         "2026-05-06",
         "6x4",
+        52.2,
     )
 
     assert page_id == "log"
@@ -489,6 +490,7 @@ def test_create_strength_log_accepts_extracted_date_and_scheme():
     assert props["effort_reps"] == {"number": 4}
     assert props["effort_scheme"] == {"rich_text": [{"text": {"content": "6x4"}}]}
     assert props["load_lbs"] == {"number": 115}
+    assert props["load_kg"] == {"number": 52.2}
     assert props["weekly_program_ref"] == {"relation": [{"id": "week-1"}]}
 
 
@@ -510,7 +512,7 @@ def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
         del notion
         return "week-1"
 
-    def fake_create_strength_log(notion, workout_log_db_id, movement_ids, movement_name, load_lbs, sets, reps, is_max_attempt, weekly_program_id, cycle_id, readiness, workout_date=None, effort_scheme=None):
+    def fake_create_strength_log(notion, workout_log_db_id, movement_ids, movement_name, load_lbs, sets, reps, is_max_attempt, weekly_program_id, cycle_id, readiness, workout_date=None, effort_scheme=None, load_kg=None):
         del notion, is_max_attempt, cycle_id, readiness
         created.update(
             workout_log_db_id=workout_log_db_id,
@@ -522,6 +524,7 @@ def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
             weekly_program_id=weekly_program_id,
             workout_date=workout_date,
             effort_scheme=effort_scheme,
+            load_kg=load_kg,
         )
         return "log-1"
 
@@ -554,10 +557,12 @@ def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
         "weekly_program_id": "week-1",
         "workout_date": "2026-05-06",
         "effort_scheme": "6x4",
+        "load_kg": 52.2,
     }
     assert "Strength logged" in message.replies[-1][0]
     assert "Date: 2026-05-06" in message.replies[-1][0]
     assert "Scheme: 6x4" in message.replies[-1][0]
+    assert "115.0lbs (52.2kg)" in message.replies[-1][0]
     assert not any("Any notes" in reply[0] for reply in message.replies)
 
 
