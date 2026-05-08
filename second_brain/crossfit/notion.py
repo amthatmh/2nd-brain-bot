@@ -357,7 +357,7 @@ def create_pr_entry(notion, prs_db_id, cycles_db_id, movement_page_id, movement_
     props={"Name":{"title":[{"text":{"content":f"{movement_name} {reps}RM — {datetime.now(timezone.utc).date().isoformat()}"}}]},"Date":{"date":{"start":datetime.now(timezone.utc).date().isoformat()}},"Movement":{"relation":[{"id":movement_page_id}]},"Weight (lbs)":{"number":weight_lbs},"Previous Best (lbs)":{"number":previous_best_lbs or 0},"Reps":{"number":reps},"Rep Format":{"rich_text":[{"text":{"content":f"{reps}RM"}}]},"Notes":{"rich_text":[{"text":{"content":notes or ""}}]}}
     page=notion_call(notion.pages.create,parent={"database_id":prs_db_id},properties=props); return page["id"]
 
-def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_name, load_lbs, effort_sets, effort_reps, is_max_attempt, weekly_program_page_id, cycle_page_id, readiness, workout_date=None, effort_scheme=None):
+def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_name, load_lbs, effort_sets, effort_reps, is_max_attempt, weekly_program_page_id, cycle_page_id, readiness, workout_date=None, effort_scheme=None, load_kg=None):
     """Create a Section B strength/accessory log in Workout Log v2.
 
     Readiness is intentionally ignored in Phase 1 because readiness now lives
@@ -377,6 +377,8 @@ def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_na
     }
     if effort_scheme:
         props["effort_scheme"] = {"rich_text": [{"text": {"content": effort_scheme}}]}
+    if load_kg is not None:
+        props["load_kg"] = {"number": load_kg}
     if weekly_program_page_id:
         props["weekly_program_ref"] = {"relation": [{"id": weekly_program_page_id}]}
     if cycle_page_id:
