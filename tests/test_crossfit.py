@@ -113,6 +113,12 @@ def test_handle_gymnastics_level_check_false_for_compound():
     assert out is False
 
 
+def test_handle_gymnastics_level_check_false_for_compound_multi_select():
+    notion = SimpleNamespace(pages=SimpleNamespace(retrieve=lambda **kwargs: {"properties": {"Category": {"multi_select": [{"name": "Compound"}]}}}))
+    out = asyncio.run(handle_gymnastics_level_check(_DummyMessage(), "mov1", "Back Squat", notion, {"NOTION_PROGRESSIONS_DB": "p", "NOTION_MOVEMENTS_DB": "m"}, {}, "k"))
+    assert out is False
+
+
 def test_classify_programme_fast_path():
     text = "MONDAY\nPERFORMANCE\nB. Back Squat\nC. For Time\n" * 15
     c = _FakeClaude("{}")
@@ -198,7 +204,7 @@ def test_get_or_create_movement_sets_primary_pattern_on_create():
 
     assert page_id == "new-movement"
     props = calls[0]["properties"]
-    assert props["Category"] == {"select": {"name": "Compound"}}
+    assert props["Category"] == {"multi_select": [{"name": "Compound"}]}
     assert props["Primary Pattern"] == {"multi_select": [{"name": "Olympic"}]}
 
 
@@ -537,6 +543,8 @@ def test_create_strength_log_accepts_extracted_date_and_scheme():
     assert props["weekly_program_ref"] == {"relation": [{"id": "week-1"}]}
     assert "effort_scheme" not in props
     assert "load_kg" not in props
+    assert "calc_1rm_brzycki" not in props
+    assert "calc_1rm_epley" not in props
     assert "is_max_attempt" not in props
 
 
