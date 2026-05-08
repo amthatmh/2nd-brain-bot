@@ -15,11 +15,57 @@ from .keyboards import level_confirm_keyboard, my_level_keyboard, rx_scaled_keyb
 from .notion import create_strength_log, create_wod_log, get_movement_category, get_or_create_movement, get_progressions_for_movement, notion_query_wod_log_by_date, query_subs, save_programme, set_current_level
 from .nlp import extract_movements_from_log, extract_workout_data, fuzzy_match_movements, load_movements_cache
 from .readiness import check_readiness_logged_today, log_daily_readiness
+from second_brain.notion import notion_call
 from .weekly_program import get_current_week_program_url, get_todays_workout_day
 
 
 log = logging.getLogger(__name__)
 logger = log
+
+async def _maybe_await(value):
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+async def upsert_training_log_field(notion, date_str: str, field_name: str, rating: str, daily_readiness_db_id: str | None = None):
+    """Upsert a feel rating into the Training Log (Daily Readiness) database."""
+    daily_readiness_db_id = (daily_readiness_db_id or os.environ.get("NOTION_DAILY_READINESS_DB") or "").strip()
+    if not daily_readiness_db_id:
+        logger.warning("[FEEL] NOTION_DAILY_READINESS_DB is not configured; skipping %s=%s", field_name, rating)
+        return
+    date_str = date_str or date.today().isoformat()
+    props = {"select": {"name": str(rating)}}
+    response = await _maybe_await(
+        notion_call(
+            notion.databases.query,
+            database_id=daily_readiness_db_id,
+            filter={"property": "Date", "date": {"equals": date_str}},
+            page_size=1,
+        )
+    )
+    results = response.get("results", [])
+    if results:
+        await _maybe_await(
+            notion_call(
+                notion.pages.update,
+                page_id=results[0]["id"],
+                properties={field_name: props},
+            )
+        )
+    else:
+        await _maybe_await(
+            notion_call(
+                notion.pages.create,
+                parent={"database_id": daily_readiness_db_id},
+                properties={
+                    "Name": {"title": [{"text": {"content": f"{date_str} — Training"}}]},
+                    "Date": {"date": {"start": date_str}},
+                    field_name: props,
+                },
+            )
+        )
+    logger.info("[FEEL] %s=%s date=%s", field_name, rating, date_str)
 
 
 # Global movement cache loaded lazily and refreshed at bot startup.
@@ -593,7 +639,7 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
             state.get("weight_lbs"),
             state.get("workout_date"),
         )
-        created_page_id = await asyncio.get_running_loop().run_in_executor(
+        workout_page_id = await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: create_strength_log(
                 notion=notion,
@@ -612,7 +658,7 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 load_kg=state.get("weight_kg"),
             ),
         )
-        state["last_workout_page_id"] = created_page_id
+        state["last_workout_page_id"] = workout_page_id
         cf_pending[key] = state
         confirm_msg = "✅ Strength logged to Workout Log v2!\n"
         confirm_msg += f"💪 Movement: {movement_name}\n"
@@ -693,10 +739,8 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 **kwargs,
             )
 
-        created_page_id = await asyncio.get_running_loop().run_in_executor(
-            None, _create_wod_log_with_optional_structure
-        )
-        state["last_wod_page_id"] = created_page_id
+        wod_page_id = await asyncio.get_running_loop().run_in_executor(None, _create_wod_log_with_optional_structure)
+        state["last_wod_page_id"] = wod_page_id
         cf_pending[key] = state
         await message.reply_text("✅ WOD logged to WOD Log!", parse_mode="Markdown")
         await _prompt_session_feel(message, key, state, cf_pending)
@@ -996,15 +1040,47 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         await q.edit_message_text("Nothing in Subs & Recs for that movement yet." if not rows else "\n".join([f"{i+1}. {r['name']} — {r['difficulty']}" for i, r in enumerate(rows)]), parse_mode="Markdown")
         cf_pending.pop(key, None)
     elif parts[1] == "feel" and len(parts) == 4:
-        value = parts[2]
+        rating = parts[2]
         key = parts[3]
         state = cf_pending.get(key, {})
-        rating = int(value)
-        state["session_feel"] = rating
-        date_str = state.get("workout_date") or date.today().isoformat()
-        await upsert_training_log_feel(notion, config, date_str, rating)
+        state["session_feel"] = int(rating)
+        mode = state.get("mode")
+        workout_date = state.get("workout_date") or date.today().isoformat()
+        daily_readiness_db_id = _cf_config(config, "NOTION_DAILY_READINESS_DB")
+        try:
+            if mode == "strength":
+                page_id = state.get("last_workout_page_id")
+                if page_id and hasattr(notion, "pages"):
+                    await _maybe_await(
+                        notion_call(
+                            notion.pages.update,
+                            page_id=page_id,
+                            properties={"Strength Feel": {"select": {"name": rating}}},
+                        )
+                    )
+                await upsert_training_log_field(notion, workout_date, "Strength Feel", rating, daily_readiness_db_id)
+            elif mode == "wod":
+                page_id = state.get("last_wod_page_id")
+                if page_id and hasattr(notion, "pages"):
+                    await _maybe_await(
+                        notion_call(
+                            notion.pages.update,
+                            page_id=page_id,
+                            properties={"WOD Feel": {"select": {"name": rating}}},
+                        )
+                    )
+                await upsert_training_log_field(notion, workout_date, "WOD Feel", rating, daily_readiness_db_id)
+            elif mode == "feel_only":
+                await upsert_training_log_field(notion, workout_date, "Workout Feel", rating, daily_readiness_db_id)
+            else:
+                logger.warning("[FEEL] Unknown feel mode=%r key=%r", mode, key)
+        except Exception as e:
+            logger.exception("Session feel logging failed")
+            cf_pending.pop(key, None)
+            await q.edit_message_text(f"❌ Error logging session feel: {e}", parse_mode="Markdown")
+            return
         cf_pending.pop(key, None)
-        await q.edit_message_text(f"✅ Session feel logged: {value}/5", parse_mode="Markdown")
+        await q.edit_message_text(f"✅ Session feel logged: {rating}/5", parse_mode="Markdown")
     elif parts[1] == "skip" and len(parts) == 3:
         key = parts[2]
         logger.info(f"[CF_STATE_B] skip received key={key!r} type={type(key)} cf_pending_keys={list(cf_pending.keys())}")
