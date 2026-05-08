@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import inspect
 import logging
 import os
@@ -145,11 +145,13 @@ def _store_extracted_strength_state(cf_pending: dict, key: str, extracted: dict 
     """Persist all NLP-extracted strength metadata into pending state."""
     state = cf_pending.get(key, {})
     extracted = extracted or {}
+    raw_workout_date = extracted.get("raw_date") or _extract_raw_workout_date(raw_text) or extracted.get("date")
     state["sets"] = extracted.get("sets")
     state["reps"] = extracted.get("reps")
     state["weight_lbs"] = extracted.get("weight_lbs")
     state["weight_kg"] = extracted.get("weight_kg")
-    state["workout_date"] = extracted.get("raw_date") or _extract_raw_workout_date(raw_text) or extracted.get("date")
+    state["workout_date"] = raw_workout_date
+    state["raw_workout_date"] = raw_workout_date
     state["effort_scheme"] = extracted.get("scheme")
     state["notes"] = extracted.get("notes")
     cf_pending[key] = state
@@ -658,12 +660,7 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
 
         key = cf_flow_key
         extracted = await extract_workout_data(raw_input, claude)
-        state["sets"] = extracted.get("sets")
-        state["reps"] = extracted.get("reps")
-        state["weight_lbs"] = extracted.get("weight_lbs")
-        state["weight_kg"] = extracted.get("weight_kg")
-        state["workout_date"] = extracted.get("date")
-        state["effort_scheme"] = extracted.get("scheme")
+        state = _store_extracted_strength_state(cf_pending, key, extracted, raw_input)
 
         extracted_movements = extracted.get("movements") or []
         movement_name = ", ".join(extracted_movements) if extracted_movements else raw_input
@@ -673,6 +670,27 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
         state["movement_name"] = state["movement"]
         state["movement_page_ids"] = movement_ids
         state["movement_page_id"] = movement_id
+
+        raw_date = state.get("raw_workout_date") or state.get("workout_date")
+        if raw_date:
+            date_result = parse_date(raw_date)
+            if date_result.ambiguous:
+                state["_date_option_a"] = date_result.option_a
+                state["_date_option_b"] = date_result.option_b
+                state["stage"] = "awaiting_date"
+                cf_pending[key] = state
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton(date_result.label_a, callback_data=f"cf:date_pick:a:{key}"),
+                    InlineKeyboardButton(date_result.label_b, callback_data=f"cf:date_pick:b:{key}"),
+                ]])
+                await message.reply_text("📅 Which date did you mean?", reply_markup=keyboard)
+                return
+            state["workout_date"] = date_result.resolved
+            cf_pending[key] = state
+        else:
+            state["workout_date"] = date.today().isoformat()
+            cf_pending[key] = state
+
         state["stage"] = "notes"
         cf_pending[key] = state
         logger.info(f"[CF_STATE_A] WROTE key={key!r} sets={state.get('sets')} weight={state.get('weight_lbs')} date={state.get('workout_date')}")

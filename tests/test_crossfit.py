@@ -949,11 +949,102 @@ def test_strength_pending_movement_stage_extracts_full_input_before_resolving(mo
     assert state["reps"] == 4
     assert state["weight_lbs"] == 115.0
     assert state["weight_kg"] == 52.2
-    assert state["workout_date"] == "2026-05-06"
+    assert state["workout_date"] == "5/6"
+    assert state["raw_workout_date"] == "5/6"
+    assert state["_date_option_a"] == "2026-05-06"
+    assert state["_date_option_b"] == "2026-06-05"
     assert state["effort_scheme"] == "6x4"
     assert state["movement"] == "Hang Squat Clean"
     assert state["movement_page_id"] == "mov-hang-squat-clean"
-    assert state["stage"] == "notes"
+    assert state["stage"] == "awaiting_date"
+    assert "Which date did you mean?" in message.replies[-1][0]
+    buttons = message.replies[-1][1]["reply_markup"].inline_keyboard[0]
+    assert [button.text for button in buttons] == ["May 6", "Jun 5"]
+
+
+def test_strength_pending_movement_stage_unambiguous_dates_go_to_notes(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    async def fake_resolve(text, claude, notion, config, message=None):
+        del claude, notion, config, message
+        return ["mov-hang-squat-clean"], ["Hang Squat Clean"]
+
+    monkeypatch.setattr(handlers, "_resolve_movement_ids", fake_resolve)
+
+    cases = [
+        ("6 sets of 4x hang squat clean 115lbs on May 6", "2026-05-06"),
+        ("6 sets of 4x hang squat clean 115lbs on 5/13", "2026-05-13"),
+    ]
+    payload = '{"movements":["Hang Squat Clean"],"date":"2026-05-06","sets":6,"reps":4,"weight_lbs":115.0,"weight_kg":52.2,"scheme":"6x4","notes":null}'
+
+    for raw_text, expected_date in cases:
+        message = _DummyMessage()
+        key = str(message.chat_id)
+        pending = {key: {"mode": "strength", "stage": "movement"}}
+
+        asyncio.run(
+            handlers.handle_cf_text_reply(
+                message,
+                raw_text,
+                key,
+                _FakeClaude(payload),
+                SimpleNamespace(),
+                {"NOTION_WORKOUT_LOG_DB": "workout-log", "NOTION_MOVEMENTS_DB": "movements"},
+                pending,
+            )
+        )
+
+        state = pending[key]
+        assert state["workout_date"] == expected_date
+        assert state["stage"] == "notes"
+        assert "_date_option_a" not in state
+        assert "Any notes" in message.replies[-1][0]
+
+
+def test_strength_date_pick_button_sets_option_and_prompts_for_notes():
+    import second_brain.crossfit.handlers as handlers
+
+    class _DummyQuery:
+        def __init__(self, message):
+            self.message = message
+            self.edits = []
+
+        async def answer(self, *args, **kwargs):
+            pass
+
+        async def edit_message_text(self, text, **kwargs):
+            self.edits.append((text, kwargs))
+
+    message = _DummyMessage()
+    key = str(message.chat_id)
+    pending = {
+        key: {
+            "mode": "strength",
+            "stage": "awaiting_date",
+            "movement": "Hang Squat Clean",
+            "sets": 6,
+            "reps": 4,
+            "weight_lbs": 115.0,
+            "_date_option_a": "2026-05-06",
+            "_date_option_b": "2026-06-05",
+        }
+    }
+
+    asyncio.run(
+        handlers.handle_cf_callback(
+            _DummyQuery(message),
+            ["cf", "date_pick", "a", key],
+            None,
+            SimpleNamespace(),
+            {},
+            pending,
+        )
+    )
+
+    assert pending[key]["workout_date"] == "2026-05-06"
+    assert pending[key]["stage"] == "notes"
+    assert "_date_option_a" not in pending[key]
+    assert "_date_option_b" not in pending[key]
     assert "Any notes" in message.replies[-1][0]
 
 
@@ -992,7 +1083,7 @@ def test_strength_pending_movement_stage_handles_movement_only(monkeypatch):
     assert state["reps"] is None
     assert state["weight_lbs"] is None
     assert state["weight_kg"] is None
-    assert state["workout_date"] is None
+    assert state["workout_date"] == "2026-05-08"
     assert state["effort_scheme"] is None
     assert state["movement"] == "Hang Squat Clean"
     assert state["stage"] == "notes"
@@ -1030,16 +1121,18 @@ def test_strength_flow_prompts_for_ambiguous_raw_date_and_preserves_metadata(mon
     )
 
     state = pending["123"]
-    assert state["stage"] == "date_pick"
+    assert state["stage"] == "awaiting_date"
     assert state["sets"] == 6
     assert state["reps"] == 4
     assert state["weight_lbs"] == 115.0
-    assert state["workout_date"] == "2026-05-06"
+    assert state["workout_date"] == "5/6"
     assert state["raw_workout_date"] == "5/6"
+    assert state["_date_option_a"] == "2026-05-06"
+    assert state["_date_option_b"] == "2026-06-05"
     assert "Which date did you mean?" in message.replies[-1][0]
 
 
-def test_strength_date_pick_resolves_movement_and_auto_logs_complete_state(monkeypatch):
+def test_strength_date_pick_resolves_date_and_prompts_for_notes(monkeypatch):
     import second_brain.crossfit.handlers as handlers
 
     created = {}
@@ -1109,12 +1202,9 @@ def test_strength_date_pick_resolves_movement_and_auto_logs_complete_state(monke
         )
     )
 
-    assert created["load_lbs"] == 115.0
-    assert created["effort_sets"] == 6
-    assert created["effort_reps"] == 4
-    assert created["workout_date"] == "2026-05-06"
-    assert created["movement_page_id"] == ["mov-hang-clean"]
-    assert key not in pending
-    assert "Strength logged" in message.replies[-1][0]
-    assert "Scheme: 6x4" in message.replies[-1][0]
-    assert "Weight: 115lbs" in message.replies[-1][0]
+    assert created == {}
+    assert pending[key]["workout_date"] == "2026-05-06"
+    assert pending[key]["stage"] == "notes"
+    assert "raw_date_a" not in pending[key]
+    assert "raw_date_b" not in pending[key]
+    assert "Any notes" in message.replies[-1][0]
