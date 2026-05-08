@@ -1474,3 +1474,109 @@ def test_crossfit_log_feel_starts_standalone_feel_flow():
         f"cf:feel:4:{key}",
         f"cf:feel:5:{key}",
     ]
+
+
+def test_crossfit_strength_feel_updates_workout_log_and_training_log():
+    import second_brain.crossfit.handlers as handlers
+    from unittest.mock import AsyncMock
+
+    page_updates = []
+    training_queries = []
+    notion = SimpleNamespace(
+        databases=SimpleNamespace(
+            query=lambda **kwargs: training_queries.append(kwargs) or {"results": [{"id": "training-row"}]}
+        ),
+        pages=SimpleNamespace(
+            update=lambda **kwargs: page_updates.append(kwargs),
+            create=lambda **kwargs: None,
+        ),
+    )
+    message = _DummyMessage()
+    q = SimpleNamespace(message=message, edit_message_reply_markup=AsyncMock(), edit_message_text=AsyncMock())
+    key = str(message.chat_id)
+    pending = {
+        key: {
+            "mode": "strength",
+            "stage": "awaiting_feel",
+            "workout_date": "2026-05-06",
+            "last_workout_page_id": "workout-page",
+        }
+    }
+
+    asyncio.run(handlers.handle_cf_callback(q, ["cf", "feel", "4", key], None, notion, {"NOTION_DAILY_READINESS_DB": "training-db"}, pending))
+
+    assert page_updates == [
+        {"page_id": "workout-page", "properties": {"Strength Feel": {"select": {"name": "4"}}}},
+        {"page_id": "training-row", "properties": {"Strength Feel": {"select": {"name": "4"}}}},
+    ]
+    assert training_queries == [{"database_id": "training-db", "filter": {"property": "Date", "date": {"equals": "2026-05-06"}}, "page_size": 1}]
+    assert key not in pending
+    q.edit_message_text.assert_awaited_once_with("✅ Session feel logged: 4/5", parse_mode="Markdown")
+
+
+def test_crossfit_wod_feel_updates_wod_log_and_creates_training_log_row():
+    import second_brain.crossfit.handlers as handlers
+    from unittest.mock import AsyncMock
+
+    page_updates = []
+    page_creates = []
+    notion = SimpleNamespace(
+        databases=SimpleNamespace(query=lambda **kwargs: {"results": []}),
+        pages=SimpleNamespace(
+            update=lambda **kwargs: page_updates.append(kwargs),
+            create=lambda **kwargs: page_creates.append(kwargs) or {"id": "new-training-row"},
+        ),
+    )
+    message = _DummyMessage()
+    q = SimpleNamespace(message=message, edit_message_reply_markup=AsyncMock(), edit_message_text=AsyncMock())
+    key = str(message.chat_id)
+    pending = {
+        key: {
+            "mode": "wod",
+            "stage": "awaiting_feel",
+            "workout_date": "2026-05-07",
+            "last_wod_page_id": "wod-page",
+        }
+    }
+
+    asyncio.run(handlers.handle_cf_callback(q, ["cf", "feel", "5", key], None, notion, {"NOTION_DAILY_READINESS_DB": "training-db"}, pending))
+
+    assert page_updates == [
+        {"page_id": "wod-page", "properties": {"WOD Feel": {"select": {"name": "5"}}}},
+    ]
+    assert page_creates == [{
+        "parent": {"database_id": "training-db"},
+        "properties": {
+            "Name": {"title": [{"text": {"content": "2026-05-07 — Training"}}]},
+            "Date": {"date": {"start": "2026-05-07"}},
+            "WOD Feel": {"select": {"name": "5"}},
+        },
+    }]
+    assert key not in pending
+    q.edit_message_text.assert_awaited_once_with("✅ Session feel logged: 5/5", parse_mode="Markdown")
+
+
+def test_crossfit_standalone_feel_updates_training_log_only():
+    import second_brain.crossfit.handlers as handlers
+    from unittest.mock import AsyncMock
+
+    page_updates = []
+    notion = SimpleNamespace(
+        databases=SimpleNamespace(query=lambda **kwargs: {"results": [{"id": "training-row"}]}),
+        pages=SimpleNamespace(
+            update=lambda **kwargs: page_updates.append(kwargs),
+            create=lambda **kwargs: None,
+        ),
+    )
+    message = _DummyMessage()
+    q = SimpleNamespace(message=message, edit_message_reply_markup=AsyncMock(), edit_message_text=AsyncMock())
+    key = str(message.chat_id)
+    pending = {key: {"mode": "feel_only", "stage": "awaiting_feel", "workout_date": "2026-05-08"}}
+
+    asyncio.run(handlers.handle_cf_callback(q, ["cf", "feel", "3", key], None, notion, {"NOTION_DAILY_READINESS_DB": "training-db"}, pending))
+
+    assert page_updates == [
+        {"page_id": "training-row", "properties": {"Workout Feel": {"select": {"name": "3"}}}},
+    ]
+    assert key not in pending
+    q.edit_message_text.assert_awaited_once_with("✅ Session feel logged: 3/5", parse_mode="Markdown")
