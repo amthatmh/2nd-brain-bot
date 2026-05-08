@@ -262,6 +262,119 @@ def test_wod_flow_prompts_result_before_rx_scaled():
     assert "Rx or Scaled?" in message.replies[-1][0]
 
 
+
+def test_wod_movement_stage_named_month_date_resolves_without_buttons(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    async def fake_resolve(text, claude, notion, config, message=None):
+        del claude, notion, config, message
+        assert text == "Wall Walks"
+        return ["mov-wall-walks"], ["Wall Walks"]
+
+    monkeypatch.setattr(handlers, "_resolve_movement_ids", fake_resolve)
+
+    raw_text = "This log is for May 6th, 3x wall walks"
+    payload = '{"movements":["Wall Walks"],"date":"2026-05-06","sets":3,"reps":null,"weight_lbs":null,"weight_kg":null,"scheme":"3x","notes":null,"workout_structure":"3x wall walks","raw_input":"This log is for May 6th, 3x wall walks","wod_name":null}'
+    message = _DummyMessage()
+    key = str(message.chat_id)
+    pending = {key: {"mode": "wod", "stage": "movement", "format": "amrap"}}
+
+    asyncio.run(
+        handlers.handle_cf_text_reply(
+            message,
+            raw_text,
+            key,
+            _FakeClaude(payload),
+            SimpleNamespace(),
+            {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"},
+            pending,
+        )
+    )
+
+    state = pending[key]
+    assert state["workout_date"] == "2026-05-06"
+    assert state["raw_workout_date"] == "May 6th"
+    assert state["stage"] == "time_cap"
+    assert "How long was the AMRAP" in message.replies[-1][0]
+    assert not any("Which date did you mean" in reply[0] for reply in message.replies)
+
+
+def test_wod_movement_stage_ambiguous_slash_date_prompts_buttons(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    async def fake_resolve(text, claude, notion, config, message=None):
+        del claude, notion, config, message
+        assert text == "Wall Walks"
+        return ["mov-wall-walks"], ["Wall Walks"]
+
+    monkeypatch.setattr(handlers, "_resolve_movement_ids", fake_resolve)
+
+    raw_text = "WOD on 5/6, 3x wall walks"
+    payload = '{"movements":["Wall Walks"],"date":"2026-05-06","sets":3,"reps":null,"weight_lbs":null,"weight_kg":null,"scheme":"3x","notes":null,"workout_structure":"3x wall walks","raw_input":"WOD on 5/6, 3x wall walks","wod_name":null}'
+    message = _DummyMessage()
+    key = str(message.chat_id)
+    pending = {key: {"mode": "wod", "stage": "movement", "format": "amrap"}}
+
+    asyncio.run(
+        handlers.handle_cf_text_reply(
+            message,
+            raw_text,
+            key,
+            _FakeClaude(payload),
+            SimpleNamespace(),
+            {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"},
+            pending,
+        )
+    )
+
+    state = pending[key]
+    assert state["workout_date"] == "2026-05-06"
+    assert state["raw_workout_date"] == "5/6"
+    assert state["stage"] == "date_pick"
+    assert state["stage_before_date_pick"] == "movement"
+    assert state["raw_date_a"] == "2026-05-06"
+    assert state["raw_date_b"] == "2026-06-05"
+    assert "Which date did you mean?" in message.replies[-1][0]
+    buttons = message.replies[-1][1]["reply_markup"].inline_keyboard[0]
+    assert [button.text for button in buttons] == ["May 6", "Jun 5"]
+    assert [button.callback_data for button in buttons] == [f"cf:date_pick:a:{key}", f"cf:date_pick:b:{key}"]
+
+
+def test_wod_movement_stage_unambiguous_slash_date_resolves_without_buttons(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    async def fake_resolve(text, claude, notion, config, message=None):
+        del claude, notion, config, message
+        assert text == "Wall Walks"
+        return ["mov-wall-walks"], ["Wall Walks"]
+
+    monkeypatch.setattr(handlers, "_resolve_movement_ids", fake_resolve)
+
+    raw_text = "WOD on 5/13, 3x wall walks"
+    payload = '{"movements":["Wall Walks"],"date":"2026-05-13","sets":3,"reps":null,"weight_lbs":null,"weight_kg":null,"scheme":"3x","notes":null,"workout_structure":"3x wall walks","raw_input":"WOD on 5/13, 3x wall walks","wod_name":null}'
+    message = _DummyMessage()
+    key = str(message.chat_id)
+    pending = {key: {"mode": "wod", "stage": "movement", "format": "amrap"}}
+
+    asyncio.run(
+        handlers.handle_cf_text_reply(
+            message,
+            raw_text,
+            key,
+            _FakeClaude(payload),
+            SimpleNamespace(),
+            {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"},
+            pending,
+        )
+    )
+
+    state = pending[key]
+    assert state["workout_date"] == "2026-05-13"
+    assert state["raw_workout_date"] == "5/13"
+    assert state["stage"] == "time_cap"
+    assert "How long was the AMRAP" in message.replies[-1][0]
+    assert not any("Which date did you mean" in reply[0] for reply in message.replies)
+
 def test_wod_rx_callback_without_result_keeps_result_prompt_defensive():
     from second_brain.crossfit.handlers import handle_cf_callback
 
