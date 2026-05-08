@@ -385,17 +385,35 @@ def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_na
     return page["id"]
 
 
-def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mins, result_type, result_seconds, result_rounds, result_reps, rx_scaled, scaling_notes, is_partner, wod_name, movement_page_ids, weekly_program_page_id, readiness, workout_structure=None):
+def notion_query_wod_log_by_date(notion, wod_log_db_id: str, workout_date: str, wod_format: str | None = None) -> list[dict]:
+    """Return WOD log entries matching a workout date and optional format."""
+    filters = [{"property": "Date", "date": {"equals": workout_date}}]
+    if wod_format:
+        filters.append({"property": "Format", "select": {"equals": wod_format}})
+    query_filter = filters[0] if len(filters) == 1 else {"and": filters}
+    return notion_call(
+        notion.databases.query,
+        database_id=wod_log_db_id,
+        filter=query_filter,
+        page_size=1,
+    ).get("results", [])
+
+
+def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mins, result_type, result_seconds, result_rounds, result_reps, rx_scaled, scaling_notes, is_partner, wod_name, movement_page_ids, weekly_program_page_id, readiness, workout_date=None, workout_structure=None):
     """Create a Section C WOD log in the dedicated WOD Log database.
 
     Readiness is intentionally ignored in Phase 1 because readiness now lives
     in the Daily Readiness database.
     """
-    del readiness
-    today = datetime.now(timezone.utc).date().isoformat()
+    # Older callers passed the workout date in the readiness slot while readiness
+    # was intentionally ignored. Preserve that behavior, but prefer the explicit
+    # workout_date argument for new callers.
+    if workout_date is None and isinstance(readiness, str):
+        workout_date = readiness
+    workout_date = workout_date or datetime.now(timezone.utc).date().isoformat()
     props = {
-        "Name": {"title": [{"text": {"content": f"{(wod_name or wod_format)} — {today}"}}]},
-        "Date": {"date": {"start": today}},
+        "Name": {"title": [{"text": {"content": f"{(wod_name or wod_format)} — {workout_date}"}}]},
+        "Date": {"date": {"start": workout_date}},
         "Format": {"select": {"name": wod_format}},
         "Result Type": {"select": {"name": result_type}},
         "Rx / Scaled": {"select": {"name": rx_scaled}},
