@@ -318,7 +318,14 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
     reps = workout_data.get("reps") if workout_data.get("reps") is not None else workout_result.get("reps")
     load_lbs = workout_data.get("weight_lbs") if workout_data.get("weight_lbs") is not None else workout_result.get("load_lbs")
     load_kg = workout_data.get("weight_kg") if workout_data.get("weight_kg") is not None else workout_result.get("load_kg")
+    workout_date = workout_data.get("date")
     scheme = workout_data.get("scheme") or (f"{sets}x{reps}" if sets and reps else None)
+
+    print("[DEBUG] Using extracted data:")
+    print(f"  Date: {workout_date}")
+    print(f"  Sets: {sets}, Reps: {reps}")
+    print(f"  Weight: {load_lbs}lbs / {load_kg}kg")
+    print(f"  Scheme: {scheme}")
 
     cf_pending[key] = {
         "mode": "strength",
@@ -328,7 +335,7 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
         "load_kg": load_kg,
         "sets": sets or 1,
         "reps": reps or 1,
-        "workout_date": workout_data.get("date"),
+        "workout_date": workout_date,
         "effort_scheme": scheme,
         "notes": workout_data.get("notes"),
     }

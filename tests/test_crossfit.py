@@ -460,6 +460,48 @@ def test_extract_workout_data_fallback_parses_common_metadata_without_claude():
     assert out["scheme"] == "5x5"
 
 
+def test_extract_workout_data_fallback_parses_sets_weight_and_slash_date():
+    from datetime import datetime
+    from second_brain.crossfit.nlp import extract_workout_data
+
+    out = asyncio.run(
+        extract_workout_data(
+            "Did 6 sets of 4x hang clean squat at 115lbs on 5/6",
+            None,
+            datetime(2026, 5, 8),
+        )
+    )
+
+    assert out["date"] == "2026-05-06"
+    assert out["sets"] == 6
+    assert out["reps"] == 4
+    assert out["weight_lbs"] == 115.0
+    assert out["weight_kg"] == 52.2
+    assert out["scheme"] == "6x4"
+
+
+def test_extract_workout_data_uses_fallback_metadata_when_claude_omits_it():
+    from datetime import datetime
+    from second_brain.crossfit.nlp import extract_workout_data
+
+    payload = '{"movements":["Hang Squat Clean"],"date":null,"sets":null,"reps":null,"weight_lbs":null,"weight_kg":null,"scheme":null,"notes":null}'
+    out = asyncio.run(
+        extract_workout_data(
+            "Did 6 sets of 4x hang clean squat at 115lbs on 5/6",
+            _FakeClaude(payload),
+            datetime(2026, 5, 8),
+        )
+    )
+
+    assert out["movements"] == ["Hang Squat Clean"]
+    assert out["date"] == "2026-05-06"
+    assert out["sets"] == 6
+    assert out["reps"] == 4
+    assert out["weight_lbs"] == 115.0
+    assert out["weight_kg"] == 52.2
+    assert out["scheme"] == "6x4"
+
+
 def test_create_strength_log_accepts_extracted_date_and_scheme():
     from second_brain.crossfit.notion import create_strength_log
 
