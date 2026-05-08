@@ -36,6 +36,15 @@ def partner_keyboard(key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("👥 Partner WOD", callback_data=f"cf:partner:{key}:yes"), InlineKeyboardButton("🙋 Solo", callback_data=f"cf:partner:{key}:no")]])
 
 
+def session_feel_keyboard(key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("😫 1", callback_data=f"cf:feel:1:{key}"),
+        InlineKeyboardButton("😕 2", callback_data=f"cf:feel:2:{key}"),
+        InlineKeyboardButton("😐 3", callback_data=f"cf:feel:3:{key}"),
+        InlineKeyboardButton("💪 4", callback_data=f"cf:feel:4:{key}"),
+        InlineKeyboardButton("🔥 5", callback_data=f"cf:feel:5:{key}"),
+    ]])
+
 def readiness_keyboard(key: str, field: str) -> InlineKeyboardMarkup:
     labels = {"1": "😴", "2": "😕", "3": "😐", "4": "🙂", "5": "💪"}
     return InlineKeyboardMarkup([[InlineKeyboardButton(f"{v} {k}", callback_data=f"cf:ready:{key}:{field}:{k}") for k, v in labels.items()]])

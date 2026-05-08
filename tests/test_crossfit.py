@@ -618,10 +618,12 @@ def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
         "effort_scheme": "6x4",
         "load_kg": 52.2,
     }
-    assert "Strength logged" in message.replies[-1][0]
-    assert "Date: 2026-05-06" in message.replies[-1][0]
-    assert "Scheme: 6x4" in message.replies[-1][0]
-    assert "Weight: 115lbs" in message.replies[-1][0]
+    assert "Strength logged" in message.replies[-2][0]
+    assert "Date: 2026-05-06" in message.replies[-2][0]
+    assert "Scheme: 6x4" in message.replies[-2][0]
+    assert "Weight: 115lbs" in message.replies[-2][0]
+    assert pending[str(message.chat_id)]["stage"] == "awaiting_feel"
+    assert "How did that session feel?" in message.replies[-1][0]
     assert not any("Any notes" in reply[0] for reply in message.replies)
 
 
@@ -731,9 +733,11 @@ def test_finalize_flow_uses_nlp_pending_state_keys(monkeypatch):
     assert created["effort_reps"] == 4
     assert created["workout_date"] == "2026-05-06"
     assert created["effort_scheme"] == "6x4"
-    assert "Date: 2026-05-06" in message.replies[-1][0]
-    assert "Scheme: 6x4" in message.replies[-1][0]
-    assert "Weight: 115lbs" in message.replies[-1][0]
+    assert "Date: 2026-05-06" in message.replies[-2][0]
+    assert "Scheme: 6x4" in message.replies[-2][0]
+    assert "Weight: 115lbs" in message.replies[-2][0]
+    assert pending[str(message.chat_id)]["stage"] == "awaiting_feel"
+    assert "How did that session feel?" in message.replies[-1][0]
 
 
 def test_wod_amrap_time_cap_and_workout_structure_logged(monkeypatch):
@@ -815,7 +819,8 @@ def test_wod_amrap_time_cap_and_workout_structure_logged(monkeypatch):
         "weekly_program_id": "week-1",
         "workout_structure": raw_structure,
     }
-    assert key not in cf_pending
+    assert cf_pending[key]["stage"] == "awaiting_feel"
+    assert "How did that session feel?" in message.replies[-1][0]
 
 
 def test_wod_for_time_result_is_captured_before_rx_and_logged(monkeypatch):
@@ -885,8 +890,14 @@ def test_wod_for_time_result_is_captured_before_rx_and_logged(monkeypatch):
         "movement_page_ids": ["mov-wall-walks", "mov-hang-power-clean"],
         "weekly_program_id": "week-1",
     }
+    assert cf_pending[key]["stage"] == "awaiting_feel"
+    assert "WOD logged" in message.replies[-2][0]
+    assert "How did that session feel?" in message.replies[-1][0]
+
+    asyncio.run(handlers.handle_cf_callback(q, ["cf", "feel", "4", key], None, SimpleNamespace(), {"NOTION_WOD_LOG_DB": "wod"}, cf_pending))
+
     assert key not in cf_pending
-    assert "WOD logged" in message.replies[-1][0]
+    assert q.edits[-1][0] == "✅ Session feel logged: 4/5"
 
 
 def test_wod_format_callback_prompts_result_before_rx_when_movements_exist():

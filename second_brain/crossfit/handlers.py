@@ -11,7 +11,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from utils.date_parser import parse_date
 
 from .classify import parse_programme
-from .keyboards import level_confirm_keyboard, my_level_keyboard, rx_scaled_keyboard, sub_type_keyboard, wod_format_keyboard
+from .keyboards import level_confirm_keyboard, my_level_keyboard, rx_scaled_keyboard, session_feel_keyboard, sub_type_keyboard, wod_format_keyboard
 from .notion import create_strength_log, create_wod_log, get_movement_category, get_or_create_movement, get_progressions_for_movement, query_subs, save_programme, set_current_level
 from .nlp import extract_movements_from_log, extract_workout_data, fuzzy_match_movements, load_movements_cache
 from .readiness import check_readiness_logged_today, log_daily_readiness
@@ -199,6 +199,12 @@ def _apply_parsed_workout_date(state: dict, raw_date: str | None):
 
 async def _send_notes_prompt(message, key: str, cf_pending: dict) -> None:
     await message.reply_text("📝 Any notes about this session?\n(Reply with text, or tap Skip)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]))
+
+
+async def _prompt_session_feel(message, key: str, state: dict, cf_pending: dict) -> None:
+    state["stage"] = "awaiting_feel"
+    cf_pending[key] = state
+    await message.reply_text("💬 How did that session feel?", reply_markup=session_feel_keyboard(key))
 
 async def _prompt_wod_result_notes(message, key: str, state: dict) -> None:
     result_type = _infer_result_type(state.get("format"))
@@ -587,6 +593,8 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         confirm_msg += f"📊 Scheme: {state.get('effort_scheme') or 'N/A'}\n"
         confirm_msg += f"⚖️ Weight: {_format_lbs(state.get('weight_lbs'))}lbs\n"
         await message.reply_text(confirm_msg, parse_mode="Markdown")
+        await _prompt_session_feel(message, key, state, cf_pending)
+        return
     elif state.get("mode") == "wod":
         target_wod_db = _cf_config(config, "NOTION_WOD_LOG_DB")
         if not state.get("format"):
@@ -647,6 +655,8 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
 
         await asyncio.get_running_loop().run_in_executor(None, _create_wod_log_with_optional_structure)
         await message.reply_text("✅ WOD logged to WOD Log!", parse_mode="Markdown")
+        await _prompt_session_feel(message, key, state, cf_pending)
+        return
     cf_pending.pop(key, None)
 
 
@@ -909,6 +919,13 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         rows = query_subs(notion, config.get("NOTION_SUBS_DB", ""), config.get("NOTION_MOVEMENTS_DB", ""), state.get("movement", ""), parts[3])
         await q.edit_message_text("Nothing in Subs & Recs for that movement yet." if not rows else "\n".join([f"{i+1}. {r['name']} — {r['difficulty']}" for i, r in enumerate(rows)]), parse_mode="Markdown")
         cf_pending.pop(key, None)
+    elif parts[1] == "feel" and len(parts) == 4:
+        value = parts[2]
+        key = parts[3]
+        state = cf_pending.get(key, {})
+        state["session_feel"] = int(value)
+        cf_pending.pop(key, None)
+        await q.edit_message_text(f"✅ Session feel logged: {value}/5", parse_mode="Markdown")
     elif parts[1] == "skip" and len(parts) == 3:
         key = parts[2]
         logger.info(f"[CF_STATE_B] skip received key={key!r} type={type(key)} cf_pending_keys={list(cf_pending.keys())}")
