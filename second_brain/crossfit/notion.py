@@ -385,7 +385,7 @@ def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_na
     return page["id"]
 
 
-def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mins, result_type, result_seconds, result_rounds, result_reps, rx_scaled, scaling_notes, is_partner, wod_name, movement_page_ids, weekly_program_page_id, readiness):
+def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mins, result_type, result_seconds, result_rounds, result_reps, rx_scaled, scaling_notes, is_partner, wod_name, movement_page_ids, weekly_program_page_id, readiness, workout_structure=None):
     """Create a Section C WOD log in the dedicated WOD Log database.
 
     Readiness is intentionally ignored in Phase 1 because readiness now lives
@@ -404,7 +404,7 @@ def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mi
     if duration_mins is not None:
         props["Duration Mins"] = {"number": duration_mins}
     if time_cap_mins is not None:
-        props["Time Cap Mins"] = {"number": time_cap_mins}
+        props["Time Cap (mins)"] = {"number": time_cap_mins}
     if result_seconds is not None:
         props["Result (seconds)"] = {"number": result_seconds}
     if result_rounds is not None:
@@ -415,6 +415,10 @@ def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mi
         props["Movements"] = {"relation": [{"id": mid} for mid in movement_page_ids if mid]}
     if weekly_program_page_id:
         props["Weekly Program"] = {"relation": [{"id": weekly_program_page_id}]}
+    if wod_name:
+        props["WOD Name"] = {"rich_text": [{"text": {"content": str(wod_name)}}]}
+    if workout_structure:
+        props["Workout Structure"] = {"rich_text": [{"text": {"content": str(workout_structure)}}]}
     if scaling_notes:
         props["Scaling Notes"] = {"rich_text": [{"text": {"content": str(scaling_notes)}}]}
     page = notion_call(notion.pages.create, parent={"database_id": wod_log_db_id}, properties=props)

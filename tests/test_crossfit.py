@@ -236,9 +236,17 @@ def test_wod_flow_prompts_result_before_rx_scaled():
     asyncio.run(handle_cf_text_reply(message, "Wall Walks", key, None, notion, {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"}, cf_pending))
 
     state = cf_pending[key]
-    assert state["stage"] == "result"
-    assert "rounds + reps" in message.replies[-1][0]
+    assert state["stage"] == "time_cap"
+    assert state["workout_structure"] == "Wall Walks"
+    assert "How long was the AMRAP" in message.replies[-1][0]
     assert "Rx or Scaled?" not in message.replies[-1][0]
+
+    asyncio.run(handle_cf_text_reply(message, "14 minutes", str(message.chat_id), None, notion, {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"}, cf_pending))
+
+    state = cf_pending[str(message.chat_id)]
+    assert state["stage"] == "result"
+    assert state["time_cap_mins"] == 14
+    assert "rounds + reps" in message.replies[-1][0]
 
     asyncio.run(handle_cf_text_reply(message, "5 rounds + 12 reps", str(message.chat_id), None, notion, {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"}, cf_pending))
 
@@ -426,6 +434,9 @@ def test_extract_workout_data_parses_complete_claude_payload():
         "weight_kg": 52.2,
         "scheme": "6x4",
         "notes": None,
+        "workout_structure": "Did 6 sets of 4x hang clean squat at 115lbs on 5/6",
+        "raw_input": "Did 6 sets of 4x hang clean squat at 115lbs on 5/6",
+        "wod_name": None,
     }
 
 
@@ -548,6 +559,88 @@ def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
     assert "Date: 2026-05-06" in message.replies[-1][0]
     assert "Scheme: 6x4" in message.replies[-1][0]
     assert not any("Any notes" in reply[0] for reply in message.replies)
+
+
+def test_wod_amrap_time_cap_and_workout_structure_logged(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    created = {}
+
+    def fake_create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mins, result_type, result_seconds, result_rounds, result_reps, rx_scaled, scaling_notes, is_partner, wod_name, movement_page_ids, weekly_program_id, readiness, workout_structure=None):
+        del notion, duration_mins, result_seconds, result_reps, scaling_notes, is_partner, wod_name, readiness
+        created.update(
+            wod_log_db_id=wod_log_db_id,
+            wod_format=wod_format,
+            time_cap_mins=time_cap_mins,
+            result_type=result_type,
+            result_rounds=result_rounds,
+            rx_scaled=rx_scaled,
+            movement_page_ids=movement_page_ids,
+            weekly_program_id=weekly_program_id,
+            workout_structure=workout_structure,
+        )
+        return "wod-log"
+
+    async def fake_week(notion):
+        del notion
+        return "week-1"
+
+    monkeypatch.setattr(handlers, "create_wod_log", fake_create_wod_log)
+    monkeypatch.setattr(handlers, "get_current_week_program_url", fake_week)
+    handlers.MOVEMENTS_CACHE.clear()
+    handlers.MOVEMENTS_CACHE.update({
+        "Wall Walks": "mov-wall-walks",
+        "Hang Cleans": "mov-hang-cleans",
+        "Burpee Over Bar": "mov-burpee-over-bar",
+        "V-Ups": "mov-v-ups",
+    })
+
+    message = _DummyMessage()
+    key = str(message.chat_id)
+    cf_pending = {key: {"mode": "wod", "stage": "movement", "format": "amrap"}}
+    notion = SimpleNamespace(databases=SimpleNamespace(query=lambda **kwargs: {"results": []}))
+
+    raw_structure = "3x Wall walks, 6 hang cleans, 9 burpee over bar, 12 v-ups"
+    asyncio.run(handlers.handle_cf_text_reply(message, raw_structure, key, None, notion, {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"}, cf_pending))
+
+    assert cf_pending[key]["stage"] == "time_cap"
+    assert cf_pending[key]["workout_structure"] == raw_structure
+    assert "How long was the AMRAP" in message.replies[-1][0]
+
+    asyncio.run(handlers.handle_cf_text_reply(message, "14 minutes", key, None, notion, {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"}, cf_pending))
+
+    assert cf_pending[key]["stage"] == "result"
+    assert cf_pending[key]["time_cap_mins"] == 14
+    assert "rounds + reps" in message.replies[-1][0]
+
+    asyncio.run(handlers.handle_cf_text_reply(message, "6 rounds", key, None, notion, {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"}, cf_pending))
+    assert cf_pending[key]["stage"] == "rx_scaled"
+
+    class _DummyQuery:
+        def __init__(self, message):
+            self.message = message
+            self.edits = []
+
+        async def answer(self, *args, **kwargs):
+            pass
+
+        async def edit_message_text(self, text, **kwargs):
+            self.edits.append((text, kwargs))
+
+    asyncio.run(handlers.handle_cf_callback(_DummyQuery(message), ["cf", "rx", key, "scaled"], None, notion, {"NOTION_WOD_LOG_DB": "wod"}, cf_pending))
+
+    assert created == {
+        "wod_log_db_id": "wod",
+        "wod_format": "AMRAP",
+        "time_cap_mins": 14,
+        "result_type": "Rounds",
+        "result_rounds": 6,
+        "rx_scaled": "Scaled",
+        "movement_page_ids": ["mov-wall-walks", "mov-hang-cleans", "mov-burpee-over-bar", "mov-v-ups"],
+        "weekly_program_id": "week-1",
+        "workout_structure": raw_structure,
+    }
+    assert key not in cf_pending
 
 
 def test_wod_for_time_result_is_captured_before_rx_and_logged(monkeypatch):

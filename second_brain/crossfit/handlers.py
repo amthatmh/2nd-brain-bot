@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import re
@@ -134,6 +135,27 @@ async def _prompt_wod_result_before_rx(message, key: str, state: dict) -> None:
     await _prompt_wod_result_notes(message, key, state)
 
 
+def _needs_time_cap_before_result(state: dict) -> bool:
+    """Return true when the WOD format should collect a time cap first."""
+    return _format_label(state.get("format")) in {"AMRAP", "EMOM", "Tabata"}
+
+
+async def _prompt_wod_time_cap(message, key: str, state: dict) -> None:
+    """Ask for AMRAP/EMOM/Tabata time cap before collecting result."""
+    format_name = _format_label(state.get("format"))
+    state["stage"] = "time_cap"
+    await message.reply_text(
+        f"⏱️ How long was the {format_name}?\n\n"
+        "Examples:\n"
+        "• 14 minutes\n"
+        "• 14 mins\n"
+        "• 14\n\n"
+        "Or tap Skip.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]),
+    )
+
+
 def _restore_pid(pid: str) -> str:
     return f"{pid[:8]}-{pid[8:12]}-{pid[12:16]}-{pid[16:20]}-{pid[20:]}"
 
@@ -146,6 +168,14 @@ def parse_rounds_reps(text: str):
 def parse_time_to_seconds(text: str):
     m = re.search(r"(\d+):(\d{2})", text)
     return (int(m.group(1)) * 60 + int(m.group(2))) if m else None
+
+
+def parse_time_cap_minutes(text: str):
+    """Parse a simple minute-based time cap such as '14 minutes' or '14'."""
+    if not text or re.search(r"\b(skip|none|no)\b", text.lower()):
+        return None
+    m = re.search(r"\b(\d+)\s*(?:minutes?|mins?|min)?\b", text.lower())
+    return int(m.group(1)) if m else None
 
 
 def parse_rounds_only(text: str):
@@ -428,14 +458,23 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
             elif result_rounds is not None and result_reps is not None:
                 result_type = "Rounds+Reps"
         weekly_program_id = await get_current_week_program_url(notion)
-        await asyncio.get_running_loop().run_in_executor(
-            None,
-            lambda: create_wod_log(
+        time_cap_mins = state.get("time_cap_mins")
+        workout_structure = state.get("workout_structure")
+        wod_name = state.get("wod_name")
+        print(f"[DEBUG] Time cap: {time_cap_mins}")
+        print(f"[DEBUG] Workout structure: {workout_structure}")
+
+        def _create_wod_log_with_optional_structure():
+            kwargs = {}
+            signature = inspect.signature(create_wod_log)
+            if "workout_structure" in signature.parameters:
+                kwargs["workout_structure"] = workout_structure
+            return create_wod_log(
                 notion,
                 target_wod_db,
                 _format_label(state.get("format")),
                 None,
-                None,
+                time_cap_mins,
                 result_type,
                 result_seconds,
                 result_rounds,
@@ -443,12 +482,14 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 _rx_scaled_label(state.get("rx_scaled")),
                 notes,
                 False,
-                None,
+                wod_name,
                 state.get("movement_page_ids") or [],
                 weekly_program_id,
                 None,
-            ),
-        )
+                **kwargs,
+            )
+
+        await asyncio.get_running_loop().run_in_executor(None, _create_wod_log_with_optional_structure)
         await message.reply_text("✅ WOD logged to WOD Log!", parse_mode="Markdown")
     cf_pending.pop(key, None)
 
@@ -481,9 +522,26 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
                 reply_markup=wod_format_keyboard(cf_flow_key),
             )
             return
-        movement_ids, names = await _resolve_movement_ids(text, claude, notion, config, message)
+        raw_structure = text.strip()
+        workout_data = await extract_workout_data(raw_structure, claude)
+        extracted_movements = workout_data.get("movements") or []
+        movement_text = ", ".join(extracted_movements) if extracted_movements else raw_structure
+        movement_ids, names = await _resolve_movement_ids(movement_text, claude, notion, config, message)
         state["movements"] = names
         state["movement_page_ids"] = movement_ids
+        state["workout_structure"] = workout_data.get("workout_structure") or workout_data.get("raw_input") or raw_structure
+        state["wod_name"] = workout_data.get("wod_name")
+        print(f"[DEBUG] Movements: {names}")
+        print(f"[DEBUG] Workout structure: {state['workout_structure']}")
+        cf_pending[cf_flow_key] = state
+        if _needs_time_cap_before_result(state):
+            await _prompt_wod_time_cap(message, cf_flow_key, state)
+        else:
+            await _prompt_wod_result_before_rx(message, cf_flow_key, state)
+        return
+    if state.get("mode") == "wod" and state.get("stage") == "time_cap":
+        state["time_cap_mins"] = parse_time_cap_minutes(text)
+        print(f"[DEBUG] Time cap: {state.get('time_cap_mins')} minutes")
         cf_pending[cf_flow_key] = state
         await _prompt_wod_result_before_rx(message, cf_flow_key, state)
         return
@@ -595,7 +653,10 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         print(f"[DEBUG] WOD format selected: {_format_label(parts[3])}")
         await q.edit_message_text(f"✅ Format: {_format_label(parts[3])}", parse_mode="Markdown")
         if state.get("movement_page_ids"):
-            await _prompt_wod_result_before_rx(q.message, key, state)
+            if _needs_time_cap_before_result(state) and state.get("time_cap_mins") is None:
+                await _prompt_wod_time_cap(q.message, key, state)
+            else:
+                await _prompt_wod_result_before_rx(q.message, key, state)
         else:
             state["stage"] = "movement"
             cf_pending[key] = state
@@ -622,7 +683,15 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         await q.edit_message_text("Nothing in Subs & Recs for that movement yet." if not rows else "\n".join([f"{i+1}. {r['name']} — {r['difficulty']}" for i, r in enumerate(rows)]), parse_mode="Markdown")
         cf_pending.pop(key, None)
     elif parts[1] == "skip" and len(parts) == 3:
-        await _finalize_flow(q.message, parts[2], notion, config, cf_pending, None)
+        key = parts[2]
+        state = cf_pending.get(key, {})
+        if state.get("mode") == "wod" and state.get("stage") == "time_cap":
+            state["time_cap_mins"] = None
+            cf_pending[key] = state
+            await q.edit_message_text("⏭️ Time cap skipped.", parse_mode="Markdown")
+            await _prompt_wod_result_before_rx(q.message, key, state)
+        else:
+            await _finalize_flow(q.message, key, notion, config, cf_pending, None)
     elif parts[1] == "cancel":
         cf_pending.pop(str(q.message.chat_id), None)
         await q.edit_message_text("❌ CrossFit action canceled.")
