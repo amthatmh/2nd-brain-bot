@@ -736,6 +736,7 @@ def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
     assert "Scheme: 6x4" in message.replies[-2][0]
     assert "Weight: 115lbs" in message.replies[-2][0]
     assert pending[str(message.chat_id)]["stage"] == "awaiting_feel"
+    assert pending[str(message.chat_id)]["last_workout_page_id"] == "log-1"
     assert "How did that session feel?" in message.replies[-1][0]
     assert not any("Any notes" in reply[0] for reply in message.replies)
 
@@ -850,6 +851,7 @@ def test_finalize_flow_uses_nlp_pending_state_keys(monkeypatch):
     assert "Scheme: 6x4" in message.replies[-2][0]
     assert "Weight: 115lbs" in message.replies[-2][0]
     assert pending[str(message.chat_id)]["stage"] == "awaiting_feel"
+    assert pending[str(message.chat_id)]["last_workout_page_id"] == "log-1"
     assert "How did that session feel?" in message.replies[-1][0]
 
 
@@ -933,6 +935,7 @@ def test_wod_amrap_time_cap_and_workout_structure_logged(monkeypatch):
         "workout_structure": raw_structure,
     }
     assert cf_pending[key]["stage"] == "awaiting_feel"
+    assert cf_pending[key]["last_wod_page_id"] == "wod-log"
     assert "How did that session feel?" in message.replies[-1][0]
 
 
@@ -1004,6 +1007,7 @@ def test_wod_for_time_result_is_captured_before_rx_and_logged(monkeypatch):
         "weekly_program_id": "week-1",
     }
     assert cf_pending[key]["stage"] == "awaiting_feel"
+    assert cf_pending[key]["last_wod_page_id"] == "wod-log"
     assert "WOD logged" in message.replies[-2][0]
     assert "How did that session feel?" in message.replies[-1][0]
 
@@ -1474,3 +1478,139 @@ def test_crossfit_log_feel_starts_standalone_feel_flow():
         f"cf:feel:4:{key}",
         f"cf:feel:5:{key}",
     ]
+
+
+def test_strength_feel_updates_existing_workout_log_page():
+    import second_brain.crossfit.handlers as handlers
+
+    updates = []
+
+    class Pages:
+        def update(self, **kwargs):
+            updates.append(kwargs)
+            return {"id": kwargs["page_id"]}
+
+    message = _DummyMessage()
+    key = str(message.chat_id)
+
+    class _DummyQuery:
+        def __init__(self, message):
+            self.message = message
+            self.edits = []
+
+        async def edit_message_reply_markup(self, **kwargs):
+            pass
+
+        async def edit_message_text(self, text, **kwargs):
+            self.edits.append((text, kwargs))
+
+    cf_pending = {key: {"mode": "strength", "stage": "awaiting_feel", "last_workout_page_id": "workout-page-1"}}
+
+    asyncio.run(
+        handlers.handle_cf_callback(
+            _DummyQuery(message),
+            ["cf", "feel", "4", key],
+            None,
+            SimpleNamespace(pages=Pages()),
+            {},
+            cf_pending,
+        )
+    )
+
+    assert updates == [{
+        "page_id": "workout-page-1",
+        "properties": {"Strength Feel": {"select": {"name": "4"}}},
+    }]
+    assert key not in cf_pending
+
+
+def test_wod_feel_updates_existing_wod_log_page():
+    import second_brain.crossfit.handlers as handlers
+
+    updates = []
+
+    class Pages:
+        def update(self, **kwargs):
+            updates.append(kwargs)
+            return {"id": kwargs["page_id"]}
+
+    message = _DummyMessage()
+    key = str(message.chat_id)
+
+    class _DummyQuery:
+        def __init__(self, message):
+            self.message = message
+            self.edits = []
+
+        async def edit_message_reply_markup(self, **kwargs):
+            pass
+
+        async def edit_message_text(self, text, **kwargs):
+            self.edits.append((text, kwargs))
+
+    cf_pending = {key: {"mode": "wod", "stage": "awaiting_feel", "last_wod_page_id": "wod-page-1"}}
+
+    asyncio.run(
+        handlers.handle_cf_callback(
+            _DummyQuery(message),
+            ["cf", "feel", "5", key],
+            None,
+            SimpleNamespace(pages=Pages()),
+            {},
+            cf_pending,
+        )
+    )
+
+    assert updates == [{
+        "page_id": "wod-page-1",
+        "properties": {"WOD Feel": {"select": {"name": "5"}}},
+    }]
+    assert key not in cf_pending
+
+
+def test_standalone_feel_upserts_daily_readiness(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    called = {}
+
+    def fake_upsert_training_log_feel(**kwargs):
+        called.update(kwargs)
+        return "readiness-page-1"
+
+    monkeypatch.setattr(handlers, "upsert_training_log_feel", fake_upsert_training_log_feel)
+
+    message = _DummyMessage()
+    key = str(message.chat_id)
+
+    class _DummyQuery:
+        def __init__(self, message):
+            self.message = message
+            self.edits = []
+
+        async def edit_message_reply_markup(self, **kwargs):
+            pass
+
+        async def edit_message_text(self, text, **kwargs):
+            self.edits.append((text, kwargs))
+
+    notion = SimpleNamespace()
+    cf_pending = {key: {"mode": "feel_only", "stage": "awaiting_feel", "workout_date": "2026-05-08"}}
+
+    asyncio.run(
+        handlers.handle_cf_callback(
+            _DummyQuery(message),
+            ["cf", "feel", "3", key],
+            None,
+            notion,
+            {"NOTION_DAILY_READINESS_DB": "daily-db"},
+            cf_pending,
+        )
+    )
+
+    assert called == {
+        "notion": notion,
+        "daily_readiness_db_id": "daily-db",
+        "rating": "3",
+        "workout_date": "2026-05-08",
+    }
+    assert key not in cf_pending
