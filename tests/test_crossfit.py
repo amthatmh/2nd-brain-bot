@@ -593,7 +593,7 @@ def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
     asyncio.run(
         handlers.handle_cf_strength_flow(
             message,
-            {"raw_text": "Did 6 sets of 4x hang clean squat at 115lbs on 5/6"},
+            {"raw_text": "Did 6 sets of 4x hang clean squat at 115lbs on May 6"},
             _FakeClaude(payload),
             SimpleNamespace(),
             {"NOTION_WORKOUT_LOG_DB": "workout-log", "NOTION_MOVEMENTS_DB": "movements"},
@@ -624,6 +624,64 @@ def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
     assert "Weight: 115lbs" in message.replies[-1][0]
     assert not any("Any notes" in reply[0] for reply in message.replies)
 
+
+
+def test_strength_flow_disambiguates_slash_date_before_notes(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    async def fake_resolve(text, claude, notion, config, message=None):
+        del claude, notion, config, message
+        return ["mov-hang-clean"], [text]
+
+    monkeypatch.setattr(handlers, "_resolve_movement_ids", fake_resolve)
+
+    pending = {}
+    payload = '{"movements":["Hang Clean"],"date":"2026-05-06","sets":6,"reps":4,"weight_lbs":115,"weight_kg":52.2,"scheme":"6x4","notes":null}'
+    message = _DummyMessage()
+
+    asyncio.run(
+        handlers.handle_cf_strength_flow(
+            message,
+            {"raw_text": "Did 6 sets of 4x hang clean squat at 115lbs on 5/6"},
+            _FakeClaude(payload),
+            SimpleNamespace(),
+            {"NOTION_WORKOUT_LOG_DB": "workout-log", "NOTION_MOVEMENTS_DB": "movements"},
+            pending,
+        )
+    )
+
+    key = str(message.chat_id)
+    assert pending[key]["stage"] == "awaiting_date"
+    assert pending[key]["workout_date"] == "5/6"
+    assert pending[key]["_date_option_a"] == "2026-05-06"
+    assert pending[key]["_date_option_b"] == "2026-06-05"
+    assert "Which date did you mean" in message.replies[-1][0]
+
+    class _DummyQuery:
+        def __init__(self, message):
+            self.message = message
+
+        async def answer(self, *args, **kwargs):
+            pass
+
+        async def edit_message_text(self, *args, **kwargs):
+            pass
+
+    asyncio.run(
+        handlers.handle_cf_callback(
+            _DummyQuery(message),
+            ["cf", "date_pick", "a", key],
+            None,
+            SimpleNamespace(),
+            {},
+            pending,
+        )
+    )
+
+    assert pending[key]["workout_date"] == "2026-05-06"
+    assert pending[key]["stage"] == "notes"
+    assert "_date_option_a" not in pending[key]
+    assert "Any notes" in message.replies[-1][0]
 
 def test_finalize_flow_uses_nlp_pending_state_keys(monkeypatch):
     import second_brain.crossfit.handlers as handlers

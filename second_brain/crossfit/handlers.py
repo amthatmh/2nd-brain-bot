@@ -19,6 +19,7 @@ from .weekly_program import get_current_week_program_url, get_todays_workout_day
 
 
 log = logging.getLogger(__name__)
+logger = log
 
 
 # Global movement cache loaded lazily and refreshed at bot startup.
@@ -117,7 +118,30 @@ def _rx_scaled_label(value: str | None) -> str:
     }.get((value or "").lower(), value or "Rx")
 
 
-def _store_extracted_strength_state(cf_pending: dict, key: str, extracted: dict | None) -> dict:
+def _extract_raw_workout_date(text: str | None) -> str | None:
+    """Return the date phrase as typed by the user when it is easy to identify."""
+    if not text:
+        return None
+    months = (
+        "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+        "jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?"
+    )
+    patterns = (
+        r"\b(?:on\s+)?(today|yesterday|tomorrow)\b",
+        r"\blast\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+        r"\b(?:on\s+)?(\d{4}[/-]\d{1,2}[/-]\d{1,2})\b",
+        r"\b(?:on\s+)?(\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\b",
+        rf"\b(?:on\s+)?((?:{months})\.?\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+\d{{4}})?)\b",
+        rf"\b(?:on\s+)?(\d{{1,2}}(?:st|nd|rd|th)?\s+(?:{months})\.?(?:,?\s+\d{{4}})?)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def _store_extracted_strength_state(cf_pending: dict, key: str, extracted: dict | None, raw_text: str | None = None) -> dict:
     """Persist all NLP-extracted strength metadata into pending state."""
     state = cf_pending.get(key, {})
     extracted = extracted or {}
@@ -125,7 +149,7 @@ def _store_extracted_strength_state(cf_pending: dict, key: str, extracted: dict 
     state["reps"] = extracted.get("reps")
     state["weight_lbs"] = extracted.get("weight_lbs")
     state["weight_kg"] = extracted.get("weight_kg")
-    state["workout_date"] = extracted.get("date")
+    state["workout_date"] = extracted.get("raw_date") or _extract_raw_workout_date(raw_text) or extracted.get("date")
     state["effort_scheme"] = extracted.get("scheme")
     state["notes"] = extracted.get("notes")
     cf_pending[key] = state
@@ -163,6 +187,9 @@ def _apply_parsed_workout_date(state: dict, raw_date: str | None):
     state["workout_date"] = result.resolved
     return result
 
+
+async def _send_notes_prompt(message, key: str, cf_pending: dict) -> None:
+    await message.reply_text("📝 Any notes about this session?\n(Reply with text, or tap Skip)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]))
 
 async def _prompt_wod_result_notes(message, key: str, state: dict) -> None:
     result_type = _infer_result_type(state.get("format"))
@@ -361,7 +388,7 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
     if raw_text:
         workout_data = await extract_workout_data(raw_text, claude)
         print(f"[DEBUG] Extracted workout data: {workout_data}")
-        state = _store_extracted_strength_state(cf_pending, key, workout_data)
+        state = _store_extracted_strength_state(cf_pending, key, workout_data, raw_text)
     else:
         state = cf_pending.get(key, {})
 
@@ -372,7 +399,6 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
     load_lbs = state.get("weight_lbs") if state.get("weight_lbs") is not None else workout_result.get("load_lbs")
     load_kg = state.get("weight_kg") if state.get("weight_kg") is not None else workout_result.get("load_kg")
     workout_date = state.get("workout_date")
-    date_result = parse_date(workout_date)
     scheme = state.get("effort_scheme") or (f"{sets}x{reps}" if sets and reps else None)
 
     print("[DEBUG] Using extracted data:")
@@ -398,9 +424,26 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
         "notes": state.get("notes"),
     })
     cf_pending[key] = state
+    logger.info(f"[CF_STATE_A] key={key!r} type={type(key)} sets={cf_pending[key].get('sets')} weight={cf_pending[key].get('weight_lbs')} date={cf_pending[key].get('workout_date')}")
+    raw_date = state.get("workout_date")
+    date_result = parse_date(raw_date)
+
     if date_result.ambiguous:
-        await _prompt_ambiguous_workout_date(message, key, cf_pending[key], date_result)
+        state["_date_option_a"] = date_result.option_a
+        state["_date_option_b"] = date_result.option_b
+        state["stage"] = "awaiting_date"
+        cf_pending[key] = state
+
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(date_result.label_a, callback_data=f"cf:date_pick:a:{key}"),
+            InlineKeyboardButton(date_result.label_b, callback_data=f"cf:date_pick:b:{key}"),
+        ]])
+        await message.reply_text("📅 Which date did you mean?", reply_markup=keyboard)
         return
+
+    else:
+        state["workout_date"] = date_result.resolved
+        cf_pending[key] = state
     if not movement_text:
         await message.reply_text("🏋️ Which movement did you train?", parse_mode="Markdown")
         return
@@ -415,7 +458,7 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
     if has_complete_extraction:
         await _finalize_flow(message, key, notion, config, cf_pending, cf_pending[key].get("notes"))
         return
-    await message.reply_text("📝 Any notes about this session?\n(Reply with text, or tap Skip)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]))
+    await _send_notes_prompt(message, key, cf_pending)
 
 
 async def handle_cf_wod_flow(message, workout_result, notion, config, cf_pending):
@@ -456,6 +499,7 @@ async def handle_cf_prs(message, notion, config):
 
 async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
     state = cf_pending.get(key) or {}
+    logger.info(f"[CF_STATE_C] finalize key={key!r} state={state}")
     if state.get("mode") == "strength":
         movement_name = state.get("movement_name") or state.get("movement") or "Unknown"
         movement_id = state.get("movement_page_id") or await asyncio.get_running_loop().run_in_executor(
@@ -674,32 +718,43 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         print("[DEBUG] Routing to handle_cf_wod_flow")
         await handle_cf_wod_flow(q.message, {}, notion, config, cf_pending)
     elif parts[1] == "date_pick" and len(parts) >= 4:
-        choice = parts[2]
+        choice = parts[2]   # "a" or "b"
         key = parts[3]
         state = cf_pending.get(key, {})
-        selected = state.pop("raw_date_a", None) if choice == "a" else state.pop("raw_date_b", None)
-        state.pop("raw_date_a", None)
-        state.pop("raw_date_b", None)
-        if selected:
-            state["workout_date"] = selected
-        previous_stage = state.pop("stage_before_date_pick", None)
-        state["stage"] = previous_stage or state.get("stage") or "notes"
-        cf_pending[key] = state
-        await q.edit_message_text(f"✅ Date: {state.get('workout_date')}", parse_mode="Markdown")
-        if state.get("mode") == "wod":
-            if _needs_time_cap_before_result(state):
-                await _prompt_wod_time_cap(q.message, key, state)
+        if "_date_option_a" in state or "_date_option_b" in state:
+            if choice == "a":
+                state["workout_date"] = state.pop("_date_option_a", None)
             else:
-                await _prompt_wod_result_before_rx(q.message, key, state)
-        elif state.get("mode") == "strength":
-            if not state.get("movement"):
-                state["stage"] = "movement"
-                cf_pending[key] = state
-                await q.message.reply_text("🏋️ Which movement did you train?", parse_mode="Markdown")
-            else:
-                state["stage"] = "notes"
-                cf_pending[key] = state
-                await q.message.reply_text("📝 Any notes about this session?\n(Reply with text, or tap Skip)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]))
+                state["workout_date"] = state.pop("_date_option_b", None)
+            state.pop("_date_option_a", None)
+            state.pop("_date_option_b", None)
+            state["stage"] = "notes"
+            cf_pending[key] = state
+            await _send_notes_prompt(q.message, key, cf_pending)
+        else:
+            selected = state.pop("raw_date_a", None) if choice == "a" else state.pop("raw_date_b", None)
+            state.pop("raw_date_a", None)
+            state.pop("raw_date_b", None)
+            if selected:
+                state["workout_date"] = selected
+            previous_stage = state.pop("stage_before_date_pick", None)
+            state["stage"] = previous_stage or state.get("stage") or "notes"
+            cf_pending[key] = state
+            await q.edit_message_text(f"✅ Date: {state.get('workout_date')}", parse_mode="Markdown")
+            if state.get("mode") == "wod":
+                if _needs_time_cap_before_result(state):
+                    await _prompt_wod_time_cap(q.message, key, state)
+                else:
+                    await _prompt_wod_result_before_rx(q.message, key, state)
+            elif state.get("mode") == "strength":
+                if not state.get("movement"):
+                    state["stage"] = "movement"
+                    cf_pending[key] = state
+                    await q.message.reply_text("🏋️ Which movement did you train?", parse_mode="Markdown")
+                else:
+                    state["stage"] = "notes"
+                    cf_pending[key] = state
+                    await _send_notes_prompt(q.message, key, cf_pending)
     elif parts[1] == "upload_programme":
         prompt = (
             "📋 *Upload Weekly Programme*\n\n"
@@ -799,6 +854,8 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         cf_pending.pop(key, None)
     elif parts[1] == "skip" and len(parts) == 3:
         key = parts[2]
+        logger.info(f"[CF_STATE_B] skip received key={key!r} type={type(key)} cf_pending_keys={list(cf_pending.keys())}")
+        logger.info(f"[CF_STATE_B] state at skip={cf_pending.get(key)}")
         state = cf_pending.get(key, {})
         if state.get("mode") == "wod" and state.get("stage") == "time_cap":
             state["time_cap_mins"] = None
