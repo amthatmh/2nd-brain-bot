@@ -735,7 +735,7 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
 
 
 async def handle_cf_wod_flow(message, workout_result, notion, config, cf_pending):
-    del workout_result
+    workout_result = workout_result or {}
     print("[DEBUG] WOD Log: Starting flow, showing format selection")
     target_wod_db = _cf_config(config, "NOTION_WOD_LOG_DB")
     print(f"[DEBUG] WOD Log DB configured as: {target_wod_db}")
@@ -744,12 +744,17 @@ async def handle_cf_wod_flow(message, workout_result, notion, config, cf_pending
         return
     todays_workout = await get_todays_workout_day(notion)
     key = str(message.chat_id)
+    movement_names = workout_result.get("movements") or []
+    if isinstance(movement_names, str):
+        movement_names = [movement_names]
+    if not movement_names and workout_result.get("movement"):
+        movement_names = [workout_result["movement"]]
     cf_pending[key] = {
         "mode": "wod",
         "stage": "format",
-        "format": None,
+        "format": workout_result.get("format"),
         "todays_workout": todays_workout,
-        "movements": [],
+        "movements": movement_names,
     }
     await message.reply_text(
         "🏋️ What format was the WOD?",
@@ -1236,6 +1241,22 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 f"⚠️ You already have a WOD logged for {workout_date}. Logging anyway as a second session."
             )
 
+        movement_names = state.get("movements") or []
+        movement_ids = list(state.get("movement_page_ids") or [])
+        movements_db_id = _cf_config(config, "NOTION_MOVEMENTS_DB")
+        if movement_names and movements_db_id:
+            for name in movement_names:
+                try:
+                    mid = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda n=name: get_or_create_movement(notion, movements_db_id, n),
+                    )
+                    if mid and mid not in movement_ids:
+                        movement_ids.append(mid)
+                except Exception as e:
+                    log.warning("WOD: could not resolve movement '%s': %s", name, e)
+        state["movement_page_ids"] = movement_ids
+
         def _create_wod_log_with_optional_structure():
             kwargs = {}
             signature = inspect.signature(create_wod_log)
@@ -1259,7 +1280,7 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 notes,
                 False,
                 wod_name,
-                state.get("movement_page_ids") or [],
+                movement_ids,
                 weekly_program_id,
                 None,
                 **kwargs,
@@ -1268,7 +1289,13 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         wod_page_id = await asyncio.get_running_loop().run_in_executor(None, _create_wod_log_with_optional_structure)
         state["last_wod_page_id"] = wod_page_id
         cf_pending[key] = state
-        await message.reply_text("✅ WOD logged to WOD Log!", parse_mode="Markdown")
+        movement_summary = ", ".join(movement_names) if movement_names else "movements not parsed"
+        await message.reply_text(
+            f"✅ WOD logged!\n\n"
+            f"🏋️ {movement_summary}\n"
+            f"_Saved to Notion_",
+            parse_mode="Markdown",
+        )
         await _prompt_session_feel(message, key, state, cf_pending)
         return
     cf_pending.pop(key, None)
