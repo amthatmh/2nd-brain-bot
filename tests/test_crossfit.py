@@ -1608,3 +1608,77 @@ def test_crossfit_standalone_feel_updates_training_log_only():
     ]
     assert key not in pending
     q.edit_message_text.assert_awaited_once_with("✅ Session feel logged: 3/5", parse_mode="Markdown")
+
+def test_parse_programme_text_splits_days_and_tracks_without_claude():
+    from second_brain.crossfit.classify import parse_programme
+
+    text = """
+MONDAY
+PERFORMANCE
+B. 5x5 Back Squat
+C. AMRAP 12
+10 Wall Balls
+FITNESS
+B. Skill Handstand Push-Up
+C. For Time
+21-15-9 Burpees
+WEDNESDAY
+PERFORMANCE
+B. EMOM 10 Hang Squat Clean
+C. Chipper
+Run 400m
+FITNESS
+B. 4x8 Front Squat
+C. Intervals
+Every 3 minutes Row
+"""
+    parsed = parse_programme(text, _FakeClaude('{"should":"not call"}'), "model", 1000)
+    perf = next(t for t in parsed["tracks"] if t["track"] == "Performance")
+    fit = next(t for t in parsed["tracks"] if t["track"] == "Fitness")
+    assert [d["day"] for d in perf["days"]] == ["Monday", "Wednesday"]
+    assert [d["day"] for d in fit["days"]] == ["Monday", "Wednesday"]
+    wed_perf = next(d for d in perf["days"] if d["day"] == "Wednesday")
+    assert wed_perf["section_b"]["description"].startswith("EMOM 10")
+    assert wed_perf["section_c"]["format"] == "Chipper"
+
+
+def test_save_programme_links_week_cycle_and_section_movements_from_text():
+    from second_brain.crossfit.notion import save_programme
+
+    created = []
+    updated = []
+
+    def query(**kwargs):
+        db = kwargs["database_id"]
+        if db == "movements":
+            return {"results": [
+                {"id": "mov-back-squat", "properties": {"Name": {"title": [{"plain_text": "Back Squat"}]}}},
+                {"id": "mov-burpee", "properties": {"Name": {"title": [{"plain_text": "Burpee"}]}}},
+            ]}
+        if db == "cycles" and kwargs.get("filter", {}).get("property") == "End Date":
+            return {"results": [{"id": "cycle-open", "properties": {"Name": {"title": [{"plain_text": "Cycle 3"}]}}}]}
+        if db == "program" and kwargs.get("filter", {}).get("property") == "Cycle":
+            return {"results": [{"id": "week-old"}, {"id": "week-old-2"}]}
+        return {"results": []}
+
+    notion = SimpleNamespace(
+        pages=SimpleNamespace(
+            create=lambda **kwargs: created.append(kwargs) or {"id": "parent" if kwargs["parent"]["database_id"] == "program" else f"row-{len(created)}"},
+            update=lambda **kwargs: updated.append(kwargs) or {"id": kwargs.get("page_id")},
+        ),
+        databases=SimpleNamespace(query=query),
+    )
+    parsed = {
+        "week_label": "Week of 2026-05-04",
+        "tracks": [{"track": "Performance", "days": [{"day": "Wednesday", "section_b": {"description": "5x5 Back Squat", "movements": []}, "section_c": {"description": "AMRAP 8 Burpees", "format": "AMRAP", "movements": []}}]}],
+    }
+    save_programme(notion, "program", "days", "movements", parsed, "raw", "cycles")
+    parent_props = created[0]["properties"]
+    assert parent_props["Cycle"] == {"relation": [{"id": "cycle-open"}]}
+    assert parent_props["Week"] == {"number": 3}
+    day_props = created[1]["properties"]
+    assert day_props["Day"] == {"select": {"name": "Wednesday"}}
+    assert day_props["Track"] == {"select": {"name": "Performance"}}
+    assert day_props["Week Of"] == {"date": {"start": "2026-05-04"}}
+    assert day_props["Section B Movements"] == {"relation": [{"id": "mov-back-squat"}]}
+    assert day_props["Section C Movements"] == {"relation": [{"id": "mov-burpee"}]}

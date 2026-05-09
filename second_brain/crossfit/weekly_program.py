@@ -69,6 +69,7 @@ async def get_todays_workout_day(notion_client) -> Optional[Dict]:
     found for the current weekday in the last seven days.
     """
     today = datetime.now()
+    monday = today - timedelta(days=today.weekday())
     day_name = today.strftime("%A")
     workout_days_db_id = os.getenv("NOTION_WORKOUT_DAYS_DB", "")
     if not workout_days_db_id or notion_client is None:
@@ -82,22 +83,16 @@ async def get_todays_workout_day(notion_client) -> Optional[Dict]:
                 filter={
                     "and": [
                         {"property": "Day", "select": {"equals": day_name}},
-                        {
-                            "property": "Week Of",
-                            "date": {
-                                "on_or_after": (today - timedelta(days=7)).strftime("%Y-%m-%d"),
-                                "on_or_before": today.strftime("%Y-%m-%d"),
-                            },
-                        },
+                        {"property": "Week Of", "date": {"equals": monday.strftime("%Y-%m-%d")}},
                     ]
                 },
-                page_size=1,
+                page_size=10,
             )
         )
         if not results.get("results"):
             return None
-        page = results["results"][0]
-        props = page.get("properties", {})
+        pages = results.get("results", [])
+        props = pages[0].get("properties", {})
 
         def select_name(key: str):
             return (props.get(key, {}).get("select") or {}).get("name")
@@ -108,11 +103,22 @@ async def get_todays_workout_day(notion_client) -> Optional[Dict]:
         def rich_text(key: str):
             return "".join(x.get("plain_text", "") for x in props.get(key, {}).get("rich_text", [])) or None
 
+        all_b_movements: list[str] = []
+        all_c_movements: list[str] = []
+        for matched_page in pages:
+            props = matched_page.get("properties", {})
+            for movement_id in relation_ids("Section B Movements"):
+                if movement_id not in all_b_movements:
+                    all_b_movements.append(movement_id)
+            for movement_id in relation_ids("Section C Movements"):
+                if movement_id not in all_c_movements:
+                    all_c_movements.append(movement_id)
+        props = pages[0].get("properties", {})
         return {
             "Section B Type": select_name("Section B Type"),
             "Section C Format": select_name("Section C Format"),
-            "Section B Movements": relation_ids("Section B Movements"),
-            "Section C Movements": relation_ids("Section C Movements"),
+            "Section B Movements": all_b_movements,
+            "Section C Movements": all_c_movements,
             "Section B": rich_text("Section B"),
             "Section C": rich_text("Section C"),
         }

@@ -3838,6 +3838,8 @@ async def process_pending_programmes(bot) -> None:
                     NOTION_WORKOUT_DAYS_DB,
                     NOTION_MOVEMENTS_DB,
                     parsed,
+                    NOTION_WORKOUT_PROGRAM_DB,
+                    NOTION_CYCLES_DB,
                 ),
             )
 
