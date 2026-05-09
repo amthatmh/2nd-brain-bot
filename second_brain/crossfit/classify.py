@@ -63,6 +63,142 @@ DAY_NAMES = [
     "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY",
 ]
 
+TRACK_NAMES = {"PERFORMANCE": "Performance", "FITNESS": "Fitness", "HYROX": "Hyrox"}
+DAY_CANONICAL = {
+    "MONDAY": "Monday",
+    "TUESDAY": "Tuesday",
+    "WEDNESDAY": "Wednesday",
+    "THURSDAY": "Thursday",
+    "FRIDAY": "Friday",
+    "SATURDAY": "Saturday",
+    "SUNDAY": "Sunday",
+}
+DAY_HEADER_RE = re.compile(r"(?im)^[ \t]*(MONDAY|TUESDAY|WEDNESDAY|THURSDAY|FRIDAY|SATURDAY|SUNDAY)[ \t]*:?.*$")
+TRACK_HEADER_RE = re.compile(r"(?im)^[ \t]*(PERFORMANCE|FITNESS|HYROX)[ \t]*:?.*$")
+SECTION_HEADER_RE = re.compile(r"(?im)^[ \t]*(?:SECTION[ \t]*)?([BC])[ \t]*[\.:\)-]?[ \t]*(.*)$")
+
+
+def _split_by_headers(text: str, header_re: re.Pattern) -> list[tuple[str, str]]:
+    matches = list(header_re.finditer(text or ""))
+    sections: list[tuple[str, str]] = []
+    for idx, match in enumerate(matches):
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        sections.append((match.group(1).upper(), text[start:end].strip()))
+    return sections
+
+
+def _extract_section_text(block: str, section_letter: str) -> str:
+    matches = list(SECTION_HEADER_RE.finditer(block or ""))
+    for idx, match in enumerate(matches):
+        if match.group(1).upper() != section_letter:
+            continue
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(block)
+        prefix = (match.group(2) or "").strip()
+        rest = block[start:end].strip() if start < end else ""
+        return "\n".join(part for part in [prefix, rest] if part).strip()
+    return ""
+
+
+def _infer_section_c_format(description: str) -> str | None:
+    text = (description or "").lower()
+    if "amrap" in text:
+        return "AMRAP"
+    if "for time" in text or "time cap" in text:
+        return "For Time"
+    if "emom" in text or "every minute" in text:
+        return "EMOM"
+    if "interval" in text or re.search(r"\bevery\s+\d+", text):
+        return "Intervals"
+    if "chipper" in text:
+        return "Chipper"
+    return None
+
+
+def _extract_time_cap(description: str) -> int | None:
+    match = re.search(r"\b(\d+)\s*(?:min|mins|minute|minutes)\b", description or "", re.I)
+    return int(match.group(1)) if match else None
+
+
+def _extract_candidate_movements(description: str) -> list[str]:
+    """Small deterministic movement-name fallback for programme parsing.
+
+    The save path augments these names from the Movements DB cache, so this only
+    needs to preserve obvious phrases when Claude is skipped or truncates output.
+    """
+    text = re.sub(r"\([^)]*\)", " ", description or "")
+    text = re.sub(r"\b(?:amrap|emom|for time|time cap|every|rounds?|reps?|cal(?:ories)?|minutes?|mins?)\b", " ", text, flags=re.I)
+    pieces = re.split(r"[,;/\n]|\d+\s*(?:x|×|-|to)\s*\d+|\d+", text)
+    out: list[str] = []
+    seen: set[str] = set()
+    for piece in pieces:
+        cleaned = re.sub(r"[^A-Za-z\- ]+", " ", piece).strip(" -")
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        words = [w for w in cleaned.split() if len(w) > 1]
+        if not words or len(" ".join(words)) < 4:
+            continue
+        name = " ".join(words).title()
+        key = name.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(name)
+    return out[:12]
+
+
+def parse_programme_text(text: str) -> dict | None:
+    """Deterministically parse programme text split by day and track headers."""
+    day_sections = _split_by_headers(text or "", DAY_HEADER_RE)
+    if not day_sections:
+        return None
+
+    tracks: dict[str, list[dict]] = {}
+    for raw_day, day_block in day_sections:
+        day = DAY_CANONICAL[raw_day]
+        track_sections = _split_by_headers(day_block, TRACK_HEADER_RE)
+        if not track_sections:
+            # Preserve older single-track programmes while still honoring days.
+            track_sections = [("PERFORMANCE", day_block)]
+        for raw_track, track_block in track_sections:
+            track = TRACK_NAMES[raw_track]
+            section_b_text = _extract_section_text(track_block, "B")
+            section_c_text = _extract_section_text(track_block, "C")
+            if not section_b_text and not section_c_text:
+                continue
+            section_b = None
+            if section_b_text:
+                section_b = {
+                    "description": section_b_text,
+                    "movements": _extract_candidate_movements(section_b_text),
+                    "is_strength_test": bool(re.search(r"\b(?:1rm|3rm|5rm|max|test)\b", section_b_text, re.I)),
+                    "rep_scheme": None,
+                }
+            section_c = None
+            if section_c_text:
+                section_c = {
+                    "description": section_c_text,
+                    "format": _infer_section_c_format(section_c_text),
+                    "duration_mins": _extract_time_cap(section_c_text) if _infer_section_c_format(section_c_text) in {"AMRAP", "EMOM", "Intervals"} else None,
+                    "time_cap_mins": _extract_time_cap(section_c_text) if _infer_section_c_format(section_c_text) == "For Time" else None,
+                    "movements": _extract_candidate_movements(section_c_text),
+                    "is_partner": bool(re.search(r"\bpartner\b", section_c_text, re.I)),
+                    "wod_name": None,
+                }
+            tracks.setdefault(track, []).append({
+                "day": day,
+                "section_b": section_b,
+                "section_c": section_c,
+                "training_notes": "",
+            })
+
+    if not tracks:
+        return None
+    monday = _monday_str()
+    return {
+        "week_label": f"Week of {monday}",
+        "tracks": [{"track": track, "days": days} for track, days in tracks.items()],
+    }
+
 
 def classify_workout_message(text: str, claude_client, model: str, max_tokens: int) -> dict:
     # Fast-path: long text with day headings is always a programme
@@ -108,6 +244,10 @@ Return ONLY valid JSON with fields exactly as requested.'''
 
 
 def parse_programme(text: str, claude_client, model: str, max_tokens: int) -> dict:
+    deterministic = parse_programme_text(text)
+    if deterministic:
+        return deterministic
+
     today = _today_str()
     monday = _monday_str()
 

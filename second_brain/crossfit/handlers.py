@@ -12,7 +12,7 @@ from utils.date_parser import parse_date
 
 from .classify import parse_programme
 from .keyboards import level_confirm_keyboard, my_level_keyboard, rx_scaled_keyboard, session_feel_keyboard, sub_type_keyboard, wod_format_keyboard
-from .notion import create_strength_log, create_wod_log, get_movement_category, get_or_create_movement, get_progressions_for_movement, notion_query_wod_log_by_date, query_subs, save_programme, set_current_level
+from .notion import create_strength_log, create_wod_log, format_movement_sub_details, fuzzy_find_movement_details, get_movement_category, get_movement_details, get_or_create_movement, get_progressions_for_movement, notion_query_wod_log_by_date, query_subs, save_programme, set_current_level
 from .nlp import extract_movements_from_log, extract_workout_data, fuzzy_match_movements, load_movements_cache
 from .readiness import check_readiness_logged_today, log_daily_readiness
 from second_brain.notion import notion_call
@@ -440,6 +440,7 @@ async def handle_cf_upload_programme(message, text, claude_client, notion, confi
                 config.get("NOTION_MOVEMENTS_DB", ""),
                 parsed,
                 text,
+                config.get("NOTION_CYCLES_DB", ""),
             ),
         )
     except Exception as e:
@@ -596,6 +597,26 @@ async def handle_cf_subs_flow(message, notion, config, cf_pending):
     key = str(message.chat_id)
     cf_pending[key] = {"mode": "subs", "stage": "movement"}
     await message.reply_text("Which movement?", parse_mode="Markdown")
+
+
+async def handle_todays_sub(message, notion, config) -> None:
+    todays_workout = await get_todays_workout_day(notion)
+    if not todays_workout:
+        await message.reply_text("No Workout Days row found for today.", parse_mode="Markdown")
+        return
+    movement_ids = []
+    for key in ("Section B Movements", "Section C Movements"):
+        for movement_id in todays_workout.get(key, []) or []:
+            if movement_id and movement_id not in movement_ids:
+                movement_ids.append(movement_id)
+    if not movement_ids:
+        await message.reply_text("No Section B/C movements linked for today's Workout Days row.", parse_mode="Markdown")
+        return
+    lines = []
+    for movement_id in movement_ids:
+        details = await asyncio.get_running_loop().run_in_executor(None, lambda mid=movement_id: get_movement_details(notion, mid))
+        lines.append(format_movement_sub_details(details))
+    await message.reply_text("\n\n".join(lines), parse_mode="Markdown")
 
 
 async def handle_cf_prs(message, notion, config):
@@ -854,10 +875,16 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
         await message.reply_text("Rx or Scaled?", parse_mode="Markdown", reply_markup=rx_scaled_keyboard(cf_flow_key))
         return
     if state.get("mode") == "subs" and state.get("stage") == "movement":
-        state["movement"] = text
-        state["stage"] = "subtype"
-        cf_pending[cf_flow_key] = state
-        await message.reply_text("Select type:", parse_mode="Markdown", reply_markup=sub_type_keyboard(cf_flow_key))
+        movement_name = text.strip()
+        if not movement_name:
+            await message.reply_text("Which movement?", parse_mode="Markdown")
+            return
+        details = await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: fuzzy_find_movement_details(notion, _cf_config(config, "NOTION_MOVEMENTS_DB"), movement_name),
+        )
+        cf_pending.pop(cf_flow_key, None)
+        await message.reply_text(format_movement_sub_details(details) if details else "No movement match found.", parse_mode="Markdown")
         return
     if state.get("stage") == "notes":
         await _finalize_flow(message, cf_flow_key, notion, config, cf_pending, text)
@@ -964,8 +991,10 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         except Exception:
             await q.message.reply_text(prompt, parse_mode="Markdown")
         return
-    elif parts[1] in {"subs", "sub_addon"}:
+    elif parts[1] in {"subs", "sub_addon", "subs_search"}:
         await handle_cf_subs_flow(q.message, notion, config, cf_pending)
+    elif parts[1] == "todays_sub":
+        await handle_todays_sub(q.message, notion, config)
     elif parts[1] in {"prs", "my_prs"}:
         await handle_cf_prs(q.message, notion, config)
     elif parts[1] == "log_readiness":
