@@ -20,14 +20,27 @@ class _FakeClaude:
         return SimpleNamespace(content=[SimpleNamespace(text=self.payload)])
 
 
+class _FakeBot:
+    def __init__(self):
+        self.edits = []
+
+    async def edit_message_text(self, **kwargs):
+        self.edits.append(kwargs)
+        return SimpleNamespace()
+
+
 class _DummyMessage:
     def __init__(self):
         self.chat_id = 123
         self.replies = []
+        self.bot = _FakeBot()
+
+    def get_bot(self):
+        return self.bot
 
     async def reply_text(self, text, **kwargs):
         self.replies.append((text, kwargs))
-        return SimpleNamespace()
+        return SimpleNamespace(message_id=len(self.replies))
 
 
 def test_crossfit_submenu_uses_conversational_log_labels():
@@ -269,11 +282,13 @@ def test_wod_flow_prompts_result_before_rx_scaled():
     assert "How long was the AMRAP" in message.replies[-1][0]
     assert "Rx or Scaled?" not in message.replies[-1][0]
 
-    asyncio.run(handle_cf_text_reply(message, "14 minutes", str(message.chat_id), None, notion, {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"}, cf_pending))
+    asyncio.run(handle_cf_text_reply(message, "14", str(message.chat_id), None, notion, {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"}, cf_pending))
 
     state = cf_pending[str(message.chat_id)]
     assert state["stage"] == "result"
     assert state["time_cap_mins"] == 14
+    assert message.bot.edits[-1]["text"] == "⏱️ How long was the AMRAP? *14mins*"
+    assert message.bot.edits[-1]["reply_markup"] is None
     assert "rounds + reps" in message.replies[-1][0]
 
     asyncio.run(handle_cf_text_reply(message, "5 rounds + 12 reps", str(message.chat_id), None, notion, {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"}, cf_pending))
@@ -281,8 +296,43 @@ def test_wod_flow_prompts_result_before_rx_scaled():
     state = cf_pending[str(message.chat_id)]
     assert state["stage"] == "rx_scaled"
     assert state["result_notes"] == "5 rounds + 12 reps"
+    assert message.bot.edits[-1]["text"] == "🔄 How many rounds + reps did you complete? *5 rounds + 12 reps*"
+    assert message.bot.edits[-1]["reply_markup"] is None
     assert "Rx or Scaled?" in message.replies[-1][0]
 
+
+
+def test_wod_time_cap_skip_edits_prompt_and_removes_button():
+    from second_brain.crossfit.handlers import handle_cf_callback
+
+    message = _DummyMessage()
+    key = str(message.chat_id)
+    cf_pending = {key: {"mode": "wod", "stage": "time_cap", "format": "amrap"}}
+    notion = SimpleNamespace(databases=SimpleNamespace(query=lambda **kwargs: {"results": []}))
+
+    class _DummyQuery:
+        def __init__(self, message):
+            self.message = message
+            self.markup_edits = []
+            self.text_edits = []
+
+        async def answer(self, *args, **kwargs):
+            pass
+
+        async def edit_message_reply_markup(self, **kwargs):
+            self.markup_edits.append(kwargs)
+
+        async def edit_message_text(self, text, **kwargs):
+            self.text_edits.append((text, kwargs))
+
+    q = _DummyQuery(message)
+    asyncio.run(handle_cf_callback(q, ["cf", "skip", key], None, notion, {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"}, cf_pending))
+
+    assert cf_pending[key]["stage"] == "result"
+    assert cf_pending[key]["time_cap_mins"] is None
+    assert q.text_edits[-1][0] == "⏱️ How long was the AMRAP? *Skipped*"
+    assert q.text_edits[-1][1]["reply_markup"] is None
+    assert "rounds + reps" in message.replies[-1][0]
 
 
 def test_wod_movement_stage_named_month_date_resolves_without_buttons(monkeypatch):
