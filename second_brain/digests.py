@@ -27,6 +27,7 @@ def manual_digest_config_now(slots: list[dict], now_dt: datetime, is_weekday: bo
         # Digest Selector slots still control weather via get_digest_config().
         "include_weather": True,
         "include_uvi": bool(chosen.get("include_uvi")),
+        "include_feel": bool(chosen.get("include_feel")),
         "contexts": chosen.get("contexts"),
         "max_items": chosen.get("max_items"),
     }

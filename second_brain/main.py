@@ -2153,7 +2153,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # mq:{action}            — mute options
     # nq:{mode}              — notes quick capture
     # note_topic:{key}:{ref} — note topic picker
-    # cf:{action}            — crossfit flow
+    # cf:{action}            — crossfit flow; cf:A aliases readiness logging
     # tw:{key}:{slug}        — trip field work picker
     # twd/tms/tcl:{key}      — trip flow steps
     # tcancel:{key}          — trip flow cancel
@@ -2164,6 +2164,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if len(parts) == 1 and q.data.startswith("cf_"):
         parts = ["cf", q.data.removeprefix("cf_")]
         print(f"[DEBUG] Normalized CrossFit callback to: {':'.join(parts)}")
+    if parts[:2] == ["cf", "A"]:
+        parts = ["cf", "log_readiness", *parts[2:]]
+        print(f"[DEBUG] Normalized CrossFit readiness callback to: {':'.join(parts)}")
     if parts[0] == "hl":
         parts[0] = "hc"
     if await handle_v10_callback(q, parts):
@@ -2819,7 +2822,7 @@ async def get_digest_config(slot_time: str, weekday: bool) -> dict:
         slots = load_digest_slots()
     except Exception as e:
         log.error("Failed to read digest config for %s (%s): %s", slot_time, "weekday" if weekday else "weekend", e)
-        return {"contexts": None, "max_items": None, "include_habits": False, "include_weather": False, "include_uvi": False}
+        return {"contexts": None, "max_items": None, "include_habits": False, "include_weather": False, "include_uvi": False, "include_feel": False}
     for slot in slots:
         if slot.get("time") == slot_time and bool(slot.get("is_weekday")) == bool(weekday):
             return {
@@ -2828,8 +2831,9 @@ async def get_digest_config(slot_time: str, weekday: bool) -> dict:
                 "include_habits": bool(slot.get("include_habits")),
                 "include_weather": bool(slot.get("include_weather")),
                 "include_uvi": bool(slot.get("include_uvi")),
+                "include_feel": bool(slot.get("include_feel")),
             }
-    return {"contexts": None, "max_items": None, "include_habits": False, "include_weather": False, "include_uvi": False}
+    return {"contexts": None, "max_items": None, "include_habits": False, "include_weather": False, "include_uvi": False, "include_feel": False}
 
 
 def _filter_digest_tasks(tasks: list[dict], config: dict | None = None) -> list[dict]:
@@ -2869,16 +2873,17 @@ async def send_digest_for_slot(bot, slot: dict) -> None:
         return
     config = await get_digest_config(slot["time"], slot["is_weekday"])
     log.info(
-        "Digest slot trigger fired at %s (%s) — include_habits=%s contexts=%s max_items=%s",
+        "Digest slot trigger fired at %s (%s) — include_habits=%s include_feel=%s contexts=%s max_items=%s",
         slot.get("time"),
         "weekday" if slot.get("is_weekday") else "weekend",
         bool(slot.get("include_habits")),
+        bool(config.get("include_feel")),
         config.get("contexts"),
         config.get("max_items"),
     )
-    if not config.get("contexts") and not config.get("include_habits") and not config.get("include_weather"):
+    if not config.get("contexts") and not config.get("include_habits") and not config.get("include_weather") and not config.get("include_feel"):
         log.info(
-            "Skipping slot %s — nothing selected (no contexts, habits, or weather)",
+            "Skipping slot %s — nothing selected (no contexts, habits, weather, or feel)",
             slot.get("time"),
         )
         return
@@ -3114,11 +3119,20 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
 
     message = "\n".join(lines).strip()
     message = append_trip_reminders_to_text(message, within_days=2)
+
+    include_feel = bool(config.get("include_feel", False)) if config else False
+    digest_keyboard_rows: list[list[InlineKeyboardButton]] = []
+    if habits:
+        digest_keyboard_rows.extend([list(row) for row in kb.habit_buttons(habits, "morning").inline_keyboard])
+    if include_feel:
+        digest_keyboard_rows.append([InlineKeyboardButton("📊 Log Readiness", callback_data="cf:A")])
+    reply_markup = InlineKeyboardMarkup(digest_keyboard_rows) if digest_keyboard_rows else None
+
     sent_digest = await bot.send_message(
         chat_id=MY_CHAT_ID,
         text=message,
         parse_mode="Markdown",
-        reply_markup=kb.habit_buttons(habits, "morning") if habits else None,
+        reply_markup=reply_markup,
     )
 
     if ordered:
