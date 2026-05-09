@@ -178,6 +178,46 @@ class TestShowAfterGating(unittest.TestCase):
         self.assertIn("Read", self._pending_names(show_after="18:00", time_str=None))
 
 
+
+class TestHabitButtonsMultiSelect(unittest.TestCase):
+    def test_habit_buttons_toggle_callbacks_and_done_count(self):
+        from second_brain import keyboards as kb
+
+        habits = [
+            {
+                "page_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "name": "Workout",
+                "icon": "💪",
+            },
+            {
+                "page_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "name": "Protein Shake",
+                "icon": "🥤",
+            },
+        ]
+
+        markup = kb.habit_buttons(habits, "morning", selected={habits[1]["page_id"]})
+        rows = markup.inline_keyboard
+        buttons = [button for row in rows for button in row]
+
+        self.assertEqual(buttons[0].text, "💪 Workout")
+        self.assertEqual(buttons[0].callback_data, "h:toggle:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        self.assertEqual(buttons[1].text, "✅ 🥤 Protein Shake")
+        self.assertEqual(buttons[1].callback_data, "h:toggle:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        self.assertIn("✅ Done (1)", [button.text for button in buttons])
+        self.assertIn("h:done", [button.callback_data for button in buttons])
+
+    def test_habit_buttons_hides_done_when_nothing_selected(self):
+        from second_brain import keyboards as kb
+
+        habits = [{"page_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "name": "Workout"}]
+
+        markup = kb.habit_buttons(habits, "manual", selected=set())
+        labels = [button.text for row in markup.inline_keyboard for button in row]
+
+        self.assertNotIn("✅ Done (0)", labels)
+        self.assertEqual(labels, ["Workout", "✖️ Cancel"])
+
 class TestSendDailyDigestHabitsIntegration(unittest.IsolatedAsyncioTestCase):
     async def test_send_daily_digest_uses_pending_habits_for_digest_with_show_after(self):
         main = load_main_module()

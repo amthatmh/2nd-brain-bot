@@ -469,6 +469,11 @@ _todo_picker_counter = 0
 _v10_counter = 0
 _entertainment_counter = 0
 habit_cache: dict[str, dict] = STATE.habit_cache
+_habit_selections: dict[int, set[str]] = {}
+
+def cleanup_old_habit_selections() -> None:
+    """Clear in-memory habit button selections to prevent stale message state."""
+    _habit_selections.clear()
 
 def _refresh_habit_cache_refs() -> None:
     global habit_cache
@@ -1180,7 +1185,8 @@ async def send_quick_reminder(message, mode: str = "priority") -> None:
 #   tdc:{key}              - Close/cancel to-do picker
 #
 # HABITS (h) — Morning/evening habit check-in
-#   h:log:{pid}            - Log a habit to Notion (morning or evening)
+#   h:toggle:{pid}         - Toggle a habit selection (morning/evening/manual)
+#   h:done                 - Log selected habits to Notion
 #   h:check:cancel         - Dismiss habit check-in without logging
 #   hpag:{check}:{page}    - Navigate habit paging for check-in lists
 #
@@ -1338,7 +1344,7 @@ async def open_habit_picker(message) -> None:
     await message.reply_text(
         "🏃 *Which habit did you complete?*",
         parse_mode="Markdown",
-        reply_markup=kb.habit_buttons(pending_habits, "manual"),
+        reply_markup=kb.habit_buttons(pending_habits, "manual", selected=set()),
     )
 
 
@@ -1625,7 +1631,7 @@ async def route_classified_message_v10(message, text: str) -> None:
         else:
             all_habits = [{"page_id": h["page_id"], "name": name} for name, h in habit_cache.items()]
             all_habits.sort(key=lambda h: h["name"].lower())
-            await thinking.edit_text("Which habit did you complete?", reply_markup=kb.habit_buttons(all_habits, "manual"))
+            await thinking.edit_text("Which habit did you complete?", reply_markup=kb.habit_buttons(all_habits, "manual", selected=set()))
         return
 
     if intent == "entertainment_log":
@@ -2128,14 +2134,20 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q     = update.callback_query
+    data = q.data or ""
+    is_habit_multi_select = data.startswith("h:toggle:") or data == "h:done" or data == "h:check:cancel"
     # Collapse the keyboard that was tapped — applies universally to all inline keyboards
-    try:
-        await q.edit_message_reply_markup(reply_markup=None)
-    except Exception:
-        pass  # Message may already be edited or deleted — safe to ignore
-    await q.answer()
+    # except multi-select habit keyboards, which must stay visible while toggling.
+    if not is_habit_multi_select:
+        try:
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass  # Message may already be edited or deleted — safe to ignore
+        await q.answer()
     # Callback prefix registry
     # hc:{page_id}           — habit check-in (log habit); hl redirects here
+    # h:toggle:{page_id}     — toggle habit selection
+    # h:done                 — log selected habits
     # nt:{key}:{code}        — new task horizon picker
     # ntctx:{key}:{ctx}      — new task context picker
     # d:{page_id}            — mark task done
@@ -2420,7 +2432,84 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if q.data == "h:check:cancel":
+        _habit_selections.pop(q.message.message_id, None)
         await q.edit_message_text("✅ Habit check closed.")
+        await q.answer()
+        return
+
+    if q.data.startswith("h:toggle:"):
+        pid_raw = q.data.removeprefix("h:toggle:").strip()
+        if not pid_raw:
+            await q.answer("Habit button expired. Please open Habits again.", show_alert=True)
+            return
+        habit_page_id = _restore_pid(pid_raw)
+        message_id = q.message.message_id
+        selected = _habit_selections.setdefault(message_id, set())
+        if habit_page_id in selected:
+            selected.remove(habit_page_id)
+        else:
+            selected.add(habit_page_id)
+
+        text = q.message.text or q.message.caption or ""
+        check_type = "evening" if "Evening check-in" in text else "manual" if "Which habit" in text else "morning"
+        page_time = datetime.now(TZ).strftime("%H:%M") if check_type == "evening" else None
+        habits = pending_habits_for_digest(time_str=page_time)
+        if check_type == "manual":
+            habits = [
+                h for h in sorted(habit_cache.values(), key=lambda x: x["sort"])
+                if not already_logged_today(h["page_id"])
+            ]
+
+        await q.edit_message_reply_markup(
+            reply_markup=kb.habit_buttons(habits, check_type, selected=selected)
+        )
+        await q.answer()
+        return
+
+    if q.data == "h:done":
+        message_id = q.message.message_id
+        selected_ids = set(_habit_selections.get(message_id, set()))
+        if not selected_ids:
+            await q.answer("No habits selected!", show_alert=True)
+            return
+
+        selected_habits = [h for h in habit_cache.values() if h["page_id"] in selected_ids]
+        selected_habits.sort(key=lambda h: h.get("sort") or 0)
+        logged_names: list[str] = []
+        failed_names: list[str] = []
+        for habit in selected_habits:
+            habit_name = habit.get("name", "Unknown")
+            try:
+                if already_logged_today(habit["page_id"]):
+                    continue
+                log_habit(habit["page_id"], habit_name)
+                logged_names.append(habit_name)
+            except Exception as notion_error:
+                failed_names.append(habit_name)
+                log.error("Habit log Notion error for %s: %s", habit_name, notion_error)
+
+        _habit_selections.pop(message_id, None)
+        await q.edit_message_reply_markup(reply_markup=None)
+        if logged_names:
+            await q.message.reply_text(f"✅ Logged: {', '.join(logged_names)}")
+            asyncio.create_task(
+                check_and_notify_weekly_goals(
+                    q.bot,
+                    MY_CHAT_ID,
+                    notion,
+                    NOTION_LOG_DB,
+                    NOTION_HABIT_DB,
+                    habit_cache,
+                    notified_goals_this_week,
+                    get_week_completion_count,
+                    get_habit_frequency,
+                )
+            )
+        if failed_names:
+            await q.message.reply_text(f"⚠️ Couldn't log: {', '.join(failed_names)}")
+        if not logged_names and not failed_names:
+            await q.message.reply_text("✅ Selected habits were already logged today.")
+        await q.answer()
         return
 
     if q.data.startswith("h:log:"):
@@ -2503,7 +2592,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     {"page_id": h["page_id"], "name": h["name"]}
                     for h in sorted(habit_cache.values(), key=lambda x: x["sort"])
                     if not already_logged_today(h["page_id"])
-                ], "manual"))
+                ], "manual", selected=set()))
         except Exception as follow_up_error:
             log.error("Habit follow-up picker failed after logging %s: %s", habit_name, follow_up_error)
             if q.message:
@@ -2532,7 +2621,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         all_habits = pending_habits_for_digest(time_str=page_time)
         try:
             await q.edit_message_reply_markup(
-                reply_markup=kb.habit_buttons(all_habits, prefix, page=int(page_str))
+                reply_markup=kb.habit_buttons(
+                    all_habits,
+                    prefix,
+                    page=int(page_str),
+                    selected=_habit_selections.get(q.message.message_id, set()),
+                )
             )
         except Exception as e:
             log.error(f"Habit pagination error: {e}")
@@ -2944,6 +3038,7 @@ def _queue_missed_slots_for_today(scheduler, bot, slots: list[dict]) -> None:
 
 def build_digest_schedule(scheduler, bot, queue_catchup: bool = False) -> int:
     global _digest_slots_last_load_succeeded
+    cleanup_old_habit_selections()
     for job in _digest_jobs:
         try:
             job.remove()
@@ -3121,7 +3216,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     include_feel = bool(config.get("include_feel", False)) if config else False
     digest_keyboard_rows: list[list[InlineKeyboardButton]] = []
     if habits:
-        digest_keyboard_rows.extend([list(row) for row in kb.habit_buttons(habits, "morning").inline_keyboard])
+        digest_keyboard_rows.extend([list(row) for row in kb.habit_buttons(habits, "morning", selected=set()).inline_keyboard])
     if include_feel:
         digest_keyboard_rows.append([InlineKeyboardButton("💬 How are you feeling?", callback_data="cf:A")])
     reply_markup = InlineKeyboardMarkup(digest_keyboard_rows) if digest_keyboard_rows else None
@@ -3296,7 +3391,7 @@ async def send_evening_checkin(bot) -> None:
         chat_id=MY_CHAT_ID,
         text=habit_text.rstrip(),
         parse_mode="Markdown",
-        reply_markup=kb.habit_buttons(evening_habits, "evening"),
+        reply_markup=kb.habit_buttons(evening_habits, "evening", selected=set()),
     )
     log.info("Evening check-in sent — %d habits", len(evening_habits))
 
@@ -3311,9 +3406,9 @@ async def send_daily_habits_list(bot) -> None:
 
     await bot.send_message(
         chat_id=MY_CHAT_ID,
-        text="🎯 *Daily habits* — tap to log:",
+        text="🎯 *Daily habits* — tap habits to select, then tap Done:",
         parse_mode="Markdown",
-        reply_markup=kb.habit_buttons(habits, "morning"),
+        reply_markup=kb.habit_buttons(habits, "morning", selected=set()),
     )
     log.info("Habits list sent — %s available habits", len(habits))
 
@@ -4327,6 +4422,7 @@ async def post_init(app: Application) -> None:
     else:
         # Notion loaded successfully — sync back to local JSON cache
         wx.save_location_state(wx.current_location)
+    cleanup_old_habit_selections()
     notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB); _refresh_habit_cache_refs()
     # Load steps config from Notion ENV DB
     health_config.load_steps_threshold_from_notion_env(notion=notion, notion_env_db=NOTION_ENV_DB)

@@ -21,7 +21,15 @@ def review_keyboard(page_id: str) -> InlineKeyboardMarkup:
         ],
     ])
 
-def habit_buttons(habits: list[dict], check_type: str, page: int = 0, page_size: int = 8) -> InlineKeyboardMarkup:
+def habit_buttons(
+    habits: list[dict],
+    check_type: str,
+    page: int = 0,
+    page_size: int = 8,
+    selected: set | None = None,
+) -> InlineKeyboardMarkup:
+    """Render habit buttons with multi-select checkmarks."""
+    selected = selected or set()
     start = max(0, page) * page_size
     end = start + page_size
     page_habits = habits[start:end]
@@ -30,7 +38,10 @@ def habit_buttons(habits: list[dict], check_type: str, page: int = 0, page_size:
     row: list[InlineKeyboardButton] = []
     for habit in page_habits:
         p = _clean_pid(habit["page_id"])
-        row.append(InlineKeyboardButton(habit["name"], callback_data=f"h:log:{p}"))
+        marker = "✅ " if habit["page_id"] in selected or p in selected else ""
+        icon = (habit.get("icon") or "").strip()
+        label = f"{marker}{icon} {habit['name']}" if icon else f"{marker}{habit['name']}"
+        row.append(InlineKeyboardButton(label, callback_data=f"h:toggle:{p}"))
         if len(row) == 2:
             rows.append(row)
             row = []
@@ -46,6 +57,8 @@ def habit_buttons(habits: list[dict], check_type: str, page: int = 0, page_size:
         if nav:
             rows.append(nav)
 
+    if selected:
+        rows.append([InlineKeyboardButton(f"✅ Done ({len(selected)})", callback_data="h:done")])
     rows.append([InlineKeyboardButton("✖️ Cancel", callback_data="h:check:cancel")])
 
     return InlineKeyboardMarkup(rows)
