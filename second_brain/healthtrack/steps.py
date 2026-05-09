@@ -330,13 +330,14 @@ async def handle_steps_sync(
     bot=None,
     chat_id: int | None = None,
     write_intraday_below_threshold: bool = False,
+    force_write: bool = False,
 ) -> dict:
     """
     Process a steps sync payload from Health Auto Export.
 
     Called both by:
       - The HTTP webhook handler (real-time hourly syncs)
-      - The nightly 23:59 scheduled job (via handle_steps_final_stamp)
+      - The nightly scheduled job (via handle_steps_final_stamp)
 
     Returns a result dict for logging/debugging:
       {action: "notified"|"updated"|"created"|"skipped", steps, date}
@@ -444,9 +445,21 @@ async def handle_steps_sync(
 
     # ── Intraday sub-threshold behavior (configurable) ──
     # Legacy mode only cached intraday counts until threshold/nightly stamp.
-    if is_today and not completed and not write_intraday_below_threshold:
+    if (
+        is_today
+        and not completed
+        and not write_intraday_below_threshold
+        and not force_write
+    ):
         log.debug("steps: sub-threshold intraday sync (%d), caching only", steps)
         return _sync_result("skipped", reason="sub_threshold_intraday")
+
+    if force_write and not completed:
+        log.info(
+            "steps: force_write=True — writing %d steps for %s despite sub-threshold",
+            steps,
+            date_str,
+        )
 
     # ── For today above threshold, or any yesterday sync: upsert Notion entry ──
     if not (is_today or is_yesterday):
@@ -490,10 +503,9 @@ async def handle_steps_final_stamp(
     tz,
     bot=None,
     chat_id: int | None = None,
-    write_intraday_below_threshold: bool = False,
 ) -> dict:
     """
-    Nightly 23:59 job — write the final daily step count as a permanent record.
+    Nightly job — write the final daily step count as a permanent record.
 
     Strategy:
     - Use whatever step count was last received for today (from in-memory state)
@@ -539,9 +551,9 @@ async def handle_steps_final_stamp(
         state = _steps_state.get(date_str)
         steps = state["last_steps"] if state else 0
 
-        # For yesterday with no data: skip (we can't know their step count)
-        if date_str == yesterday and steps == 0:
-            log.info("steps: nightly stamp — no data for yesterday %s, skipping", date_str)
+        # For any date with no cached/exported data: skip (we can't know its count).
+        if state is None and steps == 0:
+            log.info("steps: nightly stamp — no data for %s, skipping", date_str)
             continue
 
         log.info("steps: nightly stamp for %s — %d steps", date_str, steps)
@@ -558,7 +570,7 @@ async def handle_steps_final_stamp(
             tz=tz,
             bot=bot,
             chat_id=chat_id,
-            write_intraday_below_threshold=write_intraday_below_threshold,
+            force_write=True,
         )
         results[date_str] = result
 

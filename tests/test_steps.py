@@ -268,12 +268,62 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
                 threshold=10000,
                 source_label="📱 Apple Watch",
                 tz=tz,
+                force_write=False,
             )
 
         self.assertEqual(result["action"], "skipped")
         self.assertEqual(result["reason"], "sub_threshold_intraday")
         notion.pages.create.assert_not_called()
         notion.pages.update.assert_not_called()
+
+    async def test_force_write_bypasses_sub_threshold_skip(self):
+        """steps_final_stamp should write even when steps < threshold."""
+        notion = self._make_notion()
+        tz = self._make_tz()
+
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"):
+            result = await handle_steps_sync(
+                steps=9500,
+                date_str="2026-04-28",
+                notion=notion,
+                habit_db_id="h",
+                log_db_id="l",
+                env_db_id="",
+                habit_name="Steps",
+                threshold=10000,
+                source_label="📱 Apple Watch",
+                tz=tz,
+                force_write=True,
+            )
+
+        self.assertNotEqual(result["action"], "skipped")
+        self.assertIn(result["action"], ("created", "updated"))
+        self.assertEqual(result["steps"], 9500)
+
+    async def test_sub_threshold_intraday_still_skips_without_force(self):
+        """Normal intraday sync below threshold should still be skipped."""
+        notion = self._make_notion()
+        tz = self._make_tz()
+
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"):
+            result = await handle_steps_sync(
+                steps=9500,
+                date_str="2026-04-28",
+                notion=notion,
+                habit_db_id="h",
+                log_db_id="l",
+                env_db_id="",
+                habit_name="Steps",
+                threshold=10000,
+                source_label="📱 Apple Watch",
+                tz=tz,
+                force_write=False,
+            )
+
+        self.assertEqual(result["action"], "skipped")
+        self.assertEqual(result["reason"], "sub_threshold_intraday")
 
     async def test_threshold_crossed_sends_notification_and_creates_entry(self):
         notion = self._make_notion()
@@ -565,7 +615,6 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
                 notion=notion,
                 habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
-                write_intraday_below_threshold=True,
             )
 
         self.assertEqual(_steps_state["2026-04-28"]["last_steps"], 9000)
@@ -619,7 +668,6 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
                 notion=notion,
                 habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
-                write_intraday_below_threshold=True,
             )
 
         self.assertEqual(results["2026-04-28"]["action"], "created")
@@ -644,7 +692,6 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
                 notion=notion,
                 habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
-                write_intraday_below_threshold=True,
             )
 
         self.assertEqual(_steps_state["2026-04-28"]["last_steps"], 9000)
