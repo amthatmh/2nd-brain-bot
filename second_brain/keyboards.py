@@ -39,8 +39,7 @@ def habit_buttons(
     for habit in page_habits:
         p = _clean_pid(habit["page_id"])
         marker = "✅ " if habit["page_id"] in selected or p in selected else ""
-        icon = (habit.get("icon") or "").strip()
-        label = f"{marker}{icon} {habit['name']}" if icon else f"{marker}{habit['name']}"
+        label = f"{marker}{habit['name']}"
         row.append(InlineKeyboardButton(label, callback_data=f"h:toggle:{p}"))
         if len(row) == 2:
             rows.append(row)

@@ -186,12 +186,12 @@ class TestHabitButtonsMultiSelect(unittest.TestCase):
         habits = [
             {
                 "page_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                "name": "Workout",
+                "name": "💪 Workout",
                 "icon": "💪",
             },
             {
                 "page_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-                "name": "Protein Shake",
+                "name": "🥤 Protein Shake",
                 "icon": "🥤",
             },
         ]
