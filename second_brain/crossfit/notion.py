@@ -786,19 +786,6 @@ def format_movement_sub_details(details: dict) -> str:
         f"⬅️ Antagonists: {ant}"
     )
 
-def query_subs(notion, subs_db_id, movements_db_id, movement_name, sub_type):
-    m=find_movement_by_name(notion,movements_db_id,movement_name)
-    if not m: return []
-    res=notion_call(notion.databases.query,database_id=subs_db_id).get("results",[])
-    out=[]
-    for r in res:
-        p=r.get("properties",{})
-        rel=[x.get("id") for x in p.get("Movement",{}).get("relation",[])]
-        typ=(p.get("Type",{}).get("select") or {}).get("name")
-        if m["page_id"] in rel and typ==sub_type:
-            out.append({"name":_title(p),"alt_movement":"","difficulty":((p.get("Difficulty",{}).get("select") or {}).get("name") or ""),"equipment_needed":"","rationale":""})
-    return out
-
 
 def get_progressions_for_movement(notion, progressions_db_id, movement_page_id) -> list[dict]:
     res = notion_call(notion.databases.query, database_id=progressions_db_id, page_size=100).get("results", [])
