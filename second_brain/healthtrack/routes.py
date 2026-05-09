@@ -335,6 +335,7 @@ def register_health_routes(
             bot=bot,
             chat_id=chat_id,
             write_intraday_below_threshold=STEPS_WRITE_INTRADAY_BELOW_THRESHOLD,
+            force_write=False,
         )
         if on_sync_result:
             try:
