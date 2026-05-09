@@ -60,10 +60,6 @@ def readiness_keyboard(key: str, field: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton(f"{v} {k}", callback_data=f"cf:ready:{key}:{field}:{k}") for k, v in labels.items()]])
 
 
-def sub_type_keyboard(key: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Substitution", callback_data=f"cf:subtype:{key}:Sub"), InlineKeyboardButton("➕ Add-on", callback_data=f"cf:subtype:{key}:Add-on")], [InlineKeyboardButton("⚠️ Weakness work", callback_data=f"cf:subtype:{key}:Weakness")]])
-
-
 def my_level_keyboard(key: str, steps) -> InlineKeyboardMarkup:
     rows = []
     current_idx = next((i for i, s in enumerate(steps) if s.get("is_current_level")), None)

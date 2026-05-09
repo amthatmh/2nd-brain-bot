@@ -1743,3 +1743,130 @@ def test_save_programme_links_week_cycle_and_section_movements_from_text():
     assert day_props["Week Of"] == {"date": {"start": "2026-05-04"}}
     assert day_props["Section B Movements"] == {"relation": [{"id": "mov-back-squat"}]}
     assert day_props["Section C Movements"] == {"relation": [{"id": "mov-burpee"}]}
+
+
+def test_sub_addon_entry_shows_search_and_today_buttons():
+    import second_brain.crossfit.handlers as handlers
+
+    message = _DummyMessage()
+    asyncio.run(handlers.handle_cf_subs_flow(message, None, {}, {}))
+
+    text, kwargs = message.replies[-1]
+    assert text == "🔄 Sub / Add-on — what do you need?"
+    keyboard = kwargs["reply_markup"].inline_keyboard[0]
+    assert [button.text for button in keyboard] == ["🔍 Search Subs", "📅 Today's Subs"]
+    assert [button.callback_data for button in keyboard] == ["cf:sub_search", "cf:sub_today"]
+
+
+def test_sub_search_prompt_sets_subs_search_state():
+    import second_brain.crossfit.handlers as handlers
+
+    message = _DummyMessage()
+    pending = {}
+    asyncio.run(handlers.prompt_cf_sub_search(message, pending))
+
+    assert pending[str(message.chat_id)] == {"mode": "subs", "stage": "search"}
+    assert message.replies[-1][0] == "Which movement do you need a sub for?"
+
+
+def test_sub_search_reply_formats_scaling_relations_and_clears_state(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    async def fake_cache(notion, config):
+        del notion, config
+        return {"Hang Squat Clean": "move-1"}
+
+    async def fake_details(notion, movement_page_id, request_cache=None):
+        del notion, request_cache
+        assert movement_page_id == "move-1"
+        return {
+            "name": "Hang Squat Clean",
+            "scaling_notes": "Use lighter load or power clean.",
+            "complementary_movements": ["Front Squat", "Hang Power Clean"],
+            "antagonist_movements": ["Ring Row"],
+            "notes": "Strong front rack first.",
+        }
+
+    monkeypatch.setattr(handlers, "_ensure_movements_cache", fake_cache)
+    monkeypatch.setattr(handlers, "_movement_sub_details", fake_details)
+    message = _DummyMessage()
+    pending = {str(message.chat_id): {"mode": "subs", "stage": "search"}}
+
+    asyncio.run(handlers.handle_cf_text_reply(message, "hang squat clean", str(message.chat_id), None, None, {}, pending))
+
+    assert str(message.chat_id) not in pending
+    reply = message.replies[-1][0]
+    assert "🎯 *Hang Squat Clean*" in reply
+    assert "📝 *Scaling:* Use lighter load or power clean." in reply
+    assert "🔄 *Complementary:* Front Squat, Hang Power Clean" in reply
+    assert "⬅️ *Antagonist:* Ring Row" in reply
+    assert "📋 *Prerequisites:* Strong front rack first." in reply
+
+
+def test_sub_search_reply_no_match_keeps_state_for_retry(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    async def fake_cache(notion, config):
+        del notion, config
+        return {"Hang Squat Clean": "move-1"}
+
+    monkeypatch.setattr(handlers, "_ensure_movements_cache", fake_cache)
+    message = _DummyMessage()
+    key = str(message.chat_id)
+    pending = {key: {"mode": "subs", "stage": "search"}}
+
+    asyncio.run(handlers.handle_cf_text_reply(message, "xyz123", key, None, None, {}, pending))
+
+    assert pending[key] == {"mode": "subs", "stage": "search"}
+    assert message.replies[-1][0] == "❓ Couldn't find that movement. Try again."
+
+
+def test_todays_sub_formats_multiple_tracks_and_empty_sections(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    async def fake_rows(notion, workout_days_db_id):
+        del notion
+        assert workout_days_db_id == "days-db"
+        return "Saturday", [
+            {"properties": {"Day": {"select": {"name": "Saturday"}}, "Track": {"select": {"name": "Performance"}}}},
+            {"properties": {"Day": {"select": {"name": "Saturday"}}, "Track": {"select": {"name": "Fitness"}}}},
+        ]
+
+    async def fake_section(notion, props, prop_name, request_cache):
+        del notion, request_cache
+        track = props["Track"]["select"]["name"]
+        if track == "Performance" and prop_name == "Section B Movements":
+            return [{"name": "Back Squat", "scaling_notes": "Box squat."}]
+        if track == "Performance" and prop_name == "Section C Movements":
+            return [{"name": "Burpee", "scaling_notes": "Step down/up."}]
+        return []
+
+    monkeypatch.setattr(handlers, "_workout_day_rows_for_today", fake_rows)
+    monkeypatch.setattr(handlers, "_movement_details_for_section", fake_section)
+    message = _DummyMessage()
+
+    asyncio.run(handlers.handle_todays_sub(message, None, {"NOTION_WORKOUT_DAYS_DB": "days-db"}))
+
+    reply = message.replies[-1][0]
+    assert "📅 *Saturday — Performance*" in reply
+    assert "*Section B:* Back Squat" in reply
+    assert "  • Back Squat: Box squat." in reply
+    assert "*Section C:* Burpee" in reply
+    assert "  • Burpee: Step down/up." in reply
+    assert "📅 *Saturday — Fitness*" in reply
+    assert reply.count("  • No movements linked") == 2
+
+
+def test_todays_sub_no_rows_graceful_fallback(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    async def fake_rows(notion, workout_days_db_id):
+        del notion, workout_days_db_id
+        return "Saturday", []
+
+    monkeypatch.setattr(handlers, "_workout_day_rows_for_today", fake_rows)
+    message = _DummyMessage()
+
+    asyncio.run(handlers.handle_todays_sub(message, None, {"NOTION_WORKOUT_DAYS_DB": "days-db"}))
+
+    assert message.replies[-1][0] == "📅 No programme found for today. Use 🔍 Search Subs instead."
