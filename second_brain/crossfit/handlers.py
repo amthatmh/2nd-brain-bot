@@ -369,6 +369,56 @@ async def _prompt_session_feel(message, key: str, state: dict, cf_pending: dict)
     cf_pending[key] = state
     await message.reply_text("💬 How did that session feel?", reply_markup=session_feel_keyboard(key))
 
+def _markdown_bold_value(value: str) -> str:
+    escaped = re.sub(r"([\\_*`\[])", r"\\\1", str(value))
+    return f"*{escaped}*"
+
+
+def _display_time_cap_input(text: str) -> str:
+    value = (text or "").strip()
+    if re.fullmatch(r"\d+", value):
+        return f"{value}mins"
+    return value
+
+
+def _wod_time_cap_question_text(state: dict) -> str:
+    return f"⏱️ How long was the {_format_label(state.get('format'))}?"
+
+
+def _wod_result_question_text(state: dict) -> str:
+    result_type = _infer_result_type(state.get("format"))
+    if result_type == "Time":
+        return "⏱ What was your time?"
+    if result_type == "Reps":
+        return "💪 How many total reps did you complete?"
+    return "🔄 How many rounds + reps did you complete?"
+
+
+async def _edit_stored_prompt_message(message, state: dict, message_id_key: str, text: str) -> bool:
+    message_id = state.get(message_id_key)
+    if message_id:
+        try:
+            bot = message.get_bot()
+        except Exception:
+            bot = getattr(message, "bot", None)
+        if bot and hasattr(bot, "edit_message_text"):
+            await _maybe_await(
+                bot.edit_message_text(
+                    chat_id=message.chat_id,
+                    message_id=message_id,
+                    text=text,
+                    parse_mode="Markdown",
+                    reply_markup=None,
+                )
+            )
+            return True
+    prompt_message = state.get(f"_{message_id_key}_message")
+    if prompt_message and hasattr(prompt_message, "edit_text"):
+        await _maybe_await(prompt_message.edit_text(text, parse_mode="Markdown", reply_markup=None))
+        return True
+    return False
+
+
 async def _prompt_wod_result_notes(message, key: str, state: dict) -> None:
     result_type = _infer_result_type(state.get("format"))
     if result_type == "Time":
@@ -377,11 +427,13 @@ async def _prompt_wod_result_notes(message, key: str, state: dict) -> None:
         prompt = "💪 How many total reps did you complete?\nAdd any notes too, or tap Skip."
     else:
         prompt = "🔄 How many rounds + reps did you complete?\nExamples: 5 rounds + 12 reps, or 5 for full rounds.\nAdd any notes too, or tap Skip."
-    await message.reply_text(
+    prompt_message = await message.reply_text(
         prompt,
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]),
     )
+    state["result_prompt_message_id"] = getattr(prompt_message, "message_id", None)
+    state["_result_prompt_message_id_message"] = prompt_message
 
 
 async def _prompt_wod_result_before_rx(message, key: str, state: dict) -> None:
@@ -397,10 +449,10 @@ def _needs_time_cap_before_result(state: dict) -> bool:
 
 async def _prompt_wod_time_cap(message, key: str, state: dict) -> None:
     """Ask for AMRAP/EMOM/Tabata time cap before collecting result."""
-    format_name = _format_label(state.get("format"))
+    question = _wod_time_cap_question_text(state)
     state["stage"] = "time_cap"
-    await message.reply_text(
-        f"⏱️ How long was the {format_name}?\n\n"
+    prompt_message = await message.reply_text(
+        f"{question}\n\n"
         "Examples:\n"
         "• 14 minutes\n"
         "• 14 mins\n"
@@ -409,6 +461,8 @@ async def _prompt_wod_time_cap(message, key: str, state: dict) -> None:
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]),
     )
+    state["time_cap_prompt_message_id"] = getattr(prompt_message, "message_id", None)
+    state["_time_cap_prompt_message_id_message"] = prompt_message
 
 
 def _restore_pid(pid: str) -> str:
@@ -1148,12 +1202,25 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
         return
     if state.get("mode") == "wod" and state.get("stage") == "time_cap":
         state["time_cap_mins"] = parse_time_cap_minutes(text)
+        display_value = _display_time_cap_input(text)
+        await _edit_stored_prompt_message(
+            message,
+            state,
+            "time_cap_prompt_message_id",
+            f"{_wod_time_cap_question_text(state)} {_markdown_bold_value(display_value)}",
+        )
         print(f"[DEBUG] Time cap: {state.get('time_cap_mins')} minutes")
         cf_pending[cf_flow_key] = state
         await _prompt_wod_result_before_rx(message, cf_flow_key, state)
         return
     if state.get("mode") == "wod" and state.get("stage") == "result":
         state["result_notes"] = text
+        await _edit_stored_prompt_message(
+            message,
+            state,
+            "result_prompt_message_id",
+            f"{_wod_result_question_text(state)} {_markdown_bold_value(text.strip())}",
+        )
         state["stage"] = "rx_scaled"
         cf_pending[cf_flow_key] = state
         await message.reply_text("Rx or Scaled?", parse_mode="Markdown", reply_markup=rx_scaled_keyboard(cf_flow_key))
@@ -1501,8 +1568,19 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         if state.get("mode") == "wod" and state.get("stage") == "time_cap":
             state["time_cap_mins"] = None
             cf_pending[key] = state
-            await q.edit_message_text("⏭️ Time cap skipped.", parse_mode="Markdown")
+            await q.edit_message_text(
+                f"{_wod_time_cap_question_text(state)} {_markdown_bold_value('Skipped')}",
+                parse_mode="Markdown",
+                reply_markup=None,
+            )
             await _prompt_wod_result_before_rx(q.message, key, state)
+        elif state.get("mode") == "wod" and state.get("stage") == "result":
+            await q.edit_message_text(
+                f"{_wod_result_question_text(state)} {_markdown_bold_value('Skipped')}",
+                parse_mode="Markdown",
+                reply_markup=None,
+            )
+            await _finalize_flow(q.message, key, notion, config, cf_pending, None)
         else:
             await _finalize_flow(q.message, key, notion, config, cf_pending, None)
     elif parts[1] == "cancel":
