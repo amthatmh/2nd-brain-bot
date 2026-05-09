@@ -1448,7 +1448,7 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
 
 
 # TESTING CHECKLIST — Phase 1 WOD Log Handler
-# [ ] Test "Log WOD (C)" writes to NOTION_WOD_LOG_DB, NOT NOTION_WORKOUT_LOG_DB
+# [ ] Test "WOD (C)" writes to NOTION_WOD_LOG_DB, NOT NOTION_WORKOUT_LOG_DB
 # [ ] Test Result Type auto-infers: AMRAP -> Rounds, For Time -> Time
 # [ ] Test Movement field contains page IDs only (no sets/reps/weight)
 # [ ] Test weekly_program_ref auto-populates with current week page ID
@@ -1457,9 +1457,9 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
 
 # TESTING CHECKLIST — Phase 1 Main Bot Integration
 # [ ] Test bot startup loads MOVEMENTS_CACHE with >20 movements
-# [ ] Test CrossFit menu shows "Log Readiness" button on first open
+# [ ] Test CrossFit menu shows "Readiness" button on first open
 # [ ] Test button hides after readiness logged
-# [ ] Test "Log Strength (B)" triggers handle_cf_strength_flow
-# [ ] Test "Log WOD (C)" triggers handle_cf_wod_flow
+# [ ] Test "Strength (B)" triggers handle_cf_strength_flow
+# [ ] Test "WOD (C)" triggers handle_cf_wod_flow
 # [ ] Test "Sub / Add-on" triggers handle_cf_subs_flow
 # [ ] Verify all logs write to correct databases

@@ -6,6 +6,7 @@ import asyncio
 
 from second_brain.crossfit.classify import classify_workout_message
 from second_brain.crossfit.handlers import handle_cf_strength_flow, handle_gymnastics_level_check, parse_rounds_reps, parse_time_to_seconds
+from second_brain.crossfit.keyboards import crossfit_submenu_keyboard
 from second_brain.crossfit.notion import get_progressions_for_movement, save_programme, set_current_level
 
 
@@ -27,6 +28,27 @@ class _DummyMessage:
     async def reply_text(self, text, **kwargs):
         self.replies.append((text, kwargs))
         return SimpleNamespace()
+
+
+def test_crossfit_submenu_uses_conversational_log_labels():
+    keyboard = crossfit_submenu_keyboard()
+
+    assert [button.text for button in keyboard.inline_keyboard[0]] == [
+        "📊 Readiness (A)",
+        "🏋️ Strength (B)",
+    ]
+    assert [button.text for button in keyboard.inline_keyboard[1]] == [
+        "🏆 WOD (C)",
+        "💬 Workout Feel (D)",
+    ]
+    assert [button.callback_data for button in keyboard.inline_keyboard[0]] == [
+        "cf:log_readiness",
+        "cf:log_strength",
+    ]
+    assert [button.callback_data for button in keyboard.inline_keyboard[1]] == [
+        "cf:log_wod",
+        "cf:log_feel",
+    ]
 
 
 def test_classify_strength_message():

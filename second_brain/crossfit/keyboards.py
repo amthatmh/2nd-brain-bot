@@ -9,11 +9,11 @@ def crossfit_submenu_keyboard(readiness_logged: bool = True) -> InlineKeyboardMa
     del readiness_logged
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📊 Log Readiness (A)", callback_data="cf:log_readiness"),
-            InlineKeyboardButton("🏋️ Log Strength (B)", callback_data="cf:log_strength"),
+            InlineKeyboardButton("📊 Readiness (A)", callback_data="cf:log_readiness"),
+            InlineKeyboardButton("🏋️ Strength (B)", callback_data="cf:log_strength"),
         ],
         [
-            InlineKeyboardButton("🏆 Log WOD (C)", callback_data="cf:log_wod"),
+            InlineKeyboardButton("🏆 WOD (C)", callback_data="cf:log_wod"),
             InlineKeyboardButton("💬 Workout Feel (D)", callback_data="cf:log_feel"),
         ],
         [
