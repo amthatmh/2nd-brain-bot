@@ -122,7 +122,7 @@ from second_brain.crossfit.handlers import (
 from second_brain.crossfit.keyboards import crossfit_submenu_keyboard
 from second_brain.crossfit.nlp import load_movements_cache
 from second_brain.crossfit.readiness import check_readiness_logged_today
-from second_brain.crossfit.notion import parse_weekly_program_text, save_programme_from_notion_row
+from second_brain.crossfit.notion import parse_weekly_program_text, save_programme_from_notion_row, this_monday
 from second_brain.entertainment import log as ent_log
 
 
@@ -3783,6 +3783,51 @@ def startup_notion_health_check() -> None:
             )
 
 
+
+def _notion_title_text(props: dict, key: str = "Name") -> str:
+    title = props.get(key, {}).get("title", []) or []
+    return "".join(part.get("plain_text") or part.get("text", {}).get("content", "") for part in title).strip()
+
+
+def _count_notion_database_rows(database_id: str, filter_payload: dict | None = None) -> int:
+    count = 0
+    start_cursor = None
+    while True:
+        kwargs = {"database_id": database_id, "page_size": 100}
+        if filter_payload:
+            kwargs["filter"] = filter_payload
+        if start_cursor:
+            kwargs["start_cursor"] = start_cursor
+        result = notion_call(notion.databases.query, **kwargs)
+        count += len(result.get("results", []) or [])
+        if not result.get("has_more"):
+            break
+        start_cursor = result.get("next_cursor")
+        if not start_cursor:
+            break
+    return count
+
+
+def _create_cycle_row(cycle_name: str) -> str:
+    page = notion_call(
+        notion.pages.create,
+        parent={"database_id": NOTION_CYCLES_DB},
+        properties={
+            "Name": {"title": [{"text": {"content": cycle_name}}]},
+            "Start Date": {"date": {"start": this_monday()}},
+        },
+    )
+    return page["id"]
+
+
+def _current_week_sunday_iso() -> str:
+    today = date.today()
+    days_until_sunday = (6 - today.weekday()) % 7
+    if days_until_sunday == 0:
+        days_until_sunday = 7
+    return (today + timedelta(days=days_until_sunday)).isoformat()
+
+
 async def process_pending_programmes(bot) -> None:
     """Poll Weekly Programs DB for unprocessed rows and parse/save asynchronously."""
     if not NOTION_WORKOUT_PROGRAM_DB:
@@ -3828,7 +3873,7 @@ async def process_pending_programmes(bot) -> None:
                 lambda: parse_weekly_program_text(full_text, week_name),
             )
 
-            days_created = await asyncio.get_running_loop().run_in_executor(
+            result = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: save_programme_from_notion_row(
                     notion,
@@ -3840,6 +3885,94 @@ async def process_pending_programmes(bot) -> None:
                     NOTION_CYCLES_DB,
                 ),
             )
+            days_created = result["days_created"]
+
+            try:
+                movement_ids = result.get("movement_ids", [])
+                if movement_ids:
+                    notion_call(
+                        notion.pages.update,
+                        page_id=page_id,
+                        properties={"Movements": {"relation": [{"id": mid} for mid in movement_ids]}},
+                    )
+                    log.info(
+                        "process_pending_programmes: wrote %d movements to Weekly Programs row",
+                        len(movement_ids),
+                    )
+            except Exception as e:
+                log.warning("process_pending_programmes: could not write movements rollup: %s", e)
+
+            cycle_line = None
+            try:
+                if NOTION_CYCLES_DB:
+                    new_cycle = props.get("New Cycle", {}).get("checkbox", False)
+                    test_week = props.get("Test Week", {}).get("checkbox", False)
+
+                    open_cycle_results = notion_call(
+                        notion.databases.query,
+                        database_id=NOTION_CYCLES_DB,
+                        filter={"property": "End Date", "date": {"is_empty": True}},
+                        sorts=[{"property": "Start Date", "direction": "descending"}],
+                        page_size=1,
+                    ).get("results", [])
+                    open_cycle = open_cycle_results[0] if open_cycle_results else None
+                    open_cycle_id = open_cycle["id"] if open_cycle else None
+                    open_cycle_name = _notion_title_text(open_cycle.get("properties", {})) if open_cycle else None
+
+                    created_new_cycle = False
+                    sunday_iso = None
+                    if new_cycle:
+                        next_num = _count_notion_database_rows(NOTION_CYCLES_DB) + 1
+                        cycle_name = f"Cycle {next_num}"
+                        cycle_id = _create_cycle_row(cycle_name)
+                        week_num = 1
+                        created_new_cycle = True
+                        log.info("[CYCLE] Created %s", cycle_name)
+                    elif open_cycle_id:
+                        cycle_id = open_cycle_id
+                        cycle_name = open_cycle_name or "Cycle"
+                        linked_count = _count_notion_database_rows(
+                            NOTION_WORKOUT_PROGRAM_DB,
+                            {"property": "Cycle #", "relation": {"contains": open_cycle_id}},
+                        )
+                        week_num = linked_count + 1
+                    else:
+                        next_num = _count_notion_database_rows(NOTION_CYCLES_DB) + 1
+                        cycle_name = f"Cycle {next_num}"
+                        cycle_id = _create_cycle_row(cycle_name)
+                        week_num = 1
+                        log.warning(
+                            "[CYCLE] No open cycle found and New Cycle not checked — auto-created %s",
+                            cycle_name,
+                        )
+
+                    notion_call(
+                        notion.pages.update,
+                        page_id=page_id,
+                        properties={
+                            "Cycle #": {"relation": [{"id": cycle_id}]},
+                            "Week #": {"number": week_num},
+                        },
+                    )
+                    log.info("[CYCLE] Linked to %s, week=%s", cycle_name, week_num)
+
+                    if test_week:
+                        sunday_iso = _current_week_sunday_iso()
+                        notion_call(
+                            notion.pages.update,
+                            page_id=cycle_id,
+                            properties={"End Date": {"date": {"start": sunday_iso}}},
+                        )
+                        log.info("[CYCLE] Closed %s, End Date=%s", cycle_name, sunday_iso)
+
+                    if test_week and sunday_iso:
+                        cycle_line = f"_🏁 Cycle closed: {cycle_name} (ends {sunday_iso})_"
+                    elif created_new_cycle:
+                        cycle_line = f"_🔁 New cycle started: {cycle_name}_"
+                    else:
+                        cycle_line = f"_📅 Week {week_num} of {cycle_name}_"
+            except Exception as e:
+                log.warning("[CYCLE] Non-fatal error in cycle logic: %s", e)
 
             notion_call(
                 notion.pages.update,
@@ -3853,14 +3986,18 @@ async def process_pending_programmes(bot) -> None:
             if (not display_week_name) or display_week_name.strip().lower() == "unknown week":
                 display_week_name = (parsed_week_label or "Week").strip()
             track_names = ", ".join(t.get("track", "") for t in tracks if t.get("track"))
+            lines = [
+                f"📋 *{display_week_name}* parsed ✅",
+                "",
+                f"Tracks: {track_names or 'N/A'}",
+                f"Day rows created: {days_created}",
+                "_Saved to Workout Days_",
+            ]
+            if cycle_line:
+                lines.append(cycle_line)
             await bot.send_message(
                 chat_id=MY_CHAT_ID,
-                text=(
-                    f"📋 *{display_week_name}* parsed ✅\n\n"
-                    f"Tracks: {track_names or 'N/A'}\n"
-                    f"Day rows created: {days_created}\n"
-                    f"_Saved to Workout Days_"
-                ),
+                text="\n".join(lines),
                 parse_mode="Markdown",
             )
             log.info("process_pending_programmes: completed '%s'", week_name)
