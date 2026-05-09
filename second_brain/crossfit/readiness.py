@@ -84,5 +84,5 @@ async def log_daily_readiness(
 # [ ] Test check_readiness_logged_today returns False on first run
 # [ ] Test log_daily_readiness creates entry in Daily Readiness DB
 # [ ] Test subsequent check_readiness_logged_today returns True same day
-# [ ] Test CrossFit menu button "📊 Log Readiness" hides after first log
+# [ ] Test CrossFit menu button "📊 Readiness" hides after first log
 # [ ] Verify readiness fields removed from Workout Log v2 and WOD Log schemas

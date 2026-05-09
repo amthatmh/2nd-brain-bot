@@ -245,7 +245,7 @@ class TestDailyDigestHabits(unittest.IsolatedAsyncioTestCase):
         self.assertIn("*Habits:* tap to log:", kwargs["text"])
         self.assertIn("Test Digest Habit", button_labels)
 
-    async def test_send_daily_digest_renders_log_readiness_button_when_feel_enabled(self):
+    async def test_send_daily_digest_renders_conversational_readiness_button_when_feel_enabled(self):
         main = load_main_module()
         bot = MagicMock()
         sent = MagicMock(message_id=44)
@@ -272,7 +272,7 @@ class TestDailyDigestHabits(unittest.IsolatedAsyncioTestCase):
             for row in kwargs["reply_markup"].inline_keyboard
             for button in row
         ]
-        self.assertEqual(buttons[-1].text, "📊 Log Readiness")
+        self.assertEqual(buttons[-1].text, "💬 How are you feeling?")
         self.assertEqual(buttons[-1].callback_data, "cf:A")
 
     async def test_send_daily_digest_filters_habits_before_show_after_gate(self):

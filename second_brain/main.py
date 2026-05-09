@@ -3124,7 +3124,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     if habits:
         digest_keyboard_rows.extend([list(row) for row in kb.habit_buttons(habits, "morning").inline_keyboard])
     if include_feel:
-        digest_keyboard_rows.append([InlineKeyboardButton("📊 Log Readiness", callback_data="cf:A")])
+        digest_keyboard_rows.append([InlineKeyboardButton("💬 How are you feeling?", callback_data="cf:A")])
     reply_markup = InlineKeyboardMarkup(digest_keyboard_rows) if digest_keyboard_rows else None
 
     sent_digest = await bot.send_message(
