@@ -1794,6 +1794,43 @@ def test_save_programme_links_week_cycle_and_section_movements_from_text():
     assert day_props["Section B Movements"] == {"relation": [{"id": "mov-back-squat"}]}
     assert day_props["Section C Movements"] == {"relation": [{"id": "mov-burpee"}]}
 
+def test_save_programme_from_notion_row_returns_days_and_section_movement_ids():
+    from second_brain.crossfit.notion import save_programme_from_notion_row
+
+    created = []
+    updated = []
+
+    def query(**kwargs):
+        if kwargs["database_id"] == "movements":
+            return {"results": [
+                {"id": "mov-back-squat", "properties": {"Name": {"title": [{"plain_text": "Back Squat"}]}}},
+                {"id": "mov-burpee", "properties": {"Name": {"title": [{"plain_text": "Burpee"}]}}},
+            ]}
+        return {"results": []}
+
+    notion = SimpleNamespace(
+        pages=SimpleNamespace(
+            create=lambda **kwargs: created.append(kwargs) or {"id": f"row-{len(created)}"},
+            update=lambda **kwargs: updated.append(kwargs) or {"id": kwargs.get("page_id")},
+        ),
+        databases=SimpleNamespace(query=query),
+    )
+    parsed = {
+        "week_label": "Week of 2026-05-04",
+        "tracks": [{"track": "Performance", "days": [{
+            "day": "Monday",
+            "section_b": {"description": "5x5 Back Squat", "movements": []},
+            "section_c": {"description": "AMRAP 8 Burpees", "format": "AMRAP", "movements": []},
+        }]}],
+    }
+
+    result = save_programme_from_notion_row(notion, "week-page", "days", "movements", parsed, "program", "")
+
+    assert result == {"days_created": 1, "movement_ids": ["mov-back-squat", "mov-burpee"]}
+    day_props = created[0]["properties"]
+    assert day_props["Section B Movements"] == {"relation": [{"id": "mov-back-squat"}]}
+    assert day_props["Section C Movements"] == {"relation": [{"id": "mov-burpee"}]}
+
 
 def _workout_row(load, sets, reps, est_1rm, workout_date):
     return {

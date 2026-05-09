@@ -477,10 +477,11 @@ def save_programme_from_notion_row(
     parsed: dict,
     program_db_id: str | None = None,
     cycles_db_id: str | None = None,
-) -> int:
+) -> dict:
     """
     Like save_programme() but writes Workout Days rows linked to an
-    existing Weekly Programs page. Returns count of day rows created.
+    existing Weekly Programs page. Returns day row count and unique movement
+    page IDs written to Section B/C movement relations.
     """
     if "tracks" not in parsed and "days" in parsed:
         parsed = {
@@ -490,25 +491,23 @@ def save_programme_from_notion_row(
 
     week_label = parsed.get("week_label") or "Week"
     monday_iso = _week_start_from_label(week_label)
-    program_db_id = program_db_id or os.getenv("NOTION_WEEKLY_PROGRAMS_DB") or os.getenv("NOTION_WORKOUT_PROGRAM_DB", "")
-    cycle_id, week_number = _get_or_create_cycle_metadata(
-        notion,
-        cycles_db_id or os.getenv("NOTION_CYCLES_DB", ""),
-        program_db_id,
-        monday_iso,
-    ) if program_db_id else (None, None)
+    del program_db_id, cycles_db_id
 
     try:
         notion_call(
             notion.pages.update,
             page_id=parent_page_id,
-            properties={"Name": {"title": [{"text": {"content": week_label}}]}, **_weekly_program_metadata_props(cycle_id, week_number, monday_iso)},
+            properties={
+                "Name": {"title": [{"text": {"content": week_label}}]},
+                "Start Date": {"date": {"start": monday_iso}},
+            },
         )
     except Exception as e:
         log.warning("save_programme_from_notion_row: could not update parent name: %s", e)
 
     movement_cache: dict[str, str] = _load_movement_cache_sync(notion, movements_db_id) if movements_db_id else {}
     program_movement_ids: set[str] = set()
+    day_movement_ids: set[str] = set()
     all_names = _extract_unique_movement_names(parsed)
     if movements_db_id:
         for name in all_names:
@@ -522,7 +521,7 @@ def save_programme_from_notion_row(
 
     # keep Weekly Programs metadata in sync (aggregate movement relation)
     try:
-        parent_props = {"Name": {"title": [{"text": {"content": week_label}}]}, **_weekly_program_metadata_props(cycle_id, week_number, monday_iso)}
+        parent_props = {"Name": {"title": [{"text": {"content": week_label}}]}}
         if program_movement_ids:
             parent_props["Movements"] = {"relation": [{"id": mid} for mid in sorted(program_movement_ids)]}
             parent_props["Movement Summary"] = {"rich_text": _rich_text_chunks(", ".join(sorted(all_names)[:25]))}
@@ -578,6 +577,8 @@ def save_programme_from_notion_row(
 
             try:
                 notion_call(notion.pages.create, parent={"database_id": workout_days_db_id}, properties=props)
+                day_movement_ids.update(b_ids)
+                day_movement_ids.update(c_ids)
                 days_created += 1
                 log.info("save_programme_from_notion_row: created %s / %s", track, day)
             except Exception as e:
@@ -594,8 +595,9 @@ def save_programme_from_notion_row(
         except Exception as e:
             log.warning("save_programme_from_notion_row: could not update final parent movements: %s", e)
 
+    movement_ids = sorted(day_movement_ids)
     log.info("save_programme_from_notion_row: complete — %d rows", days_created)
-    return days_created
+    return {"days_created": days_created, "movement_ids": movement_ids}
 
 
 def validate_workout_days_db(notion, workout_days_db_id: str) -> list[str]:
