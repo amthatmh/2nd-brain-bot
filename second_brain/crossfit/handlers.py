@@ -36,6 +36,21 @@ READINESS_ORDER = [field for field, _emoji, _label in READINESS_FIELDS]
 READINESS_SLUGS = {"sleep_quality": "sleep", "energy": "energy", "mood": "mood", "stress": "stress", "soreness": "soreness"}
 READINESS_FIELDS_BY_SLUG = {slug: field for field, slug in READINESS_SLUGS.items()}
 
+REPS_TO_PERCENT = {
+    1: 1.00,
+    2: 0.95,
+    3: 0.93,
+    4: 0.90,
+    5: 0.87,
+    6: 0.85,
+    7: 0.83,
+    8: 0.80,
+    9: 0.77,
+    10: 0.75,
+    12: 0.70,
+    15: 0.65,
+}
+
 
 def _readiness_keyboard(field: str, values: dict[str, str], message_id: int) -> InlineKeyboardMarkup:
     labels = {"1": "😴", "2": "😕", "3": "😐", "4": "🙂", "5": "💪"}
@@ -157,6 +172,15 @@ def _prop_number(props: dict, *names: str):
     return None
 
 
+def _prop_formula_number(props: dict, *names: str):
+    for name in names:
+        formula = props.get(name, {}).get("formula") or {}
+        value = formula.get("number")
+        if value is not None:
+            return value
+    return None
+
+
 def _prop_date(props: dict, *names: str) -> str:
     for name in names:
         value = props.get(name, {}).get("date") or {}
@@ -165,13 +189,13 @@ def _prop_date(props: dict, *names: str) -> str:
     return "Unknown date"
 
 
-async def _match_movement_from_cache(notion, config: dict, movement_text: str) -> tuple[str, str] | None:
+async def _match_movement_from_cache(notion, config: dict, movement_text: str, threshold: float = 0.70) -> tuple[str, str] | None:
     cache = await _ensure_movements_cache(notion, config)
-    matches = await fuzzy_match_movements([movement_text], cache)
+    matches = await fuzzy_match_movements([movement_text], cache, threshold=threshold)
     if not matches:
         return None
     _raw, matched_name, score = matches[0]
-    if not matched_name or score < 0.70:
+    if not matched_name or score < threshold:
         return None
     return matched_name, cache[matched_name]
 
@@ -360,8 +384,11 @@ async def upsert_training_log_feel(notion, config: dict, date_str: str, rating: 
     logger.info(f"[FEEL] upsert complete date={date_str} rating={rating} action={'updated' if existing else 'created'}")
 
 
-async def _send_notes_prompt(message, key: str, cf_pending: dict) -> None:
-    await message.reply_text("📝 Any notes about this session?\n(Reply with text, or tap Skip)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]))
+async def _send_notes_prompt(message, key: str, cf_pending: dict, prefix: str | None = None) -> None:
+    prompt = "📝 Any notes about this session?\n(Reply with text, or tap Skip)"
+    if prefix:
+        prompt = f"{prefix.rstrip()}\n\n{prompt}"
+    await message.reply_text(prompt, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]))
 
 
 async def _prompt_session_feel(message, key: str, state: dict, cf_pending: dict) -> None:
@@ -751,44 +778,177 @@ async def handle_todays_sub(message, notion, config) -> None:
     await message.reply_text("\n".join(lines).strip(), parse_mode="Markdown")
 
 
-async def handle_cf_prs(message, notion, config, cf_pending=None):
-    if cf_pending is None:
-        await message.reply_text("🏆 Which movement? (type name)", parse_mode="Markdown")
-        return
-    key = str(message.chat_id)
-    cf_pending[key] = {"mode": "prs", "stage": "movement"}
-    await message.reply_text("🏆 Which movement? (type name)", parse_mode="Markdown")
+def _parse_pr_request(raw_text: str) -> tuple[str, int | None]:
+    text = (raw_text or "").strip()
+    target_match = re.match(r"(\d+)\s*[xX×]\s*(.+)", text)
+    if not target_match:
+        target_match = re.match(r"(\d+)\s*(?:reps?|rep)\s+(.+)", text, re.IGNORECASE)
+    if target_match:
+        return target_match.group(2).strip(), int(target_match.group(1))
+    return text, None
 
 
-async def handle_cf_prs_reply(message, movement_text: str, notion, config, cf_pending) -> None:
-    key = str(message.chat_id)
-    match = await _match_movement_from_cache(notion, config, movement_text.strip())
-    if not match:
-        cf_pending.pop(key, None)
-        await message.reply_text("No movement match found.", parse_mode="Markdown")
-        return
-    movement_name, movement_id = match
-    workout_log_db_id = _cf_config(config, "NOTION_WORKOUT_LOG_DB")
+def _rep_percent(target_reps: int) -> float:
+    if target_reps in REPS_TO_PERCENT:
+        return REPS_TO_PERCENT[target_reps]
+    ordered = sorted(REPS_TO_PERCENT)
+    if target_reps <= ordered[0]:
+        return REPS_TO_PERCENT[ordered[0]]
+    if target_reps >= ordered[-1]:
+        return REPS_TO_PERCENT[ordered[-1]]
+    lower = max(rep for rep in ordered if rep < target_reps)
+    upper = min(rep for rep in ordered if rep > target_reps)
+    lower_pct = REPS_TO_PERCENT[lower]
+    upper_pct = REPS_TO_PERCENT[upper]
+    span = upper - lower
+    return lower_pct + ((target_reps - lower) / span) * (upper_pct - lower_pct)
+
+
+def _round_to_nearest_5(value: float) -> int:
+    return int(round(value / 5) * 5)
+
+
+def _extract_pr_entry(row: dict) -> dict:
+    props = row.get("properties", {})
+    load = _prop_number(props, "load_lbs", "Load (lbs)", "Load Lbs")
+    sets = _prop_number(props, "effort_sets", "sets", "Sets")
+    reps = _prop_number(props, "effort_reps", "reps", "Reps")
+    estimated_1rm = _prop_formula_number(props, "calc_1rm_brzycki", "calc_1rm", "Est. 1RM")
+    if estimated_1rm is None and load is not None and reps is not None:
+        estimated_1rm = calc_1rm_brzycki(float(load), int(reps))
+    return {
+        "load_lbs": load,
+        "sets": int(sets) if sets is not None else None,
+        "reps": int(reps) if reps is not None else None,
+        "estimated_1rm": estimated_1rm,
+        "date": _prop_date(props, "Date", "Workout Date"),
+    }
+
+
+def _entry_sortable_date(entry: dict) -> str:
+    workout_date = entry.get("date") or ""
+    return workout_date if workout_date != "Unknown date" else ""
+
+
+def _recent_unique_sessions(entries: list[dict], limit: int = 3) -> list[dict]:
+    by_date: dict[str, dict] = {}
+    for entry in entries:
+        workout_date = entry.get("date") or "Unknown date"
+        if workout_date not in by_date:
+            by_date[workout_date] = entry
+            continue
+        existing_load = by_date[workout_date].get("load_lbs") or 0
+        candidate_load = entry.get("load_lbs") or 0
+        if candidate_load > existing_load:
+            by_date[workout_date] = entry
+    return sorted(by_date.values(), key=_entry_sortable_date, reverse=True)[:limit]
+
+
+def _format_best_logged(entry: dict) -> str:
+    load = _format_lbs(entry.get("load_lbs"))
+    reps = entry.get("reps") or 1
+    return f"{load} lbs × {reps} reps"
+
+
+def _format_recent_pr_lines(entries: list[dict], include_sets: bool = False) -> list[str]:
+    lines = []
+    for entry in entries:
+        load = _format_lbs(entry.get("load_lbs"))
+        sets = entry.get("sets")
+        reps = entry.get("reps") or 1
+        if include_sets and sets:
+            effort = f"{sets}×{reps}"
+        else:
+            effort = f"{reps} reps"
+        lines.append(f"• {entry.get('date') or 'Unknown date'} — {load} lbs × {effort}")
+    return lines
+
+
+async def _query_workout_log_for_movement(notion, workout_log_db_id: str, movement_id: str, page_size: int = 10, sort_property: str = "load_lbs", sort_direction: str = "descending") -> list[dict]:
     results = await _maybe_await(notion_call(
         notion.databases.query,
         database_id=workout_log_db_id,
         filter={"property": "Movement", "relation": {"contains": movement_id}},
-        sorts=[{"property": "load_lbs", "direction": "descending"}],
-        page_size=5,
+        sorts=[{"property": sort_property, "direction": sort_direction}],
+        page_size=page_size,
     ))
-    rows = results.get("results", [])
-    cf_pending.pop(key, None)
-    if not rows:
-        await message.reply_text(f"No logged entries found for {movement_name}.", parse_mode="Markdown")
+    return results.get("results", [])
+
+
+async def _recent_pr_context_for_notes(notion, config: dict, movement_id: str, movement_name: str) -> str | None:
+    workout_log_db_id = _cf_config(config, "NOTION_WORKOUT_LOG_DB")
+    if not workout_log_db_id or not movement_id:
+        return None
+    rows = await _query_workout_log_for_movement(notion, workout_log_db_id, movement_id, page_size=3, sort_property="Date")
+    entries = [_extract_pr_entry(row) for row in rows]
+    if not entries:
+        return None
+    best_1rm = max((entry.get("estimated_1rm") or 0 for entry in entries), default=0)
+    lines = [f"📊 *{movement_name} — recent*"]
+    lines.extend(_format_recent_pr_lines(entries, include_sets=True))
+    if best_1rm:
+        lines.append(f"🧮 Est. 1RM: {round(best_1rm)} lbs")
+    return "\n".join(lines)
+
+
+async def handle_cf_prs(message, notion, config, cf_pending=None):
+    key = str(message.chat_id)
+    if cf_pending is not None:
+        cf_pending[key] = {"mode": "prs", "stage": "movement"}
+    await message.reply_text("🏆 My PRs — which movement?\n(Type name, e.g. 'back squat' or '6x back squat' for a target)", parse_mode="Markdown")
+
+
+async def handle_cf_prs_reply(message, movement_text: str, notion, config, cf_pending) -> None:
+    key = str(message.chat_id)
+    requested_movement, target_reps = _parse_pr_request(movement_text)
+    if not requested_movement:
+        await message.reply_text("🏆 My PRs — which movement?\n(Type name, e.g. 'back squat' or '6x back squat' for a target)", parse_mode="Markdown")
         return
-    lines = [f"🏆 {movement_name} — Top 5"]
-    for idx, row in enumerate(rows, start=1):
-        props = row.get("properties", {})
-        weight = _prop_number(props, "load_lbs", "Load (lbs)", "Load Lbs") or 0
-        reps = int(_prop_number(props, "reps", "Reps") or 1)
-        workout_date = _prop_date(props, "Date", "Workout Date")
-        est = round(calc_1rm_brzycki(float(weight), reps)) if weight else 0
-        lines.append(f"{idx}. {_format_lbs(weight)} lbs × {reps} reps — {workout_date} (est. 1RM: {est} lbs)")
+    match = await _match_movement_from_cache(notion, config, requested_movement, threshold=0.80)
+    if not match:
+        await message.reply_text("❓ Couldn't find that movement. Try again.", parse_mode="Markdown")
+        return
+    movement_name, movement_id = match
+    workout_log_db_id = _cf_config(config, "NOTION_WORKOUT_LOG_DB")
+    rows = await _query_workout_log_for_movement(notion, workout_log_db_id, movement_id, page_size=10)
+    entries = [_extract_pr_entry(row) for row in rows]
+    if not entries:
+        cf_pending.pop(key, None)
+        await message.reply_text(f"No logged entries found for {movement_name} yet.", parse_mode="Markdown")
+        return
+
+    all_time_pr = max(entries, key=lambda entry: (entry.get("load_lbs") or 0, entry.get("estimated_1rm") or 0))
+    best_estimated_1rm = max((entry.get("estimated_1rm") or 0 for entry in entries), default=0)
+    recent_sessions = _recent_unique_sessions(entries)
+    cf_pending.pop(key, None)
+
+    if target_reps is None:
+        lines = [
+            f"🏆 *{movement_name} — PR Summary*",
+            "",
+            f"📊 *Best logged:* {_format_best_logged(all_time_pr)}",
+            f"🧮 *Est. 1RM:* {round(best_estimated_1rm)} lbs (Brzycki)",
+            "",
+            "📅 *Recent sessions:*",
+        ]
+        lines.extend(_format_recent_pr_lines(recent_sessions))
+        lines.extend([
+            "",
+            "💡 Tip: Type '6x back squat' to get a target for a specific rep scheme.",
+        ])
+    else:
+        percent = _rep_percent(target_reps)
+        suggested_weight = _round_to_nearest_5(best_estimated_1rm * percent)
+        lines = [
+            f"🏋️ *{movement_name} — {target_reps} Rep Target*",
+            "",
+            f"🧮 *Est. 1RM:* {round(best_estimated_1rm)} lbs",
+            f"🎯 *Suggested for {target_reps} reps:* {suggested_weight} lbs ({round(percent * 100)}% of 1RM)",
+            "",
+            f"📊 *Best logged:* {_format_best_logged(all_time_pr)}",
+            "📅 *Recent sessions:*",
+        ]
+        lines.extend(_format_recent_pr_lines(recent_sessions))
     await message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
@@ -988,7 +1148,12 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
         state["stage"] = "notes"
         cf_pending[key] = state
         logger.info(f"[CF_STATE_A] WROTE key={key!r} sets={state.get('sets')} weight={state.get('weight_lbs')} date={state.get('workout_date')}")
-        await _send_notes_prompt(message, key, cf_pending)
+        pr_context = None
+        try:
+            pr_context = await _recent_pr_context_for_notes(notion, config, movement_id, state["movement_name"])
+        except Exception as exc:
+            logger.warning("Skipping strength PR context for %s: %s", state.get("movement_name"), exc, exc_info=True)
+        await _send_notes_prompt(message, key, cf_pending, prefix=pr_context)
         return
     if state.get("mode") == "wod" and state.get("stage") == "movement":
         if not state.get("format"):

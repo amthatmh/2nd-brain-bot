@@ -1743,3 +1743,131 @@ def test_save_programme_links_week_cycle_and_section_movements_from_text():
     assert day_props["Week Of"] == {"date": {"start": "2026-05-04"}}
     assert day_props["Section B Movements"] == {"relation": [{"id": "mov-back-squat"}]}
     assert day_props["Section C Movements"] == {"relation": [{"id": "mov-burpee"}]}
+
+
+def _workout_row(load, sets, reps, est_1rm, workout_date):
+    return {
+        "properties": {
+            "load_lbs": {"number": load},
+            "effort_sets": {"number": sets},
+            "effort_reps": {"number": reps},
+            "calc_1rm_brzycki": {"formula": {"type": "number", "number": est_1rm}},
+            "Date": {"date": {"start": workout_date}},
+        }
+    }
+
+
+def test_my_prs_target_reps_uses_workout_log_v2_and_clears_state(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    async def fake_match(notion, config, movement_text, threshold=0.70):
+        del notion, config
+        assert movement_text == "back squat"
+        assert threshold == 0.80
+        return "Back Squat", "mov-back-squat"
+
+    captured = {}
+
+    def query(**kwargs):
+        captured.update(kwargs)
+        return {"results": [
+            _workout_row(245, 1, 3, 266, "2026-05-06"),
+            _workout_row(235, 1, 4, 261, "2026-04-28"),
+            _workout_row(225, 1, 5, 253, "2026-04-14"),
+        ]}
+
+    monkeypatch.setattr(handlers, "_match_movement_from_cache", fake_match)
+    message = _DummyMessage()
+    pending = {str(message.chat_id): {"mode": "prs", "stage": "movement"}}
+    notion = SimpleNamespace(databases=SimpleNamespace(query=query))
+
+    asyncio.run(
+        handlers.handle_cf_prs_reply(
+            message,
+            "6x back squat",
+            notion,
+            {"NOTION_WORKOUT_LOG_DB": "workout-log", "NOTION_MOVEMENTS_DB": "movements"},
+            pending,
+        )
+    )
+
+    assert captured["database_id"] == "workout-log"
+    assert captured["filter"] == {"property": "Movement", "relation": {"contains": "mov-back-squat"}}
+    assert captured["sorts"] == [{"property": "load_lbs", "direction": "descending"}]
+    assert captured["page_size"] == 10
+    assert str(message.chat_id) not in pending
+    reply = message.replies[-1][0]
+    assert "Back Squat — 6 Rep Target" in reply
+    assert "Suggested for 6 reps:* 225 lbs (85% of 1RM)" in reply
+    assert "Best logged:* 245 lbs × 3 reps" in reply
+
+
+def test_my_prs_no_match_keeps_state(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    async def fake_match(notion, config, movement_text, threshold=0.70):
+        del notion, config, movement_text, threshold
+        return None
+
+    monkeypatch.setattr(handlers, "_match_movement_from_cache", fake_match)
+    message = _DummyMessage()
+    pending = {str(message.chat_id): {"mode": "prs", "stage": "movement"}}
+
+    asyncio.run(
+        handlers.handle_cf_prs_reply(
+            message,
+            "xyz",
+            SimpleNamespace(),
+            {"NOTION_WORKOUT_LOG_DB": "workout-log", "NOTION_MOVEMENTS_DB": "movements"},
+            pending,
+        )
+    )
+
+    assert pending[str(message.chat_id)] == {"mode": "prs", "stage": "movement"}
+    assert "Couldn't find that movement" in message.replies[-1][0]
+
+
+def test_strength_movement_reply_prepends_recent_pr_context(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    async def fake_resolve(text, claude, notion, config, message=None):
+        del claude, notion, config, message
+        assert text == "Hang Squat Clean"
+        return ["mov-hsc"], ["Hang Squat Clean"]
+
+    rows = [
+        _workout_row(115, 6, 4, 130, "2026-05-06"),
+        _workout_row(110, 5, 5, 128, "2026-04-28"),
+        _workout_row(105, 4, 6, 126, "2026-04-14"),
+    ]
+
+    def query(**kwargs):
+        assert kwargs["database_id"] == "workout-log"
+        assert kwargs["sorts"] == [{"property": "Date", "direction": "descending"}]
+        assert kwargs["page_size"] == 3
+        return {"results": rows}
+
+    monkeypatch.setattr(handlers, "_resolve_movement_ids", fake_resolve)
+    payload = '{"movements":["Hang Squat Clean"],"date":null,"sets":6,"reps":4,"weight_lbs":115,"weight_kg":52.2,"scheme":"6x4","notes":null}'
+    message = _DummyMessage()
+    key = str(message.chat_id)
+    pending = {key: {"mode": "strength", "stage": "movement"}}
+    notion = SimpleNamespace(databases=SimpleNamespace(query=query))
+
+    asyncio.run(
+        handlers.handle_cf_text_reply(
+            message,
+            "6 sets of 4x hang squat clean 115lbs",
+            key,
+            _FakeClaude(payload),
+            notion,
+            {"NOTION_WORKOUT_LOG_DB": "workout-log", "NOTION_MOVEMENTS_DB": "movements"},
+            pending,
+        )
+    )
+
+    reply = message.replies[-1][0]
+    assert reply.startswith("📊 *Hang Squat Clean — recent*")
+    assert "• 2026-05-06 — 115 lbs × 6×4" in reply
+    assert "🧮 Est. 1RM: 130 lbs" in reply
+    assert "Any notes about this session" in reply
