@@ -22,6 +22,57 @@ from .weekly_program import get_current_week_program_url, get_todays_workout_day
 log = logging.getLogger(__name__)
 logger = log
 
+
+READINESS_FIELDS = [
+    ("sleep_quality", "🛏️", "Sleep Quality"),
+    ("energy", "⚡", "Energy"),
+    ("mood", "😊", "Mood"),
+    ("stress", "😰", "Stress"),
+    ("soreness", "💪", "Soreness"),
+]
+READINESS_LABELS = {field: label for field, _emoji, label in READINESS_FIELDS}
+READINESS_EMOJIS = {field: emoji for field, emoji, _label in READINESS_FIELDS}
+READINESS_ORDER = [field for field, _emoji, _label in READINESS_FIELDS]
+READINESS_SLUGS = {"sleep_quality": "sleep", "energy": "energy", "mood": "mood", "stress": "stress", "soreness": "soreness"}
+READINESS_FIELDS_BY_SLUG = {slug: field for field, slug in READINESS_SLUGS.items()}
+
+
+def _readiness_keyboard(field: str, values: dict[str, str], message_id: int) -> InlineKeyboardMarkup:
+    labels = {"1": "😴", "2": "😕", "3": "😐", "4": "🙂", "5": "💪"}
+    previous_values = ":".join(values[name] for name in READINESS_ORDER if name in values)
+    prefix = f"cf:{READINESS_SLUGS[field]}"
+    if previous_values:
+        prefix = f"{prefix}:{previous_values}"
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(f"{emoji} {score}", callback_data=f"{prefix}:{score}:{message_id}")
+        for score, emoji in labels.items()
+    ]])
+
+
+def _readiness_progress_text(values: dict[str, str], next_field: str | None = None) -> str:
+    lines = ["💪 *Readiness Log*", ""]
+    completed = []
+    for field in READINESS_ORDER:
+        if field in values:
+            completed.append(f"{READINESS_EMOJIS[field]} {READINESS_LABELS[field]}: {values[field]}")
+    if completed:
+        lines.append("✅ " + " | ".join(completed))
+    if next_field:
+        if completed:
+            lines.append("")
+        lines.append(f"{READINESS_EMOJIS[next_field]} {READINESS_LABELS[next_field]} (1-5)?")
+    return "\n".join(lines)
+
+
+def _readiness_final_text(values: dict[str, str]) -> str:
+    summary = " | ".join(
+        f"{READINESS_EMOJIS[field]} {READINESS_LABELS[field]}: {values[field]}"
+        for field in READINESS_ORDER
+        if field in values
+    )
+    return f"✅ *Readiness logged!*\n\n{summary}"
+
+
 async def _maybe_await(value):
     if inspect.isawaitable(value):
         return await value
@@ -1014,16 +1065,10 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
 
 
 async def _prompt_readiness_field(message, key: str, field: str):
-    labels = {
-        "sleep_quality": "Sleep quality",
-        "energy": "Energy",
-        "mood": "Mood",
-        "stress": "Stress",
-        "soreness": "Soreness",
-    }
-    from .keyboards import readiness_keyboard
-
-    await message.reply_text(f"📊 {labels[field]} (1-5)?", reply_markup=readiness_keyboard(key, field))
+    del key
+    prompt = _readiness_progress_text({}, field)
+    msg = await message.reply_text(prompt, parse_mode="Markdown")
+    await msg.edit_reply_markup(reply_markup=_readiness_keyboard(field, {}, msg.message_id))
 
 
 async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
@@ -1124,45 +1169,146 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         await handle_cf_prs(q.message, notion, config, cf_pending)
     elif parts[1] == "log_readiness":
         if await check_readiness_logged_today(notion, _cf_config(config, "NOTION_DAILY_READINESS_DB")):
-            await q.edit_message_text("✅ Readiness is already logged for today.")
+            await q.edit_message_text("✅ Readiness is already logged for today.", reply_markup=None)
             return
         key = str(q.message.chat_id)
         cf_pending[key] = {"mode": "readiness", "stage": "sleep_quality", "readiness": {}}
         await _prompt_readiness_field(q.message, key, "sleep_quality")
-    elif parts[1] == "ready" and len(parts) == 5:
-        key, field, value = parts[2], parts[3], parts[4]
-        state = cf_pending.get(key, {"mode": "readiness", "readiness": {}})
-        state.setdefault("readiness", {})[field] = value
-        order = ["sleep_quality", "energy", "mood", "stress", "soreness"]
+    elif parts[1] in READINESS_FIELDS_BY_SLUG and len(parts) >= 4:
+        field = READINESS_FIELDS_BY_SLUG[parts[1]]
+        field_index = READINESS_ORDER.index(field)
+        expected_len = 4 + field_index
+        if len(parts) != expected_len:
+            await q.answer("This readiness prompt expired — please start again.", show_alert=False)
+            return
+        previous_values = parts[2:2 + field_index]
+        value = parts[2 + field_index]
+        message_id = int(parts[3 + field_index])
+        values = dict(zip(READINESS_ORDER[:field_index], previous_values))
+        values[field] = value
+        key = str(q.message.chat_id)
+        state = {"mode": "readiness", "readiness": values}
+
         try:
-            next_field = order[order.index(field) + 1]
-        except (ValueError, IndexError):
-            scores = state.get("readiness", {})
-            print(f"[DEBUG] All readiness scores collected: {scores}")
+            next_field = READINESS_ORDER[field_index + 1]
+        except IndexError:
+            print(f"[DEBUG] All readiness scores collected: {values}")
             print("[DEBUG] Calling log_daily_readiness...")
             try:
                 await log_daily_readiness(
                     notion,
-                    sleep_quality=scores.get("sleep_quality", value),
-                    energy=scores.get("energy", value),
-                    mood=scores.get("mood", value),
-                    stress=scores.get("stress", value),
-                    soreness=scores.get("soreness", value),
+                    sleep_quality=values.get("sleep_quality", value),
+                    energy=values.get("energy", value),
+                    mood=values.get("mood", value),
+                    stress=values.get("stress", value),
+                    soreness=values.get("soreness", value),
                     daily_readiness_db_id=_cf_config(config, "NOTION_DAILY_READINESS_DB"),
                 )
             except Exception as e:
                 print(f"[ERROR] Readiness logging failed: {e}")
                 log.exception("Readiness logging failed")
-                await q.edit_message_text(f"❌ Error logging readiness: {e}")
+                await q.edit_message_text(f"❌ Error logging readiness: {e}", reply_markup=None)
                 return
             print("[DEBUG] Readiness logged successfully")
             cf_pending.pop(key, None)
-            await q.edit_message_text("✅ Readiness logged!")
+            await q.edit_message_text(_readiness_final_text(values), parse_mode="Markdown", reply_markup=None)
             return
+
         state["stage"] = next_field
         cf_pending[key] = state
-        await q.edit_message_text(f"✅ {field.replace('_', ' ').title()}: {value}")
-        await _prompt_readiness_field(q.message, key, next_field)
+        await q.edit_message_text(
+            _readiness_progress_text(values, next_field),
+            parse_mode="Markdown",
+            reply_markup=_readiness_keyboard(next_field, values, message_id),
+        )
+    elif parts[1] == "ready" and len(parts) >= 5:
+        if len(parts) == 5 and parts[2] not in READINESS_ORDER:
+            key, field, value = parts[2], parts[3], parts[4]
+            state = cf_pending.get(key, {"mode": "readiness", "readiness": {}})
+            values = state.setdefault("readiness", {})
+            values[field] = value
+            try:
+                next_field = READINESS_ORDER[READINESS_ORDER.index(field) + 1]
+            except (ValueError, IndexError):
+                print(f"[DEBUG] All readiness scores collected: {values}")
+                print("[DEBUG] Calling log_daily_readiness...")
+                try:
+                    await log_daily_readiness(
+                        notion,
+                        sleep_quality=values.get("sleep_quality", value),
+                        energy=values.get("energy", value),
+                        mood=values.get("mood", value),
+                        stress=values.get("stress", value),
+                        soreness=values.get("soreness", value),
+                        daily_readiness_db_id=_cf_config(config, "NOTION_DAILY_READINESS_DB"),
+                    )
+                except Exception as e:
+                    print(f"[ERROR] Readiness logging failed: {e}")
+                    log.exception("Readiness logging failed")
+                    await q.edit_message_text(f"❌ Error logging readiness: {e}", reply_markup=None)
+                    return
+                print("[DEBUG] Readiness logged successfully")
+                cf_pending.pop(key, None)
+                await q.edit_message_text(_readiness_final_text(values), parse_mode="Markdown", reply_markup=None)
+                return
+            state["stage"] = next_field
+            cf_pending[key] = state
+            await q.edit_message_text(
+                _readiness_progress_text(values, next_field),
+                parse_mode="Markdown",
+            )
+            await _prompt_readiness_field(q.message, key, next_field)
+            return
+
+        field = parts[2]
+        if field not in READINESS_ORDER:
+            await q.answer("Action unavailable.", show_alert=False)
+            return
+        field_index = READINESS_ORDER.index(field)
+        expected_len = 5 + field_index
+        if len(parts) != expected_len:
+            await q.answer("This readiness prompt expired — please start again.", show_alert=False)
+            return
+        previous_values = parts[3:3 + field_index]
+        value = parts[3 + field_index]
+        message_id = int(parts[4 + field_index])
+        values = dict(zip(READINESS_ORDER[:field_index], previous_values))
+        values[field] = value
+        key = str(q.message.chat_id)
+        state = {"mode": "readiness", "readiness": values}
+
+        try:
+            next_field = READINESS_ORDER[field_index + 1]
+        except IndexError:
+            print(f"[DEBUG] All readiness scores collected: {values}")
+            print("[DEBUG] Calling log_daily_readiness...")
+            try:
+                await log_daily_readiness(
+                    notion,
+                    sleep_quality=values.get("sleep_quality", value),
+                    energy=values.get("energy", value),
+                    mood=values.get("mood", value),
+                    stress=values.get("stress", value),
+                    soreness=values.get("soreness", value),
+                    daily_readiness_db_id=_cf_config(config, "NOTION_DAILY_READINESS_DB"),
+                )
+            except Exception as e:
+                print(f"[ERROR] Readiness logging failed: {e}")
+                log.exception("Readiness logging failed")
+                await q.edit_message_text(f"❌ Error logging readiness: {e}", reply_markup=None)
+                return
+            print("[DEBUG] Readiness logged successfully")
+            cf_pending.pop(key, None)
+            await q.edit_message_text(_readiness_final_text(values), parse_mode="Markdown", reply_markup=None)
+            return
+
+        state["stage"] = next_field
+        cf_pending[key] = state
+        await q.edit_message_text(
+            _readiness_progress_text(values, next_field),
+            parse_mode="Markdown",
+            reply_markup=_readiness_keyboard(next_field, values, message_id),
+        )
     elif parts[1] == "fmt" and len(parts) >= 4:
         key = parts[2]
         state = cf_pending.get(key, {"mode": "wod"})
