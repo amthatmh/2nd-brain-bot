@@ -22,7 +22,7 @@ async def _maybe_await(value):
 
 
 def _weekly_programs_db_id() -> str:
-    return os.getenv("NOTION_WORKOUT_PROGRAM_DB", "")
+    return os.getenv("NOTION_WEEKLY_PROGRAMS_DB") or os.getenv("NOTION_WORKOUT_PROGRAM_DB", "")
 
 
 async def get_current_week_program_url(notion_client) -> Optional[str]:

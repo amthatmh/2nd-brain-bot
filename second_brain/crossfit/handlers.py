@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import inspect
 import logging
 import os
@@ -85,10 +85,44 @@ def _cf_config(config: dict, name: str, default: str = "") -> str:
     defaults = {
         "NOTION_MOVEMENTS_DB": DEFAULT_MOVEMENTS_DB_ID,
         "NOTION_WOD_LOG_DB": DEFAULT_WOD_LOG_DB_ID,
+        "NOTION_WORKOUT_PROGRAM_DB": os.environ.get("NOTION_WEEKLY_PROGRAMS_DB", ""),
     }
     fallback = default or defaults.get(name, "")
     return str((config or {}).get(name) or os.environ.get(name) or fallback).strip()
 
+
+
+def calc_1rm_brzycki(weight: float, reps: int) -> float:
+    if reps >= 37:
+        return weight
+    return weight * 36 / (37 - reps)
+
+
+def _prop_number(props: dict, *names: str):
+    for name in names:
+        value = props.get(name, {}).get("number")
+        if value is not None:
+            return value
+    return None
+
+
+def _prop_date(props: dict, *names: str) -> str:
+    for name in names:
+        value = props.get(name, {}).get("date") or {}
+        if value.get("start"):
+            return value["start"]
+    return "Unknown date"
+
+
+async def _match_movement_from_cache(notion, config: dict, movement_text: str) -> tuple[str, str] | None:
+    cache = await _ensure_movements_cache(notion, config)
+    matches = await fuzzy_match_movements([movement_text], cache)
+    if not matches:
+        return None
+    _raw, matched_name, score = matches[0]
+    if not matched_name or score < 0.70:
+        return None
+    return matched_name, cache[matched_name]
 
 
 async def query_wod_log_by_date(notion, wod_log_db_id: str, workout_date: str, wod_format: str | None = None) -> list[dict]:
@@ -593,35 +627,118 @@ async def handle_cf_wod_flow(message, workout_result, notion, config, cf_pending
 
 
 async def handle_cf_subs_flow(message, notion, config, cf_pending):
-    del notion, config
+    del notion, config, cf_pending
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔍 Subs Search", callback_data="cf:sub_search"),
+        InlineKeyboardButton("📅 Today's Subs", callback_data="cf:sub_today"),
+    ]])
+    await message.reply_text("🔄 Sub / Add-on", reply_markup=keyboard)
+
+
+async def prompt_cf_sub_search(message, cf_pending):
     key = str(message.chat_id)
-    cf_pending[key] = {"mode": "subs", "stage": "movement"}
-    await message.reply_text("Which movement?", parse_mode="Markdown")
+    cf_pending[key] = {"mode": "sub_search", "stage": "movement"}
+    await message.reply_text("Which movement do you need a sub for?", parse_mode="Markdown")
 
 
 async def handle_todays_sub(message, notion, config) -> None:
-    todays_workout = await get_todays_workout_day(notion)
-    if not todays_workout:
-        await message.reply_text("No Workout Days row found for today.", parse_mode="Markdown")
+    today = date.today()
+    monday = today - timedelta(days=today.weekday())
+    day_name = today.strftime("%A")
+    workout_days_db_id = _cf_config(config, "NOTION_WORKOUT_DAYS_DB")
+    if not workout_days_db_id:
+        await message.reply_text("No workout found for today.", parse_mode="Markdown")
         return
-    movement_ids = []
-    for key in ("Section B Movements", "Section C Movements"):
-        for movement_id in todays_workout.get(key, []) or []:
-            if movement_id and movement_id not in movement_ids:
-                movement_ids.append(movement_id)
-    if not movement_ids:
-        await message.reply_text("No Section B/C movements linked for today's Workout Days row.", parse_mode="Markdown")
+
+    results = await _maybe_await(notion_call(
+        notion.databases.query,
+        database_id=workout_days_db_id,
+        filter={"and": [
+            {"property": "Week Of", "date": {"equals": monday.isoformat()}},
+            {"property": "Day", "select": {"equals": day_name}},
+        ]},
+        page_size=1,
+    ))
+    rows = results.get("results", [])
+    if not rows:
+        await message.reply_text("No workout found for today.", parse_mode="Markdown")
         return
-    lines = []
-    for movement_id in movement_ids:
-        details = await asyncio.get_running_loop().run_in_executor(None, lambda mid=movement_id: get_movement_details(notion, mid))
-        lines.append(format_movement_sub_details(details))
-    await message.reply_text("\n\n".join(lines), parse_mode="Markdown")
+
+    props = rows[0].get("properties", {})
+    track = (props.get("Track", {}).get("select") or {}).get("name") or "Workout"
+
+    async def movement_details_for_relation(prop_name: str):
+        out = []
+        for rel in props.get(prop_name, {}).get("relation", []) or []:
+            movement_id = rel.get("id")
+            if movement_id:
+                details = await asyncio.get_running_loop().run_in_executor(None, lambda mid=movement_id: get_movement_details(notion, mid))
+                out.append(details)
+        return out
+
+    b_details = await movement_details_for_relation("Section B Movements")
+    c_details = await movement_details_for_relation("Section C Movements")
+    if not b_details and not c_details:
+        await message.reply_text("No workout found for today.", parse_mode="Markdown")
+        return
+
+    lines = [f"📅 *{day_name} — {track}*", ""]
+    if b_details:
+        b_names = " | ".join(d.get("name") or "Movement" for d in b_details)
+        lines.append(f"Section B: {b_names}")
+        if len(b_details) == 1:
+            lines.append(f"📝 {b_details[0].get('scaling_notes') or 'None set'}")
+        else:
+            for details in b_details:
+                lines.append(f"📝 {details.get('name') or 'Movement'}: {details.get('scaling_notes') or 'None set'}")
+        lines.append("")
+    if c_details:
+        c_names = " | ".join(d.get("name") or "Movement" for d in c_details)
+        lines.append(f"Section C: {c_names}")
+        for details in c_details:
+            lines.append(f"📝 {details.get('name') or 'Movement'}: {details.get('scaling_notes') or 'None set'}")
+    await message.reply_text("\n".join(lines).strip(), parse_mode="Markdown")
 
 
-async def handle_cf_prs(message, notion, config):
-    del notion, config
-    await message.reply_text("🏆 Recent PRs\n\n(Connect PR DB to view entries)", parse_mode="Markdown")
+async def handle_cf_prs(message, notion, config, cf_pending=None):
+    if cf_pending is None:
+        await message.reply_text("🏆 Which movement? (type name)", parse_mode="Markdown")
+        return
+    key = str(message.chat_id)
+    cf_pending[key] = {"mode": "prs", "stage": "movement"}
+    await message.reply_text("🏆 Which movement? (type name)", parse_mode="Markdown")
+
+
+async def handle_cf_prs_reply(message, movement_text: str, notion, config, cf_pending) -> None:
+    key = str(message.chat_id)
+    match = await _match_movement_from_cache(notion, config, movement_text.strip())
+    if not match:
+        cf_pending.pop(key, None)
+        await message.reply_text("No movement match found.", parse_mode="Markdown")
+        return
+    movement_name, movement_id = match
+    workout_log_db_id = _cf_config(config, "NOTION_WORKOUT_LOG_DB")
+    results = await _maybe_await(notion_call(
+        notion.databases.query,
+        database_id=workout_log_db_id,
+        filter={"property": "Movement", "relation": {"contains": movement_id}},
+        sorts=[{"property": "load_lbs", "direction": "descending"}],
+        page_size=5,
+    ))
+    rows = results.get("results", [])
+    cf_pending.pop(key, None)
+    if not rows:
+        await message.reply_text(f"No logged entries found for {movement_name}.", parse_mode="Markdown")
+        return
+    lines = [f"🏆 {movement_name} — Top 5"]
+    for idx, row in enumerate(rows, start=1):
+        props = row.get("properties", {})
+        weight = _prop_number(props, "load_lbs", "Load (lbs)", "Load Lbs") or 0
+        reps = int(_prop_number(props, "reps", "Reps") or 1)
+        workout_date = _prop_date(props, "Date", "Workout Date")
+        est = round(calc_1rm_brzycki(float(weight), reps)) if weight else 0
+        lines.append(f"{idx}. {_format_lbs(weight)} lbs × {reps} reps — {workout_date} (est. 1RM: {est} lbs)")
+    await message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
@@ -874,17 +991,23 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
         cf_pending[cf_flow_key] = state
         await message.reply_text("Rx or Scaled?", parse_mode="Markdown", reply_markup=rx_scaled_keyboard(cf_flow_key))
         return
-    if state.get("mode") == "subs" and state.get("stage") == "movement":
+    if state.get("mode") == "sub_search" and state.get("stage") == "movement":
         movement_name = text.strip()
         if not movement_name:
-            await message.reply_text("Which movement?", parse_mode="Markdown")
+            await message.reply_text("Which movement do you need a sub for?", parse_mode="Markdown")
             return
-        details = await asyncio.get_running_loop().run_in_executor(
-            None,
-            lambda: fuzzy_find_movement_details(notion, _cf_config(config, "NOTION_MOVEMENTS_DB"), movement_name),
-        )
+        match = await _match_movement_from_cache(notion, config, movement_name)
+        if not match:
+            cf_pending.pop(cf_flow_key, None)
+            await message.reply_text("No movement match found.", parse_mode="Markdown")
+            return
+        _matched_name, movement_id = match
+        details = await asyncio.get_running_loop().run_in_executor(None, lambda: get_movement_details(notion, movement_id))
         cf_pending.pop(cf_flow_key, None)
-        await message.reply_text(format_movement_sub_details(details) if details else "No movement match found.", parse_mode="Markdown")
+        await message.reply_text(format_movement_sub_details(details), parse_mode="Markdown")
+        return
+    if state.get("mode") == "prs" and state.get("stage") == "movement":
+        await handle_cf_prs_reply(message, text, notion, config, cf_pending)
         return
     if state.get("stage") == "notes":
         await _finalize_flow(message, cf_flow_key, notion, config, cf_pending, text)
@@ -991,12 +1114,14 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         except Exception:
             await q.message.reply_text(prompt, parse_mode="Markdown")
         return
-    elif parts[1] in {"subs", "sub_addon", "subs_search"}:
+    elif parts[1] in {"subs", "sub_addon"}:
         await handle_cf_subs_flow(q.message, notion, config, cf_pending)
-    elif parts[1] == "todays_sub":
+    elif parts[1] in {"sub_search", "subs_search"}:
+        await prompt_cf_sub_search(q.message, cf_pending)
+    elif parts[1] in {"sub_today", "todays_sub"}:
         await handle_todays_sub(q.message, notion, config)
     elif parts[1] in {"prs", "my_prs"}:
-        await handle_cf_prs(q.message, notion, config)
+        await handle_cf_prs(q.message, notion, config, cf_pending)
     elif parts[1] == "log_readiness":
         if await check_readiness_logged_today(notion, _cf_config(config, "NOTION_DAILY_READINESS_DB")):
             await q.edit_message_text("✅ Readiness is already logged for today.")

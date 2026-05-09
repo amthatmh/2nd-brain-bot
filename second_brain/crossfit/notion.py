@@ -177,10 +177,11 @@ def _cycle_number_from_name(name: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _get_or_create_cycle_metadata(notion, cycles_db_id: str, program_db_id: str, monday_iso: str) -> tuple[str | None, int | None]:
-    """Return (cycle_page_id, weekly_program_week_number)."""
-    if not cycles_db_id:
-        return None, None
+def _get_open_cycle_metadata(notion, cycles_db_id: str, program_db_id: str) -> tuple[str | None, int]:
+    """Return (open_cycle_page_id, next_week_number), without creating cycles."""
+    if not cycles_db_id or not program_db_id:
+        log.warning("[PARSER] No open cycle found — Week set to 1, Cycle # left blank")
+        return None, 1
     try:
         open_cycles = notion_call(
             notion.databases.query,
@@ -188,40 +189,33 @@ def _get_or_create_cycle_metadata(notion, cycles_db_id: str, program_db_id: str,
             filter={"property": "End Date", "date": {"is_empty": True}},
             page_size=1,
         ).get("results", [])
-        if open_cycles:
-            cycle_id = open_cycles[0]["id"]
-            existing = notion_call(
-                notion.databases.query,
-                database_id=program_db_id,
-                filter={"property": "Cycle", "relation": {"contains": cycle_id}},
-                page_size=100,
-            ).get("results", [])
-            return cycle_id, len(existing) + 1
+        if not open_cycles:
+            log.warning("[PARSER] No open cycle found — Week set to 1, Cycle # left blank")
+            return None, 1
 
-        all_cycles = notion_call(notion.databases.query, database_id=cycles_db_id, page_size=100).get("results", [])
-        max_cycle = 0
-        for row in all_cycles:
-            max_cycle = max(max_cycle, _cycle_number_from_name(_title(row.get("properties", {}))) or 0)
-        next_cycle = max_cycle + 1
-        created = notion_call(
-            notion.pages.create,
-            parent={"database_id": cycles_db_id},
-            properties={
-                "Name": {"title": [{"text": {"content": f"Cycle {next_cycle}"}}]},
-                "Start Date": {"date": {"start": monday_iso}},
-                "Week #": {"number": 1},
-            },
-        )
-        return created.get("id"), 1
+        cycle_id = open_cycles[0]["id"]
+        existing = notion_call(
+            notion.databases.query,
+            database_id=program_db_id,
+            filter={"property": "Cycle #", "relation": {"contains": cycle_id}},
+            page_size=100,
+        ).get("results", [])
+        return cycle_id, len(existing) + 1
     except Exception as e:
-        log.warning("cycle metadata lookup/create failed: %s", e)
-        return None, None
+        log.warning("cycle metadata lookup failed: %s", e)
+        log.warning("[PARSER] No open cycle found — Week set to 1, Cycle # left blank")
+        return None, 1
+
+
+def _get_or_create_cycle_metadata(notion, cycles_db_id: str, program_db_id: str, monday_iso: str) -> tuple[str | None, int | None]:
+    del monday_iso
+    return _get_open_cycle_metadata(notion, cycles_db_id, program_db_id)
 
 
 def _weekly_program_metadata_props(cycle_id: str | None, week_number: int | None, monday_iso: str) -> dict:
     props: dict = {"Start Date": {"date": {"start": monday_iso}}}
     if cycle_id:
-        props["Cycle"] = {"relation": [{"id": cycle_id}]}
+        props["Cycle #"] = {"relation": [{"id": cycle_id}]}
     if week_number is not None:
         props["Week"] = {"number": week_number}
     return props
@@ -249,18 +243,27 @@ def infer_section_b_type(section_b: dict) -> str:
     desc = (section_b.get("description") or "")
     if section_b.get("is_strength_test"):
         return "Strength Test"
-    if "EMOM" in desc:
+    lower = desc.lower()
+    if "emom" in lower:
         return "EMOM"
-    if "Every" in desc:
+    if "intervals" in lower:
         return "Intervals"
-    if "skill" in desc.lower():
+    if "sets of" in lower:
+        return "Volume"
+    if "1rm" in lower or "max" in lower:
+        return "Strength Test"
+    if "skill" in lower or "practice" in lower:
         return "Skill"
+    if "every" in lower:
+        return "Intervals"
     return "Volume"
 
 
 
 def infer_section_c_format(section_c: dict) -> str | None:
     desc = ((section_c or {}).get("description") or "").lower()
+    if "partner" in desc and "amrap" in desc:
+        return "Partner AMRAP"
     if "amrap" in desc:
         return "AMRAP"
     if "for time" in desc or "time cap" in desc:
@@ -269,9 +272,79 @@ def infer_section_c_format(section_c: dict) -> str | None:
         return "EMOM"
     if "chipper" in desc:
         return "Chipper"
-    if "interval" in desc or re.search(r"\bevery\s+\d+", desc):
+    if "intervals" in desc or "work:" in desc or re.search(r"\bevery\s+\d+", desc):
         return "Intervals"
     return None
+
+
+
+_DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+_TRACK_NAMES = ("Performance", "Fitness", "Hyrox")
+
+
+def _header_line_pattern(names: tuple[str, ...]) -> re.Pattern:
+    choices = "|".join(re.escape(name) for name in names)
+    return re.compile(rf"(?im)^\s*[*_`#>\-\s]*(?P<name>{choices})(?=[\s*_`:#>\-–—)]|$)[^\n]*$", re.IGNORECASE)
+
+
+def _split_by_headers(text: str, names: tuple[str, ...]) -> list[tuple[str, str]]:
+    pattern = _header_line_pattern(names)
+    matches = list(pattern.finditer(text or ""))
+    blocks: list[tuple[str, str]] = []
+    for idx, match in enumerate(matches):
+        raw_name = match.group("name").lower()
+        canonical = next(name for name in names if name.lower() == raw_name)
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        blocks.append((canonical, text[start:end].strip()))
+    return blocks
+
+
+def _strip_section_label(text: str) -> str:
+    return re.sub(r"(?im)^\s*(?:section\s*)?[BC]\s*[.:)\-–—]?\s*", "", text or "", count=1).strip()
+
+
+def _extract_training_notes(block: str) -> tuple[str, str]:
+    match = re.search(r"(?ims)^\s*training\s+notes\s*:\s*(?P<notes>.*)$", block or "")
+    if not match:
+        return block or "", ""
+    return (block[:match.start()].rstrip(), match.group("notes").strip())
+
+
+def _extract_sections(block: str) -> tuple[str, str, str]:
+    body, notes = _extract_training_notes(block or "")
+    marker = re.compile(r"(?im)^\s*(?:section\s*)?(?P<section>[BC])\s*[.:)\-–—]\s*")
+    matches = list(marker.finditer(body))
+    section_text: dict[str, str] = {"B": "", "C": ""}
+    for idx, match in enumerate(matches):
+        key = match.group("section").upper()
+        start = match.start()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
+        section_text[key] = _strip_section_label(body[start:end])
+    if not matches:
+        section_text["C"] = body.strip()
+    return section_text["B"], section_text["C"], notes
+
+
+def parse_weekly_program_text(full_text: str, week_label: str | None = None) -> dict:
+    """Parse raw Weekly Programs text into tracks/days using day and track headers."""
+    tracks_by_name: dict[str, list[dict]] = {track: [] for track in _TRACK_NAMES}
+    for day, day_block in _split_by_headers(full_text or "", _DAY_NAMES):
+        track_blocks = _split_by_headers(day_block, _TRACK_NAMES)
+        if not track_blocks:
+            continue
+        for track, track_block in track_blocks:
+            section_b, section_c, training_notes = _extract_sections(track_block)
+            tracks_by_name[track].append({
+                "day": day,
+                "section_b": {"description": section_b, "movements": []} if section_b else {},
+                "section_c": {"description": section_c, "movements": [], "is_partner": "partner" in section_c.lower()} if section_c else {},
+                "training_notes": training_notes,
+            })
+    tracks = [{"track": track, "days": days} for track, days in tracks_by_name.items() if days]
+    if not tracks:
+        raise ValueError("No day/track workout blocks found in Full Program")
+    return {"week_label": week_label or f"Week of {this_monday()}", "tracks": tracks}
 
 def get_current_week_programme(notion, program_db_id: str):
     res = notion_call(notion.databases.query, database_id=program_db_id, sorts=[{"timestamp": "created_time", "direction": "descending"}], page_size=1).get("results", [])
@@ -386,6 +459,12 @@ def save_programme(notion, program_db_id: str, workout_days_db_id: str, movement
                 log.error("save_programme: failed to create row %s/%s: %s", track, day, e)
                 log.error("save_programme: failed props keys: %s", list(props.keys()))
 
+    if program_movement_ids:
+        try:
+            notion_call(notion.pages.update, page_id=parent_page_id, properties={"Movements": {"relation": [{"id": mid} for mid in sorted(program_movement_ids)]}})
+        except Exception as e:
+            log.warning("save_programme: could not update final parent movements: %s", e)
+
     log.info("save_programme: complete — %d day rows created", days_created)
     return parent_page_id
 
@@ -411,9 +490,7 @@ def save_programme_from_notion_row(
 
     week_label = parsed.get("week_label") or "Week"
     monday_iso = _week_start_from_label(week_label)
-    cycle_match = re.search(r"cycle\s*#?\s*(\d+)", week_label, re.IGNORECASE)
-    cycle_num = int(cycle_match.group(1)) if cycle_match else None
-    program_db_id = program_db_id or os.getenv("NOTION_WORKOUT_PROGRAM_DB", "")
+    program_db_id = program_db_id or os.getenv("NOTION_WEEKLY_PROGRAMS_DB") or os.getenv("NOTION_WORKOUT_PROGRAM_DB", "")
     cycle_id, week_number = _get_or_create_cycle_metadata(
         notion,
         cycles_db_id or os.getenv("NOTION_CYCLES_DB", ""),
@@ -446,8 +523,6 @@ def save_programme_from_notion_row(
     # keep Weekly Programs metadata in sync (aggregate movement relation)
     try:
         parent_props = {"Name": {"title": [{"text": {"content": week_label}}]}, **_weekly_program_metadata_props(cycle_id, week_number, monday_iso)}
-        if cycle_num is not None:
-            parent_props["Cycle #"] = {"number": cycle_num}
         if program_movement_ids:
             parent_props["Movements"] = {"relation": [{"id": mid} for mid in sorted(program_movement_ids)]}
             parent_props["Movement Summary"] = {"rich_text": _rich_text_chunks(", ".join(sorted(all_names)[:25]))}
@@ -509,6 +584,16 @@ def save_programme_from_notion_row(
                 log.error("save_programme_from_notion_row: failed %s/%s: %s", track, day, e)
                 log.error("save_programme_from_notion_row: props keys: %s", list(props.keys()))
 
+    if program_movement_ids:
+        try:
+            notion_call(
+                notion.pages.update,
+                page_id=parent_page_id,
+                properties={"Movements": {"relation": [{"id": mid} for mid in sorted(program_movement_ids)]}},
+            )
+        except Exception as e:
+            log.warning("save_programme_from_notion_row: could not update final parent movements: %s", e)
+
     log.info("save_programme_from_notion_row: complete — %d rows", days_created)
     return days_created
 
@@ -532,22 +617,6 @@ def validate_workout_days_db(notion, workout_days_db_id: str) -> list[str]:
     except Exception as e:
         problems.append(f"Cannot retrieve Workout Days DB: {e}")
     return problems
-
-def get_previous_best(notion, prs_db_id, movement_page_id, reps):
-    res=notion_call(notion.databases.query,database_id=prs_db_id,page_size=50).get("results",[])
-    best=None
-    for r in res:
-        p=r.get("properties",{})
-        rs=p.get("Reps",{}).get("number")
-        rel=[x.get("id") for x in p.get("Movement",{}).get("relation",[])]
-        wt=p.get("Weight (lbs)",{}).get("number")
-        if rs==reps and movement_page_id in rel and wt is not None and (best is None or wt>best["weight_lbs"]):
-            best={"page_id":r["id"],"weight_lbs":wt,"date":(p.get("Date",{}).get("date") or {}).get("start")}
-    return best
-
-def create_pr_entry(notion, prs_db_id, cycles_db_id, movement_page_id, movement_name, weight_lbs, reps, previous_best_lbs, notes):
-    props={"Name":{"title":[{"text":{"content":f"{movement_name} {reps}RM — {datetime.now(timezone.utc).date().isoformat()}"}}]},"Date":{"date":{"start":datetime.now(timezone.utc).date().isoformat()}},"Movement":{"relation":[{"id":movement_page_id}]},"Weight (lbs)":{"number":weight_lbs},"Previous Best (lbs)":{"number":previous_best_lbs or 0},"Reps":{"number":reps},"Rep Format":{"rich_text":[{"text":{"content":f"{reps}RM"}}]},"Notes":{"rich_text":[{"text":{"content":notes or ""}}]}}
-    page=notion_call(notion.pages.create,parent={"database_id":prs_db_id},properties=props); return page["id"]
 
 def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_name, load_lbs, effort_sets, effort_reps, is_max_attempt, weekly_program_page_id, cycle_page_id, readiness, workout_date=None, effort_scheme=None, load_kg=None):
     """Create a Section B strength/accessory log in Workout Log v2.
@@ -707,14 +776,14 @@ def fuzzy_find_movement_details(notion, movements_db_id: str, movement_name: str
 def format_movement_sub_details(details: dict) -> str:
     if not details:
         return "No movement match found."
-    comp = ", ".join(details.get("complementary_movements") or []) or "None listed"
-    ant = ", ".join(details.get("antagonist_movements") or []) or "None listed"
-    scaling = details.get("scaling_notes") or "None listed"
+    comp = ", ".join(details.get("complementary_movements") or []) or "None set"
+    ant = ", ".join(details.get("antagonist_movements") or []) or "None set"
+    scaling = details.get("scaling_notes") or "None set"
     return (
-        f"🎯 {details.get('name') or 'Movement'}\n"
+        f"🎯 *{details.get('name') or 'Movement'}*\n"
         f"📝 Scaling: {scaling}\n"
-        f"🔄 Substitutes: {comp}\n"
-        f"⬅️ Antagonist: {ant}"
+        f"🔄 Subs/Complements: {comp}\n"
+        f"⬅️ Antagonists: {ant}"
     )
 
 def query_subs(notion, subs_db_id, movements_db_id, movement_name, sub_type):

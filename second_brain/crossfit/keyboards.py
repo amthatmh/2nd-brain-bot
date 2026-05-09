@@ -18,10 +18,7 @@ def crossfit_submenu_keyboard(readiness_logged: bool = True) -> InlineKeyboardMa
         ],
         [
             InlineKeyboardButton("🥇 My PRs", callback_data="cf:my_prs"),
-            InlineKeyboardButton("🔍 Subs Search", callback_data="cf:subs_search"),
-        ],
-        [
-            InlineKeyboardButton("📅 Today's Sub", callback_data="cf:todays_sub"),
+            InlineKeyboardButton("🔄 Sub / Add-on", callback_data="cf:sub_addon"),
         ],
         [
             InlineKeyboardButton("❌ Cancel", callback_data="cf:cancel"),

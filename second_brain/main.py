@@ -110,7 +110,7 @@ from utils.alert_handlers import (
     alert_startup,
 )
 
-from second_brain.crossfit.classify import classify_workout_message, parse_programme
+from second_brain.crossfit.classify import classify_workout_message
 from second_brain.crossfit.handlers import (
     MOVEMENTS_CACHE,
     handle_cf_callback,
@@ -122,7 +122,7 @@ from second_brain.crossfit.handlers import (
 from second_brain.crossfit.keyboards import crossfit_submenu_keyboard
 from second_brain.crossfit.nlp import load_movements_cache
 from second_brain.crossfit.readiness import check_readiness_logged_today
-from second_brain.crossfit.notion import save_programme_from_notion_row
+from second_brain.crossfit.notion import parse_weekly_program_text, save_programme_from_notion_row
 from second_brain.entertainment import log as ent_log
 
 
@@ -305,11 +305,10 @@ CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
 CLAUDE_PARSE_MAX_TOKENS = int(os.environ.get("CLAUDE_PARSE_MAX_TOKENS", "4000"))
 NOTION_MOVEMENTS_DB = os.environ.get("NOTION_MOVEMENTS_DB", "ecf5ac8381ce41a98fa804a1694977bb").strip()
 NOTION_CYCLES_DB = os.environ.get("NOTION_CYCLES_DB", "")
-NOTION_WORKOUT_PROGRAM_DB = os.environ.get("NOTION_WORKOUT_PROGRAM_DB", "")
+NOTION_WORKOUT_PROGRAM_DB = os.environ.get("NOTION_WEEKLY_PROGRAMS_DB") or os.environ.get("NOTION_WORKOUT_PROGRAM_DB", "")
 NOTION_WORKOUT_DAYS_DB = os.environ.get("NOTION_WORKOUT_DAYS_DB", "")
 NOTION_WORKOUT_LOG_DB = os.environ.get("NOTION_WORKOUT_LOG_DB", "")
 NOTION_SUBS_DB = os.environ.get("NOTION_SUBS_DB", "")
-NOTION_PRS_DB = os.environ.get("NOTION_PRS_DB", "")
 NOTION_WOD_LOG_DB = os.environ.get("NOTION_WOD_LOG_DB", "f94bd9bc79384b53b18bf3d2afaf9881").strip()
 NOTION_PROGRESSIONS_DB = os.environ.get("NOTION_PROGRESSIONS_DB", "")
 NOTION_DAILY_READINESS_DB = os.environ.get("NOTION_DAILY_READINESS_DB", "")
@@ -1554,7 +1553,7 @@ async def route_classified_message_v10(message, text: str) -> None:
             workout_result["raw_text"] = text
             await thinking.delete()
             if workout_result.get("type") == "strength":
-                await handle_cf_strength_flow(message, workout_result, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_PRS_DB": NOTION_PRS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB, "NOTION_DAILY_READINESS_DB": NOTION_DAILY_READINESS_DB}, cf_pending)
+                await handle_cf_strength_flow(message, workout_result, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB, "NOTION_DAILY_READINESS_DB": NOTION_DAILY_READINESS_DB}, cf_pending)
             else:
                 await handle_cf_wod_flow(message, workout_result, notion, {"NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_DAILY_READINESS_DB": NOTION_DAILY_READINESS_DB}, cf_pending)
             return
@@ -2116,7 +2115,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     cf_flow_key = context.user_data.get("cf_flow_key")
     if cf_flow_key and cf_flow_key in cf_pending:
-        await handle_cf_text_reply(message, text, cf_flow_key, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_PRS_DB": NOTION_PRS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB, "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB, "NOTION_DAILY_READINESS_DB": NOTION_DAILY_READINESS_DB}, cf_pending)
+        await handle_cf_text_reply(message, text, cf_flow_key, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB, "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB, "NOTION_DAILY_READINESS_DB": NOTION_DAILY_READINESS_DB}, cf_pending)
         return
 
     match_force = re.match(r"force:\s*(.+)$", text, re.IGNORECASE)
@@ -2302,7 +2301,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         else:
             context.user_data["cf_flow_key"] = str(q.message.chat_id)
-        await handle_cf_callback(q, parts, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_PRS_DB": NOTION_PRS_DB, "NOTION_SUBS_DB": NOTION_SUBS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB, "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS, "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB, "NOTION_DAILY_READINESS_DB": NOTION_DAILY_READINESS_DB}, cf_pending)
+        await handle_cf_callback(q, parts, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_SUBS_DB": NOTION_SUBS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB, "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS, "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB, "NOTION_DAILY_READINESS_DB": NOTION_DAILY_READINESS_DB}, cf_pending)
         return
 
     if parts[0] == "kind_task" and len(parts) == 2:
@@ -3827,7 +3826,7 @@ async def process_pending_programmes(bot) -> None:
         try:
             parsed = await asyncio.get_running_loop().run_in_executor(
                 None,
-                lambda: parse_programme(full_text, claude, CLAUDE_MODEL, CLAUDE_PARSE_MAX_TOKENS),
+                lambda: parse_weekly_program_text(full_text, week_name),
             )
 
             days_created = await asyncio.get_running_loop().run_in_executor(
@@ -3867,7 +3866,7 @@ async def process_pending_programmes(bot) -> None:
             )
             log.info("process_pending_programmes: completed '%s'", week_name)
         except Exception as e:
-            log.error("process_pending_programmes: failed '%s': %s", week_name, e)
+            log.error(f"[PARSER] Failed to parse week {week_name}: {e}")
             try:
                 notion_call(
                     notion.pages.update,
