@@ -107,13 +107,8 @@ def alert_job_success(job_key: str, duration: float, result: Any = None) -> bool
     """
     Send INFO alert for successful job completion.
 
-    Args:
-        job_key: Job identifier (e.g., "asana_sync")
-        duration: Execution time in seconds
-        result: Optional dict with job-specific metrics
-
-    Returns:
-        True if alert sent successfully
+    If result is None, sends a quiet alert (brief format).
+    If result is a dict, sends full alert with metrics.
     """
     import logging
     logger = logging.getLogger(__name__)
@@ -130,17 +125,20 @@ def alert_job_success(job_key: str, duration: float, result: Any = None) -> bool
         secs = int(duration % 60)
         duration_str = f"{mins}m {secs}s"
 
-    # Build metrics section
-    metrics_lines = []
-    if result and isinstance(result, dict):
-        for key, value in result.items():
-            # Format key (convert snake_case to Title Case)
-            display_key = key.replace('_', ' ').title()
-            metrics_lines.append(f"• {display_key}: {value}")
+    # Quiet mode: minimal message
+    if result is None:
+        message = f"✓ {job_key} ({duration_str})"
+    else:
+        # Full mode: detailed message
+        metrics_lines = []
+        if isinstance(result, dict):
+            for key, value in result.items():
+                display_key = key.replace('_', ' ').title()
+                metrics_lines.append(f"• {display_key}: {value}")
 
-    metrics_section = "\n".join(metrics_lines) if metrics_lines else ""
+        metrics_section = "\n".join(metrics_lines) if metrics_lines else ""
 
-    message = f"""**Job Completed: {job_key}**
+        message = f"""**Job Completed: {job_key}**
 
 Duration: {duration_str}
 Status: ✓ Success
@@ -199,8 +197,6 @@ def alert_job_overlap(job_key: str, expected_duration: float, actual_duration: f
     """
     Send WARNING alert for job overlap.
 
-    Only fires if overlap > 3 minutes (180 seconds).
-
     Args:
         job_key: Job identifier
         expected_duration: Baseline duration in seconds
@@ -214,11 +210,6 @@ def alert_job_overlap(job_key: str, expected_duration: float, actual_duration: f
     logger = logging.getLogger(__name__)
 
     logger.info(f"[ALERT_HANDLER] alert_job_overlap() called: job={job_key}, overlap={overlap_amount:.1f}s")
-
-    # Only alert if overlap >3 minutes
-    if overlap_amount < 180:
-        logger.info(f"[ALERT_HANDLER] Overlap <3min, skipping alert")
-        return False
 
     # Format durations
     def format_duration(secs):

@@ -262,3 +262,27 @@ def test_execute_job_does_not_double_track_decorated_handler(monkeypatch) -> Non
 
     assert job_tracker._job_metrics["decorated_job"]["last_status"] == "success"
     assert job_tracker.get_weekly_metrics()["total_executions"] == 1
+
+
+def test_extract_alert_config_reads_utility_scheduler_columns() -> None:
+    config = _manager()._extract_alert_config(
+        {
+            "Alert On Success": _select("quiet"),
+            "Alert On Failure": _select("critical_only"),
+            "Alert On Overlap": _checkbox(False),
+            "Success Cooldown Hours": {"number": 1},
+            "Failure Cooldown Hours": {"number": 2},
+            "Overlap Cooldown Hours": {"number": 3},
+            "Overlap Threshold Seconds": {"number": 45},
+        }
+    )
+
+    assert config == {
+        "alert_on_success": "quiet",
+        "alert_on_failure": "critical_only",
+        "alert_on_overlap": False,
+        "success_cooldown_hours": 1,
+        "failure_cooldown_hours": 2,
+        "overlap_cooldown_hours": 3,
+        "overlap_threshold_seconds": 45,
+    }

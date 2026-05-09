@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -43,6 +43,7 @@ class UtilityJobSpec:
     coalesce: bool = True
     misfire_grace_seconds: int | None = None
     validation_error: str = ""
+    alert_config: dict[str, Any] = field(default_factory=dict)
 
     @property
     def valid(self) -> bool:
@@ -141,6 +142,7 @@ def parse_utility_job_rows(rows: list[dict[str, Any]], *, logger: logging.Logger
             coalesce=_read_checkbox(props.get("Coalesce")),
             misfire_grace_seconds=_read_positive_int(props.get("Misfire Grace Seconds")),
             validation_error=validation_error,
+            alert_config=_extract_alert_config(props),
         )
         if not validation_error:
             spec = _validate_spec(spec)
@@ -192,6 +194,11 @@ def apply_utility_job_specs(
             recorder.mark_loaded(spec, STATUS_SKIPPED_CONFIG, job_definition.unavailable_reason)
             stats["skipped_config"] += 1
             continue
+
+        from second_brain.monitoring import load_alert_config
+
+        load_alert_config(spec.job_key, spec.alert_config)
+        log.info("[SCHEDULER] Loaded alert config for %s: %s", spec.job_key, spec.alert_config)
 
         signature = _spec_signature(spec, job_definition)
         if (
@@ -255,6 +262,18 @@ async def load_and_apply_utility_scheduler(
         now_fn=now_fn,
         logger=log,
     )
+
+
+def _extract_alert_config(props: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "alert_on_success": _normalize_token(_read_select_or_text(props.get("Alert On Success"))) or "full",
+        "alert_on_failure": _normalize_token(_read_select_or_text(props.get("Alert On Failure"))) or "always",
+        "alert_on_overlap": _read_checkbox_default(props.get("Alert On Overlap"), default=True),
+        "success_cooldown_hours": _read_non_negative_int(props.get("Success Cooldown Hours")) or 0,
+        "failure_cooldown_hours": _read_non_negative_int(props.get("Failure Cooldown Hours")) or 6,
+        "overlap_cooldown_hours": _read_non_negative_int(props.get("Overlap Cooldown Hours")) or 6,
+        "overlap_threshold_seconds": _read_non_negative_int(props.get("Overlap Threshold Seconds")) or 180,
+    }
 
 
 def _validate_spec(spec: UtilityJobSpec) -> UtilityJobSpec:
@@ -369,6 +388,12 @@ def _read_optional_text(prop: dict[str, Any] | None) -> str | None:
 
 def _read_checkbox(prop: dict[str, Any] | None) -> bool:
     return bool((prop or {}).get("checkbox"))
+
+
+def _read_checkbox_default(prop: dict[str, Any] | None, *, default: bool) -> bool:
+    if not prop or "checkbox" not in prop:
+        return default
+    return bool(prop.get("checkbox"))
 
 
 def _read_positive_int(prop: dict[str, Any] | None) -> int | None:

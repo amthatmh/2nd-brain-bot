@@ -196,3 +196,66 @@ def test_tracked_job_updates_run_status():
     asyncio.run(scheduler.calls[0]["fn"]())
 
     assert recorder.run_ok == ["known_job"]
+
+
+def test_parse_utility_job_rows_reads_alert_config():
+    specs = parse_utility_job_rows([
+        _row(
+            "asana_sync",
+            **{
+                "Alert On Success": _prop_select("never"),
+                "Alert On Failure": _prop_select("after_3"),
+                "Alert On Overlap": _prop_checkbox(False),
+                "Success Cooldown Hours": _prop_number(1),
+                "Failure Cooldown Hours": _prop_number(2),
+                "Overlap Cooldown Hours": _prop_number(3),
+                "Overlap Threshold Seconds": _prop_number(45),
+            },
+        )
+    ])
+
+    assert specs[0].alert_config == {
+        "alert_on_success": "never",
+        "alert_on_failure": "after_3",
+        "alert_on_overlap": False,
+        "success_cooldown_hours": 1,
+        "failure_cooldown_hours": 2,
+        "overlap_cooldown_hours": 3,
+        "overlap_threshold_seconds": 45,
+    }
+
+
+def test_apply_specs_loads_alert_config_for_registered_and_unchanged_jobs():
+    from second_brain.monitoring import job_tracker
+
+    job_tracker._alert_configs.clear()
+    scheduler = _FakeScheduler()
+    recorder = _Recorder()
+    specs = parse_utility_job_rows([
+        _row("known_job", **{"Alert On Success": _prop_select("quiet")})
+    ])
+    registry = {"known_job": UtilityJobDefinition(lambda: None)}
+
+    first = apply_utility_job_specs(
+        scheduler=scheduler,
+        specs=specs,
+        registry=registry,
+        status_recorder=recorder,
+        initial_load=True,
+    )
+    assert first["registered"] == 1
+    assert job_tracker.get_alert_config("known_job")["alert_on_success"] == "quiet"
+
+    changed_specs = parse_utility_job_rows([
+        _row("known_job", **{"Alert On Success": _prop_select("never")})
+    ])
+    second = apply_utility_job_specs(
+        scheduler=scheduler,
+        specs=changed_specs,
+        registry=registry,
+        status_recorder=recorder,
+        initial_load=False,
+    )
+
+    assert second["unchanged"] == 1
+    assert job_tracker.get_alert_config("known_job")["alert_on_success"] == "never"
