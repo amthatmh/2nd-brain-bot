@@ -598,6 +598,41 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
         # Yesterday skipped (no data), today also skipped (0 steps = sub-threshold intraday)
         self.assertNotIn("2026-04-27", results)
 
+    async def test_nightly_stamp_skips_today_zero_steps_but_stamps_yesterday(self):
+        _steps_state["2026-05-09"] = {
+            "last_steps": 0,
+            "threshold_notified": False,
+            "notion_page_id": None,
+        }
+        _steps_state["2026-05-08"] = {
+            "last_steps": 10596,
+            "threshold_notified": True,
+            "notion_page_id": None,
+        }
+
+        notion = MagicMock()
+        notion.databases.query.return_value = {"results": []}
+        notion.pages.create.return_value = {"id": "yesterday-pid"}
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/Chicago")
+
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-05-09"), \
+             patch("second_brain.healthtrack.steps._yesterday", return_value="2026-05-08"), \
+             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"), \
+             patch("second_brain.healthtrack.steps._find_existing_log_entry", return_value=None):
+            results = await handle_steps_final_stamp(
+                notion=notion,
+                habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
+                threshold=10000, source_label="📱 Apple Watch", tz=tz,
+            )
+
+        self.assertNotIn("2026-05-09", results)
+        self.assertEqual(results["2026-05-08"]["steps"], 10596)
+        self.assertEqual(results["2026-05-08"]["action"], "created")
+        props = notion.pages.create.call_args.kwargs["properties"]
+        self.assertEqual(props["Date"]["date"]["start"], "2026-05-08")
+        self.assertEqual(props["Steps Count"]["number"], 10596)
+
     async def test_nightly_stamp_recovers_today_from_notion_when_state_empty(self):
         notion = MagicMock()
         notion.pages.retrieve.return_value = {
