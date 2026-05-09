@@ -217,6 +217,7 @@ def classify_workout_message(text: str, claude_client, model: str, max_tokens: i
             "format": None,
             "duration_mins": None,
             "partner": False,
+            "raw_text": text,
         }
 
     prompt = f'''You are a CrossFit workout classifier for a personal tracking bot.
@@ -266,6 +267,7 @@ Return ONLY valid JSON with fields exactly as requested:
     if not movements and result.get("movement"):
         movements = [result["movement"]]
     result["movements"] = movements
+    result["raw_text"] = text
     return result
 
 

@@ -620,7 +620,7 @@ def validate_workout_days_db(notion, workout_days_db_id: str) -> list[str]:
         problems.append(f"Cannot retrieve Workout Days DB: {e}")
     return problems
 
-def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_name, load_lbs, effort_sets, effort_reps, is_max_attempt, weekly_program_page_id, cycle_page_id, readiness, workout_date=None, effort_scheme=None, load_kg=None):
+def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_name, load_lbs, effort_sets, effort_reps, is_max_attempt, weekly_program_page_id, cycle_page_id, readiness, workout_date=None, effort_scheme=None, load_kg=None, raw_log: str = ""):
     """Create a Section B strength/accessory log in Workout Log v2.
 
     Readiness is intentionally ignored in Phase 1 because readiness now lives
@@ -644,8 +644,69 @@ def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_na
         "weekly_program_ref": {"relation": [{"id": weekly_program_page_id}]} if weekly_program_page_id else None,
     }
     props = {key: value for key, value in props.items() if value is not None}
+    if raw_log:
+        props["Log"] = {"rich_text": _rich_text_chunks(raw_log)}
     page = notion_call(notion.pages.create, parent={"database_id": workout_log_db_id}, properties=props)
     return page["id"]
+
+
+def get_today_workout_structure(notion, workout_days_db_id: str) -> str:
+    """
+    Query Workout Days DB for today's row and return a formatted string
+    combining Section B and Section C descriptions.
+    Returns empty string if nothing found.
+    """
+    if not notion or not workout_days_db_id:
+        return ""
+
+    today = date.today()
+    day_name = today.strftime("%A")
+    monday = (today - timedelta(days=today.weekday())).isoformat()
+
+    try:
+        results = notion_call(
+            notion.databases.query,
+            database_id=workout_days_db_id,
+            filter={
+                "and": [
+                    {"property": "Day", "select": {"equals": day_name}},
+                    {"property": "Week Of", "date": {"equals": monday}},
+                ]
+            },
+            page_size=3,
+        ).get("results", [])
+    except Exception as e:
+        log.warning("get_today_workout_structure: query failed: %s", e)
+        return ""
+
+    if not results:
+        return ""
+
+    row = next(
+        (
+            r for r in results
+            if (r.get("properties", {}).get("Track", {}).get("select") or {}).get("name") == "Performance"
+        ),
+        results[0],
+    )
+    props = row.get("properties", {})
+
+    def _rt(field):
+        return "".join(
+            chunk.get("plain_text", "")
+            for chunk in (props.get(field, {}).get("rich_text") or [])
+        ).strip()
+
+    b = _rt("Section B")
+    c = _rt("Section C")
+
+    parts = []
+    if b:
+        parts.append(f"Section B:\n{b}")
+    if c:
+        parts.append(f"Section C:\n{c}")
+
+    return "\n\n".join(parts)
 
 
 def notion_query_wod_log_by_date(notion, wod_log_db_id: str, workout_date: str, wod_format: str | None = None) -> list[dict]:
@@ -662,7 +723,7 @@ def notion_query_wod_log_by_date(notion, wod_log_db_id: str, workout_date: str, 
     ).get("results", [])
 
 
-def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mins, result_type, result_seconds, result_rounds, result_reps, rx_scaled, scaling_notes, is_partner, wod_name, movement_page_ids, weekly_program_page_id, readiness, workout_date=None, workout_structure=None):
+def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mins, result_type, result_seconds, result_rounds, result_reps, rx_scaled, scaling_notes, is_partner, wod_name, movement_page_ids, weekly_program_page_id, readiness, workout_date=None, workout_structure: str = "", raw_log: str = ""):
     """Create a Section C WOD log in the dedicated WOD Log database.
 
     Readiness is intentionally ignored in Phase 1 because readiness now lives
@@ -698,8 +759,10 @@ def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mi
         props["Weekly Program"] = {"relation": [{"id": weekly_program_page_id}]}
     if wod_name:
         props["WOD Name"] = {"rich_text": [{"text": {"content": str(wod_name)}}]}
+    if raw_log:
+        props["Log"] = {"rich_text": _rich_text_chunks(raw_log)}
     if workout_structure:
-        props["Workout Structure"] = {"rich_text": [{"text": {"content": str(workout_structure)}}]}
+        props["Workout Structure"] = {"rich_text": _rich_text_chunks(str(workout_structure))}
     if scaling_notes:
         props["Scaling Notes"] = {"rich_text": [{"text": {"content": str(scaling_notes)}}]}
     page = notion_call(notion.pages.create, parent={"database_id": wod_log_db_id}, properties=props)
