@@ -17,6 +17,35 @@ logger = logging.getLogger(__name__)
 _job_metrics: Dict[str, Dict[str, Any]] = {}
 _weekly_counters: Dict[str, int] = {"executions": 0, "failures": 0}
 _alert_cooldowns: Dict[str, datetime] = {}
+_alert_configs: Dict[str, Dict[str, Any]] = {}
+
+
+_DEFAULT_ALERT_CONFIG: Dict[str, Any] = {
+    "alert_on_success": "full",
+    "alert_on_failure": "always",
+    "alert_on_overlap": True,
+    "success_cooldown_hours": 0,
+    "failure_cooldown_hours": 6,
+    "overlap_cooldown_hours": 6,
+    "overlap_threshold_seconds": 180,
+}
+
+
+def load_alert_config(job_key: str, config: Dict[str, Any]) -> None:
+    """
+    Load alert configuration for a job from Utility Scheduler config.
+
+    Args:
+        job_key: Job identifier
+        config: Job configuration dict from Utility Scheduler
+    """
+    _alert_configs[job_key] = {**_DEFAULT_ALERT_CONFIG, **{k: v for k, v in config.items() if v is not None}}
+    logger.debug("[JOB_TRACKER] Loaded alert config for %s: %s", job_key, _alert_configs[job_key])
+
+
+def get_alert_config(job_key: str) -> Dict[str, Any]:
+    """Get alert configuration for a job. Returns defaults if not configured."""
+    return dict(_alert_configs.get(job_key, _DEFAULT_ALERT_CONFIG))
 
 
 def update_job_metrics(job_key: str, duration: float, status: str) -> None:
@@ -229,28 +258,65 @@ def send_duration_alert_if_slow(job_key: str, baseline: Optional[float], duratio
         return False
 
 
+def _alert_on_success(job_key: str, duration: float, result: Any, alert_config: Dict[str, Any]) -> None:
+    """Send a success alert according to the job-specific alert configuration."""
+    from utils.alert_handlers import alert_job_success
+
+    alert_level = alert_config["alert_on_success"]
+    if alert_level == "full":
+        alert_job_success(job_key, duration, result)
+    elif alert_level == "quiet":
+        alert_job_success(job_key, duration, None)
+
+
+def _alert_on_overlap(job_key: str, baseline: Optional[float], duration: float, alert_config: Dict[str, Any]) -> None:
+    """Send an overlap alert when enabled and above the configured threshold."""
+    if not alert_config["alert_on_overlap"] or baseline is None or duration <= baseline * 1.5:
+        return
+
+    overlap = duration - baseline
+    if overlap <= alert_config["overlap_threshold_seconds"]:
+        return
+
+    from utils.alert_handlers import alert_job_overlap
+
+    cooldown_key = f"overlap_{job_key}"
+    if check_alert_cooldown(cooldown_key, alert_config["overlap_cooldown_hours"]):
+        alert_job_overlap(job_key, baseline, duration, overlap)
+        set_alert_cooldown(cooldown_key)
+
+
+def _alert_on_failure(job_key: str, error: Exception, consecutive: int, alert_config: Dict[str, Any]) -> None:
+    """Send a failure alert according to the job-specific alert configuration."""
+    from utils.alert_handlers import alert_job_failure
+
+    failure_mode = alert_config["alert_on_failure"]
+    should_alert = failure_mode == "always" or (failure_mode in {"after_3", "critical_only"} and consecutive >= 3)
+    if not should_alert:
+        return
+
+    # Critical alerts bypass cooldown so operators always see recurring failures.
+    if consecutive >= 3:
+        alert_job_failure(job_key, str(error), consecutive)
+        return
+
+    cooldown_key = f"failure_{job_key}"
+    if check_alert_cooldown(cooldown_key, alert_config["failure_cooldown_hours"]):
+        alert_job_failure(job_key, str(error), consecutive)
+        set_alert_cooldown(cooldown_key)
+
+
 def track_job_execution(job_key: str):
     """
-    Decorator to automatically track job execution and send alerts.
+    Decorator to track job execution with dynamic alert configuration.
 
-    Usage:
-        @track_job_execution("asana_sync")
-        async def sync_asana_tasks():
-            # job logic
-            return {"tasks_synced": 42}
-
-    This will:
-    - Track execution time
-    - Store metrics in memory
-    - Send success/failure alerts
-    - Calculate baselines automatically
+    Alert behavior is loaded from the Utility Scheduler database.
     """
 
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         async def async_wrapper(*args, **kwargs) -> Any:
-            from utils.alert_handlers import alert_job_failure, alert_job_success
-
+            alert_config = get_alert_config(job_key)
             start = time.time()
             try:
                 logger.info("[JOB_TRACKER] Starting %s", job_key)
@@ -258,36 +324,25 @@ def track_job_execution(job_key: str):
                 duration = time.time() - start
 
                 baseline = get_baseline_duration(job_key)
-
-                # Update metrics
+                _alert_on_overlap(job_key, baseline, duration, alert_config)
                 update_job_metrics(job_key, duration, "success")
-
-                # Send success and slow-run alerts
-                alert_job_success(job_key, duration, result)
-                send_duration_alert_if_slow(job_key, baseline, duration)
+                _alert_on_success(job_key, duration, result, alert_config)
 
                 logger.info("[JOB_TRACKER] %s completed in %.2fs", job_key, duration)
                 return result
 
             except Exception as e:
                 duration = time.time() - start
-
-                # Update metrics (this will increment consecutive_fails)
                 update_job_metrics(job_key, duration, "failed")
-
-                # Get updated consecutive count
                 consecutive = get_consecutive_failures(job_key)
-
-                # Send failure alert
-                alert_job_failure(job_key, str(e), consecutive)
+                _alert_on_failure(job_key, e, consecutive, alert_config)
 
                 logger.error("[JOB_TRACKER] %s failed after %.2fs: %s", job_key, duration, e)
                 raise
 
         @wraps(func)
         def sync_wrapper(*args, **kwargs) -> Any:
-            from utils.alert_handlers import alert_job_failure, alert_job_success
-
+            alert_config = get_alert_config(job_key)
             start = time.time()
             try:
                 logger.info("[JOB_TRACKER] Starting %s", job_key)
@@ -295,9 +350,9 @@ def track_job_execution(job_key: str):
                 duration = time.time() - start
 
                 baseline = get_baseline_duration(job_key)
+                _alert_on_overlap(job_key, baseline, duration, alert_config)
                 update_job_metrics(job_key, duration, "success")
-                alert_job_success(job_key, duration, result)
-                send_duration_alert_if_slow(job_key, baseline, duration)
+                _alert_on_success(job_key, duration, result, alert_config)
 
                 logger.info("[JOB_TRACKER] %s completed in %.2fs", job_key, duration)
                 return result
@@ -306,12 +361,11 @@ def track_job_execution(job_key: str):
                 duration = time.time() - start
                 update_job_metrics(job_key, duration, "failed")
                 consecutive = get_consecutive_failures(job_key)
-                alert_job_failure(job_key, str(e), consecutive)
+                _alert_on_failure(job_key, e, consecutive, alert_config)
 
                 logger.error("[JOB_TRACKER] %s failed after %.2fs: %s", job_key, duration, e)
                 raise
 
-        # Return appropriate wrapper based on function type
         if asyncio.iscoroutinefunction(func):
             async_wrapper._job_tracker_key = job_key  # type: ignore[attr-defined]
             return async_wrapper

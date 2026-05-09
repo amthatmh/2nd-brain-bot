@@ -13,12 +13,16 @@ from datetime import datetime, timezone as dt_timezone
 from typing import Any, Callable
 
 from second_brain.monitoring import (
+    check_alert_cooldown,
+    get_alert_config,
     get_baseline_duration,
     get_consecutive_failures,
+    load_alert_config,
     send_duration_alert_if_slow,
+    set_alert_cooldown,
 )
 from second_brain.monitoring.job_tracker import update_job_metrics
-from utils.alert_handlers import alert_job_failure, alert_job_success
+from utils.alert_handlers import alert_job_failure, alert_job_overlap, alert_job_success
 
 log = logging.getLogger(__name__)
 
@@ -124,6 +128,9 @@ class UtilitySchedulerManager:
                     continue
 
                 config = self._extract_job_config(props, env_fallbacks=self._env_fallbacks)
+                alert_config = self._extract_alert_config(props)
+                load_alert_config(job_key, alert_config)
+                log.info("[SCHEDULER] Loaded alert config for %s: %s", job_key, alert_config)
                 signature = self._config_signature(config)
                 apscheduler_id = self._apscheduler_id(job_key)
                 existing_job = self._scheduler.get_job(apscheduler_id)
@@ -173,19 +180,59 @@ class UtilitySchedulerManager:
                 result = await result
             duration = time.time() - start
             if not handler_tracks_itself:
+                alert_config = get_alert_config(job_key)
+                self._send_overlap_alert_if_needed(job_key, baseline, duration, alert_config)
                 update_job_metrics(job_key, duration, "success")
-                alert_job_success(job_key, duration, result)
-                send_duration_alert_if_slow(job_key, baseline, duration)
+                self._send_success_alert_if_needed(job_key, duration, result, alert_config)
             log.info("scheduler_manager: job_key=%s completed: %s", job_key, result)
             self._update_notion_run_result(page_id=page_id, ran_at=ran_at, status="ok", error=None)
         except Exception as exc:
             duration = time.time() - start
             if not handler_tracks_itself:
                 update_job_metrics(job_key, duration, "failed")
-                alert_job_failure(job_key, str(exc), get_consecutive_failures(job_key))
+                consecutive = get_consecutive_failures(job_key)
+                self._send_failure_alert_if_needed(job_key, exc, consecutive, get_alert_config(job_key))
             log.exception("scheduler_manager: job_key=%s FAILED", job_key)
             self._update_notion_run_result(page_id=page_id, ran_at=ran_at, status="error", error=str(exc))
             await self._send_failure_alert(job_key, exc)
+
+    @staticmethod
+    def _send_success_alert_if_needed(job_key: str, duration: float, result: Any, alert_config: dict[str, Any]) -> None:
+        alert_level = alert_config["alert_on_success"]
+        if alert_level == "full":
+            alert_job_success(job_key, duration, result)
+        elif alert_level == "quiet":
+            alert_job_success(job_key, duration, None)
+
+    @staticmethod
+    def _send_overlap_alert_if_needed(
+        job_key: str, baseline: float | None, duration: float, alert_config: dict[str, Any]
+    ) -> None:
+        if not alert_config["alert_on_overlap"] or baseline is None or duration <= baseline * 1.5:
+            return
+        overlap = duration - baseline
+        if overlap <= alert_config["overlap_threshold_seconds"]:
+            return
+        cooldown_key = f"overlap_{job_key}"
+        if check_alert_cooldown(cooldown_key, alert_config["overlap_cooldown_hours"]):
+            alert_job_overlap(job_key, baseline, duration, overlap)
+            set_alert_cooldown(cooldown_key)
+
+    @staticmethod
+    def _send_failure_alert_if_needed(
+        job_key: str, error: Exception, consecutive: int, alert_config: dict[str, Any]
+    ) -> None:
+        failure_mode = alert_config["alert_on_failure"]
+        should_alert = failure_mode == "always" or (failure_mode in {"after_3", "critical_only"} and consecutive >= 3)
+        if not should_alert:
+            return
+        if consecutive >= 3:
+            alert_job_failure(job_key, str(error), consecutive)
+            return
+        cooldown_key = f"failure_{job_key}"
+        if check_alert_cooldown(cooldown_key, alert_config["failure_cooldown_hours"]):
+            alert_job_failure(job_key, str(error), consecutive)
+            set_alert_cooldown(cooldown_key)
 
     async def _send_failure_alert(self, job_key: str, error: Exception) -> None:
         """Send a Telegram alert when a managed Utility Scheduler job fails."""
@@ -289,6 +336,18 @@ class UtilitySchedulerManager:
             "max_instances": int(self._extract_int_from_text_or_number(props.get("Max Instances", {})) or 1),
             "misfire_grace_seconds": int(self._extract_int_from_text_or_number(props.get("Misfire Grace Seconds", {})) or 300),
             "coalesce": self._extract_checkbox(props.get("Coalesce", {}), default=True),
+        }
+
+    def _extract_alert_config(self, props: dict[str, Any]) -> dict[str, Any]:
+        """Extract alert configuration from Notion row properties."""
+        return {
+            "alert_on_success": (self._extract_select(props.get("Alert On Success", {})) or "full").strip().lower(),
+            "alert_on_failure": (self._extract_select(props.get("Alert On Failure", {})) or "always").strip().lower(),
+            "alert_on_overlap": self._extract_checkbox(props.get("Alert On Overlap", {}), default=True),
+            "success_cooldown_hours": int(self._extract_int_from_text_or_number(props.get("Success Cooldown Hours", {})) or 0),
+            "failure_cooldown_hours": int(self._extract_int_from_text_or_number(props.get("Failure Cooldown Hours", {})) or 6),
+            "overlap_cooldown_hours": int(self._extract_int_from_text_or_number(props.get("Overlap Cooldown Hours", {})) or 6),
+            "overlap_threshold_seconds": int(self._extract_int_from_text_or_number(props.get("Overlap Threshold Seconds", {})) or 180),
         }
 
     @staticmethod

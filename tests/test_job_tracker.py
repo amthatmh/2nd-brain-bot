@@ -13,6 +13,7 @@ def reset_job_tracker(monkeypatch):
     job_tracker._weekly_counters["executions"] = 0
     job_tracker._weekly_counters["failures"] = 0
     job_tracker._alert_cooldowns.clear()
+    job_tracker._alert_configs.clear()
     monkeypatch.setattr(alert_handlers, "alert_job_success", lambda *args, **kwargs: True)
     monkeypatch.setattr(alert_handlers, "alert_job_failure", lambda *args, **kwargs: True)
     yield
@@ -20,6 +21,7 @@ def reset_job_tracker(monkeypatch):
     job_tracker._weekly_counters["executions"] = 0
     job_tracker._weekly_counters["failures"] = 0
     job_tracker._alert_cooldowns.clear()
+    job_tracker._alert_configs.clear()
 
 
 def test_update_job_metrics_tracks_success_and_baseline():
@@ -147,3 +149,63 @@ def test_send_duration_alert_if_slow_skips_without_baseline_or_extra_duration(mo
     assert job_tracker.send_duration_alert_if_slow("fast", None, 250.0) is False
     assert job_tracker.send_duration_alert_if_slow("fast", 300.0, 250.0) is False
     assert calls == []
+
+
+def test_load_alert_config_merges_defaults():
+    job_tracker.load_alert_config("unit", {"alert_on_success": "never", "failure_cooldown_hours": 2})
+
+    assert job_tracker.get_alert_config("unit") == {
+        "alert_on_success": "never",
+        "alert_on_failure": "always",
+        "alert_on_overlap": True,
+        "success_cooldown_hours": 0,
+        "failure_cooldown_hours": 2,
+        "overlap_cooldown_hours": 6,
+        "overlap_threshold_seconds": 180,
+    }
+
+
+def test_track_job_execution_respects_never_success_alert(monkeypatch):
+    calls = []
+    monkeypatch.setattr(alert_handlers, "alert_job_success", lambda *args, **kwargs: calls.append(args) or True)
+    job_tracker.load_alert_config("quiet_unit", {"alert_on_success": "never"})
+
+    @job_tracker.track_job_execution("quiet_unit")
+    def sample():
+        return {"ok": True}
+
+    assert sample() == {"ok": True}
+    assert calls == []
+
+
+def test_track_job_execution_respects_quiet_success_alert(monkeypatch):
+    calls = []
+    monkeypatch.setattr(alert_handlers, "alert_job_success", lambda *args, **kwargs: calls.append(args) or True)
+    job_tracker.load_alert_config("quiet_unit", {"alert_on_success": "quiet"})
+
+    @job_tracker.track_job_execution("quiet_unit")
+    def sample():
+        return {"ok": True}
+
+    assert sample() == {"ok": True}
+    assert calls[0][0] == "quiet_unit"
+    assert calls[0][2] is None
+
+
+def test_track_job_execution_respects_after_3_failure_alert(monkeypatch):
+    calls = []
+    monkeypatch.setattr(alert_handlers, "alert_job_failure", lambda *args, **kwargs: calls.append(args) or True)
+    job_tracker.load_alert_config("failure_unit", {"alert_on_failure": "after_3"})
+
+    @job_tracker.track_job_execution("failure_unit")
+    def sample():
+        raise RuntimeError("boom")
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            sample()
+    assert calls == []
+
+    with pytest.raises(RuntimeError):
+        sample()
+    assert calls == [("failure_unit", "boom", 3)]
