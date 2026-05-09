@@ -76,6 +76,24 @@ def test_classify_conditioning_message():
     assert out["type"] == "conditioning"
 
 
+
+
+def test_classify_conditioning_message_normalizes_legacy_singular_movement():
+    c = _FakeClaude('{"type":"conditioning","confidence":"high","movement":"Thruster","load_lbs":null,"load_kg":null,"sets":null,"reps":null,"is_max_attempt":false,"wod_name":null,"format":"For Time","duration_mins":null,"partner":false}')
+
+    out = classify_workout_message("21-15-9 thrusters", c, "test-model", 1000)
+
+    assert out["type"] == "conditioning"
+    assert out["movements"] == ["Thruster"]
+
+
+def test_classify_conditioning_message_keeps_movements_array():
+    c = _FakeClaude('{"type":"conditioning","confidence":"high","movement":null,"movements":["Thruster","Pull-Up"],"load_lbs":null,"load_kg":null,"sets":null,"reps":null,"is_max_attempt":false,"wod_name":null,"format":"For Time","duration_mins":null,"partner":false}')
+
+    out = classify_workout_message("21-15-9 thrusters and pull-ups", c, "test-model", 1000)
+
+    assert out["movements"] == ["Thruster", "Pull-Up"]
+
 def test_classify_programme_text():
     c = _FakeClaude('{"type":"programme","confidence":"high","movement":null,"load_lbs":null,"load_kg":null,"sets":null,"reps":null,"is_max_attempt":false,"wod_name":null,"format":null,"duration_mins":null,"partner":false}')
     out = classify_workout_message("MONDAY\nB. Squat\nC. AMRAP\nTUESDAY\nB. Bench\nC. For Time\nWEDNESDAY\nB. Deadlift\nC. EMOM", c, "test-model", 1000)
@@ -1049,6 +1067,72 @@ def test_wod_amrap_time_cap_and_workout_structure_logged(monkeypatch):
     assert cf_pending[key]["last_wod_page_id"] == "wod-log"
     assert "How did that session feel?" in message.replies[-1][0]
 
+
+
+
+def test_wod_finalize_resolves_state_movements_and_continues_on_failure(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    created = {}
+    resolved = []
+
+    async def fake_week(notion):
+        del notion
+        return "week-1"
+
+    async def fake_query(notion, wod_log_db_id, workout_date, wod_format=None):
+        del notion, wod_log_db_id, workout_date, wod_format
+        return []
+
+    def fake_get_or_create(notion, movements_db_id, name):
+        del notion
+        assert movements_db_id == "movements"
+        if name == "Bad Match":
+            raise RuntimeError("boom")
+        page_id = f"mov-{name.lower().replace(' ', '-')}"
+        resolved.append((name, page_id))
+        return page_id
+
+    def fake_create_wod_log(*args, **kwargs):
+        created["args"] = args
+        created["kwargs"] = kwargs
+        return "wod-log"
+
+    monkeypatch.setattr(handlers, "get_current_week_program_url", fake_week)
+    monkeypatch.setattr(handlers, "query_wod_log_by_date", fake_query)
+    monkeypatch.setattr(handlers, "get_or_create_movement", fake_get_or_create)
+    monkeypatch.setattr(handlers, "create_wod_log", fake_create_wod_log)
+
+    message = _DummyMessage()
+    key = str(message.chat_id)
+    pending = {
+        key: {
+            "mode": "wod",
+            "stage": "rx_scaled",
+            "format": "amrap",
+            "movements": ["Row", "Bad Match", "Wall Ball"],
+            "rx_scaled": "rx",
+            "result_notes": "5 rounds",
+            "workout_date": "2026-05-06",
+        }
+    }
+
+    asyncio.run(
+        handlers._finalize_flow(
+            message,
+            key,
+            SimpleNamespace(),
+            {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"},
+            pending,
+            "5 rounds",
+        )
+    )
+
+    assert resolved == [("Row", "mov-row"), ("Wall Ball", "mov-wall-ball")]
+    assert created["args"][13] == ["mov-row", "mov-wall-ball"]
+    assert pending[key]["last_wod_page_id"] == "wod-log"
+    assert pending[key]["stage"] == "awaiting_feel"
+    assert "🏋️ Row, Bad Match, Wall Ball" in message.replies[-2][0]
 
 def test_wod_for_time_result_is_captured_before_rx_and_logged(monkeypatch):
     import second_brain.crossfit.handlers as handlers

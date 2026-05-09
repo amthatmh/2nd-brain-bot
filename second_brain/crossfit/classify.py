@@ -207,6 +207,7 @@ def classify_workout_message(text: str, claude_client, model: str, max_tokens: i
             "type": "programme",
             "confidence": "high",
             "movement": None,
+            "movements": [],
             "load_lbs": None,
             "load_kg": None,
             "sets": None,
@@ -224,8 +225,10 @@ Today is {_today_str()}.
 Message: "{text}"
 
 Classify into exactly ONE type:
-STRENGTH ...
-CONDITIONING ...
+STRENGTH — strength lifting, skill, or accessory work. Return a single "movement" when identifiable.
+CONDITIONING — for WODs, metcons, AMRAPs, For Time workouts.
+  Extract ALL movements mentioned (e.g. burpees, wall balls, pull-ups).
+  Return as "movements" array. Empty array if none identifiable.
 PROGRAMME — user pasting a full weekly gym programme.
   Signals: contains day headings (MONDAY, TUESDAY, WEDNESDAY etc. in any case),
   multiple sections (B., C., or Section B / Section C), structured workout
@@ -234,13 +237,36 @@ PROGRAMME — user pasting a full weekly gym programme.
   A message over 300 characters containing day names and movement descriptions
   should be classified as PROGRAMME even if day count is unclear.
 NONE ...
-Return ONLY valid JSON with fields exactly as requested.'''
+
+Return ONLY valid JSON with fields exactly as requested:
+{{
+  "type": "strength|conditioning|programme|none",
+  "confidence": "low|medium|high",
+  "movement": "single strength movement name or null",
+  "movements": ["list", "of", "movement", "names"],
+  "load_lbs": null,
+  "load_kg": null,
+  "sets": null,
+  "reps": null,
+  "is_max_attempt": false,
+  "wod_name": null,
+  "format": "For Time|AMRAP|EMOM|Chipper|Intervals|null",
+  "duration_mins": null,
+  "partner": false
+}}'''
     try:
         resp = claude_client.messages.create(model=model, max_tokens=max_tokens, messages=[{"role": "user", "content": prompt}])
     except Exception as e:
         alert_claude_auth_failure(str(e))
         raise
-    return _extract_json(resp.content[0].text)
+    result = _extract_json(resp.content[0].text)
+    movements = result.get("movements") or []
+    if isinstance(movements, str):
+        movements = [movements]
+    if not movements and result.get("movement"):
+        movements = [result["movement"]]
+    result["movements"] = movements
+    return result
 
 
 def parse_programme(text: str, claude_client, model: str, max_tokens: int) -> dict:
