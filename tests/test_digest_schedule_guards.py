@@ -71,6 +71,7 @@ class TestDigestSelectorDedupe(unittest.TestCase):
                     "Time": {"rich_text": [{"plain_text": time_text}]},
                     "Weekday/Weekend": {"select": {"name": ww_name}},
                     "Habits": {"checkbox": True},
+                    "Feel": {"checkbox": True},
                     "Max Items": {"number": 10},
                     "🏠 Personal": {"checkbox": True},
                 }
@@ -83,6 +84,7 @@ class TestDigestSelectorDedupe(unittest.TestCase):
         self.assertEqual(len(slots), 1)
         self.assertEqual(slots[0]["time"], "08:15")
         self.assertTrue(slots[0]["is_weekday"])
+        self.assertTrue(slots[0]["include_feel"])
 
     def test_load_digest_slots_keeps_empty_contexts_for_habits_only_rows(self):
         main = load_main_module()
@@ -105,6 +107,7 @@ class TestDigestSelectorDedupe(unittest.TestCase):
 
         self.assertEqual(len(slots), 1)
         self.assertEqual(slots[0]["contexts"], [])
+        self.assertFalse(slots[0]["include_feel"])
 
 
 class TestDigestTaskFiltering(unittest.TestCase):
@@ -154,7 +157,7 @@ class TestManualDigestConfig(unittest.TestCase):
         now = main.datetime.now(main.TZ).replace(hour=18, minute=45)
         slots = [
             {"time": "08:15", "is_weekday": True, "include_habits": False, "include_weather": False, "include_uvi": False, "contexts": ["💼 Work"], "max_items": 10},
-            {"time": "16:30", "is_weekday": True, "include_habits": True, "include_weather": True, "include_uvi": True, "contexts": ["🏠 Personal"], "max_items": 5},
+            {"time": "16:30", "is_weekday": True, "include_habits": True, "include_weather": True, "include_uvi": True, "include_feel": True, "contexts": ["🏠 Personal"], "max_items": 5},
             {"time": "23:59", "is_weekday": True, "include_habits": False, "include_weather": False, "include_uvi": False, "contexts": [], "max_items": None},
         ]
 
@@ -164,6 +167,7 @@ class TestManualDigestConfig(unittest.TestCase):
         self.assertTrue(config["include_habits"])
         self.assertTrue(config["include_weather"])
         self.assertTrue(config["include_uvi"])
+        self.assertTrue(config["include_feel"])
         self.assertEqual(config["contexts"], ["🏠 Personal"])
         self.assertEqual(config["max_items"], 5)
 
@@ -240,6 +244,36 @@ class TestDailyDigestHabits(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertIn("*Habits:* tap to log:", kwargs["text"])
         self.assertIn("Test Digest Habit", button_labels)
+
+    async def test_send_daily_digest_renders_log_readiness_button_when_feel_enabled(self):
+        main = load_main_module()
+        bot = MagicMock()
+        sent = MagicMock(message_id=44)
+        bot.send_message = AsyncMock(return_value=sent)
+
+        with patch.object(main.notion_tasks, "get_today_and_overdue_tasks", return_value=[]):
+            await main.send_daily_digest(
+                bot,
+                include_habits=False,
+                config={
+                    "contexts": [],
+                    "max_items": None,
+                    "include_habits": False,
+                    "include_weather": False,
+                    "include_uvi": False,
+                    "include_feel": True,
+                },
+            )
+
+        kwargs = bot.send_message.await_args.kwargs
+        self.assertIsNotNone(kwargs["reply_markup"])
+        buttons = [
+            button
+            for row in kwargs["reply_markup"].inline_keyboard
+            for button in row
+        ]
+        self.assertEqual(buttons[-1].text, "📊 Log Readiness")
+        self.assertEqual(buttons[-1].callback_data, "cf:A")
 
     async def test_send_daily_digest_filters_habits_before_show_after_gate(self):
         main = load_main_module()
