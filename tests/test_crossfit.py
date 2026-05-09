@@ -520,7 +520,10 @@ def test_readiness_final_score_writes_and_clears_pending(monkeypatch):
     asyncio.run(handlers.handle_cf_callback(q, ["cf", "ready", key, "soreness", "3"], None, notion, {"NOTION_DAILY_READINESS_DB": "ready-db"}, cf_pending))
 
     assert key not in cf_pending
-    assert q.edits[-1][0] == "✅ Readiness logged!"
+    assert q.edits[-1][0].startswith("✅ *Readiness logged!*")
+    assert "Sleep Quality: 4" in q.edits[-1][0]
+    assert "Soreness: 3" in q.edits[-1][0]
+    assert q.edits[-1][1]["reply_markup"] is None
     assert calls[0][1] == {
         "sleep_quality": "4",
         "energy": "5",
@@ -529,6 +532,42 @@ def test_readiness_final_score_writes_and_clears_pending(monkeypatch):
         "soreness": "3",
         "daily_readiness_db_id": "ready-db",
     }
+
+
+def test_readiness_progressive_callback_edits_single_message(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    class _DummyQuery:
+        def __init__(self):
+            self.message = _DummyMessage()
+            self.edits = []
+
+        async def answer(self, *args, **kwargs):
+            pass
+
+        async def edit_message_text(self, text, **kwargs):
+            self.edits.append((text, kwargs))
+
+    q = _DummyQuery()
+    cf_pending = {}
+
+    asyncio.run(
+        handlers.handle_cf_callback(
+            q,
+            ["cf", "sleep", "4", "99"],
+            None,
+            SimpleNamespace(),
+            {"NOTION_DAILY_READINESS_DB": "ready-db"},
+            cf_pending,
+        )
+    )
+
+    assert len(q.edits) == 1
+    text, kwargs = q.edits[0]
+    assert "Sleep Quality: 4" in text
+    assert "Energy (1-5)?" in text
+    assert kwargs["reply_markup"] is not None
+    assert kwargs["reply_markup"].inline_keyboard[0][0].callback_data == "cf:energy:4:1:99"
 
 
 def test_extract_workout_data_parses_complete_claude_payload():
