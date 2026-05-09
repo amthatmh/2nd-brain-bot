@@ -509,9 +509,11 @@ async def handle_steps_final_stamp(
 
     Strategy:
     - Use whatever step count was last received for today (from in-memory state)
-    - If no data received today at all (phone off all day), write 0 as Completed=False
+    - If today has no meaningful step data yet (0 steps), skip it rather than
+      overwriting a new-day placeholder
     - Also check yesterday for late arrivals (post-midnight scenario)
-    - Always runs; creates or updates entries for both today and yesterday if needed
+    - Always runs; creates or updates entries for today and/or yesterday when
+      cached or recovered step data exists
     """
     results = {}
     today_str = _local_today(tz)
@@ -551,9 +553,21 @@ async def handle_steps_final_stamp(
         state = _steps_state.get(date_str)
         steps = state["last_steps"] if state else 0
 
-        # For any date with no cached/exported data: skip (we can't know its count).
-        if state is None and steps == 0:
-            log.info("steps: nightly stamp — no data for %s, skipping", date_str)
+        # Skip today if no steps data yet (day just started at 00:05).
+        # force_write=True should not write 0 steps to a brand new day.
+        if date_str == today_str and steps == 0:
+            log.info(
+                "steps: nightly stamp — skipping today %s (no data yet, day just started)",
+                date_str,
+            )
+            continue
+
+        # Skip yesterday if no data was received at all.
+        if date_str == yesterday and steps == 0:
+            log.info(
+                "steps: nightly stamp — no data for yesterday %s, skipping",
+                date_str,
+            )
             continue
 
         log.info("steps: nightly stamp for %s — %d steps", date_str, steps)
