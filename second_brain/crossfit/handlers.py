@@ -12,7 +12,7 @@ from utils.date_parser import parse_date
 
 from .classify import parse_programme
 from .keyboards import level_confirm_keyboard, my_level_keyboard, rx_scaled_keyboard, session_feel_keyboard, wod_format_keyboard
-from .notion import create_strength_log, create_wod_log, get_movement_category, get_movement_details, get_or_create_movement, get_progressions_for_movement, notion_query_wod_log_by_date, save_programme, set_current_level
+from .notion import create_strength_log, create_wod_log, get_movement_category, get_movement_details, get_or_create_movement, get_progressions_for_movement, get_today_workout_structure, notion_query_wod_log_by_date, save_programme, set_current_level
 from .nlp import extract_movements_from_log, extract_workout_data, fuzzy_match_movements, load_movements_cache
 from .readiness import check_readiness_logged_today, log_daily_readiness
 from second_brain.notion import notion_call
@@ -695,6 +695,7 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
         "effort_scheme": scheme,
         "is_max_attempt": workout_result.get("is_max_attempt", False),
         "notes": state.get("notes"),
+        "raw_log": workout_result.get("raw_text") or raw_text or "",
     })
     cf_pending[key] = state
     logger.info(f"[CF_STATE_A] key={key!r} type={type(key)} sets={cf_pending[key].get('sets')} weight={cf_pending[key].get('weight_lbs')} date={cf_pending[key].get('workout_date')}")
@@ -749,12 +750,24 @@ async def handle_cf_wod_flow(message, workout_result, notion, config, cf_pending
         movement_names = [movement_names]
     if not movement_names and workout_result.get("movement"):
         movement_names = [workout_result["movement"]]
+    try:
+        workout_structure = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: get_today_workout_structure(
+                notion, config.get("NOTION_WORKOUT_DAYS_DB", "")
+            ),
+        )
+    except Exception:
+        workout_structure = ""
+
     cf_pending[key] = {
         "mode": "wod",
         "stage": "format",
         "format": workout_result.get("format"),
         "todays_workout": todays_workout,
         "movements": movement_names,
+        "raw_log": workout_result.get("raw_text") or "",
+        "workout_structure": workout_structure,
     }
     await message.reply_text(
         "🏋️ What format was the WOD?",
@@ -1160,6 +1173,7 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
             state["effort_scheme"] = f"{effort_sets}x{effort_reps}"
         weekly_program_id = state.get("weekly_program_page_id") or await get_current_week_program_url(notion)
         movement_ids = state.get("movement_page_ids") or [movement_id]
+        raw_log = state.get("raw_log") or ""
         state_snapshot = dict(state)
         print(f"[DEBUG] Finalizing strength flow state before create_strength_log: {state_snapshot}")
         log.debug("Finalizing strength flow state before create_strength_log: %r", state_snapshot)
@@ -1187,6 +1201,7 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 workout_date=state.get("workout_date"),
                 effort_scheme=state.get("effort_scheme"),
                 load_kg=state.get("weight_kg"),
+                raw_log=raw_log,
             ),
         )
         state["last_workout_page_id"] = workout_page_id
@@ -1227,7 +1242,8 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 result_type = "Rounds+Reps"
         weekly_program_id = await get_current_week_program_url(notion)
         time_cap_mins = state.get("time_cap_mins")
-        workout_structure = state.get("workout_structure")
+        raw_log = state.get("raw_log") or ""
+        workout_structure = state.get("workout_structure") or ""
         wod_name = state.get("wod_name")
         wod_format = _format_label(state.get("format"))
         workout_date = state.get("workout_date") or date.today().isoformat()
@@ -1262,6 +1278,8 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
             signature = inspect.signature(create_wod_log)
             if "workout_structure" in signature.parameters:
                 kwargs["workout_structure"] = workout_structure
+            if "raw_log" in signature.parameters:
+                kwargs["raw_log"] = raw_log
             if "workout_date" in signature.parameters or any(
                 param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()
             ):
@@ -1363,13 +1381,14 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
             )
             return
         raw_structure = text.strip()
+        state["raw_log"] = state.get("raw_log") or raw_structure
         workout_data = await extract_workout_data(raw_structure, claude)
         extracted_movements = workout_data.get("movements") or []
         movement_text = ", ".join(extracted_movements) if extracted_movements else raw_structure
         movement_ids, names = await _resolve_movement_ids(movement_text, claude, notion, config, message)
         state["movements"] = names
         state["movement_page_ids"] = movement_ids
-        state["workout_structure"] = workout_data.get("workout_structure") or workout_data.get("raw_input") or raw_structure
+        state["workout_structure"] = state.get("workout_structure") or ""
         state["wod_name"] = workout_data.get("wod_name")
         raw_date = workout_data.get("date")
         state["workout_date"] = raw_date
