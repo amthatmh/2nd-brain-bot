@@ -4540,7 +4540,6 @@ async def post_init(app: Application) -> None:
             env_db_id=NOTION_ENV_DB,
             habit_name=health_config.STEPS_HABIT_NAME,
             tz=TZ,
-            env_db_id=NOTION_ENV_DB,
         )
         log.info("Steps state backfill complete")
     except Exception as e:
