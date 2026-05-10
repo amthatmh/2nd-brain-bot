@@ -60,6 +60,7 @@ When adding generic health metrics (/api/v1/health/export for UV, metrics, etc.)
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
@@ -78,7 +79,14 @@ from second_brain.healthtrack.metrics import (
     MalformedHealthMetricsPayload,
     handle_health_metrics_sync,
 )
-from second_brain.healthtrack.steps import handle_steps_sync, get_steps_state_summary
+from second_brain.healthtrack.steps import (
+    handle_steps_sync,
+    get_steps_state_summary,
+    _find_steps_habit_page_id,
+    _find_existing_log_entry,
+    _create_log_entry,
+    _update_log_entry_steps,
+)
 from second_brain.http_utils import cors_headers
 
 log = logging.getLogger(__name__)
@@ -210,6 +218,65 @@ def _parse_health_export_payload(body: dict) -> tuple[int, str] | None:
 
     return None
 
+
+
+def _parse_all_dates_from_payload(body: dict) -> list[tuple[int, str]]:
+    """
+    Parse ALL date/steps pairs from a Health Auto Export payload.
+    Returns list of (steps, date_str) tuples, one per calendar date.
+    If multiple readings exist for the same date, sum them (daily total).
+    Dates are extracted as YYYY-MM-DD strings.
+    Returns empty list if payload cannot be parsed.
+    """
+    # Shape 1: flat simple format {"steps": 1234, "date": "YYYY-MM-DD"} — single entry
+    if "steps" in body and "date" in body:
+        steps = _coerce_step_count(body.get("steps"))
+        if steps is not None:
+            raw_date = str(body["date"])[:10]
+            return [(steps, raw_date)]
+
+    # Shape 2: Health Auto Export v2 — body["data"] is a dict with "metrics" key
+    # Shape 3: Health Auto Export v1 — body["data"] is a list directly
+    data_field = body.get("data")
+    if isinstance(data_field, dict):
+        data_array = data_field.get("metrics", [])
+    elif isinstance(data_field, list):
+        data_array = data_field
+    elif isinstance(body.get("metrics"), list):
+        data_array = body.get("metrics", [])
+    else:
+        return []
+
+    if not data_array:
+        return []
+
+    for metric in data_array:
+        name = (metric.get("name") or "").lower()
+        if "step" not in name:
+            continue
+        readings = metric.get("data", [])
+        if not readings:
+            continue
+
+        daily_totals: dict[str, int] = {}
+        for reading in readings:
+            qty = _coerce_step_count(
+                reading.get("qty")
+                if reading.get("qty") is not None
+                else reading.get("value", reading.get("steps"))
+            )
+            if qty is None:
+                continue
+            raw_date = str(reading.get("date") or reading.get("startDate") or "")
+            if not raw_date:
+                continue
+            date_str = raw_date[:10]
+            daily_totals[date_str] = daily_totals.get(date_str, 0) + qty
+
+        if daily_totals:
+            return [(steps, date_str) for date_str, steps in sorted(daily_totals.items())]
+
+    return []
 
 
 def register_health_routes(
@@ -452,15 +519,171 @@ def register_health_routes(
             headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
         )
 
+    async def steps_backfill_handler(request: web.Request) -> web.Response:
+        if request.method == "OPTIONS":
+            return web.Response(status=204, headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"))
+
+        incoming_secret = request.headers.get("X-Health-Secret", "").strip()
+        if not incoming_secret:
+            log.warning("steps_backfill: missing X-Health-Secret header")
+            return web.Response(
+                status=401,
+                text=json.dumps({"ok": False, "error": "Missing X-Health-Secret header"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+
+        if WEBHOOK_SECRET and incoming_secret != WEBHOOK_SECRET:
+            log.warning("steps_backfill: invalid secret")
+            return web.Response(
+                status=401,
+                text=json.dumps({"ok": False, "error": "Invalid X-Health-Secret"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+
+        try:
+            body = await request.json()
+        except Exception as e:
+            log.warning("steps_backfill: invalid JSON payload: %s", e)
+            return web.Response(
+                status=400,
+                text=json.dumps({"ok": False, "error": "invalid JSON"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+
+        date_steps_pairs = _parse_all_dates_from_payload(body)
+        if not date_steps_pairs:
+            received_keys = list(body.keys()) if isinstance(body, dict) else []
+            log.warning("steps_backfill: could not parse any dates from payload. Body keys: %s", received_keys)
+            return web.Response(
+                status=422,
+                text=json.dumps({"ok": False, "error": "could not parse any dates from payload"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+
+        today_str = datetime.now(tz).strftime("%Y-%m-%d")
+        total_dates = len(date_steps_pairs)
+        log.info("steps_backfill: starting backfill of %d dates", total_dates)
+
+        habit_page_id = await asyncio.to_thread(
+            _find_steps_habit_page_id, notion, habit_db_id, health_config.STEPS_HABIT_NAME
+        )
+        if not habit_page_id:
+            log.error("steps_backfill: Steps habit not found in Habits DB")
+            return web.Response(
+                status=500,
+                text=json.dumps({"ok": False, "error": "Steps habit not found in Habits DB"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+
+        created = 0
+        updated = 0
+        skipped = 0
+        errors = 0
+        dates_attempted: list[str] = []
+
+        for i, (steps, date_str) in enumerate(date_steps_pairs, start=1):
+            if date_str > today_str:
+                log.warning("steps_backfill: skipping future date %s", date_str)
+                skipped += 1
+                continue
+
+            dates_attempted.append(date_str)
+            try:
+                completed = steps >= STEPS_THRESHOLD
+
+                existing_page_id = await asyncio.to_thread(
+                    _find_existing_log_entry, notion, log_db_id, habit_page_id, date_str
+                )
+
+                if existing_page_id:
+                    success = await asyncio.to_thread(
+                        _update_log_entry_steps, notion, existing_page_id, steps, completed
+                    )
+                    if success:
+                        updated += 1
+                    else:
+                        errors += 1
+                else:
+                    new_page_id = await asyncio.to_thread(
+                        _create_log_entry,
+                        notion,
+                        log_db_id,
+                        habit_page_id,
+                        date_str,
+                        steps,
+                        completed,
+                        STEPS_SOURCE_LABEL,
+                    )
+                    if new_page_id:
+                        created += 1
+                    else:
+                        errors += 1
+
+            except Exception as e:
+                log.error("steps_backfill: error for date %s: %s", date_str, e)
+                errors += 1
+
+            if i % 10 == 0:
+                log.info("steps_backfill: processed %d/%d dates...", i, total_dates)
+
+            await asyncio.sleep(0.35)
+
+        log.info(
+            "steps_backfill: complete — total=%d created=%d updated=%d skipped=%d errors=%d",
+            total_dates,
+            created,
+            updated,
+            skipped,
+            errors,
+        )
+
+        date_range: dict = {}
+        if dates_attempted:
+            date_range = {"from": min(dates_attempted), "to": max(dates_attempted)}
+
+        return web.Response(
+            text=json.dumps({
+                "ok": True,
+                "summary": {
+                    "total_dates": total_dates,
+                    "created": created,
+                    "updated": updated,
+                    "skipped": skipped,
+                    "errors": errors,
+                    "date_range": date_range,
+                },
+            }),
+            content_type="application/json",
+            headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+        )
+
+        # TEST: POST /api/v1/steps-backfill with 3-date payload → creates 3 Notion entries
+        # TEST: POST same payload again → updates all 3 (no duplicates created)
+        # TEST: Mixed payload — some dates exist, some don't → correct created/updated counts
+        # TEST: Date with multiple intraday readings → summed into daily total
+        # TEST: Future date in payload → skipped, logged as warning
+        # TEST: No X-Health-Secret header → 401 response
+        # TEST: Malformed payload → 422 response, no partial writes
+        # TEST: Single date that already exists with lower step count → updated to new value
+        # TEST: Completed flag: 9999 steps → False, 10000 steps → True
+        # TEST: No Telegram notification sent for any historical date regardless of step count
+
     app.router.add_post("/api/v1/steps-sync", steps_sync_handler)
     app.router.add_options("/api/v1/steps-sync", steps_sync_handler)
     app.router.add_get("/api/v1/steps-status", steps_status_handler)
     app.router.add_post("/api/v1/health-sync", health_sync_handler)
     app.router.add_options("/api/v1/health-sync", health_sync_handler)
+    app.router.add_post("/api/v1/steps-backfill", steps_backfill_handler)
+    app.router.add_options("/api/v1/steps-backfill", steps_backfill_handler)
 
     log.info(
         "Health routes registered: POST /api/v1/steps-sync, POST /api/v1/health-sync, "
-        "GET /api/v1/steps-status (threshold=%d, habit='%s')",
+        "POST /api/v1/steps-backfill, GET /api/v1/steps-status (threshold=%d, habit='%s')",
         STEPS_THRESHOLD,
         health_config.STEPS_HABIT_NAME,
     )
