@@ -2464,17 +2464,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if q.data.startswith("h:toggle:"):
+        t0 = time.time()
+        log.info("[PERF] Toggle start: %s", q.data)
+
         pid_raw = q.data.removeprefix("h:toggle:").strip()
         if not pid_raw:
             await q.answer("Habit button expired. Please open Habits again.", show_alert=True)
+            log.info("[PERF] TOTAL toggle time: %.0fms", (time.time() - t0) * 1000)
             return
         habit_page_id = _restore_pid(pid_raw)
         message_id = q.message.message_id
+
         selected = _habit_selections.setdefault(message_id, set())
+        t1 = time.time()
+        log.info("[PERF] Session loaded in %.0fms", (t1 - t0) * 1000)
+
         if habit_page_id in selected:
             selected.remove(habit_page_id)
         else:
             selected.add(habit_page_id)
+        t2 = time.time()
+        log.info("[PERF] Toggle logic in %.0fms", (t2 - t1) * 1000)
 
         text = q.message.text or q.message.caption or ""
         check_type = "evening" if "Evening check-in" in text else "manual" if "Which habit" in text else "morning"
@@ -2485,11 +2495,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 h for h in sorted(habit_cache.values(), key=lambda x: x["sort"])
                 if not already_logged_today(h["page_id"])
             ]
+        t3 = time.time()
+        log.info("[PERF] Habits loaded in %.0fms", (t3 - t2) * 1000)
 
-        await q.edit_message_reply_markup(
-            reply_markup=kb.habit_buttons(habits, check_type, selected=selected)
-        )
+        new_markup = kb.habit_buttons(habits, check_type, selected=selected)
+        t4 = time.time()
+        log.info("[PERF] Buttons rendered in %.0fms", (t4 - t3) * 1000)
+
+        await q.edit_message_reply_markup(reply_markup=new_markup)
+        t5 = time.time()
+        log.info("[PERF] Message edited in %.0fms", (t5 - t4) * 1000)
+
         await q.answer()
+        t6 = time.time()
+        log.info("[PERF] Callback answered in %.0fms", (t6 - t5) * 1000)
+        log.info("[PERF] TOTAL toggle time: %.0fms", (t6 - t0) * 1000)
         return
 
     if q.data == "h:done":
