@@ -283,6 +283,8 @@ NOTION_TOKEN    = os.environ["NOTION_TOKEN"]
 NOTION_DB_ID    = os.environ["NOTION_DB_ID"]
 NOTION_HABIT_DB = os.environ["NOTION_HABIT_DB"]
 NOTION_LOG_DB   = os.environ["NOTION_LOG_DB"]
+# Required at startup so /api/v1/health-sync never discovers a missing DB at request time.
+NOTION_HEALTH_METRICS_DB = os.environ.get("NOTION_HEALTH_METRICS_DB", "").strip()
 NOTION_STREAK_DB = os.environ["NOTION_STREAK_DB"]
 NOTION_CINEMA_LOG_DB = os.environ.get("NOTION_CINEMA_LOG_DB", os.environ.get("NOTION_CINEMA_DB", "")).strip()
 NOTION_PERFORMANCE_LOG_DB = os.environ.get("NOTION_PERFORMANCE_LOG_DB", "").strip()
@@ -3870,6 +3872,7 @@ async def start_http_server() -> None:
         bot_getter=lambda: _app_bot,
         chat_id=MY_CHAT_ID,
         on_sync_result=_record_steps_sync_result,
+        health_metrics_db_id=NOTION_HEALTH_METRICS_DB,
     )
     runner = web.AppRunner(app)
     await runner.setup()
@@ -3945,6 +3948,7 @@ def startup_notion_health_check() -> None:
         "NOTION_DB_ID": (NOTION_DB_ID, True),
         "NOTION_HABIT_DB": (NOTION_HABIT_DB, True),
         "NOTION_LOG_DB": (NOTION_LOG_DB, True),
+        "NOTION_HEALTH_METRICS_DB": (NOTION_HEALTH_METRICS_DB, True),
         "NOTION_CINEMA_LOG_DB": (NOTION_CINEMA_LOG_DB, False),
         "NOTION_PERFORMANCE_LOG_DB": (NOTION_PERFORMANCE_LOG_DB, False),
         "NOTION_SPORTS_LOG_DB": (NOTION_SPORTS_LOG_DB, False),
@@ -3956,6 +3960,8 @@ def startup_notion_health_check() -> None:
     }
     for label, (db_id, required) in dbs.items():
         if not db_id:
+            if required:
+                raise RuntimeError(f"Startup health check failed: required Notion DB env {label} is missing")
             log.warning("startup_health_check fn=startup_notion_health_check db=%s status=skipped_empty", label)
             continue
         try:
@@ -4534,6 +4540,7 @@ async def post_init(app: Application) -> None:
             env_db_id=NOTION_ENV_DB,
             habit_name=health_config.STEPS_HABIT_NAME,
             tz=TZ,
+            env_db_id=NOTION_ENV_DB,
         )
         log.info("Steps state backfill complete")
     except Exception as e:

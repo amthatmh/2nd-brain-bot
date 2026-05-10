@@ -278,12 +278,24 @@ def _persist_threshold_state(
             if results.get("results"):
                 break
 
+    Stored as row: "steps_threshold_{date_str}" with Value = "{message_id}".
+    Called after the first threshold notification is sent so Railway restarts can
+    recover the Telegram message_id and edit the existing message instead of
+    sending duplicate notifications.
+    """
+    if not env_db_id:
+        return
+
+    try:
+        row_name = f"steps_threshold_{date_str}"
+        page = _query_threshold_state_row(notion, env_db_id, row_name)
         properties = {
             "Value": {"rich_text": [{"text": {"content": str(message_id)}}]},
         }
-        if results.get("results"):
+
+        if page:
             notion.pages.update(
-                page_id=results["results"][0]["id"],
+                page_id=page["id"],
                 properties=properties,
             )
         else:
@@ -346,6 +358,7 @@ async def handle_steps_sync(
     threshold: int,
     source_label: str,
     tz,
+    env_db_id: str = "",
     bot=None,
     chat_id: int | None = None,
     write_intraday_below_threshold: bool = False,
@@ -515,11 +528,11 @@ async def handle_steps_final_stamp(
     notion,
     habit_db_id: str,
     log_db_id: str,
-    env_db_id: str,
     habit_name: str,
     threshold: int,
     source_label: str,
     tz,
+    env_db_id: str = "",
     bot=None,
     chat_id: int | None = None,
 ) -> dict:
@@ -675,6 +688,7 @@ def get_steps_state_summary() -> dict:
         date_str: {
             "last_steps": s["last_steps"],
             "threshold_notified": s["threshold_notified"],
+            "threshold_message_id": s.get("threshold_message_id"),
             "has_notion_entry": bool(s.get("notion_page_id")),
             "threshold_message_id": s.get("threshold_message_id"),
         }

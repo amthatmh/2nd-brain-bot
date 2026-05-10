@@ -74,6 +74,10 @@ from second_brain.healthtrack.config import (
     STEPS_WRITE_INTRADAY_BELOW_THRESHOLD,
     WEBHOOK_SECRET,
 )
+from second_brain.healthtrack.metrics import (
+    MalformedHealthMetricsPayload,
+    handle_health_metrics_sync,
+)
 from second_brain.healthtrack.steps import handle_steps_sync, get_steps_state_summary
 from second_brain.http_utils import cors_headers
 
@@ -218,9 +222,10 @@ def register_health_routes(
     bot_getter,  # callable() → bot, evaluated at request time to avoid circular import
     chat_id: int,
     on_sync_result=None,  # optional callback(result: dict) for telemetry
+    health_metrics_db_id: str = "",
 ) -> None:
     """
-    Register /api/v1/steps-sync and /api/v1/steps-status routes on the aiohttp app.
+    Register health tracking routes on the aiohttp app.
 
     Call this from start_http_server() in second_brain/main.py.
 
@@ -233,6 +238,7 @@ def register_health_routes(
         tz          — IANA timezone (ZoneInfo from config)
         bot_getter  — zero-arg callable returning the Telegram bot (avoids circular ref)
         chat_id     — MY_CHAT_ID to send threshold notifications
+        health_metrics_db_id — NOTION_HEALTH_METRICS_DB env value for /api/v1/health-sync
     """
 
     async def steps_sync_handler(request: web.Request) -> web.Response:
@@ -355,6 +361,83 @@ def register_health_routes(
             headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
         )
 
+
+
+    async def health_sync_handler(request: web.Request) -> web.Response:
+        # Handle CORS preflight
+        if request.method == "OPTIONS":
+            return web.Response(status=204, headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"))
+
+        incoming_secret = request.headers.get("X-Health-Secret", "").strip()
+        if not incoming_secret:
+            log.warning("health_sync: missing X-Health-Secret header")
+            return web.Response(
+                status=401,
+                text=json.dumps({"ok": False, "error": "Missing X-Health-Secret header"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+
+        if WEBHOOK_SECRET and incoming_secret != WEBHOOK_SECRET:
+            log.warning("health_sync: invalid secret")
+            return web.Response(
+                status=401,
+                text=json.dumps({"ok": False, "error": "Invalid X-Health-Secret"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+
+        if not health_metrics_db_id:
+            log.error("health_sync: NOTION_HEALTH_METRICS_DB is not configured")
+            return web.Response(
+                status=500,
+                text=json.dumps({"ok": False, "error": "NOTION_HEALTH_METRICS_DB is not configured"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+
+        try:
+            body = await request.json()
+        except Exception as e:
+            log.warning("health_sync: invalid JSON payload: %s", e)
+            return web.Response(
+                status=400,
+                text=json.dumps({"ok": False, "error": "invalid JSON"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+
+        try:
+            result = await handle_health_metrics_sync(
+                body=body,
+                notion=notion,
+                metrics_db_id=health_metrics_db_id,
+                tz=tz,
+            )
+        except MalformedHealthMetricsPayload as e:
+            received_keys = list(body.keys()) if isinstance(body, dict) else []
+            log.warning("health_sync: malformed payload: %s", e)
+            return web.Response(
+                status=400,
+                text=json.dumps({"ok": False, "error": str(e), "received_keys": received_keys}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+        except Exception as e:
+            log.exception("health_sync: Notion sync failed: %s", e)
+            return web.Response(
+                status=500,
+                text=json.dumps({"ok": False, "error": "Notion API failure"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+
+        return web.Response(
+            text=json.dumps({"ok": True, "result": result}),
+            content_type="application/json",
+            headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+        )
+
     async def steps_status_handler(request: web.Request) -> web.Response:
         """Debug endpoint — shows in-memory steps state."""
         return web.Response(
@@ -372,10 +455,12 @@ def register_health_routes(
     app.router.add_post("/api/v1/steps-sync", steps_sync_handler)
     app.router.add_options("/api/v1/steps-sync", steps_sync_handler)
     app.router.add_get("/api/v1/steps-status", steps_status_handler)
+    app.router.add_post("/api/v1/health-sync", health_sync_handler)
+    app.router.add_options("/api/v1/health-sync", health_sync_handler)
 
     log.info(
-        "Health routes registered: POST /api/v1/steps-sync, GET /api/v1/steps-status "
-        "(threshold=%d, habit='%s')",
+        "Health routes registered: POST /api/v1/steps-sync, POST /api/v1/health-sync, "
+        "GET /api/v1/steps-status (threshold=%d, habit='%s')",
         STEPS_THRESHOLD,
         health_config.STEPS_HABIT_NAME,
     )
