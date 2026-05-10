@@ -494,7 +494,10 @@ _digest_catchup_sent: set[str] = set()
 _digest_slot_sent_today: set[str] = set()
 notified_goals_this_week: set[str] = set()
 mute_until: datetime | None = None
-_signoff_note_today: str = ""
+_signoff_notes_today: dict[str, str] = {
+    "second_brain": "",
+    "brian_ii": "",
+}
 _claude_activity_today: list[str] = []
 _last_daily_log_url: str = ""
 _app_bot = None  # set during post_init for health route bot access
@@ -965,25 +968,28 @@ def is_on_pace(habit: dict) -> bool:
 
 
 
-def store_signoff_note(text: str) -> None:
-    global _signoff_note_today
-    _signoff_note_today = text.strip()
-    log.info("Daily log note stored: %s", text[:80])
+def store_signoff_note(project: str, text: str) -> None:
+    global _signoff_notes_today
+    if project not in _signoff_notes_today:
+        log.warning("Unknown signoff project: %s", project)
+        return
+    _signoff_notes_today[project] = text.strip()
+    log.info("Signoff note stored for %s: %s", project, text[:80])
 
 
 
 def is_muted() -> bool:
     return _is_muted()
 
-def get_and_clear_signoff_note() -> str:
-    global _signoff_note_today
-    note = _signoff_note_today
-    _signoff_note_today = ""
-    return note
+def get_and_clear_project_signoff_notes() -> dict[str, str]:
+    global _signoff_notes_today
+    notes = _signoff_notes_today.copy()
+    _signoff_notes_today = {"second_brain": "", "brian_ii": ""}
+    return notes
 
-async def trigger_signoff_now(message, note: str | None = None) -> None:
+async def trigger_signoff_now(message, note: str | None = None, project: str = "second_brain") -> None:
     if note:
-        store_signoff_note(note)
+        store_signoff_note(project, note)
     await generate_daily_log(message.get_bot())
     note_msg = f"\n\n📝 {_escape_markdown_v2(note[:180])}" if note else ""
     await message.reply_text(
@@ -1750,12 +1756,32 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if lower == "signoff":
         await trigger_signoff_now(message)
         return
-    match_signoff_inline = re.match(r"signoff:\s*(.+)$", text, re.IGNORECASE)
-    if match_signoff_inline:
-        await trigger_signoff_now(message, note=match_signoff_inline.group(1).strip())
+    match_signoff_sb = re.match(r"signoff_secondbrain:\s*(.+)$", text, re.IGNORECASE)
+    if match_signoff_sb:
+        note = match_signoff_sb.group(1).strip()
+        store_signoff_note("second_brain", note)
+        await message.reply_text(
+            f"📓 Second Brain signoff noted.\n\n_{note}_",
+            parse_mode="Markdown",
+        )
         return
 
-    if not lower.startswith("signoff:") and not lower.startswith("/signoff") and lower != "signoff":
+    match_signoff_b2 = re.match(r"signoff_brian:\s*(.+)$", text, re.IGNORECASE)
+    if match_signoff_b2:
+        note = match_signoff_b2.group(1).strip()
+        store_signoff_note("brian_ii", note)
+        await message.reply_text(
+            f"📓 Brian II signoff noted.\n\n_{note}_",
+            parse_mode="Markdown",
+        )
+        return
+
+    if not (
+        lower.startswith("signoff_secondbrain:")
+        or lower.startswith("signoff_brian:")
+        or lower.startswith("/signoff")
+        or lower == "signoff"
+    ):
         track_claude_activity(text)
 
     if lower == "cancel":
@@ -3115,7 +3141,7 @@ async def generate_daily_log(bot) -> dict:
     Link is sent next morning via send_daily_digest().
     """
     global _last_daily_log_url
-    _last_daily_log_url = notion_daily_log.generate_daily_log(
+    _last_daily_log_url = await notion_daily_log.generate_daily_log(
         notion=notion,
         notion_daily_log_db=NOTION_DAILY_LOG_DB,
         notion_db_id=NOTION_DB_ID,
@@ -3124,7 +3150,7 @@ async def generate_daily_log(bot) -> dict:
         claude=claude,
         claude_model=CLAUDE_MODEL,
         tz=TZ,
-        signoff_note=get_and_clear_signoff_note(),
+        signoff_notes=get_and_clear_project_signoff_notes(),
         claude_activity=get_and_clear_claude_activity(),
     )
     return {"action": "generated", "has_url": bool(_last_daily_log_url)}
