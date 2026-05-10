@@ -31,10 +31,12 @@ import json
 import re
 import logging
 import calendar
+import threading
 from datetime import date, datetime, timedelta
 
 import pytz
 from dotenv import load_dotenv
+from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -46,6 +48,8 @@ from telegram.ext import (
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import anthropic
 from notion_client import Client as NotionClient
+from health.steps import parse_log_date as _steps_parse_date, upsert_steps
+from health.metrics import parse_log_date as _metrics_parse_date, upsert_metrics, METRIC_MAP
 
 load_dotenv()
 
@@ -66,10 +70,107 @@ _rc_h, _rc_m = map(int, os.environ.get("RECURRING_CHECK_TIME", "7:00").split(":"
 
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "150"))
+WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
 
 # ── Clients ──────────────────────────────────────────────────────────────────
 notion = NotionClient(auth=NOTION_TOKEN)
 claude = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+
+# ── Flask web server (Health Auto Export webhooks) ───────────────────────────
+flask_app = Flask(__name__)
+
+
+def _authorized() -> bool:
+    return request.headers.get("Authorization") == f"Bearer {WEBHOOK_SECRET}"
+
+
+@flask_app.route("/api/v1/steps-sync", methods=["POST"])
+def steps_sync():
+    if not _authorized():
+        return jsonify({"error": "unauthorized"}), 401
+
+    payload = request.get_json(silent=True)
+    if not payload or "data" not in payload:
+        return jsonify({"error": "missing 'data' key"}), 400
+
+    metrics = payload["data"]
+    if not metrics:
+        return jsonify({"error": "empty data array"}), 400
+
+    try:
+        first_entry = metrics[0]["data"][0]
+        log_date = _steps_parse_date(first_entry["date"])
+        steps = int(first_entry["qty"])
+    except (KeyError, IndexError, ValueError) as exc:
+        log.warning("steps-sync: malformed payload — %s", exc)
+        return jsonify({"error": "malformed payload"}), 400
+
+    log.info("steps-sync: received  date=%s  steps=%d", log_date, steps)
+
+    try:
+        outcome = upsert_steps(log_date, steps)
+    except Exception as exc:
+        log.error("steps-sync: Notion error — %s", exc, exc_info=True)
+        return jsonify({"error": "notion write failed"}), 500
+
+    return jsonify({"status": outcome, "date": log_date.isoformat(), "steps": steps}), 200
+
+
+@flask_app.route("/api/v1/health-sync", methods=["POST"])
+def health_sync():
+    if not _authorized():
+        return jsonify({"error": "unauthorized"}), 401
+
+    payload = request.get_json(silent=True)
+    if not payload or "data" not in payload:
+        return jsonify({"error": "missing 'data' key"}), 400
+
+    raw_metrics = payload["data"]
+    if not raw_metrics:
+        return jsonify({"error": "empty data array"}), 400
+
+    # Determine the log date from the first data point of the first metric.
+    try:
+        first_date_str = raw_metrics[0]["data"][0]["date"]
+        log_date = _metrics_parse_date(first_date_str)
+    except (KeyError, IndexError, ValueError) as exc:
+        log.warning("health-sync: malformed payload — %s", exc)
+        return jsonify({"error": "malformed payload"}), 400
+
+    received_names = [m.get("name", "<unknown>") for m in raw_metrics]
+    log.info("health-sync: received  date=%s  metrics=%s", log_date, received_names)
+
+    # Map incoming metric names to Notion property names; skip unknowns.
+    metrics: dict[str, float] = {}
+    for entry in raw_metrics:
+        name = entry.get("name", "")
+        notion_prop = METRIC_MAP.get(name)
+        if notion_prop is None:
+            log.warning("health-sync: unknown metric '%s' — skipping", name)
+            continue
+        try:
+            value = float(entry["data"][0]["qty"])
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            log.warning("health-sync: could not read qty for '%s' — %s", name, exc)
+            continue
+        metrics[notion_prop] = value
+        log.info("health-sync: %s = %s", notion_prop, value)
+
+    if not metrics:
+        return jsonify({"error": "no recognised metrics in payload"}), 400
+
+    try:
+        outcome = upsert_metrics(log_date, metrics)
+    except Exception as exc:
+        log.error("health-sync: Notion error — %s", exc, exc_info=True)
+        return jsonify({"error": "notion write failed"}), 500
+
+    return jsonify({
+        "status": outcome,
+        "date": log_date.isoformat(),
+        "written": list(metrics.keys()),
+    }), 200
+
 
 # ── In-memory state ──────────────────────────────────────────────────────────
 digest_map: dict[int, list[dict]] = {}
@@ -1032,6 +1133,15 @@ async def post_init(app: Application) -> None:
 
 
 def main() -> None:
+    port = int(os.environ.get("PORT", 8080))
+    flask_thread = threading.Thread(
+        target=lambda: flask_app.run(host="0.0.0.0", port=port, use_reloader=False),
+        daemon=True,
+        name="flask-health",
+    )
+    flask_thread.start()
+    log.info("Flask health server started on port %d", port)
+
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
