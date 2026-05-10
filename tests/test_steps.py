@@ -12,6 +12,8 @@ from aiohttp.test_utils import TestClient, TestServer
 from second_brain.healthtrack.routes import _parse_health_export_payload, register_health_routes
 from second_brain.healthtrack.steps import (
     _date_state,
+    _load_threshold_state,
+    _persist_threshold_state,
     _steps_state,
     backfill_steps_state_from_notion,
     get_steps_state_summary,
@@ -231,6 +233,51 @@ class TestParseHealthExportPayload(unittest.TestCase):
 
 
 # ── Steps sync logic ──────────────────────────────────────────────────────────
+
+
+class TestThresholdStatePersistence(unittest.TestCase):
+    def test_persist_threshold_state_uses_standard_env_key(self):
+        notion = MagicMock()
+        notion.databases.query.return_value = {"results": []}
+
+        _persist_threshold_state(notion, "env-db", "2026-04-28", 12345)
+
+        notion.pages.create.assert_called_once()
+        kwargs = notion.pages.create.call_args.kwargs
+        self.assertEqual(kwargs["parent"], {"database_id": "env-db"})
+        props = kwargs["properties"]
+        self.assertEqual(
+            props["Name"]["title"][0]["text"]["content"],
+            "steps_threshold_2026-04-28",
+        )
+        self.assertEqual(
+            props["Value"]["rich_text"][0]["text"]["content"],
+            "12345",
+        )
+
+    def test_load_threshold_state_reads_message_id(self):
+        notion = MagicMock()
+        notion.databases.query.return_value = {
+            "results": [
+                {
+                    "id": "env-row",
+                    "properties": {
+                        "Value": {"rich_text": [{"plain_text": "12345"}]}
+                    },
+                }
+            ]
+        }
+
+        message_id = _load_threshold_state(notion, "env-db", "2026-04-28")
+
+        self.assertEqual(message_id, 12345)
+        query_kwargs = notion.databases.query.call_args.kwargs
+        self.assertEqual(query_kwargs["database_id"], "env-db")
+        self.assertEqual(
+            query_kwargs["filter"],
+            {"property": "Name", "title": {"equals": "steps_threshold_2026-04-28"}},
+        )
+
 
 class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -767,6 +814,37 @@ class TestBackfillStepsStateFromNotion(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(_steps_state["2026-04-28"]["last_steps"], 8500)
         self.assertEqual(_steps_state["2026-04-28"]["notion_page_id"], "today-pid")
+
+    async def test_backfill_restores_threshold_message_from_env_db(self):
+        notion = MagicMock()
+        notion.pages.retrieve.return_value = {
+            "properties": {"Steps Count": {"number": 11083}}
+        }
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/Chicago")
+
+        def find_existing(_notion, _log_db_id, _habit_page_id, date_str):
+            if date_str == "2026-04-28":
+                return "today-pid"
+            return None
+
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._yesterday", return_value="2026-04-27"), \
+             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"), \
+             patch("second_brain.healthtrack.steps._find_existing_log_entry", side_effect=find_existing), \
+             patch("second_brain.healthtrack.steps._load_threshold_state", return_value=12345):
+            await backfill_steps_state_from_notion(
+                notion=notion,
+                habit_db_id="h",
+                log_db_id="l",
+                env_db_id="env-db",
+                habit_name="Steps",
+                tz=tz,
+            )
+
+        self.assertEqual(_steps_state["2026-04-28"]["last_steps"], 11083)
+        self.assertTrue(_steps_state["2026-04-28"]["threshold_notified"])
+        self.assertEqual(_steps_state["2026-04-28"]["threshold_message_id"], 12345)
 
 
 class TestGetStepsStateSummary(unittest.TestCase):

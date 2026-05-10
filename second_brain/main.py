@@ -4531,6 +4531,7 @@ async def post_init(app: Application) -> None:
             notion=notion,
             habit_db_id=NOTION_HABIT_DB,
             log_db_id=NOTION_LOG_DB,
+            env_db_id=NOTION_ENV_DB,
             habit_name=health_config.STEPS_HABIT_NAME,
             tz=TZ,
         )
