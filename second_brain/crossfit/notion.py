@@ -65,6 +65,103 @@ def get_or_create_movement(notion, movements_db_id: str, name: str) -> str:
 
 
 
+MOVEMENT_ALIAS_MAP = [
+    # Format: (regex_pattern, canonical_name)
+    # Processed in order — first match wins.
+
+    # Explicit aliases — must come before generic stripping
+    (r"russian\s+(kb|kettlebell)\s+swing", "Kettlebell Swing"),
+    (r"american\s+(kb|kettlebell)\s+swing", "American Kettlebell Swing"),
+    (r"(s/?a|single[\s-]arm)\s+(db|dumbbell)\s+overhead\s+(walking\s+)?lunge", "Overhead Carry"),
+    (r"(db|dumbbell)\s+overhead\s+(walking\s+)?lunge", "Overhead Carry"),
+    (r"(db|dumbbell)\s+goblet\s+(walking\s+)?lunge", "Lunge"),
+    (r"double\s+(kb|kettlebell)\s+hang\s+clean[\s\w]*jerk", "Kettlebell Clean"),
+    (r"hang\s+clean\s+and\s+jerk", "Clean & Jerk"),
+    (r"box\s+jump\s+over", "Box Jump"),
+    (r"burpee\s+broad\s+jump", "Burpee"),
+    (r"line[\s-]facing\s+burpee", "Burpee"),
+    (r"lying\s+to\s+stand\s+rope\s+(climb|pull)", "Ring Row"),
+    (r"rope\s+climb", "Pull-Up"),
+    (r"(db|dumbbell)\s+push\s+press", "Dumbbell Push Press"),
+    (r"(kb|kettlebell)\s+hang\s+clean", "Kettlebell Clean"),
+    (r"farmer[\s']+s?\s+(carry|walk)", "Farmer's Carry"),
+    (r"assault\s+bike", "Assault Bike"),
+    (r"ski\s+(erg|meters?)", "SkiErg"),
+    (r"handstand\s+push[\s-]?ups?", "Handstand Push-Up"),
+    (r"kneeling\s+push[\s-]?ups?", "Kneeling Push-Up"),
+    (r"toes[\s-]?to[\s-]?bar", "Toes-to-Bar"),
+    (r"\bt2b\b", "Toes-to-Bar"),
+    (r"push[\s-]?ups?", "Push-Up"),
+    (r"pull[\s-]?ups?", "Pull-Up"),
+    (r"push\s*/\s*power\s+jerk", "Push Jerk"),
+    (r"wall\s+ball", "Wall Ball"),
+    (r"wall\s+walk", "Wall Walk"),
+    (r"air\s+squat", "Air Squat"),
+    (r"ring\s+row", "Ring Row"),
+    (r"box\s+jump", "Box Jump"),
+    (r"double[\s-]?under", "Double-Under"),
+    (r"single[\s-]?under", "Single-Under"),
+    (r"hanging\s+knee\s+raise", "Toes-to-Bar"),
+    (r"kb\s+swing", "Kettlebell Swing"),
+]
+
+
+def normalise_movement_name(raw: str) -> list[str]:
+    """
+    Normalise a raw movement string extracted from programme text.
+    Returns a list of canonical movement names (usually one, but
+    slash-notation like "Push/Power Jerk" returns multiple).
+    """
+    s = raw.strip()
+
+    # Handle slash-separated compound movements FIRST
+    slash_parts = re.split(r"\s*/\s*", s)
+    if len(slash_parts) > 1 and all(re.search(r"[a-zA-Z]{3,}", p) for p in slash_parts):
+        # Share the tail of the last part with any single-word modifier parts,
+        # e.g. "Push/Power Jerk" → ["Push Jerk", "Power Jerk"]
+        last_words = slash_parts[-1].split()
+        results: list[str] = []
+        for i, part in enumerate(slash_parts):
+            part_words = part.split()
+            if i < len(slash_parts) - 1 and len(part_words) < len(last_words):
+                suffix = last_words[len(part_words):]
+                filled = " ".join(part_words + suffix)
+                results.extend(normalise_movement_name(filled))
+            else:
+                results.extend(normalise_movement_name(part))
+        return results
+
+    # Strip trailing parentheticals e.g. "(24\"/20\")" or "(53/35)"
+    s = re.sub(r"\s*\(.*?\)\s*$", "", s).strip()
+
+    # Strip leading quantity/distance e.g. "400 Meter", "50'", "24/18"
+    s = re.sub(r"^\d[\d/'.]*\s*(meter|m|cal|calories|foot|feet|')?\s*", "", s, flags=re.IGNORECASE).strip()
+
+    # Strip trailing measurement units e.g. "Row Calories" → "Row"
+    s = re.sub(r"\s+(calories?|meters?|reps?|rounds?)\s*$", "", s, flags=re.IGNORECASE).strip()
+
+    # Check alias map (case-insensitive, full string match)
+    for pattern, canonical in MOVEMENT_ALIAS_MAP:
+        if re.search(pattern, s, re.IGNORECASE):
+            return [canonical]
+
+    # Strip common equipment prefixes for fuzzy fallback
+    s = re.sub(
+        r"^(double|single|s/a|sa|db|dumbbell|kb|kettlebell|barbell|banded|"
+        r"weighted|strict|kipping|touch\s*n?\s*go|tng)\s+",
+        "", s, flags=re.IGNORECASE,
+    ).strip()
+
+    # Normalise plurals for fuzzy fallback
+    s = re.sub(
+        r"(?i)\b(swings|jumps|dips|lunges|squats|rows|burpees|climbs)\b",
+        lambda m: m.group(0).rstrip("s"),
+        s,
+    )
+
+    return [s] if s else []
+
+
 def _extract_unique_movement_names(parsed: dict) -> set[str]:
     names: set[str] = set()
     for track_row in (parsed or {}).get("tracks", []):
@@ -143,9 +240,12 @@ def _movement_names_from_text(section_text: str, movement_cache: dict[str, str])
 def _resolve_section_movements(section: dict, movement_cache: dict[str, str], notion, movements_db_id: str) -> list[str]:
     section = section or {}
     candidates: list[str] = []
-    for name in section.get("movements") or []:
-        if name and name not in candidates:
-            candidates.append(name)
+    for raw_name in section.get("movements") or []:
+        if not raw_name:
+            continue
+        for canonical in normalise_movement_name(raw_name):
+            if canonical and canonical not in candidates:
+                candidates.append(canonical)
     for name in _movement_names_from_text(section.get("description") or "", movement_cache):
         if name not in candidates:
             candidates.append(name)
@@ -158,10 +258,13 @@ def _resolve_section_movements(section: dict, movement_cache: dict[str, str], no
                 resolved.append(mid)
             continue
         if extracted_name and movements_db_id:
-            mid = get_or_create_movement(notion, movements_db_id, extracted_name)
-            movement_cache.setdefault(extracted_name, mid)
-            if mid not in resolved:
-                resolved.append(mid)
+            try:
+                mid = get_or_create_movement(notion, movements_db_id, extracted_name)
+                movement_cache.setdefault(extracted_name, mid)
+                if mid not in resolved:
+                    resolved.append(mid)
+            except Exception as e:
+                log.warning("movement '%s' failed: %s", extracted_name, e)
     return resolved
 
 
@@ -234,8 +337,18 @@ def _rich_text_chunks(text: str, limit: int = 1900) -> list[dict]:
 
 
 def this_monday() -> str:
+    """
+    Returns ISO date string of the Monday anchoring the current training
+    week. Saturday/Sunday → next Monday. Monday–Friday → current Monday.
+    """
     today = date.today()
-    return (today - timedelta(days=today.weekday())).isoformat()
+    weekday = today.weekday()  # Monday=0 ... Sunday=6
+    if weekday == 0:
+        return today.isoformat()
+    elif weekday <= 4:
+        return (today - timedelta(days=weekday)).isoformat()
+    else:
+        return (today + timedelta(days=7 - weekday)).isoformat()
 
 
 def infer_section_b_type(section_b: dict) -> str:
@@ -489,8 +602,8 @@ def save_programme_from_notion_row(
             "tracks": [{"track": "Performance", "days": parsed.get("days", [])}],
         }
 
-    week_label = parsed.get("week_label") or "Week"
-    monday_iso = _week_start_from_label(week_label)
+    monday_iso = this_monday()
+    week_label = f"Week of {monday_iso}"
     del program_db_id, cycles_db_id
 
     try:

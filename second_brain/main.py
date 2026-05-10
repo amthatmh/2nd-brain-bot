@@ -4106,77 +4106,76 @@ async def process_pending_programmes(bot) -> None:
             except Exception as e:
                 log.warning("process_pending_programmes: could not write movements rollup: %s", e)
 
-            cycle_line = None
+            cycle_line = ""
             try:
-                if NOTION_CYCLES_DB:
-                    new_cycle = props.get("New Cycle", {}).get("checkbox", False)
-                    test_week = props.get("Test Week", {}).get("checkbox", False)
+                new_cycle = props.get("New Cycle", {}).get("checkbox", False)
 
-                    open_cycle_results = notion_call(
+                if new_cycle:
+                    all_rows: list[dict] = []
+                    _cursor = None
+                    while True:
+                        _kwargs: dict = {"database_id": NOTION_WORKOUT_PROGRAM_DB, "page_size": 100}
+                        if _cursor:
+                            _kwargs["start_cursor"] = _cursor
+                        _res = notion_call(notion.databases.query, **_kwargs)
+                        all_rows.extend(_res.get("results", []))
+                        if not _res.get("has_more"):
+                            break
+                        _cursor = _res.get("next_cursor")
+                        if not _cursor:
+                            break
+                    existing_cycle_nums = [
+                        r["properties"].get("Cycle", {}).get("number") or 0
+                        for r in all_rows
+                    ]
+                    cycle_num = max(existing_cycle_nums, default=0) + 1
+                else:
+                    recent_rows = notion_call(
                         notion.databases.query,
-                        database_id=NOTION_CYCLES_DB,
-                        filter={"property": "End Date", "date": {"is_empty": True}},
-                        sorts=[{"property": "Start Date", "direction": "descending"}],
-                        page_size=1,
+                        database_id=NOTION_WORKOUT_PROGRAM_DB,
+                        filter={"property": "Processed", "checkbox": {"equals": True}},
+                        sorts=[{"property": "Week Of", "direction": "descending"}],
+                        page_size=10,
                     ).get("results", [])
-                    open_cycle = open_cycle_results[0] if open_cycle_results else None
-                    open_cycle_id = open_cycle["id"] if open_cycle else None
-                    open_cycle_name = _notion_title_text(open_cycle.get("properties", {})) if open_cycle else None
-
-                    created_new_cycle = False
-                    sunday_iso = None
-                    if new_cycle:
-                        next_num = _count_notion_database_rows(NOTION_CYCLES_DB) + 1
-                        cycle_name = f"Cycle {next_num}"
-                        cycle_id = _create_cycle_row(cycle_name)
-                        week_num = 1
-                        created_new_cycle = True
-                        log.info("[CYCLE] Created %s", cycle_name)
-                    elif open_cycle_id:
-                        cycle_id = open_cycle_id
-                        cycle_name = open_cycle_name or "Cycle"
-                        linked_count = _count_notion_database_rows(
-                            NOTION_WORKOUT_PROGRAM_DB,
-                            {"property": "Cycle #", "relation": {"contains": open_cycle_id}},
-                        )
-                        week_num = linked_count + 1
-                    else:
-                        next_num = _count_notion_database_rows(NOTION_CYCLES_DB) + 1
-                        cycle_name = f"Cycle {next_num}"
-                        cycle_id = _create_cycle_row(cycle_name)
-                        week_num = 1
-                        log.warning(
-                            "[CYCLE] No open cycle found and New Cycle not checked — auto-created %s",
-                            cycle_name,
-                        )
-
-                    notion_call(
-                        notion.pages.update,
-                        page_id=page_id,
-                        properties={
-                            "Cycle #": {"relation": [{"id": cycle_id}]},
-                            "Week #": {"number": week_num},
-                        },
+                    cycle_num = next(
+                        (
+                            r["properties"]["Cycle"]["number"]
+                            for r in recent_rows
+                            if r["properties"].get("Cycle", {}).get("number")
+                        ),
+                        1,
                     )
-                    log.info("[CYCLE] Linked to %s, week=%s", cycle_name, week_num)
 
-                    if test_week:
-                        sunday_iso = _current_week_sunday_iso()
-                        notion_call(
-                            notion.pages.update,
-                            page_id=cycle_id,
-                            properties={"End Date": {"date": {"start": sunday_iso}}},
-                        )
-                        log.info("[CYCLE] Closed %s, End Date=%s", cycle_name, sunday_iso)
+                counted_rows = notion_call(
+                    notion.databases.query,
+                    database_id=NOTION_WORKOUT_PROGRAM_DB,
+                    filter={
+                        "and": [
+                            {"property": "Processed", "checkbox": {"equals": True}},
+                            {"property": "Cycle", "number": {"equals": cycle_num}},
+                        ]
+                    },
+                    page_size=100,
+                ).get("results", [])
+                week_num = len(counted_rows) + 1
 
-                    if test_week and sunday_iso:
-                        cycle_line = f"_🏁 Cycle closed: {cycle_name} (ends {sunday_iso})_"
-                    elif created_new_cycle:
-                        cycle_line = f"_🔁 New cycle started: {cycle_name}_"
-                    else:
-                        cycle_line = f"_📅 Week {week_num} of {cycle_name}_"
+                notion_call(
+                    notion.pages.update,
+                    page_id=page_id,
+                    properties={
+                        "Cycle": {"number": cycle_num},
+                        "Week": {"number": week_num},
+                    },
+                )
+                log.info("[CYCLE] Cycle %d, Week %d", cycle_num, week_num)
+                cycle_line = (
+                    f"_🔁 Cycle {cycle_num} started — Week 1_"
+                    if new_cycle
+                    else f"_📅 Cycle {cycle_num} — Week {week_num}_"
+                )
             except Exception as e:
-                log.warning("[CYCLE] Non-fatal error in cycle logic: %s", e)
+                log.warning("[CYCLE] Non-fatal: %s", e)
+                cycle_line = ""
 
             notion_call(
                 notion.pages.update,
