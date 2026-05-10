@@ -252,18 +252,6 @@ def migrate_steps_entry_titles(
         return {"error": str(e)}
 
 
-def _query_threshold_state_row(notion, env_db_id: str, row_name: str) -> dict | None:
-    """Find a persisted threshold notification row in the Notion ENV DB."""
-    for filter_type in ("title", "rich_text"):
-        results = notion.databases.query(
-            database_id=env_db_id,
-            filter={"property": "Name", filter_type: {"equals": row_name}},
-        )
-        if results.get("results"):
-            return results["results"][0]
-    return None
-
-
 def _persist_threshold_state(
     notion,
     env_db_id: str,
@@ -272,6 +260,23 @@ def _persist_threshold_state(
 ) -> None:
     """
     Persist threshold notification state to Notion ENV DB.
+
+    Stored as row: ``steps_threshold_{date_str}`` with Value = ``message_id``
+    so the bot can recover the Telegram message after a restart and edit it
+    instead of sending a duplicate notification.
+    """
+    if not env_db_id:
+        return
+    try:
+        row_name = f"steps_threshold_{date_str}"
+        results = {"results": []}
+        for filter_type in ("title", "rich_text"):
+            results = notion.databases.query(
+                database_id=env_db_id,
+                filter={"property": "Name", filter_type: {"equals": row_name}},
+            )
+            if results.get("results"):
+                break
 
     Stored as row: "steps_threshold_{date_str}" with Value = "{message_id}".
     Called after the first threshold notification is sent so Railway restarts can
@@ -306,31 +311,31 @@ def _persist_threshold_state(
         log.warning("steps: could not persist threshold state: %s", e)
 
 
-def _load_threshold_state(
-    notion,
-    env_db_id: str,
-    date_str: str,
-) -> int | None:
+def _load_threshold_state(notion, env_db_id: str, date_str: str) -> int | None:
     """
-    Load threshold message_id from Notion ENV DB on startup.
+    Load threshold message_id from Notion ENV DB on startup/recovery.
 
-    Returns message_id as int, or None if not found. Also checks the temporary
-    legacy key used by earlier unreleased edit-message code so any existing ENV
-    DB rows remain recoverable.
+    Returns message_id as int, or None if not found. Also checks the legacy
+    ``steps_threshold_msg_{date_str}`` key for compatibility with any rows
+    created before the ENV key was standardized.
     """
     if not env_db_id:
         return None
-
     try:
-        row_names = [
-            f"steps_threshold_{date_str}",
-            f"steps_threshold_msg_{date_str}",
-        ]
+        row_names = (f"steps_threshold_{date_str}", f"steps_threshold_msg_{date_str}")
+        results = {"results": []}
         for row_name in row_names:
-            page = _query_threshold_state_row(notion, env_db_id, row_name)
-            if not page:
-                continue
-            value_prop = page.get("properties", {}).get("Value", {})
+            for filter_type in ("title", "rich_text"):
+                results = notion.databases.query(
+                    database_id=env_db_id,
+                    filter={"property": "Name", filter_type: {"equals": row_name}},
+                )
+                if results.get("results"):
+                    break
+            if results.get("results"):
+                break
+        if results.get("results"):
+            value_prop = results["results"][0].get("properties", {}).get("Value", {})
             items = value_prop.get("rich_text", [])
             if items:
                 return int(items[0]["plain_text"])
@@ -348,6 +353,7 @@ async def handle_steps_sync(
     notion,
     habit_db_id: str,
     log_db_id: str,
+    env_db_id: str = "",
     habit_name: str,
     threshold: int,
     source_label: str,
@@ -628,11 +634,9 @@ async def backfill_steps_state_from_notion(
 ) -> None:
     """Pre-populate _steps_state from Notion at bot startup.
 
-    This restores the latest known step count and Habit Log page id so redeploys
-    do not cause the 23:59 stamp to write 0 or duplicate entries. It also
-    restores today's threshold notification message id from the ENV DB so
-    restart-time syncs edit the existing Telegram message instead of sending a
-    duplicate notification.
+    Restores the latest known step counts and Notion page IDs, plus today's
+    threshold notification message_id from the ENV DB so redeploys edit the
+    existing Telegram message instead of sending duplicates.
     """
     habit_page_id = _find_steps_habit_page_id(notion, habit_db_id, habit_name)
     if not habit_page_id:
@@ -686,6 +690,7 @@ def get_steps_state_summary() -> dict:
             "threshold_notified": s["threshold_notified"],
             "threshold_message_id": s.get("threshold_message_id"),
             "has_notion_entry": bool(s.get("notion_page_id")),
+            "threshold_message_id": s.get("threshold_message_id"),
         }
         for date_str, s in _steps_state.items()
     }

@@ -41,6 +41,7 @@ In second_brain/main.py → start_http_server(), call:
         notion=notion,
         habit_db_id=NOTION_HABIT_DB,
         log_db_id=NOTION_LOG_DB,
+        env_db_id=NOTION_ENV_DB,
         tz=TZ,
         bot_getter=lambda: _app_bot,
         chat_id=TELEGRAM_CHAT_ID,
