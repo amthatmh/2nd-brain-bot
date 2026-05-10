@@ -252,30 +252,45 @@ def migrate_steps_entry_titles(
         return {"error": str(e)}
 
 
-def _persist_threshold_message_id(
+def _query_threshold_state_row(notion, env_db_id: str, row_name: str) -> dict | None:
+    """Find a persisted threshold notification row in the Notion ENV DB."""
+    for filter_type in ("title", "rich_text"):
+        results = notion.databases.query(
+            database_id=env_db_id,
+            filter={"property": "Name", filter_type: {"equals": row_name}},
+        )
+        if results.get("results"):
+            return results["results"][0]
+    return None
+
+
+def _persist_threshold_state(
     notion,
     env_db_id: str,
     date_str: str,
     message_id: int,
 ) -> None:
-    """Store the threshold notification message_id in Notion ENV DB."""
-    try:
-        row_name = f"steps_threshold_msg_{date_str}"
-        results = {"results": []}
-        for filter_type in ("title", "rich_text"):
-            results = notion.databases.query(
-                database_id=env_db_id,
-                filter={"property": "Name", filter_type: {"equals": row_name}},
-            )
-            if results.get("results"):
-                break
+    """
+    Persist threshold notification state to Notion ENV DB.
 
+    Stored as row: "steps_threshold_{date_str}" with Value = "{message_id}".
+    Called after the first threshold notification is sent so Railway restarts can
+    recover the Telegram message_id and edit the existing message instead of
+    sending duplicate notifications.
+    """
+    if not env_db_id:
+        return
+
+    try:
+        row_name = f"steps_threshold_{date_str}"
+        page = _query_threshold_state_row(notion, env_db_id, row_name)
         properties = {
             "Value": {"rich_text": [{"text": {"content": str(message_id)}}]},
         }
-        if results.get("results"):
+
+        if page:
             notion.pages.update(
-                page_id=results["results"][0]["id"],
+                page_id=page["id"],
                 properties=properties,
             )
         else:
@@ -286,30 +301,41 @@ def _persist_threshold_message_id(
                     **properties,
                 },
             )
-        log.info("steps: persisted threshold_message_id=%s for %s", message_id, date_str)
+        log.info("steps: persisted threshold state for %s (msg_id=%s)", date_str, message_id)
     except Exception as e:
-        log.warning("steps: could not persist threshold_message_id: %s", e)
+        log.warning("steps: could not persist threshold state: %s", e)
 
 
-def _load_threshold_message_id(notion, env_db_id: str, date_str: str) -> int | None:
-    """Load the threshold notification message_id from Notion ENV DB."""
+def _load_threshold_state(
+    notion,
+    env_db_id: str,
+    date_str: str,
+) -> int | None:
+    """
+    Load threshold message_id from Notion ENV DB on startup.
+
+    Returns message_id as int, or None if not found. Also checks the temporary
+    legacy key used by earlier unreleased edit-message code so any existing ENV
+    DB rows remain recoverable.
+    """
+    if not env_db_id:
+        return None
+
     try:
-        row_name = f"steps_threshold_msg_{date_str}"
-        results = {"results": []}
-        for filter_type in ("title", "rich_text"):
-            results = notion.databases.query(
-                database_id=env_db_id,
-                filter={"property": "Name", filter_type: {"equals": row_name}},
-            )
-            if results.get("results"):
-                break
-        if results.get("results"):
-            value_prop = results["results"][0].get("properties", {}).get("Value", {})
+        row_names = [
+            f"steps_threshold_{date_str}",
+            f"steps_threshold_msg_{date_str}",
+        ]
+        for row_name in row_names:
+            page = _query_threshold_state_row(notion, env_db_id, row_name)
+            if not page:
+                continue
+            value_prop = page.get("properties", {}).get("Value", {})
             items = value_prop.get("rich_text", [])
             if items:
                 return int(items[0]["plain_text"])
     except Exception as e:
-        log.warning("steps: could not load threshold_message_id: %s", e)
+        log.warning("steps: could not load threshold state: %s", e)
     return None
 
 
@@ -322,11 +348,11 @@ async def handle_steps_sync(
     notion,
     habit_db_id: str,
     log_db_id: str,
-    env_db_id: str,
     habit_name: str,
     threshold: int,
     source_label: str,
     tz,
+    env_db_id: str = "",
     bot=None,
     chat_id: int | None = None,
     write_intraday_below_threshold: bool = False,
@@ -369,7 +395,7 @@ async def handle_steps_sync(
         and state.get("threshold_message_id") is None
         and env_db_id
     ):
-        recovered_id = _load_threshold_message_id(notion, env_db_id, date_str)
+        recovered_id = _load_threshold_state(notion, env_db_id, date_str)
         if recovered_id:
             state["threshold_notified"] = True
             state["threshold_message_id"] = recovered_id
@@ -394,7 +420,7 @@ async def handle_steps_sync(
                 if env_db_id:
                     asyncio.create_task(
                         asyncio.to_thread(
-                            _persist_threshold_message_id,
+                            _persist_threshold_state,
                             notion,
                             env_db_id,
                             date_str,
@@ -432,7 +458,7 @@ async def handle_steps_sync(
                     if env_db_id:
                         asyncio.create_task(
                             asyncio.to_thread(
-                                _persist_threshold_message_id,
+                                _persist_threshold_state,
                                 notion,
                                 env_db_id,
                                 date_str,
@@ -496,11 +522,11 @@ async def handle_steps_final_stamp(
     notion,
     habit_db_id: str,
     log_db_id: str,
-    env_db_id: str,
     habit_name: str,
     threshold: int,
     source_label: str,
     tz,
+    env_db_id: str = "",
     bot=None,
     chat_id: int | None = None,
 ) -> dict:
@@ -598,9 +624,15 @@ async def backfill_steps_state_from_notion(
     log_db_id: str,
     habit_name: str,
     tz,
+    env_db_id: str = "",
 ) -> None:
-    """Pre-populate _steps_state from Notion at bot startup so redeploys
-    don't cause the 23:59 stamp to write 0.
+    """Pre-populate _steps_state from Notion at bot startup.
+
+    This restores the latest known step count and Habit Log page id so redeploys
+    do not cause the 23:59 stamp to write 0 or duplicate entries. It also
+    restores today's threshold notification message id from the ENV DB so
+    restart-time syncs edit the existing Telegram message instead of sending a
+    duplicate notification.
     """
     habit_page_id = _find_steps_habit_page_id(notion, habit_db_id, habit_name)
     if not habit_page_id:
@@ -625,8 +657,23 @@ async def backfill_steps_state_from_notion(
             state = _date_state(date_str)
             if steps > state["last_steps"]:
                 state["last_steps"] = steps
-                state["notion_page_id"] = existing_id
-                log.info("steps backfill: %s → %d steps", date_str, steps)
+            state["notion_page_id"] = existing_id
+
+            if env_db_id and date_str == today:
+                message_id = _load_threshold_state(notion, env_db_id, date_str)
+                if message_id:
+                    state["threshold_notified"] = True
+                    state["threshold_message_id"] = message_id
+                    log.info(
+                        "steps backfill: %s → %d steps, threshold_notified=True (msg_id=%s)",
+                        date_str,
+                        state["last_steps"],
+                        message_id,
+                    )
+                else:
+                    log.info("steps backfill: %s → %d steps", date_str, state["last_steps"])
+            else:
+                log.info("steps backfill: %s → %d steps", date_str, state["last_steps"])
         except Exception as e:
             log.error("steps backfill: error for %s: %s", date_str, e)
 
@@ -637,6 +684,7 @@ def get_steps_state_summary() -> dict:
         date_str: {
             "last_steps": s["last_steps"],
             "threshold_notified": s["threshold_notified"],
+            "threshold_message_id": s.get("threshold_message_id"),
             "has_notion_entry": bool(s.get("notion_page_id")),
         }
         for date_str, s in _steps_state.items()

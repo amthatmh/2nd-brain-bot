@@ -12,6 +12,8 @@ from aiohttp.test_utils import TestClient, TestServer
 from second_brain.healthtrack.routes import _parse_health_export_payload, register_health_routes
 from second_brain.healthtrack.steps import (
     _date_state,
+    _load_threshold_state,
+    _persist_threshold_state,
     _steps_state,
     backfill_steps_state_from_notion,
     get_steps_state_summary,
@@ -416,6 +418,48 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(edit_kwargs["message_id"], 12345)
         self.assertIn("11,000", edit_kwargs["text"])
 
+    async def test_recovers_threshold_message_id_from_env_db_and_edits(self):
+        notion = self._make_notion()
+        notion.databases.query.return_value = {
+            "results": [
+                {
+                    "id": "env-row",
+                    "properties": {
+                        "Value": {"rich_text": [{"plain_text": "777"}]},
+                    },
+                }
+            ]
+        }
+        bot = AsyncMock()
+        tz = self._make_tz()
+
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"), \
+             patch("second_brain.healthtrack.steps._find_existing_log_entry", return_value="existing-pid"):
+            result = await handle_steps_sync(
+                steps=11000,
+                date_str="2026-04-28",
+                notion=notion,
+                habit_db_id="h",
+                log_db_id="l",
+                habit_name="Steps",
+                threshold=10000,
+                source_label="📱 Apple Watch",
+                tz=tz,
+                env_db_id="env",
+                bot=bot,
+                chat_id=99,
+            )
+
+        self.assertEqual(result["action"], "updated")
+        bot.send_message.assert_not_awaited()
+        bot.edit_message_text.assert_awaited_once()
+        edit_kwargs = bot.edit_message_text.await_args.kwargs
+        self.assertEqual(edit_kwargs["message_id"], 777)
+        self.assertIn("11,000", edit_kwargs["text"])
+        self.assertTrue(_steps_state["2026-04-28"]["threshold_notified"])
+        self.assertEqual(_steps_state["2026-04-28"]["threshold_message_id"], 777)
+
     async def test_yesterday_late_arrival_upserts_without_notification(self):
         notion = self._make_notion()
         bot = AsyncMock()
@@ -513,6 +557,34 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
         props = create_call.kwargs["properties"]
         self.assertFalse(props["Completed"]["checkbox"])
         self.assertEqual(props["Steps Count"]["number"], 7000)
+
+
+class TestThresholdStatePersistence(unittest.TestCase):
+    def test_persist_threshold_state_creates_env_row(self):
+        notion = MagicMock()
+        notion.databases.query.return_value = {"results": []}
+
+        _persist_threshold_state(notion, "env", "2026-04-28", 12345)
+
+        notion.pages.create.assert_called_once()
+        props = notion.pages.create.call_args.kwargs["properties"]
+        self.assertEqual(props["Name"]["title"][0]["text"]["content"], "steps_threshold_2026-04-28")
+        self.assertEqual(props["Value"]["rich_text"][0]["text"]["content"], "12345")
+
+    def test_load_threshold_state_reads_env_row(self):
+        notion = MagicMock()
+        notion.databases.query.return_value = {
+            "results": [
+                {
+                    "id": "env-row",
+                    "properties": {
+                        "Value": {"rich_text": [{"plain_text": "12345"}]},
+                    },
+                }
+            ]
+        }
+
+        self.assertEqual(_load_threshold_state(notion, "env", "2026-04-28"), 12345)
 
 
 class TestBackfillStepsStateFromNotion(unittest.IsolatedAsyncioTestCase):
@@ -768,6 +840,47 @@ class TestBackfillStepsStateFromNotion(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(_steps_state["2026-04-28"]["last_steps"], 8500)
         self.assertEqual(_steps_state["2026-04-28"]["notion_page_id"], "today-pid")
 
+    async def test_backfill_restores_today_threshold_message_id(self):
+        notion = MagicMock()
+        notion.pages.retrieve.return_value = {
+            "properties": {"Steps Count": {"number": 11000}}
+        }
+        notion.databases.query.return_value = {
+            "results": [
+                {
+                    "id": "env-row",
+                    "properties": {
+                        "Value": {"rich_text": [{"plain_text": "888"}]},
+                    },
+                }
+            ]
+        }
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/Chicago")
+
+        def find_existing(_notion, _log_db_id, _habit_page_id, date_str):
+            if date_str == "2026-04-28":
+                return "today-pid"
+            return None
+
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._yesterday", return_value="2026-04-27"), \
+             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"), \
+             patch("second_brain.healthtrack.steps._find_existing_log_entry", side_effect=find_existing):
+            await backfill_steps_state_from_notion(
+                notion=notion,
+                habit_db_id="h",
+                log_db_id="l",
+                habit_name="Steps",
+                tz=tz,
+                env_db_id="env",
+            )
+
+        self.assertEqual(_steps_state["2026-04-28"]["last_steps"], 11000)
+        self.assertEqual(_steps_state["2026-04-28"]["notion_page_id"], "today-pid")
+        self.assertTrue(_steps_state["2026-04-28"]["threshold_notified"])
+        self.assertEqual(_steps_state["2026-04-28"]["threshold_message_id"], 888)
+
 
 class TestGetStepsStateSummary(unittest.TestCase):
     def setUp(self):
@@ -782,6 +895,7 @@ class TestGetStepsStateSummary(unittest.TestCase):
         summary = get_steps_state_summary()
         self.assertEqual(summary["2026-04-28"]["last_steps"], 9500)
         self.assertFalse(summary["2026-04-28"]["threshold_notified"])
+        self.assertIsNone(summary["2026-04-28"]["threshold_message_id"])
         self.assertTrue(summary["2026-04-28"]["has_notion_entry"])
 
 
