@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""
-Second Brain — Telegram Bot (v6)
-- AI task capture into Notion
-- Duplicate guard
-- Reply-to-done support
-- Bare `done` opens a completion picker for Today + overdue tasks
-- `done 1,3`, `done: task name`, and `mark ... done` supported
-- Multi-task capture: bullet lists (-, •, 1.) or multi-line messages
-  are split, classified concurrently, and reported in a single summary
+"""Deployment entrypoint for Second Brain bot."""
 
 v5 changes:
 - Removed `Horizon` field; horizon is computed by `Auto Horizon` formula.
