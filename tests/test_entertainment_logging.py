@@ -1,5 +1,6 @@
 import importlib
 import os
+from datetime import date
 import sys
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -156,6 +157,78 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["title"], "Mother Mary")
         self.assertEqual(parsed["venue"], "AMC Roosevelt")
         self.assertTrue(parsed["date"].endswith("T19:20:00"))
+
+
+    def test_parse_explicit_cinema_strips_temporal_tokens_and_prefers_explicit_spelled_date(self):
+        with patch("second_brain.entertainment.log._local_today", return_value=date(2026, 5, 9)):
+            parsed = self.main.parse_explicit_entertainment_log(
+                "/log cinema Devil Wears Prada 2 yesterday May 8th 4pm at AMC Newcity"
+            )
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["title"], "Devil Wears Prada 2")
+        self.assertEqual(parsed["date"], "2026-05-08T16:00:00")
+        self.assertEqual(parsed["venue"], "AMC Newcity")
+
+    def test_parse_explicit_performance_preserves_literal_venue_and_strips_datetime_tokens(self):
+        with patch("second_brain.entertainment.log._local_today", return_value=date(2026, 5, 9)):
+            parsed = self.main.parse_explicit_entertainment_log(
+                "/log performance Naomi Watanabe May 8th at The Vic Theatre at 7:30pm"
+            )
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["title"], "Naomi Watanabe")
+        self.assertEqual(parsed["date"], "2026-05-08T19:30:00")
+        self.assertEqual(parsed["venue"], "The Vic Theatre")
+
+    def test_parse_explicit_log_without_date_uses_same_day_local_default(self):
+        with patch("second_brain.entertainment.log._local_today", return_value=date(2026, 5, 9)):
+            parsed = self.main.parse_explicit_entertainment_log("/log cinema Sinners at AMC Newcity")
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["title"], "Sinners")
+        self.assertEqual(parsed["date"], "2026-05-09")
+        self.assertEqual(parsed["venue"], "AMC Newcity")
+
+
+    def test_parse_explicit_log_keeps_year_like_title_numbers_without_time_marker(self):
+        with patch("second_brain.entertainment.log._local_today", return_value=date(2026, 5, 9)):
+            parsed = self.main.parse_explicit_entertainment_log("/log cinema 2001 at AMC Newcity")
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["title"], "2001")
+        self.assertEqual(parsed["date"], "2026-05-09")
+        self.assertEqual(parsed["venue"], "AMC Newcity")
+
+    def test_maybe_prompt_explicit_venue_does_not_silently_substitute_literal_input(self):
+        self.main.NOTION_PERFORMANCE_LOG_DB = "performances_db"
+        self.main.entertainment_schemas["performances"] = {
+            "Name": "title",
+            "Place": "status",
+            "Date": "date",
+        }
+        self.main.notion_call = MagicMock(return_value={
+            "results": [
+                {
+                    "properties": {
+                        "Name": {"title": [{"plain_text": "Other Show"}]},
+                        "Place": {"type": "status", "status": {"name": "The Riviera Theatre"}},
+                    }
+                }
+            ]
+        })
+        payload = {
+            "log_type": "performance",
+            "title": "Naomi Watanabe",
+            "venue": "The Vic Theatre",
+            "date": "2026-05-08",
+        }
+
+        import asyncio
+        prompted = asyncio.run(self.main._maybe_prompt_explicit_venue(self.main.notion, AsyncMock(), payload, "raw"))
+
+        self.assertFalse(prompted)
+        self.assertEqual(payload["venue"], "The Vic Theatre")
 
     def test_extract_cinema_visit_details(self):
         seat, auditorium = self.main._extract_cinema_visit_details("Seat D6, Auditorium D5, 20:40")

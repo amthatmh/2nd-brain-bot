@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import calendar
 import logging
 import os
 import re
 from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
+from zoneinfo import ZoneInfo
 
 from second_brain.config import (
     NOTION_CINEMA_LOG_DB,
@@ -16,12 +18,38 @@ from second_brain.config import (
 )
 from second_brain.notion import notion_call, notion_call_async
 from second_brain.utils import reply_notion_error
+from utils.date_parser import parse_date
 
 
 log = logging.getLogger(__name__)
 
 entertainment_schemas: dict[str, dict] = {}
 pending_sport_competition_map: dict[int, dict] = {}
+
+
+def _local_today() -> date:
+    """Return today's date in the configured app timezone."""
+    try:
+        tz = ZoneInfo(os.environ.get("TIMEZONE", "America/Chicago"))
+    except Exception:
+        tz = ZoneInfo("America/Chicago")
+    return datetime.now(tz).date()
+
+
+def _cleanup_extracted_text(text: str | None) -> str:
+    cleaned = re.sub(r"\s+", " ", text or "").strip(" ,;-–|:")
+    cleaned = re.sub(r"\s+(?=,)", "", cleaned)
+    return cleaned.strip(" ,;-–|:")
+
+
+def _month_name_pattern() -> str:
+    month_names = {
+        name.lower()
+        for names in (calendar.month_name, calendar.month_abbr)
+        for name in names
+        if name
+    }
+    return "|".join(sorted((re.escape(name) for name in month_names), key=len, reverse=True))
 
 
 def parse_explicit_entertainment_log(text: str) -> dict | None:
@@ -58,9 +86,24 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
         cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,;-")
         return (cleaned or None), cleaned != (raw_text or "").strip()
 
-    def _normalize_time(hour: str | None, minute: str | None, compact: str | None = None) -> str | None:
-        if hour is not None and minute is not None:
-            return f"{int(hour):02d}:{minute}"
+    def _normalize_time(
+        hour: str | None,
+        minute: str | None,
+        compact: str | None = None,
+        meridiem: str | None = None,
+    ) -> str | None:
+        if hour is not None:
+            parsed_hour = int(hour)
+            parsed_minute = int(minute or "0")
+            if meridiem:
+                meridiem = meridiem.lower()
+                if meridiem == "pm" and parsed_hour != 12:
+                    parsed_hour += 12
+                elif meridiem == "am" and parsed_hour == 12:
+                    parsed_hour = 0
+            if 0 <= parsed_hour <= 23 and 0 <= parsed_minute <= 59:
+                return f"{parsed_hour:02d}:{parsed_minute:02d}"
+            return None
         if not compact:
             return None
         digits = compact.strip()
@@ -74,15 +117,17 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
 
     parsed_time = None
     parsed_date = None
-    raw_title = rest
     raw_venue = None
     extracted_notes = None
     favourite = False
+    today = _local_today()
 
     if log_type == "cinema":
         rest_without_favourite, favourite = _extract_favourite_marker(rest)
         rest = rest_without_favourite or rest
 
+    # Pull structured ISO dates with trailing notes first to preserve existing
+    # "on YYYY/MM/DD at HH:MM Seat ..." behavior.
     match_on_datetime = re.search(
         r"\s+on\s+(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:\s+(?:at\s+)?([01]?\d|2[0-3]):([0-5]\d))?",
         rest,
@@ -101,36 +146,62 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
             extracted_notes = tail
         rest = rest[: match_on_datetime.start()].strip()
     else:
-        match_relative_datetime = re.search(
-            r"\s+(today|tomorrow|yesterday)(?:\s+at)?\s+(?:([01]?\d|2[0-3]):([0-5]\d)|(\d{3,4}))\s*$",
+        # Remove all date tokens before assembling title/venue so temporal words
+        # never leak into title. Explicit calendar dates win over relative words.
+        explicit_date: str | None = None
+        relative_date: str | None = None
+        date_spans: list[tuple[int, int]] = []
+        month_names = _month_name_pattern()
+        date_patterns = [
+            rf"\b(?:on\s+)?(?P<month>{month_names})\.?\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+\d{{4}})?\b",
+            rf"\b(?:on\s+)?\d{{1,2}}(?:st|nd|rd|th)?\s+(?P<month2>{month_names})\.?(?:,?\s+\d{{4}})?\b",
+            r"\b(?:on\s+)?\d{4}[/-]\d{1,2}[/-]\d{1,2}\b",
+            r"\b(?:on\s+)?\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b",
+        ]
+        for pattern in date_patterns:
+            for dm in re.finditer(pattern, rest, flags=re.IGNORECASE):
+                raw_date = re.sub(r"^on\s+", "", dm.group(0).strip(), flags=re.IGNORECASE)
+                parsed = parse_date(raw_date, today=today)
+                if not parsed.ambiguous and parsed.resolved:
+                    explicit_date = parsed.resolved
+                    date_spans.append(dm.span())
+        for rm in re.finditer(r"\b(?:today|tomorrow|yesterday)\b", rest, flags=re.IGNORECASE):
+            parsed = parse_date(rm.group(0), today=today)
+            if not parsed.ambiguous and parsed.resolved:
+                relative_date = parsed.resolved
+                date_spans.append(rm.span())
+        if explicit_date or relative_date:
+            parsed_date = explicit_date or relative_date
+            for span_start, span_end in sorted(date_spans, reverse=True):
+                rest = rest[:span_start] + " " + rest[span_end:]
+            rest = _cleanup_extracted_text(rest)
+
+        time_spans: list[tuple[int, int]] = []
+        for tm in re.finditer(
+            r"\b(?:(?:at\s+)?(?:(?P<hour>1[0-2]|0?\d)(?::(?P<minute>[0-5]\d))?\s*(?P<ampm>[ap]m)|(?P<hour24>[01]?\d|2[0-3]):(?P<minute24>[0-5]\d))|at\s+(?P<compact>\d{3,4}))\b",
             rest,
-            re.IGNORECASE,
-        )
-        if match_relative_datetime:
-            relative_day = (match_relative_datetime.group(1) or "").lower()
-            parsed_time = _normalize_time(
-                match_relative_datetime.group(2),
-                match_relative_datetime.group(3),
-                match_relative_datetime.group(4),
+            flags=re.IGNORECASE,
+        ):
+            candidate = _normalize_time(
+                tm.group("hour") or tm.group("hour24"),
+                tm.group("minute") or tm.group("minute24"),
+                tm.group("compact"),
+                tm.group("ampm"),
             )
-            if relative_day == "today":
-                parsed_date = date.today().isoformat()
-            elif relative_day == "tomorrow":
-                parsed_date = (date.today() + timedelta(days=1)).isoformat()
-            elif relative_day == "yesterday":
-                parsed_date = (date.today() - timedelta(days=1)).isoformat()
-            rest = rest[: match_relative_datetime.start()].strip()
+            if candidate:
+                parsed_time = candidate
+                time_spans.append(tm.span())
+        if time_spans:
+            for span_start, span_end in sorted(time_spans, reverse=True):
+                rest = rest[:span_start] + " " + rest[span_end:]
+            rest = _cleanup_extracted_text(rest)
 
-        match_time = re.search(r"\s+at\s+(?:([01]?\d|2[0-3]):([0-5]\d)|(\d{3,4}))\s*$", rest, re.IGNORECASE)
-        if match_time:
-            parsed_time = _normalize_time(match_time.group(1), match_time.group(2), match_time.group(3))
-            rest = rest[: match_time.start()].strip()
-
-    if not raw_venue:
-        title_and_venue = re.match(r"^(?P<title>.+?)\s+at\s+(?P<venue>.+)$", rest, re.IGNORECASE)
-        if title_and_venue:
-            raw_title = (title_and_venue.group("title") or "").strip()
-            raw_venue = (title_and_venue.group("venue") or "").strip()
+    title_and_venue = re.match(r"^(?P<title>.+?)\s+at\s+(?P<venue>.+)$", rest, re.IGNORECASE)
+    if title_and_venue:
+        raw_title = (title_and_venue.group("title") or "").strip()
+        raw_venue = (title_and_venue.group("venue") or "").strip()
+    else:
+        raw_title = rest
 
     title = (raw_title or "").strip().rstrip(":")
     title = re.sub(
@@ -146,10 +217,10 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
         "type": "entertainment_log",
         "log_type": log_type,
         "title": title,
-        "date": date.today().isoformat(),
+        "date": today.isoformat(),
         "confidence": "high",
     }
-    venue = (raw_venue or "").strip()
+    venue = _cleanup_extracted_text(raw_venue)
     if venue:
         payload["venue"] = venue
     if extracted_notes:
@@ -163,7 +234,6 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
     elif parsed_time and "notes" not in payload:
         payload["notes"] = f"{parsed_time}"
     return payload
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # RECURRING LOGIC
@@ -498,7 +568,7 @@ def create_entertainment_log_entry(notion, payload: dict) -> tuple[str, bool]:
     if not title:
         raise ValueError("Entertainment log missing title")
 
-    when_iso = payload.get("date") or date.today().isoformat()
+    when_iso = payload.get("date") or _local_today().isoformat()
     venue = payload.get("venue")
     notes = payload.get("notes")
     favourite = bool(payload.get("favourite"))
@@ -620,7 +690,7 @@ async def handle_entertainment_log(notion, message, payload: dict) -> None:
     log_type = payload.get("log_type", "cinema")
     venue = payload.get("venue")
     notes = payload.get("notes")
-    when_iso = payload.get("date") or date.today().isoformat()
+    when_iso = payload.get("date") or _local_today().isoformat()
 
     summary_lines = [
         f"✅ Logged to { {'cinema': 'Cinema', 'performance': 'Performance', 'sport': 'Sports'}.get(log_type, 'Entertainment') }",
@@ -741,9 +811,13 @@ async def _maybe_prompt_explicit_venue(notion, message, payload: dict, raw_text:
     original, suggested = _suggest_known_venue(notion, payload)
     if not (original and suggested):
         return False
-    adjusted_payload = dict(payload)
-    adjusted_payload["venue"] = suggested
-    payload.update(adjusted_payload)
+    log.info(
+        "Venue suggestion skipped to preserve explicit user input raw=%r suggested=%r text=%r",
+        original,
+        suggested,
+        raw_text,
+    )
+    payload["venue_review"] = {"raw": original, "suggested": suggested}
     return False
 
 
