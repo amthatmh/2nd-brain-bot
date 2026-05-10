@@ -130,7 +130,7 @@ def _apply_shared_date_parse(payload: dict) -> object:
     raw_date = payload.get("date")
     if isinstance(raw_date, str) and "T" in raw_date:
         return None
-    result = parse_date(raw_date)
+    result = parse_date(raw_date, today=local_today())
     if result.ambiguous:
         payload["raw_date_a"] = result.option_a
         payload["raw_date_b"] = result.option_b
@@ -181,7 +181,7 @@ async def handle_entertainment_log(notion, message, payload: dict) -> None:
     log_type = payload.get("log_type", "cinema")
     venue = payload.get("venue")
     notes = payload.get("notes")
-    when_iso = payload.get("date") or date.today().isoformat()
+    when_iso = payload.get("date") or local_today().isoformat()
 
     summary_lines = [
         f"✅ Logged to { {'cinema': 'Cinema', 'performance': 'Performance', 'sport': 'Sports'}.get(log_type, 'Entertainment') }",
@@ -1643,7 +1643,7 @@ async def route_classified_message_v10(message, text: str) -> None:
     if intent == "entertainment_log":
         title = (result.get("title") or "").strip()
         confidence = result.get("confidence", "low")
-        result.setdefault("date", date.today().isoformat())
+        result.setdefault("date", local_today().isoformat())
         date_result = _apply_shared_date_parse(result)
         if date_result and getattr(date_result, "ambiguous", False):
             key = str(_entertainment_counter)
@@ -2699,7 +2699,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         raw_text = entry.get("raw_text", "")
         if not (payload.get("title") or "").strip():
             payload["title"] = raw_text
-        payload.setdefault("date", date.today().isoformat())
+        payload.setdefault("date", local_today().isoformat())
         try:
             entry_id, fav_saved = ent_log.create_entertainment_log_entry(notion, payload)
             label = ENTERTAINMENT_LOG_LABELS.get(payload.get("log_type"), "Entertainment")
