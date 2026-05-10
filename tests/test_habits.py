@@ -218,6 +218,36 @@ class TestHabitButtonsMultiSelect(unittest.TestCase):
         self.assertNotIn("✅ Done (0)", labels)
         self.assertEqual(labels, ["Workout", "✖️ Cancel"])
 
+
+class TestHabitToggleCache(unittest.IsolatedAsyncioTestCase):
+    async def test_toggle_uses_cached_habits_without_refreshing_notion(self):
+        main = load_main_module()
+        page_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        habits = [{"page_id": page_id, "name": "Workout", "sort": 1}]
+        message = MagicMock()
+        message.message_id = 123
+        message.text = "🎯 *Daily habits* — tap habits to select, then tap Done:"
+        message.caption = None
+
+        query = MagicMock()
+        query.data = "h:toggle:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        query.message = message
+        query.edit_message_reply_markup = AsyncMock()
+        query.answer = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+
+        main._store_habit_selection_session(message.message_id, habits)
+
+        with patch.object(main, "pending_habits_for_digest", side_effect=AssertionError("should use cached habits")):
+            await main.handle_callback(update, MagicMock())
+
+        query.edit_message_reply_markup.assert_awaited_once()
+        query.answer.assert_awaited_once()
+        self.assertEqual(main._habit_selection_selected(message.message_id), {page_id})
+
+
 class TestSendDailyDigestHabitsIntegration(unittest.IsolatedAsyncioTestCase):
     async def test_send_daily_digest_uses_pending_habits_for_digest_with_show_after(self):
         main = load_main_module()

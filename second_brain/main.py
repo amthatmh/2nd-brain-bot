@@ -469,7 +469,36 @@ _todo_picker_counter = 0
 _v10_counter = 0
 _entertainment_counter = 0
 habit_cache: dict[str, dict] = STATE.habit_cache
-_habit_selections: dict[int, set[str]] = {}
+_habit_selections: dict[int, dict[str, object]] = {}
+
+def _store_habit_selection_session(message_id: int, habits: list[dict], selected: set[str] | None = None) -> None:
+    """Cache habit button state for a rendered Telegram message."""
+    _habit_selections[message_id] = {"selected": selected or set(), "habits": habits}
+
+def _habit_selection_session(message_id: int) -> dict[str, object]:
+    """Return a habit selection session, migrating legacy set-only state if present."""
+    session = _habit_selections.get(message_id)
+    if isinstance(session, dict):
+        session.setdefault("selected", set())
+        session.setdefault("habits", [])
+        return session
+    if isinstance(session, set):
+        migrated: dict[str, object] = {"selected": session, "habits": []}
+        _habit_selections[message_id] = migrated
+        return migrated
+    session = {"selected": set(), "habits": []}
+    _habit_selections[message_id] = session
+    return session
+
+def _habit_selection_selected(message_id: int) -> set[str]:
+    """Return selected habit IDs for a message."""
+    selected = _habit_selection_session(message_id).get("selected", set())
+    return selected if isinstance(selected, set) else set()
+
+def _habit_selection_habits(message_id: int) -> list[dict]:
+    """Return cached habits for a message."""
+    habits = _habit_selection_session(message_id).get("habits", [])
+    return habits if isinstance(habits, list) else []
 
 def cleanup_old_habit_selections() -> None:
     """Clear in-memory habit button selections to prevent stale message state."""
@@ -1347,11 +1376,12 @@ async def open_habit_picker(message) -> None:
     if not pending_habits:
         await message.reply_text("✅ No habits left to log today.")
         return
-    await message.reply_text(
+    sent = await message.reply_text(
         "🏃 *Which habit did you complete?*",
         parse_mode="Markdown",
         reply_markup=kb.habit_buttons(pending_habits, "manual", selected=set()),
     )
+    _store_habit_selection_session(sent.message_id, pending_habits)
 
 
 async def cmd_refresh(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
@@ -1638,6 +1668,7 @@ async def route_classified_message_v10(message, text: str) -> None:
             all_habits = [{"page_id": h["page_id"], "name": name} for name, h in habit_cache.items()]
             all_habits.sort(key=lambda h: h["name"].lower())
             await thinking.edit_text("Which habit did you complete?", reply_markup=kb.habit_buttons(all_habits, "manual", selected=set()))
+            _store_habit_selection_session(thinking.message_id, all_habits)
         return
 
     if intent == "entertainment_log":
@@ -2475,7 +2506,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         habit_page_id = _restore_pid(pid_raw)
         message_id = q.message.message_id
 
-        selected = _habit_selections.setdefault(message_id, set())
+        session = _habit_selection_session(message_id)
+        selected = session["selected"]
+        if not isinstance(selected, set):
+            selected = set()
+            session["selected"] = selected
         t1 = time.time()
         log.info("[PERF] Session loaded in %.0fms", (t1 - t0) * 1000)
 
@@ -2489,12 +2524,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         text = q.message.text or q.message.caption or ""
         check_type = "evening" if "Evening check-in" in text else "manual" if "Which habit" in text else "morning"
         page_time = datetime.now(TZ).strftime("%H:%M") if check_type == "evening" else None
-        habits = pending_habits_for_digest(time_str=page_time)
-        if check_type == "manual":
-            habits = [
-                h for h in sorted(habit_cache.values(), key=lambda x: x["sort"])
-                if not already_logged_today(h["page_id"])
-            ]
+        habits = session.get("habits", [])
+        if not isinstance(habits, list) or not habits:
+            log.warning("Habit selection cache missing for message_id=%s; falling back to Notion refresh", message_id)
+            habits = pending_habits_for_digest(time_str=page_time)
+            if check_type == "manual":
+                habits = [
+                    h for h in sorted(habit_cache.values(), key=lambda x: x["sort"])
+                    if not already_logged_today(h["page_id"])
+                ]
+            session["habits"] = habits
         t3 = time.time()
         log.info("[PERF] Habits loaded in %.0fms", (t3 - t2) * 1000)
 
@@ -2514,7 +2553,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if q.data == "h:done":
         message_id = q.message.message_id
-        selected_ids = set(_habit_selections.get(message_id, set()))
+        selected_ids = set(_habit_selection_selected(message_id))
         if not selected_ids:
             await q.answer("No habits selected!", show_alert=True)
             return
@@ -2664,14 +2703,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if parts[0] == "hpag" and len(parts) == 3:
         _, prefix, page_str = parts
         page_time = datetime.now(TZ).strftime("%H:%M") if prefix == "evening" else None
-        all_habits = pending_habits_for_digest(time_str=page_time)
+        all_habits = _habit_selection_habits(q.message.message_id)
+        if not all_habits:
+            log.warning("Habit pagination cache missing for message_id=%s; falling back to Notion refresh", q.message.message_id)
+            all_habits = pending_habits_for_digest(time_str=page_time)
+            _habit_selection_session(q.message.message_id)["habits"] = all_habits
         try:
             await q.edit_message_reply_markup(
                 reply_markup=kb.habit_buttons(
                     all_habits,
                     prefix,
                     page=int(page_str),
-                    selected=_habit_selections.get(q.message.message_id, set()),
+                    selected=_habit_selection_selected(q.message.message_id),
                 )
             )
         except Exception as e:
@@ -3274,6 +3317,8 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         reply_markup=reply_markup,
     )
 
+    if habits:
+        _store_habit_selection_session(sent_digest.message_id, habits)
     if ordered:
         digest_map[sent_digest.message_id] = ordered
     last_digest_msg_id = sent_digest.message_id
@@ -3433,12 +3478,13 @@ async def send_evening_checkin(bot) -> None:
     if len(evening_habits) > 5:
         habit_text += f"\n_+{len(evening_habits) - 5} more_"
 
-    await bot.send_message(
+    sent = await bot.send_message(
         chat_id=MY_CHAT_ID,
         text=habit_text.rstrip(),
         parse_mode="Markdown",
         reply_markup=kb.habit_buttons(evening_habits, "evening", selected=set()),
     )
+    _store_habit_selection_session(sent.message_id, evening_habits)
     log.info("Evening check-in sent — %d habits", len(evening_habits))
 
 
@@ -3450,12 +3496,13 @@ async def send_daily_habits_list(bot) -> None:
         await bot.send_message(chat_id=MY_CHAT_ID, text="🎯 No habits for today.")
         return
 
-    await bot.send_message(
+    sent = await bot.send_message(
         chat_id=MY_CHAT_ID,
         text="🎯 *Daily habits* — tap habits to select, then tap Done:",
         parse_mode="Markdown",
         reply_markup=kb.habit_buttons(habits, "morning", selected=set()),
     )
+    _store_habit_selection_session(sent.message_id, habits)
     log.info("Habits list sent — %s available habits", len(habits))
 
 
