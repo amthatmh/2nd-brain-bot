@@ -201,7 +201,7 @@ def num_emoji(n: int) -> str:
 
 def next_weekday(weekday: int) -> date:
     """
-    Return the next occurrence of a weekday (0=Mon … 6=Sun) from today.
+    Return the next occurrence of a weekday (0=Mon ... 6=Sun) from today.
     If today IS that weekday, returns next week's occurrence (not today),
     so "every Friday" captured on a Friday means next Friday.
     """
