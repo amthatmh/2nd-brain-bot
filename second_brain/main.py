@@ -63,7 +63,6 @@ from second_brain.notes.flow import (
 )
 from second_brain.ai import classify as ai_classify
 from second_brain.healthtrack.routes import register_health_routes
-from health.dashboard import register_health_dashboard_route
 from second_brain.healthtrack import config as health_config
 from second_brain.healthtrack.steps import (
     _find_steps_habit_page_id,
@@ -3874,15 +3873,6 @@ async def start_http_server() -> None:
         chat_id=MY_CHAT_ID,
         on_sync_result=_record_steps_sync_result,
         health_metrics_db_id=NOTION_HEALTH_METRICS_DB,
-    )
-    register_health_dashboard_route(
-        app,
-        notion=notion,
-        health_metrics_db_id=NOTION_HEALTH_METRICS_DB,
-        habit_log_db_id=NOTION_LOG_DB,
-        env_db_id=NOTION_ENV_DB,
-        tz=TZ,
-        notion_query_all=notion_query_all,
     )
     runner = web.AppRunner(app)
     await runner.setup()
