@@ -8,7 +8,7 @@ from notion_client import Client as NotionClient
 log = logging.getLogger(__name__)
 
 TZ = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
-NOTION_STEPS_DB = os.environ["NOTION_STEPS_DB"]
+NOTION_STEPS_DB = os.environ.get("NOTION_STEPS_DB") or os.environ.get("NOTION_LOG_DB", "")
 
 _notion = NotionClient(auth=os.environ["NOTION_TOKEN"])
 
@@ -19,7 +19,7 @@ def parse_log_date(date_str: str) -> date:
     return pytz.utc.localize(dt_utc).astimezone(TZ).date()
 
 
-def upsert_steps(log_date: date, steps: int) -> str:
+def upsert_steps(log_date: date, steps: int, log_db_id: str = NOTION_STEPS_DB) -> str:
     """
     Upsert a daily steps row in Notion.
 
@@ -31,7 +31,7 @@ def upsert_steps(log_date: date, steps: int) -> str:
 
     # Strategy 1: name match
     res = _notion.databases.query(
-        database_id=NOTION_STEPS_DB,
+        database_id=log_db_id,
         filter={"property": "Name", "title": {"equals": title}},
     )
     pages = res.get("results", [])
@@ -42,7 +42,7 @@ def upsert_steps(log_date: date, steps: int) -> str:
 
     # Strategy 2: date property fallback
     res = _notion.databases.query(
-        database_id=NOTION_STEPS_DB,
+        database_id=log_db_id,
         filter={"property": "Date", "date": {"equals": date_iso}},
     )
     pages = res.get("results", [])
@@ -53,7 +53,7 @@ def upsert_steps(log_date: date, steps: int) -> str:
 
     # Strategy 3: create new row
     _notion.pages.create(
-        parent={"database_id": NOTION_STEPS_DB},
+        parent={"database_id": log_db_id},
         properties={
             "Name": {"title": [{"text": {"content": title}}]},
             "Date": {"date": {"start": date_iso}},
