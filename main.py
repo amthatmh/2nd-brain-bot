@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deployment entrypoint for Second Brain bot."""
+"""Deployment entrypoint for Second Brain bot.
 
 v5 changes:
 - Removed `Horizon` field; horizon is computed by `Auto Horizon` formula.
