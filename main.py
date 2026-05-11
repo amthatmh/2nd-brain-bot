@@ -9,7 +9,7 @@ v5 changes:
 - Added `focus:` / `unfocus:` Telegram commands.
 
 v6 changes:
-- Multi-task detection via `split_tasks()`: bullet markers (-, •, *, 1.)
+- Multi-task detection via `split_tasks()`: bullet markers (-, -, *, 1.)
   or multiple non-empty lines are each treated as a separate task.
 - All tasks in a batch are classified concurrently via asyncio + executor.
 - Results are grouped by (horizon, context) and formatted as one summary.
