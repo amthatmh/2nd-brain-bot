@@ -28,6 +28,9 @@ from datetime import date, datetime, timedelta
 
 import pytz
 from dotenv import load_dotenv
+
+load_dotenv()
+
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -42,8 +45,6 @@ import anthropic
 from notion_client import Client as NotionClient
 from health.steps import parse_log_date as _steps_parse_date, upsert_steps
 from health.metrics import parse_log_date as _metrics_parse_date, upsert_metrics, METRIC_MAP
-
-load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
 log = logging.getLogger(__name__)
