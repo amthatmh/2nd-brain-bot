@@ -50,11 +50,11 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(
 log = logging.getLogger(__name__)
 
 # ── Config ───────────────────────────────────────────────────────────────────
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 MY_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
-ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]
+ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 NOTION_TOKEN = os.environ["NOTION_TOKEN"]
-NOTION_DB_ID = os.environ["NOTION_DB_ID"]
+NOTION_DB_ID = os.environ.get("NOTION_DB_ID", "")
 
 TZ = pytz.timezone(os.environ.get("TIMEZONE", "America/Chicago"))
 _wk_h, _wk_m = map(int, os.environ.get("DIGEST_TIME_WEEKDAY", "8:15").split(":"))
@@ -63,7 +63,7 @@ _rc_h, _rc_m = map(int, os.environ.get("RECURRING_CHECK_TIME", "7:00").split(":"
 
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "150"))
-WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
+WEBHOOK_SECRET = os.environ.get("STEPS_WEBHOOK_SECRET", "")
 
 # ── Clients ──────────────────────────────────────────────────────────────────
 notion = NotionClient(auth=NOTION_TOKEN)
