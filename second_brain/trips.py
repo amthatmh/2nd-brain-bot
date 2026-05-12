@@ -399,10 +399,12 @@ def _build_trip_weather_summary(
         return WEATHER_PLACEHOLDER_SUMMARY, []
 
     snapshots: list[tuple[str, dict]] = []
+    caught_exception: Exception | None = None
     if fetch_trip_weather_range and departure_date and return_date and destination:
         try:
             rows = fetch_trip_weather_range(departure_date, return_date, destination)
-        except Exception:
+        except Exception as exc:
+            caught_exception = exc
             rows = []
         for row in rows:
             label = row.get("label") or row.get("date") or "Day"
@@ -411,11 +413,19 @@ def _build_trip_weather_summary(
         for bucket in ("today", "tomorrow"):
             try:
                 data = fetch_weather(bucket)
-            except Exception:
+            except Exception as exc:
+                caught_exception = exc
                 data = None
             if data:
                 snapshots.append((bucket, data))
     if not snapshots:
+        logger.error(
+            "trip_weather_summary: empty summary for destination=%r departure_date=%r return_date=%r exception=%r",
+            destination,
+            departure_date,
+            return_date,
+            caught_exception,
+        )
         return "", []
     labels: list[str] = []
     flags: list[str] = []
@@ -516,9 +526,12 @@ def refresh_upcoming_trip_weather(
         payload.pop("Trip", None)
         if not payload:
             continue
+        logger.info("trip_weather_refresh: updating page %s with summary=%r flags=%r", row["id"], summary, flags)
         try:
             notion.pages.update(page_id=row["id"], properties=payload)
             updated += 1
-        except Exception:
+        except Exception as exc:
+            logger.error("trip_weather_refresh: failed to update page %s: %s", row["id"], exc)
+            logger.error("trip_weather_refresh: payload was: %s", payload)
             continue
     return updated
