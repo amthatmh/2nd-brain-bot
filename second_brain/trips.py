@@ -395,7 +395,7 @@ def _build_trip_weather_summary(
     fetch_weather: Callable[[str], dict | None] | None,
     fetch_trip_weather_range: Callable[[str, str, str], list[dict]] | None,
 ) -> tuple[str, list[str]]:
-    if not _is_departure_within_forecast_window(departure_date, min_days_before=3):
+    if not _is_departure_within_forecast_window(departure_date):
         return WEATHER_PLACEHOLDER_SUMMARY, []
     import os; logger.info("trips: key_present=%s dest=%r dep=%r", bool(os.environ.get("OPENWEATHER_KEY","").strip()), destination, departure_date)
     snapshots: list[tuple[str, dict]] = []
@@ -452,7 +452,6 @@ def _is_departure_within_forecast_window(
     *,
     today: date | None = None,
     lookahead_days: int = 5,
-    min_days_before: int = 3,
 ) -> bool:
     if not departure_date:
         return True
@@ -462,11 +461,7 @@ def _is_departure_within_forecast_window(
         return True
     today = today or date.today()
     days_until_departure = (departure - today).days
-    # Too far out — wait until 3 days before
-    if days_until_departure > min_days_before:
-        return False
-    # Past return date — stop updating
-    return days_until_departure >= -lookahead_days
+    return days_until_departure <= lookahead_days
 
 
 def refresh_upcoming_trip_weather(
