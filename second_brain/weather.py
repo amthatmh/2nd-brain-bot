@@ -504,8 +504,32 @@ def fetch_trip_weather_range(departure_date: str, return_date: str, destination:
         places = geo.json()
         log.info("fetch_trip_weather_range: geo json response for %r: %s", destination, places)
         if not places:
-            log.warning("fetch_trip_weather_range: geo returned empty for %r", destination)
-            return []
+            # Retry with US appended — OWM geo API struggles with "City, ST" abbreviations
+            cleaned = re.sub(r",?\s*[A-Z]{2}$", "", destination).strip()
+            retry_queries = [
+                f"{destination}, US",
+                f"{cleaned}, US",
+                cleaned,
+            ]
+            for q in retry_queries:
+                if q == destination:
+                    continue
+                try:
+                    retry = httpx.get(
+                        "https://api.openweathermap.org/geo/1.0/direct",
+                        params={"q": q, "limit": 1, "appid": key},
+                        timeout=10,
+                    )
+                    retry.raise_for_status()
+                    places = retry.json()
+                    log.info("fetch_trip_weather_range: geo retry %r → %d results", q, len(places))
+                    if places:
+                        break
+                except Exception as retry_exc:
+                    log.warning("fetch_trip_weather_range: geo retry failed for %r: %s", q, retry_exc)
+            if not places:
+                log.warning("fetch_trip_weather_range: geo returned empty after retries for %r", destination)
+                return []
         lat = places[0].get("lat")
         lon = places[0].get("lon")
         if lat is None or lon is None:
