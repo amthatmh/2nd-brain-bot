@@ -392,6 +392,7 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
                 tz=tz,
                 bot=bot,
                 chat_id=12345,
+                force_write=False,
             )
 
         self.assertEqual(result["action"], "created")
@@ -415,6 +416,7 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
                 habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
                 bot=bot, chat_id=12345,
+                force_write=False,
             )
             # Second sync above threshold (same day)
             notion.databases.query.return_value = {"results": [{"id": "existing-pid"}]}
@@ -423,6 +425,7 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
                 habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
                 bot=bot, chat_id=12345,
+                force_write=False,
             )
 
         # Notification sent exactly once
@@ -446,6 +449,7 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
                 habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
                 bot=bot, chat_id=99,
+                force_write=False,
             )
 
             notion.databases.query.return_value = {"results": [{"id": "existing-pid"}]}
@@ -454,6 +458,7 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
                 habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
                 bot=bot, chat_id=99,
+                force_write=False,
             )
 
         bot.send_message.assert_awaited_once()
@@ -494,6 +499,7 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
                 env_db_id="env",
                 bot=bot,
                 chat_id=99,
+                force_write=False,
             )
 
         self.assertEqual(result["action"], "updated")
@@ -520,6 +526,7 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
                 habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
                 bot=bot, chat_id=12345,
+                force_write=False,
             )
 
         # No Telegram notification for yesterday's late arrival
@@ -539,6 +546,7 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
                 notion=notion,
                 habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
+                force_write=False,
             )
 
         self.assertEqual(result["action"], "skipped")
@@ -556,6 +564,7 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
                 notion=notion,
                 habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
+                force_write=False,
             )
 
         self.assertEqual(result["action"], "updated")
@@ -576,6 +585,7 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
                 notion=notion,
                 habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
+                force_write=False,
             )
 
         self.assertEqual(result["action"], "updated")
@@ -596,6 +606,7 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
                 notion=notion,
                 habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
+                force_write=False,
             )
 
         create_call = notion.pages.create.call_args
@@ -712,8 +723,32 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
                 threshold=10000, source_label="📱 Apple Watch", tz=tz,
             )
 
-        # Yesterday skipped (no data), today also skipped (0 steps = sub-threshold intraday)
+        # Today skipped (0 steps), yesterday skipped (no data)
+        self.assertNotIn("2026-04-28", results)
         self.assertNotIn("2026-04-27", results)
+
+    async def test_stamp_skips_today_when_no_data(self):
+        notion = MagicMock()
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/Chicago")
+
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
+             patch("second_brain.healthtrack.steps._yesterday", return_value="2026-04-27"):
+            results = await handle_steps_final_stamp(
+                notion=notion,
+                habit_db_id="h",
+                log_db_id="l",
+                env_db_id="",
+                habit_name="Steps",
+                threshold=10000,
+                source_label="📱 Apple Watch",
+                tz=tz,
+            )
+
+        self.assertNotIn("2026-04-28", results)
+        self.assertNotIn("2026-04-27", results)
+        notion.pages.create.assert_not_called()
+        notion.pages.update.assert_not_called()
 
     async def test_nightly_stamp_skips_today_zero_steps_but_stamps_yesterday(self):
         _steps_state["2026-05-09"] = {
@@ -750,56 +785,6 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(props["Date"]["date"]["start"], "2026-05-08")
         self.assertEqual(props["Steps Count"]["number"], 10596)
 
-    async def test_nightly_stamp_recovers_today_from_notion_when_state_empty(self):
-        notion = MagicMock()
-        notion.pages.retrieve.return_value = {
-            "properties": {"Steps Count": {"number": 9000}}
-        }
-        notion.pages.update.return_value = {}
-        from zoneinfo import ZoneInfo
-        tz = ZoneInfo("America/Chicago")
-
-        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
-             patch("second_brain.healthtrack.steps._yesterday", return_value="2026-04-27"), \
-             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"), \
-             patch("second_brain.healthtrack.steps._find_existing_log_entry", return_value="today-page"):
-            results = await handle_steps_final_stamp(
-                notion=notion,
-                habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
-                threshold=10000, source_label="📱 Apple Watch", tz=tz,
-            )
-
-        self.assertEqual(_steps_state["2026-04-28"]["last_steps"], 9000)
-        self.assertEqual(results["2026-04-28"]["steps"], 9000)
-        update_props = notion.pages.update.call_args.kwargs["properties"]
-        self.assertEqual(update_props["Steps Count"]["number"], 9000)
-
-    async def test_nightly_stamp_skips_recovery_lookup_when_state_populated(self):
-        _steps_state["2026-04-28"] = {
-            "last_steps": 12000,
-            "threshold_notified": True,
-            "notion_page_id": "today-page",
-        }
-        notion = MagicMock()
-        notion.pages.retrieve.return_value = {"properties": {"Completed": {"checkbox": True}}}
-        notion.pages.update.return_value = {}
-        from zoneinfo import ZoneInfo
-        tz = ZoneInfo("America/Chicago")
-
-        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
-             patch("second_brain.healthtrack.steps._yesterday", return_value="2026-04-27"), \
-             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"), \
-             patch("second_brain.healthtrack.steps._find_existing_log_entry") as find_existing:
-            results = await handle_steps_final_stamp(
-                notion=notion,
-                habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
-                threshold=10000, source_label="📱 Apple Watch", tz=tz,
-            )
-
-        self.assertEqual(results["2026-04-28"]["steps"], 12000)
-        notion.pages.retrieve.assert_called_once_with(page_id="today-page")
-        find_existing.assert_not_called()
-
     async def test_nightly_stamp_can_write_below_threshold_today(self):
         _steps_state["2026-04-28"] = {
             "last_steps": 1018,
@@ -826,31 +811,6 @@ class TestHandleStepsFinalStamp(unittest.IsolatedAsyncioTestCase):
         props = notion.pages.create.call_args.kwargs["properties"]
         self.assertEqual(props["Steps Count"]["number"], 1018)
         self.assertFalse(props["Completed"]["checkbox"])
-
-    async def test_final_stamp_recovers_today_steps_from_notion_when_state_empty(self):
-        notion = MagicMock()
-        notion.pages.retrieve.return_value = {
-            "properties": {"Steps Count": {"number": 9000}}
-        }
-        notion.pages.update.return_value = {}
-        from zoneinfo import ZoneInfo
-        tz = ZoneInfo("America/Chicago")
-
-        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-04-28"), \
-             patch("second_brain.healthtrack.steps._yesterday", return_value="2026-04-27"), \
-             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"), \
-             patch("second_brain.healthtrack.steps._find_existing_log_entry", return_value="existing-pid"):
-            results = await handle_steps_final_stamp(
-                notion=notion,
-                habit_db_id="h", log_db_id="l", env_db_id="", habit_name="Steps",
-                threshold=10000, source_label="📱 Apple Watch", tz=tz,
-            )
-
-        self.assertEqual(_steps_state["2026-04-28"]["last_steps"], 9000)
-        self.assertEqual(_steps_state["2026-04-28"]["notion_page_id"], "existing-pid")
-        self.assertEqual(results["2026-04-28"]["action"], "updated")
-        props = notion.pages.update.call_args.kwargs["properties"]
-        self.assertEqual(props["Steps Count"]["number"], 9000)
 
 
 class TestBackfillStepsStateFromNotion(unittest.IsolatedAsyncioTestCase):

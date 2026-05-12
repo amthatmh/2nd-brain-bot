@@ -524,72 +524,41 @@ async def handle_steps_final_stamp(
     chat_id: int | None = None,
 ) -> dict:
     """
-    Nightly job — write the final daily step count as a permanent record.
+    Stamp final daily step count. Called by both:
+      - steps_morning_stamp (08:00) — first attempt
+      - steps_final_stamp (12:00) — second attempt / override
 
-    Strategy:
-    - Use whatever step count was last received for today (from in-memory state)
-    - If today has no meaningful step data yet (0 steps), skip it rather than
-      overwriting a new-day placeholder
-    - Also check yesterday for late arrivals (post-midnight scenario)
-    - Always runs; creates or updates entries for today and/or yesterday when
-      cached or recovered step data exists
+    Uses last received step count from in-memory state.
+    Always writes regardless of threshold (force_write=True).
+    Skips today if steps = 0 (day just started, no data yet).
+    Silent — no Telegram notification.
     """
     results = {}
-    today_str = _local_today(tz)
-    if _steps_state.get(today_str, {}).get("last_steps", 0) == 0:
-        habit_page_id = _find_steps_habit_page_id(
-            notion, habit_db_id, habit_name
-        )
-        if habit_page_id:
-            existing_id = _find_existing_log_entry(
-                notion, log_db_id, habit_page_id, today_str
-            )
-            if existing_id:
-                try:
-                    page = notion.pages.retrieve(page_id=existing_id)
-                    steps_raw = (
-                        page.get("properties", {})
-                        .get("Steps Count", {})
-                        .get("number")
-                        or 0
-                    )
-                    if steps_raw > 0:
-                        state = _date_state(today_str)
-                        state["last_steps"] = steps_raw
-                        state["notion_page_id"] = existing_id
-                        log.info(
-                            "steps final stamp: recovered %d steps",
-                            steps_raw,
-                        )
-                except Exception as e:
-                    log.warning(
-                        "steps final stamp: recovery failed: %s", e
-                    )
-
+    today = _local_today(tz)
     yesterday = _yesterday(tz)
 
-    for date_str in (today_str, yesterday):
+    for date_str in (today, yesterday):
         state = _steps_state.get(date_str)
         steps = state["last_steps"] if state else 0
 
-        # Skip today if no steps data yet (day just started at 00:05).
-        # force_write=True should not write 0 steps to a brand new day.
-        if date_str == today_str and steps == 0:
+        # Skip today if no steps data yet (day just started)
+        if date_str == today and steps == 0:
             log.info(
-                "steps: nightly stamp — skipping today %s (no data yet, day just started)",
+                "steps: stamp — skipping today %s (no data yet, day just started)",
                 date_str,
             )
             continue
 
-        # Skip yesterday if no data was received at all.
+        # Skip yesterday if no data received at all
         if date_str == yesterday and steps == 0:
             log.info(
-                "steps: nightly stamp — no data for yesterday %s, skipping",
+                "steps: stamp — no data for yesterday %s, skipping",
                 date_str,
             )
             continue
 
-        log.info("steps: nightly stamp for %s — %d steps", date_str, steps)
+        log.info("steps: stamp for %s — %d steps", date_str, steps)
+
         result = await handle_steps_sync(
             steps=steps,
             date_str=date_str,
@@ -601,9 +570,9 @@ async def handle_steps_final_stamp(
             threshold=threshold,
             source_label=source_label,
             tz=tz,
-            bot=bot,
-            chat_id=chat_id,
-            force_write=True,
+            bot=None,          # Silent — no threshold notification from stamp
+            chat_id=None,      # Silent — no threshold notification from stamp
+            force_write=True,  # Always write regardless of threshold
         )
         results[date_str] = result
 
