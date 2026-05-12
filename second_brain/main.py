@@ -4123,7 +4123,7 @@ async def process_pending_programmes(bot) -> None:
                         notion.databases.query,
                         database_id=NOTION_WORKOUT_PROGRAM_DB,
                         filter={"property": "Processed", "checkbox": {"equals": True}},
-                        sorts=[{"property": "Week Of", "direction": "descending"}],
+                        sorts=[{"property": "Week", "direction": "descending"}],
                         page_size=10,
                     ).get("results", [])
                     cycle_num = next(
