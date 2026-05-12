@@ -324,8 +324,8 @@ def test_refresh_upcoming_trip_weather_updates_rows():
                     {
                         "id": "page-1",
                         "properties": {
-                            "Departure Date": {"date": {"start": "2026-05-06"}},
-                            "Return Date": {"date": {"start": "2026-05-08"}},
+                            "Departure Date": {"date": {"start": (date.today() + timedelta(days=1)).isoformat()}},
+                            "Return Date": {"date": {"start": (date.today() + timedelta(days=3)).isoformat()}},
                             "Destination(s)": {"rich_text": [{"plain_text": "Nashville, TN"}]},
                             "Weather Flags": {"type": "multi_select"},
                             "Weather Summary": {"type": "rich_text"},
@@ -350,7 +350,7 @@ def test_refresh_upcoming_trip_weather_updates_rows():
     count = trips.refresh_upcoming_trip_weather(
         notion,
         "c57f9edb406d4368b32d23f0ea2a0c66",
-        fetch_trip_weather_range=lambda *_: [{"label": "Thu May 6", "condition": "Rain", "temp_high": 30, "temp_low": 10, "precip_chance": 80}],
+        fetch_trip_weather_range=lambda *_: [{"label": "Trip day", "condition": "Rain", "temp_high": 30, "temp_low": 10, "precip_chance": 80}],
         lookahead_days=5,
     )
     assert count == 1
