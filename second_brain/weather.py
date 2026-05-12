@@ -8,20 +8,23 @@ from pathlib import Path
 
 import httpx
 
-from second_brain.config import WEATHER_LOCATION, TZ, CLAUDE_MODEL
-from second_brain.config import OPENWEATHER_KEY, WEATHER_LOCATION, TZ, CLAUDE_MODEL
+from second_brain.config import OPENWEATHER_KEY as _CONFIG_OPENWEATHER_KEY, WEATHER_LOCATION, TZ, CLAUDE_MODEL
 log = logging.getLogger(__name__)
 notion = None
 NOTION_ENV_DB = os.environ.get("ENV_DB_ID", "").strip()
 
 
-OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "") or os.environ.get("OPENWEATHER_API_KEY", "")
+OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "").strip() or os.environ.get("OPENWEATHER_API_KEY", "").strip()
+log.info("weather module loaded: OPENWEATHER_KEY present=%s", bool(OPENWEATHER_KEY))
 def _openweather_key() -> str:
-    import os
-    return (
-        os.environ.get("OPENWEATHER_KEY", "").strip()
-        or os.environ.get("OPENWEATHER_API_KEY", "").strip()
+    import os as _os
+    result = (
+        _os.environ.get("OPENWEATHER_KEY", "").strip()
+        or _os.environ.get("OPENWEATHER_API_KEY", "").strip()
+        or _CONFIG_OPENWEATHER_KEY
     )
+    log.info("_openweather_key: resolved key_present=%s", bool(result))
+    return result
 
 def _resolve_state_dir() -> Path:
     override = os.environ.get("BOT_STATE_DIR", "").strip()
