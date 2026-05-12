@@ -439,10 +439,11 @@ def _forecast_rows_for_coordinates(lat: float, lon: float, *, num_days: int, sta
             day = local_dt.date()
             if day < start_date or day > end_date:
                 continue
-            item = buckets.setdefault(day, {"highs": [], "lows": [], "pops": [], "conds": [], "descriptions": []})
+            item = buckets.setdefault(day, {"highs": [], "lows": [], "pops": [], "conds": [], "descriptions": [], "winds": []})
             item["highs"].append(row.get("main", {}).get("temp_max", 0))
             item["lows"].append(row.get("main", {}).get("temp_min", 0))
             item["pops"].append(row.get("pop", 0))
+            item["winds"].append(row.get("wind", {}).get("speed", 0) or 0)
             weather_item = (row.get("weather") or [{}])[0]
             item["conds"].append(weather_item.get("main", "Unknown"))
             item["descriptions"].append(weather_item.get("description", "Unknown"))
@@ -462,6 +463,7 @@ def _forecast_rows_for_coordinates(lat: float, lon: float, *, num_days: int, sta
                     "precip_chance": int(round(max(item["pops"]) * 100)) if item["pops"] else 0,
                     "condition": max(set(conds), key=conds.count),
                     "description": max(set(descriptions), key=descriptions.count).title(),
+                    "wind_speed_max": round(max(item["winds"]), 1) if item["winds"] else 0,
                 }
             )
         log.info("_forecast_rows_for_coordinates: returning %d day rows", len(out))
