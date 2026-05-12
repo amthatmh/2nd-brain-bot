@@ -65,16 +65,100 @@ def get_or_create_movement(notion, movements_db_id: str, name: str) -> str:
 
 
 
+MOVEMENT_ALIAS_MAP = [
+    (r"russian\s+(kb|kettlebell)\s+swing", "Kettlebell Swing"),
+    (r"american\s+(kb|kettlebell)\s+swing", "American Kettlebell Swing"),
+    (r"(s/?a|single[\s-]arm)\s+(db|dumbbell)\s+overhead\s+(walking\s+)?lunge", "Overhead Carry"),
+    (r"(db|dumbbell)\s+overhead\s+(walking\s+)?lunge", "Overhead Carry"),
+    (r"(db|dumbbell)\s+goblet\s+(walking\s+)?lunge", "Lunge"),
+    (r"double\s+(kb|kettlebell)\s+hang\s+clean[\s\w]*jerk", "Kettlebell Clean"),
+    (r"hang\s+clean\s+and\s+jerk", "Clean & Jerk"),
+    (r"box\s+jump\s+over", "Box Jump"),
+    (r"burpee\s+broad\s+jump", "Burpee"),
+    (r"line[\s-]facing\s+burpee", "Burpee"),
+    (r"rope\s+climb", "Pull-Up"),
+    (r"lying\s+to\s+stand\s+rope\s+(climb|pull)", "Ring Row"),
+    (r"(db|dumbbell)\s+push\s+press", "Dumbbell Push Press"),
+    (r"(kb|kettlebell)\s+hang\s+clean", "Kettlebell Clean"),
+    (r"farmer[\s']*s?\s+(carry|walk)", "Farmer's Carry"),
+    (r"assault\s+bike", "Assault Bike"),
+    (r"ski\s+(erg|meters?)", "SkiErg"),
+    (r"handstand\s+push[\s-]?ups?", "Handstand Push-Up"),
+    (r"kneeling\s+push[\s-]?ups?", "Kneeling Push-Up"),
+    (r"toes[\s-]?to[\s-]?bar", "Toes-to-Bar"),
+    (r"\bt2b\b", "Toes-to-Bar"),
+    (r"push[\s-]?ups?(?!\s+press)", "Push-Up"),
+    (r"pull[\s-]?ups?", "Pull-Up"),
+    (r"push\s*/\s*power\s+jerk", "Push Jerk"),
+    (r"wall\s+ball", "Wall Ball"),
+    (r"wall\s+walk", "Wall Walk"),
+    (r"air\s+squat", "Air Squat"),
+    (r"ring\s+row", "Ring Row"),
+    (r"box\s+jump", "Box Jump"),
+    (r"double[\s-]?under", "Double-Under"),
+    (r"single[\s-]?under", "Single-Under"),
+    (r"hanging\s+knee\s+raise", "Toes-to-Bar"),
+    (r"kb\s+swing", "Kettlebell Swing"),
+    (r"power\s+jerk", "Power Jerk"),
+    (r"push\s+jerk", "Push Jerk"),
+    (r"push\s+press", "Push Press"),
+]
+
+
+def normalise_movement_name(raw: str) -> list[str]:
+    s = (raw or "").strip()
+
+    slash_parts = re.split(r"\s*/\s*", s)
+    if len(slash_parts) > 1 and all(re.search(r"[a-zA-Z]{3,}", p) for p in slash_parts):
+        if len(slash_parts) == 2:
+            right_words = slash_parts[1].split()
+            left_words = slash_parts[0].split()
+            if len(left_words) == 1 and len(right_words) > 1:
+                slash_parts[0] = f"{slash_parts[0]} {' '.join(right_words[1:])}"
+        out: list[str] = []
+        for part in slash_parts:
+            out.extend(normalise_movement_name(part))
+        return out
+
+    s = re.sub(r"\s*\(.*?\)\s*$", "", s).strip()
+    s = re.sub(r"^\d[\d/'\"\.]*\s*(meter|m|cal|calories|foot|feet)?\s*", "", s, flags=re.IGNORECASE).strip()
+
+    if re.match(r"^\w[\w\s]+—\s*\d{1,2}:\d{2}-\d{1,2}:\d{2}", s):
+        return []
+
+    for pattern, canonical in MOVEMENT_ALIAS_MAP:
+        if re.search(pattern, s, re.IGNORECASE):
+            return [canonical]
+
+    s = re.sub(
+        r"^(double|single|s/a|sa|db|dumbbell|kb|kettlebell|barbell|"
+        r"banded|weighted|strict|kipping|touch\s*n?\s*go|tng)\s+",
+        "", s, flags=re.IGNORECASE,
+    ).strip()
+    s = re.sub(
+        r"(?i)\b(swings|jumps|dips|lunges|squats|rows|burpees|climbs)\b",
+        lambda m: m.group(0).rstrip("s"), s,
+    )
+    return [s] if s else []
+
+
+def get_movement_load_type(notion, page_id: str) -> str:
+    try:
+        page = notion_call(notion.pages.retrieve, page_id=page_id)
+        lt = page["properties"].get("Load Type", {}).get("select", {})
+        return lt.get("name", "External Load")
+    except Exception:
+        return "External Load"
+
 def _extract_unique_movement_names(parsed: dict) -> set[str]:
     names: set[str] = set()
     for track_row in (parsed or {}).get("tracks", []):
         for day_row in track_row.get("days", []):
-            for m in (day_row.get("section_b") or {}).get("movements") or []:
-                if m:
-                    names.add(m)
-            for m in (day_row.get("section_c") or {}).get("movements") or []:
-                if m:
-                    names.add(m)
+            for section_key in ("section_b", "section_c"):
+                for raw in (day_row.get(section_key) or {}).get("movements") or []:
+                    for canonical in normalise_movement_name(raw):
+                        if canonical:
+                            names.add(canonical)
     return names
 
 
@@ -144,22 +228,28 @@ def _resolve_section_movements(section: dict, movement_cache: dict[str, str], no
     section = section or {}
     candidates: list[str] = []
     for name in section.get("movements") or []:
-        if name and name not in candidates:
-            candidates.append(name)
+        for canonical in normalise_movement_name(name):
+            if canonical and canonical not in candidates:
+                candidates.append(canonical)
     for name in _movement_names_from_text(section.get("description") or "", movement_cache):
-        if name not in candidates:
-            candidates.append(name)
+        for canonical in normalise_movement_name(name):
+            if canonical and canonical not in candidates:
+                candidates.append(canonical)
 
     resolved: list[str] = []
     for extracted_name, matched_name, score in _run_fuzzy_match_sync(candidates, movement_cache):
+        canonical_names = normalise_movement_name(extracted_name) or [extracted_name]
+        canonical = canonical_names[0] if canonical_names else extracted_name
         if matched_name and score >= 0.70:
             mid = movement_cache.get(matched_name)
             if mid and mid not in resolved:
                 resolved.append(mid)
+            if canonical and mid:
+                movement_cache.setdefault(canonical, mid)
             continue
-        if extracted_name and movements_db_id:
-            mid = get_or_create_movement(notion, movements_db_id, extracted_name)
-            movement_cache.setdefault(extracted_name, mid)
+        if canonical and movements_db_id:
+            mid = get_or_create_movement(notion, movements_db_id, canonical)
+            movement_cache.setdefault(canonical, mid)
             if mid not in resolved:
                 resolved.append(mid)
     return resolved
@@ -178,33 +268,9 @@ def _cycle_number_from_name(name: str) -> int | None:
 
 
 def _get_open_cycle_metadata(notion, cycles_db_id: str, program_db_id: str) -> tuple[str | None, int]:
-    """Return (open_cycle_page_id, next_week_number), without creating cycles."""
-    if not cycles_db_id or not program_db_id:
-        log.warning("[PARSER] No open cycle found — Week set to 1, Cycle # left blank")
-        return None, 1
-    try:
-        open_cycles = notion_call(
-            notion.databases.query,
-            database_id=cycles_db_id,
-            filter={"property": "End Date", "date": {"is_empty": True}},
-            page_size=1,
-        ).get("results", [])
-        if not open_cycles:
-            log.warning("[PARSER] No open cycle found — Week set to 1, Cycle # left blank")
-            return None, 1
-
-        cycle_id = open_cycles[0]["id"]
-        existing = notion_call(
-            notion.databases.query,
-            database_id=program_db_id,
-            filter={"property": "Cycle #", "relation": {"contains": cycle_id}},
-            page_size=100,
-        ).get("results", [])
-        return cycle_id, len(existing) + 1
-    except Exception as e:
-        log.warning("cycle metadata lookup failed: %s", e)
-        log.warning("[PARSER] No open cycle found — Week set to 1, Cycle # left blank")
-        return None, 1
+    """Legacy no-op: Weekly Programs now use plain Cycle/Week numbers."""
+    del notion, cycles_db_id, program_db_id
+    return None, 1
 
 
 def _get_or_create_cycle_metadata(notion, cycles_db_id: str, program_db_id: str, monday_iso: str) -> tuple[str | None, int | None]:
@@ -213,9 +279,8 @@ def _get_or_create_cycle_metadata(notion, cycles_db_id: str, program_db_id: str,
 
 
 def _weekly_program_metadata_props(cycle_id: str | None, week_number: int | None, monday_iso: str) -> dict:
+    del cycle_id
     props: dict = {"Start Date": {"date": {"start": monday_iso}}}
-    if cycle_id:
-        props["Cycle #"] = {"relation": [{"id": cycle_id}]}
     if week_number is not None:
         props["Week"] = {"number": week_number}
     return props
@@ -235,7 +300,12 @@ def _rich_text_chunks(text: str, limit: int = 1900) -> list[dict]:
 
 def this_monday() -> str:
     today = date.today()
-    return (today - timedelta(days=today.weekday())).isoformat()
+    weekday = today.weekday()  # Mon=0 Sun=6
+    if weekday == 0:
+        return today.isoformat()
+    if weekday <= 4:
+        return (today - timedelta(days=weekday)).isoformat()
+    return (today + timedelta(days=7 - weekday)).isoformat()
 
 
 def infer_section_b_type(section_b: dict) -> str:
@@ -304,6 +374,25 @@ def _strip_section_label(text: str) -> str:
     return re.sub(r"(?im)^\s*(?:section\s*)?[BC]\s*[.:)\-–—]?\s*", "", text or "", count=1).strip()
 
 
+def _extract_candidate_movements_from_section(description: str) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    skip_re = re.compile(r"\b(?:every|minutes?|training notes|goal|rest|sets?|rounds?|time cap|amrap|emom|for time)\b", re.I)
+    for raw_line in (description or "").splitlines():
+        line = raw_line.strip().lstrip("•- ").strip()
+        if not line or skip_re.search(line):
+            continue
+        for piece in re.split(r",|;|\+", line):
+            for canonical in normalise_movement_name(piece):
+                if not canonical or len(canonical) < 3:
+                    continue
+                key = canonical.lower()
+                if key not in seen:
+                    seen.add(key)
+                    names.append(canonical)
+    return names
+
+
 def _extract_training_notes(block: str) -> tuple[str, str]:
     match = re.search(r"(?ims)^\s*training\s+notes\s*:\s*(?P<notes>.*)$", block or "")
     if not match:
@@ -312,8 +401,14 @@ def _extract_training_notes(block: str) -> tuple[str, str]:
 
 
 def _extract_sections(block: str) -> tuple[str, str, str]:
-    body, notes = _extract_training_notes(block or "")
-    marker = re.compile(r"(?im)^\s*(?:section\s*)?(?P<section>[BC])\s*[.:)\-–—]\s*")
+    lines = []
+    time_marker = re.compile(r"^\s*\w[\w\s]+—\s*\d{1,2}:\d{2}-\d{1,2}:\d{2}\s*$")
+    for line in (block or "").splitlines():
+        if time_marker.match(line):
+            continue
+        lines.append(line)
+    body = "\n".join(lines)
+    marker = re.compile(r"(?im)^\s*[*_`]*(?:section\s*)?(?P<section>[BC])[*_`]*[\.)]\s+")
     matches = list(marker.finditer(body))
     section_text: dict[str, str] = {"B": "", "C": ""}
     for idx, match in enumerate(matches):
@@ -323,7 +418,7 @@ def _extract_sections(block: str) -> tuple[str, str, str]:
         section_text[key] = _strip_section_label(body[start:end])
     if not matches:
         section_text["C"] = body.strip()
-    return section_text["B"], section_text["C"], notes
+    return section_text["B"], section_text["C"], ""
 
 
 def parse_weekly_program_text(full_text: str, week_label: str | None = None) -> dict:
@@ -337,14 +432,14 @@ def parse_weekly_program_text(full_text: str, week_label: str | None = None) -> 
             section_b, section_c, training_notes = _extract_sections(track_block)
             tracks_by_name[track].append({
                 "day": day,
-                "section_b": {"description": section_b, "movements": []} if section_b else {},
-                "section_c": {"description": section_c, "movements": [], "is_partner": "partner" in section_c.lower()} if section_c else {},
+                "section_b": {"description": section_b, "movements": _extract_candidate_movements_from_section(section_b)} if section_b else {},
+                "section_c": {"description": section_c, "movements": _extract_candidate_movements_from_section(section_c), "is_partner": "partner" in section_c.lower()} if section_c else {},
                 "training_notes": training_notes,
             })
     tracks = [{"track": track, "days": days} for track, days in tracks_by_name.items() if days]
     if not tracks:
         raise ValueError("No day/track workout blocks found in Full Program")
-    return {"week_label": week_label or f"Week of {this_monday()}", "tracks": tracks}
+    return {"week_label": f"Week of {this_monday()}", "tracks": tracks}
 
 def get_current_week_programme(notion, program_db_id: str):
     res = notion_call(notion.databases.query, database_id=program_db_id, sorts=[{"timestamp": "created_time", "direction": "descending"}], page_size=1).get("results", [])
@@ -364,8 +459,8 @@ def save_programme(notion, program_db_id: str, workout_days_db_id: str, movement
             "tracks": [{"track": "Performance", "days": parsed.get("days", [])}],
         }
 
-    week_label = parsed.get("week_label") or "Week"
-    monday_iso = _week_start_from_label(week_label)
+    monday_iso = this_monday()
+    week_label = f"Week of {monday_iso}"
     cycle_id, week_number = _get_or_create_cycle_metadata(notion, cycles_db_id or os.getenv("NOTION_CYCLES_DB", ""), program_db_id, monday_iso)
 
     try:
@@ -489,8 +584,8 @@ def save_programme_from_notion_row(
             "tracks": [{"track": "Performance", "days": parsed.get("days", [])}],
         }
 
-    week_label = parsed.get("week_label") or "Week"
-    monday_iso = _week_start_from_label(week_label)
+    monday_iso = this_monday()
+    week_label = f"Week of {monday_iso}"
     del program_db_id, cycles_db_id
 
     try:
@@ -585,19 +680,32 @@ def save_programme_from_notion_row(
                 log.error("save_programme_from_notion_row: failed %s/%s: %s", track, day, e)
                 log.error("save_programme_from_notion_row: props keys: %s", list(props.keys()))
 
-    if program_movement_ids:
+    all_movement_ids = list({
+        movement_cache[canonical]
+        for track_row in parsed.get("tracks", [])
+        for day_row in track_row.get("days", [])
+        for section_key in ("section_b", "section_c")
+        for raw in (day_row.get(section_key) or {}).get("movements") or []
+        for canonical in normalise_movement_name(raw)
+        if canonical and canonical in movement_cache
+    }) or sorted(day_movement_ids or program_movement_ids)
+
+    if all_movement_ids:
         try:
             notion_call(
                 notion.pages.update,
                 page_id=parent_page_id,
-                properties={"Movements": {"relation": [{"id": mid} for mid in sorted(program_movement_ids)]}},
+                properties={"Movements": {"relation": [{"id": mid} for mid in all_movement_ids]}},
+            )
+            log.info(
+                "save_programme_from_notion_row: wrote %d movements to Weekly Programs",
+                len(all_movement_ids),
             )
         except Exception as e:
-            log.warning("save_programme_from_notion_row: could not update final parent movements: %s", e)
+            log.warning("movements rollup failed (non-fatal): %s", e)
 
-    movement_ids = sorted(day_movement_ids)
     log.info("save_programme_from_notion_row: complete — %d rows", days_created)
-    return {"days_created": days_created, "movement_ids": movement_ids}
+    return {"days_created": days_created, "movement_ids": all_movement_ids}
 
 
 def validate_workout_days_db(notion, workout_days_db_id: str) -> list[str]:

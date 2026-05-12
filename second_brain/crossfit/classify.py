@@ -16,8 +16,12 @@ def _today_str() -> str:
 
 def _monday_str() -> str:
     today = datetime.now(timezone.utc).date()
-    monday = today - timedelta(days=today.weekday())
-    return monday.isoformat()
+    weekday = today.weekday()
+    if weekday == 0:
+        return today.isoformat()
+    if weekday <= 4:
+        return (today - timedelta(days=weekday)).isoformat()
+    return (today + timedelta(days=7 - weekday)).isoformat()
 
 
 def _extract_json(raw: str) -> dict:
@@ -75,7 +79,8 @@ DAY_CANONICAL = {
 }
 DAY_HEADER_RE = re.compile(r"(?im)^[ \t]*(MONDAY|TUESDAY|WEDNESDAY|THURSDAY|FRIDAY|SATURDAY|SUNDAY)[ \t]*:?.*$")
 TRACK_HEADER_RE = re.compile(r"(?im)^[ \t]*(PERFORMANCE|FITNESS|HYROX)[ \t]*:?.*$")
-SECTION_HEADER_RE = re.compile(r"(?im)^[ \t]*(?:SECTION[ \t]*)?([BC])[ \t]*[\.:\)-]?[ \t]*(.*)$")
+SECTION_HEADER_RE = re.compile(r"(?im)^[ \t]*[*_`]*(?:SECTION[ \t]*)?([BC])[*_`]*[ \t]*[\.)][ \t]+(.*)$")
+TIME_MARKER_RE = re.compile(r"(?im)^\s*\w[\w\s]+—\s*\d{1,2}:\d{2}-\d{1,2}:\d{2}\s*$")
 
 
 def _split_by_headers(text: str, header_re: re.Pattern) -> list[tuple[str, str]]:
@@ -89,7 +94,8 @@ def _split_by_headers(text: str, header_re: re.Pattern) -> list[tuple[str, str]]
 
 
 def _extract_section_text(block: str, section_letter: str) -> str:
-    matches = list(SECTION_HEADER_RE.finditer(block or ""))
+    block = TIME_MARKER_RE.sub("", block or "")
+    matches = list(SECTION_HEADER_RE.finditer(block))
     for idx, match in enumerate(matches):
         if match.group(1).upper() != section_letter:
             continue
@@ -279,7 +285,7 @@ def parse_programme(text: str, claude_client, model: str, max_tokens: int) -> di
     today = _today_str()
     monday = _monday_str()
 
-    prompt = f"""You are parsing a CrossFit gym's weekly programme.
+    prompt = fr"""You are parsing a CrossFit gym's weekly programme.
 Today: {today}. Week starts: {monday}.
 
 Programme:
@@ -288,6 +294,30 @@ Programme:
 ---
 
 Extract ALL tracks (Performance, Fitness, Hyrox). For each track, each day with Section B or C.
+
+Section splitting rules (must follow exactly):
+- RULE 1: Section B starts at the first line matching r'^B[\.)]\s' with optional bold/italic markdown around B.
+- RULE 2: Section C starts at the first line matching r'^C[\.)]\s' with optional bold/italic markdown around C.
+- RULE 3: Everything between B. and C. is Section B content including any training notes that follow B.
+- RULE 4: Everything after C. until the next day/track header or end of track block is Section C content including its training notes.
+- RULE 5: Time markers are NOT section boundaries. Ignore/strip lines matching r'^\w[\w\s]+—\s*\d{{1,2}}:\d{{2}}-\d{{1,2}}:\d{{2}}', e.g. "Murph Prep — 35:00-55:00", "Sprint Couplets — 45:00-55:00", "Clean-up — 55:00-60:00".
+- RULE 6: Training notes that appear AFTER C. belong to Section C. Only training notes between B. and C. belong to Section B.
+- RULE 7: Include the "Training notes:" label and bullet points in the relevant section description; do not extract them as a separate top-level field.
+
+Example:
+Input fragment:
+"Murph Prep — 35:00-55:00
+C. Every 5 Minutes for 20 Minutes
+400 Meter Run
+12 Pull Ups
+24 Push Ups
+36 Air Squats
+Training notes:
+• Goal is to rest 1-2 minutes between sets."
+Expected parse:
+section_c.description = "Every 5 Minutes for 20 Minutes\n400 Meter Run\n12 Pull Ups\n24 Push Ups\n36 Air Squats\nTraining notes:\n• Goal is to rest 1-2 minutes between sets."
+section_c.movements = ["Run", "Pull-Up", "Push-Up", "Air Squat"]
+top_level training_notes = ""
 
 Return ONLY valid JSON:
 {{
@@ -312,7 +342,7 @@ Rules:
 - Omit tracks not in the programme
 - Use null for unknown/missing number fields
 - Thursday and Saturday are often partner WODs (is_partner: true)
-- Keep descriptions concise — movement names + rep counts only, skip coaching notes
+- Keep descriptions concise, but preserve Training notes labels and bullets inside the relevant Section B/C description
 """
     try:
         resp = claude_client.messages.create(
