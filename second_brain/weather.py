@@ -502,7 +502,9 @@ def fetch_trip_weather_range(departure_date: str, return_date: str, destination:
         geo = httpx.get("https://api.openweathermap.org/geo/1.0/direct", params={"q": destination, "limit": 1, "appid": key}, timeout=10)
         geo.raise_for_status()
         places = geo.json()
+        log.info("fetch_trip_weather_range: geo json response for %r: %s", destination, places)
         if not places:
+            log.warning("fetch_trip_weather_range: geo returned empty for %r", destination)
             return []
         lat = places[0].get("lat")
         lon = places[0].get("lon")
