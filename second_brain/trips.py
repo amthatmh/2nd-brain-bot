@@ -395,7 +395,7 @@ def _build_trip_weather_summary(
     fetch_weather: Callable[[str], dict | None] | None,
     fetch_trip_weather_range: Callable[[str, str, str], list[dict]] | None,
 ) -> tuple[str, list[str]]:
-    if not _is_departure_within_forecast_window(departure_date):
+    if not _is_departure_within_forecast_window(departure_date, min_days_before=3):
         return WEATHER_PLACEHOLDER_SUMMARY, []
 
     snapshots: list[tuple[str, dict]] = []
@@ -447,7 +447,13 @@ def _build_trip_weather_summary(
     return " | ".join(labels), sorted(set(flags))
 
 
-def _is_departure_within_forecast_window(departure_date: str | None, *, today: date | None = None, lookahead_days: int = 5) -> bool:
+def _is_departure_within_forecast_window(
+    departure_date: str | None,
+    *,
+    today: date | None = None,
+    lookahead_days: int = 5,
+    min_days_before: int = 3,
+) -> bool:
     if not departure_date:
         return True
     try:
@@ -456,7 +462,11 @@ def _is_departure_within_forecast_window(departure_date: str | None, *, today: d
         return True
     today = today or date.today()
     days_until_departure = (departure - today).days
-    return days_until_departure <= lookahead_days
+    # Too far out — wait until 3 days before
+    if days_until_departure > min_days_before:
+        return False
+    # Past return date — stop updating
+    return days_until_departure >= -lookahead_days
 
 
 def refresh_upcoming_trip_weather(
@@ -507,6 +517,9 @@ def refresh_upcoming_trip_weather(
         destination = dest_parts[0].get("plain_text", "").strip() if dest_parts else ""
         if not dep or not ret or not destination:
             continue
+        # Skip if return date already passed
+        if ret and date.fromisoformat(ret) < date.today():
+            continue
         summary, flags = _build_trip_weather_summary(
             dep,
             ret,
@@ -530,6 +543,25 @@ def refresh_upcoming_trip_weather(
         try:
             notion.pages.update(page_id=row["id"], properties=payload)
             updated += 1
+            if summary and summary != WEATHER_PLACEHOLDER_SUMMARY:
+                try:
+                    import asyncio
+                    from second_brain.main import app, MY_CHAT_ID
+
+                    dest_name = destination
+                    asyncio.create_task(
+                        app.bot.send_message(
+                            chat_id=MY_CHAT_ID,
+                            text=(
+                                f"🌦️ Weather ready for {dest_name} ({dep} → {ret}):\n"
+                                f"{summary}\n\n"
+                                f"Notion trip updated."
+                            ),
+                            parse_mode="Markdown",
+                        )
+                    )
+                except Exception as notify_exc:
+                    logger.warning("trip_weather_refresh: Telegram notify failed: %s", notify_exc)
         except Exception as exc:
             logger.error("trip_weather_refresh: failed to update page %s: %s", row["id"], exc)
             logger.error("trip_weather_refresh: payload was: %s", payload)

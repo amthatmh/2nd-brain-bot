@@ -385,60 +385,72 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
 def _forecast_rows_for_coordinates(lat: float, lon: float, *, num_days: int, start_date: date | None = None, end_date: date | None = None) -> list[dict]:
     """Fetch and bucket OpenWeather 5-day/3-hour forecast rows for coordinates."""
     if not OPENWEATHER_KEY or num_days <= 0:
+        log.warning("_forecast_rows_for_coordinates: skipped — no key or num_days=%d", num_days)
         return []
     try:
         resp = httpx.get(
             "https://api.openweathermap.org/data/2.5/forecast",
-            params={"lat": lat, "lon": lon, "appid": OPENWEATHER_KEY, "units": "metric"},
+            params={"lat": lat, "lon": lon, "appid": OPENWEATHER_KEY, "units": "metric", "cnt": 40},
             timeout=10,
         )
         resp.raise_for_status()
     except Exception as e:
-        log.error("_forecast_rows_for_coordinates: HTTP failed lat=%s lon=%s: %s", lat, lon, e, exc_info=True)
+        log.error("_forecast_rows_for_coordinates: HTTP failed lat=%s lon=%s: %s", lat, lon, e)
         return []
-    rows = resp.json().get("list", [])
-    log.info("_forecast_rows_for_coordinates: API returned %d slots for lat=%s lon=%s", len(rows), lat, lon)
-    today = datetime.now(TZ).date()
-    if start_date is None:
-        start_date = today
-    if end_date is None:
-        end_date = start_date + timedelta(days=num_days - 1)
-    log.info("_forecast_rows_for_coordinates: filtering for %s to %s", start_date, end_date)
-
-    buckets: dict[date, dict] = {}
-    for row in rows:
-        dt_utc = datetime.fromtimestamp(row["dt"], timezone.utc)
-        local_dt = dt_utc.astimezone(TZ)
-        day = local_dt.date()
-        if day < start_date or day > end_date:
-            continue
-        item = buckets.setdefault(day, {"highs": [], "lows": [], "pops": [], "conds": [], "descriptions": []})
-        item["highs"].append(row.get("main", {}).get("temp_max", 0))
-        item["lows"].append(row.get("main", {}).get("temp_min", 0))
-        item["pops"].append(row.get("pop", 0))
-        weather_item = (row.get("weather") or [{}])[0]
-        item["conds"].append(weather_item.get("main", "Unknown"))
-        item["descriptions"].append(weather_item.get("description", "Unknown"))
-    log.info("_forecast_rows_for_coordinates: bucketed %d days: %s", len(buckets), sorted(buckets))
-
-    out: list[dict] = []
-    for day in sorted(buckets)[:num_days]:
-        item = buckets[day]
-        conds = item["conds"] or ["Unknown"]
-        descriptions = item["descriptions"] or ["Unknown"]
-        out.append(
-            {
-                "date": day.isoformat(),
-                "label": day.strftime("%a %b %-d"),
-                "temp_high": round(max(item["highs"])) if item["highs"] else None,
-                "temp_low": round(min(item["lows"])) if item["lows"] else None,
-                "precip_chance": int(round(max(item["pops"]) * 100)) if item["pops"] else 0,
-                "condition": max(set(conds), key=conds.count),
-                "description": max(set(descriptions), key=descriptions.count).title(),
-            }
+    try:
+        rows = resp.json().get("list", [])
+        log.info(
+            "_forecast_rows_for_coordinates: API returned %d slots for lat=%s lon=%s start=%s end=%s",
+            len(rows),
+            lat,
+            lon,
+            start_date,
+            end_date,
         )
-    log.info("_forecast_rows_for_coordinates: returning %d rows", len(out))
-    return out
+        today = datetime.now(TZ).date()
+        if start_date is None:
+            start_date = today
+        if end_date is None:
+            end_date = start_date + timedelta(days=num_days - 1)
+        log.info("_forecast_rows_for_coordinates: filtering for %s to %s", start_date, end_date)
+
+        buckets: dict[date, dict] = {}
+        for row in rows:
+            dt_utc = datetime.fromtimestamp(row["dt"], timezone.utc)
+            local_dt = dt_utc.astimezone(TZ)
+            day = local_dt.date()
+            if day < start_date or day > end_date:
+                continue
+            item = buckets.setdefault(day, {"highs": [], "lows": [], "pops": [], "conds": [], "descriptions": []})
+            item["highs"].append(row.get("main", {}).get("temp_max", 0))
+            item["lows"].append(row.get("main", {}).get("temp_min", 0))
+            item["pops"].append(row.get("pop", 0))
+            weather_item = (row.get("weather") or [{}])[0]
+            item["conds"].append(weather_item.get("main", "Unknown"))
+            item["descriptions"].append(weather_item.get("description", "Unknown"))
+        log.info("_forecast_rows_for_coordinates: bucketed %d days: %s", len(buckets), sorted(buckets))
+
+        out: list[dict] = []
+        for day in sorted(buckets)[:num_days]:
+            item = buckets[day]
+            conds = item["conds"] or ["Unknown"]
+            descriptions = item["descriptions"] or ["Unknown"]
+            out.append(
+                {
+                    "date": day.isoformat(),
+                    "label": day.strftime("%a %b %-d"),
+                    "temp_high": round(max(item["highs"])) if item["highs"] else None,
+                    "temp_low": round(min(item["lows"])) if item["lows"] else None,
+                    "precip_chance": int(round(max(item["pops"]) * 100)) if item["pops"] else 0,
+                    "condition": max(set(conds), key=conds.count),
+                    "description": max(set(descriptions), key=descriptions.count).title(),
+                }
+            )
+        log.info("_forecast_rows_for_coordinates: returning %d day rows", len(out))
+        return out
+    except Exception as e:
+        log.error("_forecast_rows_for_coordinates: processing failed lat=%s lon=%s: %s", lat, lon, e)
+        return []
 
 
 def fetch_multi_day_forecast(num_days: int) -> list[dict] | None:
