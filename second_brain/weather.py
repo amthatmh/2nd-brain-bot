@@ -7,11 +7,18 @@ from pathlib import Path
 
 import httpx
 
-from second_brain.config import OPENWEATHER_KEY, WEATHER_LOCATION, TZ, CLAUDE_MODEL
+from second_brain.config import WEATHER_LOCATION, TZ, CLAUDE_MODEL
 
 log = logging.getLogger(__name__)
 notion = None
 NOTION_ENV_DB = os.environ.get("ENV_DB_ID", "").strip()
+
+
+def _get_openweather_key() -> str:
+    return os.environ.get("OPENWEATHER_KEY", "") or os.environ.get("OPENWEATHER_API_KEY", "")
+
+
+OPENWEATHER_KEY = _get_openweather_key()
 
 
 def _resolve_state_dir() -> Path:
@@ -179,10 +186,11 @@ def save_notion_env_location(location: str, lat: float, lon: float) -> None:
 
 def set_location(location: str) -> bool:
     global current_location, current_lat, current_lon
-    if not OPENWEATHER_KEY:
+    openweather_key = _get_openweather_key()
+    if not openweather_key:
         return False
     try:
-        resp = httpx.get("https://api.openweathermap.org/geo/1.0/direct", params={"q": location, "limit": 1, "appid": OPENWEATHER_KEY}, timeout=10)
+        resp = httpx.get("https://api.openweathermap.org/geo/1.0/direct", params={"q": location, "limit": 1, "appid": openweather_key}, timeout=10)
         resp.raise_for_status()
         rows = resp.json()
         if not rows:
@@ -304,10 +312,11 @@ def set_location_smart(user_text: str, claude) -> bool:
             save_location_history(user_text)
             return True
     zip_match = re.search(r"\b\d{5}(?:-\d{4})?\b", user_text or "")
-    if zip_match and OPENWEATHER_KEY:
+    openweather_key = _get_openweather_key()
+    if zip_match and openweather_key:
         zip_value = zip_match.group(0)
         try:
-            resp = httpx.get("https://api.openweathermap.org/geo/1.0/zip", params={"zip": zip_value, "appid": OPENWEATHER_KEY}, timeout=10)
+            resp = httpx.get("https://api.openweathermap.org/geo/1.0/zip", params={"zip": zip_value, "appid": openweather_key}, timeout=10)
             resp.raise_for_status()
             payload = resp.json()
             lat = payload.get("lat")
@@ -330,7 +339,8 @@ def clear_weather_cache() -> None:
 def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -> dict | None:
     if forecast_type not in {"current", "today", "tomorrow"}:
         return None
-    if not OPENWEATHER_KEY:
+    openweather_key = _get_openweather_key()
+    if not openweather_key:
         return None
     cache_entry = weather_cache.get(forecast_type, {"timestamp": None, "data": None})
     now = datetime.now(TZ)
@@ -343,7 +353,7 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
             if not set_location(WEATHER_LOCATION):
                 return None
         if forecast_type == "current":
-            resp = httpx.get("https://api.openweathermap.org/data/2.5/weather", params={"lat": current_lat, "lon": current_lon, "appid": OPENWEATHER_KEY, "units": "metric"}, timeout=10)
+            resp = httpx.get("https://api.openweathermap.org/data/2.5/weather", params={"lat": current_lat, "lon": current_lon, "appid": openweather_key, "units": "metric"}, timeout=10)
             resp.raise_for_status()
             data = resp.json()
             sunrise_ts = data.get("sys", {}).get("sunrise")
@@ -357,7 +367,7 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
                 "sunset": datetime.fromtimestamp(sunset_ts, timezone.utc).astimezone(TZ).isoformat() if sunset_ts else None,
             }
         else:
-            resp = httpx.get("https://api.openweathermap.org/data/2.5/forecast", params={"lat": current_lat, "lon": current_lon, "appid": OPENWEATHER_KEY, "units": "metric"}, timeout=10)
+            resp = httpx.get("https://api.openweathermap.org/data/2.5/forecast", params={"lat": current_lat, "lon": current_lon, "appid": openweather_key, "units": "metric"}, timeout=10)
             resp.raise_for_status()
             rows = resp.json().get("list", [])
             target = datetime.now(TZ).date() + timedelta(days=1 if forecast_type == "tomorrow" else 0)
@@ -384,13 +394,15 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
 
 def _forecast_rows_for_coordinates(lat: float, lon: float, *, num_days: int, start_date: date | None = None, end_date: date | None = None) -> list[dict]:
     """Fetch and bucket OpenWeather 5-day/3-hour forecast rows for coordinates."""
-    if not OPENWEATHER_KEY or num_days <= 0:
-        log.warning("_forecast_rows_for_coordinates: skipped — no key or num_days=%d", num_days)
+    openweather_key = _get_openweather_key()
+    log.info("_forecast_rows_for_coordinates: called with OPENWEATHER_KEY present=%s num_days=%d start=%s end=%s", bool(openweather_key), num_days, start_date, end_date)
+    if not openweather_key or num_days <= 0:
+        log.warning("_forecast_rows_for_coordinates: early exit — key_present=%s num_days=%d", bool(openweather_key), num_days)
         return []
     try:
         resp = httpx.get(
             "https://api.openweathermap.org/data/2.5/forecast",
-            params={"lat": lat, "lon": lon, "appid": OPENWEATHER_KEY, "units": "metric", "cnt": 40},
+            params={"lat": lat, "lon": lon, "appid": openweather_key, "units": "metric", "cnt": 40},
             timeout=10,
         )
         resp.raise_for_status()
@@ -455,7 +467,8 @@ def _forecast_rows_for_coordinates(lat: float, lon: float, *, num_days: int, sta
 
 def fetch_multi_day_forecast(num_days: int) -> list[dict] | None:
     """Return up to num_days of forecast rows for the active weather location."""
-    if not OPENWEATHER_KEY or num_days <= 0:
+    openweather_key = _get_openweather_key()
+    if not openweather_key or num_days <= 0:
         return None
     if current_lat is None or current_lon is None:
         if not set_location(WEATHER_LOCATION):
@@ -468,7 +481,8 @@ def fetch_multi_day_forecast(num_days: int) -> list[dict] | None:
 
 
 def fetch_trip_weather_range(departure_date: str, return_date: str, destination: str) -> list[dict]:
-    if not OPENWEATHER_KEY:
+    openweather_key = _get_openweather_key()
+    if not openweather_key:
         return []
     try:
         start = datetime.fromisoformat(departure_date).date()
@@ -478,7 +492,7 @@ def fetch_trip_weather_range(departure_date: str, return_date: str, destination:
     if end < start:
         return []
     try:
-        geo = httpx.get("https://api.openweathermap.org/geo/1.0/direct", params={"q": destination, "limit": 1, "appid": OPENWEATHER_KEY}, timeout=10)
+        geo = httpx.get("https://api.openweathermap.org/geo/1.0/direct", params={"q": destination, "limit": 1, "appid": openweather_key}, timeout=10)
         geo.raise_for_status()
         places = geo.json()
         if not places:
@@ -501,10 +515,11 @@ def fetch_trip_weather_range(departure_date: str, return_date: str, destination:
 
 
 def fetch_uvi_data() -> dict | None:
-    if not OPENWEATHER_KEY or current_lat is None or current_lon is None:
+    openweather_key = _get_openweather_key()
+    if not openweather_key or current_lat is None or current_lon is None:
         return None
     try:
-        resp = httpx.get("https://api.openweathermap.org/data/3.0/onecall", params={"lat": current_lat, "lon": current_lon, "exclude": "minutely,hourly,alerts", "appid": OPENWEATHER_KEY}, timeout=5)
+        resp = httpx.get("https://api.openweathermap.org/data/3.0/onecall", params={"lat": current_lat, "lon": current_lon, "exclude": "minutely,hourly,alerts", "appid": openweather_key}, timeout=5)
         resp.raise_for_status()
         data = resp.json()
         current_uvi = float(data.get("current", {}).get("uvi", 0))
@@ -519,7 +534,8 @@ def fetch_uvi_data() -> dict | None:
 
 def fetch_daily_weather(days: int = 5, force_refresh: bool = False) -> list[dict]:
     """Return cached daily weather rows (today forward) from the shared One Call pull."""
-    if not OPENWEATHER_KEY or days <= 0:
+    openweather_key = _get_openweather_key()
+    if not openweather_key or days <= 0:
         return []
     if current_lat is None or current_lon is None:
         if not set_location(WEATHER_LOCATION):
@@ -543,7 +559,7 @@ def fetch_daily_weather(days: int = 5, force_refresh: bool = False) -> list[dict
                 "lat": current_lat,
                 "lon": current_lon,
                 "exclude": "minutely,hourly,alerts",
-                "appid": OPENWEATHER_KEY,
+                "appid": openweather_key,
                 "units": "metric",
             },
             timeout=8,
@@ -578,7 +594,7 @@ def fetch_daily_weather(days: int = 5, force_refresh: bool = False) -> list[dict
 
 async def fetch_weather_cache(bot) -> None:
     _ = bot
-    if not OPENWEATHER_KEY:
+    if not _get_openweather_key():
         return
     fetch_weather("current", force_refresh=True)
     fetch_weather("today", force_refresh=True)
