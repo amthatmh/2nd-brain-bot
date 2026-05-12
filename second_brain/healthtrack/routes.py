@@ -78,7 +78,6 @@ from second_brain.healthtrack.config import (
 from second_brain.healthtrack.metrics import (
     MalformedHealthMetricsPayload,
     handle_health_metrics_sync,
-    parse_health_metrics_payload,
 )
 from second_brain.healthtrack.steps import (
     handle_steps_sync,
@@ -219,16 +218,6 @@ def _parse_health_export_payload(body: dict) -> tuple[int, str] | None:
 
     return None
 
-
-
-def _count_metrics_in_payload(body: dict) -> int:
-    """Return number of metric entries in a Health Auto Export payload."""
-    data_field = body.get("data", [])
-    if isinstance(data_field, list):
-        return len(data_field)
-    if isinstance(data_field, dict):
-        return len(data_field.get("metrics", []))
-    return 0
 
 
 def _parse_all_dates_from_payload(body: dict) -> list[tuple[int, str]]:
@@ -441,24 +430,6 @@ def register_health_routes(
 
 
 
-    async def _run_health_sync_background(body: dict) -> None:
-        """
-        Background task: call handle_health_metrics_sync and log the result.
-        Errors are caught and logged — never crash the background task silently.
-        """
-        try:
-            result = await handle_health_metrics_sync(
-                body=body,
-                notion=notion,
-                metrics_db_id=health_metrics_db_id,
-                tz=tz,
-            )
-            log.info("health_sync: background task complete — %s", result)
-        except MalformedHealthMetricsPayload as e:
-            log.warning("health_sync: malformed payload in background task: %s", e)
-        except Exception as e:
-            log.exception("health_sync: background task failed: %s", e)
-
     async def health_sync_handler(request: web.Request) -> web.Response:
         # Handle CORS preflight
         if request.method == "OPTIONS":
@@ -504,7 +475,12 @@ def register_health_routes(
             )
 
         try:
-            parse_health_metrics_payload(body, tz)
+            result = await handle_health_metrics_sync(
+                body=body,
+                notion=notion,
+                metrics_db_id=health_metrics_db_id,
+                tz=tz,
+            )
         except MalformedHealthMetricsPayload as e:
             received_keys = list(body.keys()) if isinstance(body, dict) else []
             log.warning("health_sync: malformed payload: %s", e)
@@ -514,18 +490,17 @@ def register_health_routes(
                 content_type="application/json",
                 headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
             )
-
-        asyncio.create_task(_run_health_sync_background(body=body))
-        metric_count = _count_metrics_in_payload(body)
+        except Exception as e:
+            log.exception("health_sync: Notion sync failed: %s", e)
+            return web.Response(
+                status=500,
+                text=json.dumps({"ok": False, "error": "Notion API failure"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
 
         return web.Response(
-            status=202,
-            text=json.dumps({
-                "ok": True,
-                "status": "accepted",
-                "message": f"Health sync of {metric_count} metrics started in background. Check Railway logs.",
-                "metric_count": metric_count,
-            }),
+            text=json.dumps({"ok": True, "result": result}),
             content_type="application/json",
             headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
         )
@@ -542,72 +517,6 @@ def register_health_routes(
             }),
             content_type="application/json",
             headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
-        )
-
-    async def _run_steps_backfill_background(
-        date_steps_pairs: list[tuple[int, str]],
-        habit_page_id: str,
-        today_str: str,
-    ) -> None:
-        total_dates = len(date_steps_pairs)
-        created = 0
-        updated = 0
-        skipped = 0
-        errors = 0
-
-        for i, (steps, date_str) in enumerate(date_steps_pairs, start=1):
-            if date_str > today_str:
-                log.warning("steps_backfill: skipping future date %s", date_str)
-                skipped += 1
-                continue
-
-            try:
-                completed = steps >= STEPS_THRESHOLD
-
-                existing_page_id = await asyncio.to_thread(
-                    _find_existing_log_entry, notion, log_db_id, habit_page_id, date_str
-                )
-
-                if existing_page_id:
-                    success = await asyncio.to_thread(
-                        _update_log_entry_steps, notion, existing_page_id, steps, completed
-                    )
-                    if success:
-                        updated += 1
-                    else:
-                        errors += 1
-                else:
-                    new_page_id = await asyncio.to_thread(
-                        _create_log_entry,
-                        notion,
-                        log_db_id,
-                        habit_page_id,
-                        date_str,
-                        steps,
-                        completed,
-                        STEPS_SOURCE_LABEL,
-                    )
-                    if new_page_id:
-                        created += 1
-                    else:
-                        errors += 1
-
-            except Exception as e:
-                log.error("steps_backfill: error for date %s: %s", date_str, e)
-                errors += 1
-
-            if i % 10 == 0:
-                log.info("steps_backfill: processed %d/%d dates...", i, total_dates)
-
-            await asyncio.sleep(0.35)
-
-        log.info(
-            "steps_backfill: complete — total=%d created=%d updated=%d skipped=%d errors=%d",
-            total_dates,
-            created,
-            updated,
-            skipped,
-            errors,
         )
 
     async def steps_backfill_handler(request: web.Request) -> web.Response:
@@ -671,21 +580,83 @@ def register_health_routes(
                 headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
             )
 
-        dates = [date_str for _, date_str in date_steps_pairs]
-        date_range = {"from": min(dates), "to": max(dates)}
-        asyncio.create_task(_run_steps_backfill_background(date_steps_pairs, habit_page_id, today_str))
+        created = 0
+        updated = 0
+        skipped = 0
+        errors = 0
+        dates_attempted: list[str] = []
+
+        for i, (steps, date_str) in enumerate(date_steps_pairs, start=1):
+            if date_str > today_str:
+                log.warning("steps_backfill: skipping future date %s", date_str)
+                skipped += 1
+                continue
+
+            dates_attempted.append(date_str)
+            try:
+                completed = steps >= STEPS_THRESHOLD
+
+                existing_page_id = await asyncio.to_thread(
+                    _find_existing_log_entry, notion, log_db_id, habit_page_id, date_str
+                )
+
+                if existing_page_id:
+                    success = await asyncio.to_thread(
+                        _update_log_entry_steps, notion, existing_page_id, steps, completed
+                    )
+                    if success:
+                        updated += 1
+                    else:
+                        errors += 1
+                else:
+                    new_page_id = await asyncio.to_thread(
+                        _create_log_entry,
+                        notion,
+                        log_db_id,
+                        habit_page_id,
+                        date_str,
+                        steps,
+                        completed,
+                        STEPS_SOURCE_LABEL,
+                    )
+                    if new_page_id:
+                        created += 1
+                    else:
+                        errors += 1
+
+            except Exception as e:
+                log.error("steps_backfill: error for date %s: %s", date_str, e)
+                errors += 1
+
+            if i % 10 == 0:
+                log.info("steps_backfill: processed %d/%d dates...", i, total_dates)
+
+            await asyncio.sleep(0.35)
+
+        log.info(
+            "steps_backfill: complete — total=%d created=%d updated=%d skipped=%d errors=%d",
+            total_dates,
+            created,
+            updated,
+            skipped,
+            errors,
+        )
+
+        date_range: dict = {}
+        if dates_attempted:
+            date_range = {"from": min(dates_attempted), "to": max(dates_attempted)}
 
         return web.Response(
-            status=202,
             text=json.dumps({
                 "ok": True,
-                "status": "accepted",
-                "message": (
-                    f"Backfill of {total_dates} dates started in background. "
-                    "Check Railway logs for progress."
-                ),
-                "total_dates": total_dates,
-                "date_range": date_range,
+                "summary": {
+                    "total_dates": total_dates,
+                    "created": created,
+                    "updated": updated,
+                    "skipped": skipped,
+                    "errors": errors,
+                    "date_range": date_range,
+                },
             }),
             content_type="application/json",
             headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
