@@ -1757,7 +1757,8 @@ async def handle_trip_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     dep = parsed.get("departure_date")
     ret = parsed.get("return_date")
     key = str(_trip_counter); _trip_counter += 1
-    trip_map[key] = {"destination": destination, "destinations": destinations or [destination], "departure_date": dep, "return_date": ret, "duration_label": "", "nights": 0, "purpose": parsed.get("purpose") or "Work", "multiple_cities": bool(parsed.get("multiple_cities")), "field_work_types": [], "multiple_sites": None, "checked_luggage": None}
+    purpose_list = parsed.get("purpose_list") or ["Work"]
+    trip_map[key] = {"destination": destination, "destinations": destinations or [destination], "departure_date": dep, "return_date": ret, "duration_label": "", "nights": 0, "purpose_list": purpose_list, "multiple_cities": bool(parsed.get("multiple_cities")), "field_work_types": [], "multiple_sites": None, "checked_luggage": None}
     if not dep or not ret:
         prompt = await message.reply_text("📅 What dates is the trip? (e.g. Jun 14-17)")
         trip_awaiting_date_map[prompt.message_id] = key
@@ -1766,7 +1767,99 @@ async def handle_trip_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     trip_map[key]["nights"] = nights
     trip_days = nights + 1
     trip_map[key]["duration_label"] = "Overnight" if trip_days <= 1 else ("2-3 Days" if trip_days <= 3 else "4-5 Days")
-    await message.reply_text(f"✈️ {destination} — {trips_mod.format_trip_dates(dep, ret)} ({nights} night(s), {trip_map[key]['purpose']})\n\nWhat field work are you doing?\n(Tap all that apply, then tap ✅ Done)", reply_markup=kb.field_work_keyboard(key, trip_map))
+    purpose_str = " + ".join(trip_map[key]["purpose_list"])
+    await message.reply_text(f"✈️ {destination} — {trips_mod.format_trip_dates(dep, ret)} ({nights} night(s), {purpose_str})\n\nWhat field work are you doing?\n(Tap all that apply, then tap ✅ Done)", reply_markup=kb.field_work_keyboard(key, trip_map))
+
+
+
+async def fetch_weather(city: str, departure_date: str) -> dict:
+    summary, flags = trips_mod._build_trip_weather_summary(
+        departure_date,
+        departure_date,
+        city,
+        fetch_weather=None,
+        fetch_trip_weather_range=wx.fetch_trip_weather_range,
+    )
+    return {"summary": summary or "Weather unavailable", "flags": flags}
+
+
+def weather_triggered_items(flags: list[str]) -> list[str]:
+    additions_by_flag = {
+        "Rain": "Umbrella / rain jacket",
+        "Cold": "Warm layer",
+        "Hot": "Sunscreen",
+        "Snow": "Winter boots",
+    }
+    return [additions_by_flag[flag] for flag in flags if flag in additions_by_flag]
+
+
+def _scheduler_run_datetime(refresh_date: date) -> datetime:
+    refresh_time = datetime.strptime("08:00", "%H:%M").time()
+    refresh_dt = datetime.combine(refresh_date, refresh_time)
+    if hasattr(TZ, "localize"):
+        return TZ.localize(refresh_dt)
+    return refresh_dt.replace(tzinfo=TZ)
+
+
+def schedule_weather_refresh(key: str, trip: dict) -> None:
+    if _scheduler is None:
+        logger.warning("Weather refresh not scheduled because scheduler is unavailable — %s", trip.get("destination"))
+        return
+    page_id = trip.get("notion_page_id")
+    if not page_id:
+        logger.warning("Weather refresh not scheduled because trip page ID is unavailable — %s", trip.get("destination"))
+        return
+    refresh_date = date.fromisoformat(trip["departure_date"]) - timedelta(days=3)
+    refresh_dt = _scheduler_run_datetime(refresh_date)
+    _scheduler.add_job(
+        run_weather_refresh,
+        "date",
+        run_date=refresh_dt,
+        args=[page_id, trip["destination"], trip["departure_date"]],
+        id=f"weather_{key}",
+        replace_existing=True,
+    )
+    logger.info(f"Weather refresh scheduled for {refresh_dt} — {trip['destination']}")
+
+
+async def run_weather_refresh(page_id: str, city: str, departure_date: str) -> None:
+    weather = await fetch_weather(city, departure_date)
+    notion.pages.update(
+        page_id=page_id,
+        properties={
+            "Weather Summary": {"rich_text": [{"text": {"content": weather["summary"]}}]},
+            "Weather Flags": {"multi_select": [{"name": f} for f in weather["flags"]]},
+        },
+    )
+    additions = weather_triggered_items(weather["flags"])
+    additions_line = f"\n➕ Weather additions: {', '.join(additions)}" if additions else ""
+    bot = _app_bot
+    if bot is None:
+        logger.warning("Weather refresh completed but Telegram bot is unavailable for notification")
+        return
+    await bot.send_message(
+        chat_id=MY_CHAT_ID,
+        text=f"🌦️ 3-day weather update for {city}:\n{weather['summary']}{additions_line}\n\nNotion trip updated.",
+        parse_mode="Markdown",
+    )
+
+
+async def cmd_refreshweather(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_chat.id != MY_CHAT_ID:
+        return
+    args = context.args or []
+    if len(args) < 3:
+        await update.message.reply_text("Usage: /refreshweather {page_id} {city} {departure_date}")
+        return
+    page_id = args[0]
+    departure_date = args[-1]
+    city = " ".join(args[1:-1]).strip()
+    try:
+        await run_weather_refresh(page_id, city, departure_date)
+        await update.message.reply_text(f"✅ Weather refreshed for {city} ({departure_date}).")
+    except Exception as exc:
+        logger.error("Manual weather refresh failed: %s", exc)
+        await update.message.reply_text(f"⚠️ Weather refresh failed: {exc}")
 
 async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global _entertainment_counter
@@ -1841,7 +1934,8 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         trip_map[key]["nights"] = nights
         trip_days = nights + 1
         trip_map[key]["duration_label"] = "Overnight" if trip_days <= 1 else ("2-3 Days" if trip_days <= 3 else "4-5 Days")
-        await message.reply_text(f"✈️ {trip_map[key]['destination']} — {trips_mod.format_trip_dates(dep, ret)} ({nights} night(s), {trip_map[key]['purpose']})\n\nWhat field work are you doing?\n(Tap all that apply, then tap ✅ Done)", reply_markup=kb.field_work_keyboard(key, trip_map))
+        purpose_str = " + ".join(trip_map[key]["purpose_list"])
+        await message.reply_text(f"✈️ {trip_map[key]['destination']} — {trips_mod.format_trip_dates(dep, ret)} ({nights} night(s), {purpose_str})\n\nWhat field work are you doing?\n(Tap all that apply, then tap ✅ Done)", reply_markup=kb.field_work_keyboard(key, trip_map))
         return
 
     if awaiting_packing_feedback and not command_head.startswith('/'):
@@ -2195,9 +2289,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     q     = update.callback_query
     data = q.data or ""
     is_habit_multi_select = data.startswith("h:toggle:") or data == "h:done" or data == "h:check:cancel"
+    is_trip_field_work_multi_select = data.startswith("tw:")
     # Collapse the keyboard that was tapped — applies universally to all inline keyboards
-    # except multi-select habit keyboards, which must stay visible while toggling.
-    if not is_habit_multi_select:
+    # except multi-select keyboards, which must stay visible while toggling.
+    if not is_habit_multi_select and not is_trip_field_work_multi_select:
         try:
             await q.edit_message_reply_markup(reply_markup=None)
         except Exception:
@@ -2268,6 +2363,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if parts[0] == "tw" and len(parts) == 3:
         _, key, slug = parts
+        await q.answer()
         if key not in trip_map:
             await q.edit_message_text("⚠️ Trip session expired. Use /trip again.")
             return
@@ -2295,7 +2391,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             current.remove(label); trip_map[key]["field_work_types"] = current
         elif label:
             current = [x for x in current if x != "None"]; current.append(label); trip_map[key]["field_work_types"] = current
-        await q.edit_message_reply_markup(reply_markup=kb.field_work_keyboard(key, trip_map))
+        new_markup = kb.field_work_keyboard(key, trip_map)
+        current_markup = q.message.reply_markup
+        if str(new_markup.inline_keyboard) != str(current_markup.inline_keyboard if current_markup else None):
+            await q.edit_message_reply_markup(reply_markup=new_markup)
         return
 
     if parts[0] == "twd" and len(parts) == 2:
@@ -2357,6 +2456,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             set_awaiting_packing_feedback=lambda value: globals().__setitem__("awaiting_packing_feedback", value),
             fetch_weather=wx.fetch_weather,
             fetch_trip_weather_range=wx.fetch_trip_weather_range,
+            schedule_weather_refresh=schedule_weather_refresh,
         )
         return
 
@@ -3374,7 +3474,12 @@ def get_upcoming_trips_needing_reminder(within_days: int = 2) -> list[dict]:
             days_until = (dep - today).days
 
             purpose_prop = props.get("Purpose", {})
-            purpose = (purpose_prop.get("select") or {}).get("name", "Work")
+            if purpose_prop.get("multi_select") is not None:
+                purpose_list = [p.get("name", "") for p in purpose_prop.get("multi_select", []) if p.get("name")]
+            else:
+                purpose_name = (purpose_prop.get("select") or {}).get("name", "Work")
+                purpose_list = ["Work", "Personal"] if purpose_name == "Both" else [purpose_name]
+            purpose_list = purpose_list or ["Work"]
 
             field_work_prop = props.get("Field Work", {})
             if field_work_prop.get("type") == "rich_text" or field_work_prop.get("rich_text") is not None:
@@ -3400,7 +3505,7 @@ def get_upcoming_trips_needing_reminder(within_days: int = 2) -> list[dict]:
                     "departure_date": dep,
                     "return_date": ret,
                     "days_until": days_until,
-                    "purpose": purpose,
+                    "purpose_list": purpose_list,
                     "field_work": field_work,
                     "weather_summary": weather_summary,
                     "weather_flags": weather_flags,
@@ -3430,10 +3535,11 @@ def format_trip_reminder_block(trip: dict) -> str:
     ]
 
     field_work_display = trip["field_work"]
+    purpose_str = " + ".join(trip.get("purpose_list") or ["Work"])
     if field_work_display and field_work_display != ["None"]:
-        lines.append(f"🎯 {trip['purpose']} trip · {', '.join(field_work_display)}")
+        lines.append(f"🎯 {purpose_str} trip · {', '.join(field_work_display)}")
     else:
-        lines.append(f"🎯 {trip['purpose']} trip")
+        lines.append(f"🎯 {purpose_str} trip")
 
     lines.append("")
     lines.append("🌤️ *Forecast:*")
@@ -4919,6 +5025,7 @@ def main() -> None:
         test_alert_command=test_alert_command,
         test_channel_send=test_channel_send,
     )
+    app.add_handler(CommandHandler("refreshweather", cmd_refreshweather))
     log.info(f"🤖 Second Brain bot starting ({APP_VERSION})...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
