@@ -146,4 +146,8 @@ def register_handlers(manager: "UtilitySchedulerManager") -> None:
 
     manager.register_handler("steps_sync_check", handle_steps_sync_check)
     manager.register_handler("steps_final_stamp", handle_steps_final_stamp_job)
-    log.info("healthtrack: registered scheduler handlers (steps_sync_check, steps_final_stamp)")
+    manager.register_handler("steps_morning_stamp", handle_steps_final_stamp_job)
+    log.info(
+        "healthtrack: registered scheduler handlers "
+        "(steps_sync_check, steps_final_stamp, steps_morning_stamp)"
+    )
