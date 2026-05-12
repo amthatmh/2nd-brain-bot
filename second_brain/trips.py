@@ -397,7 +397,7 @@ def _build_trip_weather_summary(
 ) -> tuple[str, list[str]]:
     if not _is_departure_within_forecast_window(departure_date, min_days_before=3):
         return WEATHER_PLACEHOLDER_SUMMARY, []
-
+    import os; logger.info("trips: key_present=%s dest=%r dep=%r", bool(os.environ.get("OPENWEATHER_KEY","").strip()), destination, departure_date)
     snapshots: list[tuple[str, dict]] = []
     caught_exception: Exception | None = None
     if fetch_trip_weather_range and departure_date and return_date and destination:
