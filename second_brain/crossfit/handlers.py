@@ -12,7 +12,7 @@ from utils.date_parser import parse_date
 
 from .classify import parse_programme
 from .keyboards import level_confirm_keyboard, my_level_keyboard, rx_scaled_keyboard, session_feel_keyboard, wod_format_keyboard
-from .notion import create_strength_log, create_wod_log, get_movement_category, get_movement_details, get_or_create_movement, get_progressions_for_movement, get_today_workout_structure, notion_query_wod_log_by_date, save_programme, set_current_level
+from .notion import create_strength_log, create_wod_log, get_movement_category, get_movement_details, get_movement_load_type, get_or_create_movement, get_progressions_for_movement, get_today_workout_structure, normalise_movement_name, notion_query_wod_log_by_date, save_programme, set_current_level, this_monday
 from .nlp import extract_movements_from_log, extract_workout_data, fuzzy_match_movements, load_movements_cache
 from .readiness import check_readiness_logged_today, log_daily_readiness
 from second_brain.notion import notion_call
@@ -252,6 +252,7 @@ async def _resolve_movement_ids(text: str, claude, notion, config: dict, message
         # Phase 1 avoids storing sets/reps/weight in Movement by creating the
         # canonical NLP extraction when no confident DB match exists.
         canonical = matched_name if matched_name and score >= 0.70 else extracted_name
+        canonical = (normalise_movement_name(canonical) or [canonical])[0]
         movement_id = await asyncio.get_running_loop().run_in_executor(
             None, lambda name=canonical: get_or_create_movement(notion, movements_db_id, name)
         )
@@ -342,6 +343,10 @@ def _has_complete_strength_metadata(state: dict) -> bool:
     )
 
 
+def _fmt_load(value) -> str:
+    return "BW" if not value else f"{_format_lbs(value)} lbs"
+
+
 def _format_lbs(value) -> str:
     if value is None:
         return "N/A"
@@ -390,6 +395,35 @@ async def _send_notes_prompt(message, key: str, cf_pending: dict, prefix: str | 
         prompt = f"{prefix.rstrip()}\n\n{prompt}"
     await message.reply_text(prompt, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]))
 
+
+
+def _parse_weight_lbs(text: str) -> float | None:
+    match = re.search(r"(-?\d+(?:\.\d+)?)", text or "")
+    return float(match.group(1)) if match else None
+
+
+async def _prompt_bodyweight_confirm(message, key: str, state: dict, cf_pending: dict) -> None:
+    state["load_lbs"] = None
+    state["weight_lbs"] = None
+    state["stage"] = "bodyweight_confirm"
+    cf_pending[key] = state
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("No", callback_data="cf:bw_no"),
+        InlineKeyboardButton("Yes — add weight", callback_data="cf:bw_yes"),
+    ]])
+    await message.reply_text("💪 Any load added? (e.g. weighted vest)", reply_markup=keyboard)
+
+
+async def _prompt_strength_notes_with_pr_context(message, key: str, notion, config: dict, cf_pending: dict) -> None:
+    state = cf_pending.get(key, {})
+    pr_context = None
+    try:
+        pr_context = await _recent_pr_context_for_notes(notion, config, state.get("movement_page_id"), state.get("movement_name") or state.get("movement") or "Movement")
+    except Exception as exc:
+        logger.warning("Skipping strength PR context for %s: %s", state.get("movement_name"), exc, exc_info=True)
+    state["stage"] = "notes"
+    cf_pending[key] = state
+    await _send_notes_prompt(message, key, cf_pending, prefix=pr_context)
 
 async def _prompt_session_feel(message, key: str, state: dict, cf_pending: dict) -> None:
     state["stage"] = "awaiting_feel"
@@ -728,11 +762,15 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
     cf_pending[key]["movement_name"] = cf_pending[key]["movement"]
     if movement_ids and await handle_gymnastics_level_check(message, movement_ids[0], cf_pending[key]["movement"], notion, config, cf_pending, key):
         return
+    load_type = await asyncio.get_running_loop().run_in_executor(None, lambda: get_movement_load_type(notion, movement_ids[0])) if movement_ids else "External Load"
+    if load_type == "Bodyweight":
+        await _prompt_bodyweight_confirm(message, key, cf_pending[key], cf_pending)
+        return
     has_complete_extraction = bool(raw_text and sets is not None and reps is not None and load_lbs is not None)
     if has_complete_extraction:
         await _finalize_flow(message, key, notion, config, cf_pending, cf_pending[key].get("notes"))
         return
-    await _send_notes_prompt(message, key, cf_pending)
+    await _prompt_strength_notes_with_pr_context(message, key, notion, config, cf_pending)
 
 
 async def handle_cf_wod_flow(message, workout_result, notion, config, cf_pending):
@@ -852,7 +890,7 @@ def _format_sub_search_result(details: dict) -> str:
         f"📝 *Scaling:* {scaling}\n\n"
         f"🔄 *Complementary:* {comp}\n\n"
         f"⬅️ *Antagonist:* {ant}\n\n"
-        f"📋 *Prerequisites:* {notes}"
+        f"📋 *Notes:* {notes}"
     )
 
 
@@ -882,14 +920,14 @@ def _select_name(props: dict, key: str, default: str = "") -> str:
 
 async def _workout_day_rows_for_today(notion, workout_days_db_id: str) -> tuple[str, list[dict]]:
     today = date.today()
-    monday = today - timedelta(days=today.weekday())
+    monday = this_monday()
     day_name = today.strftime("%A")
     results = await _maybe_await(notion_call(
         notion.databases.query,
         database_id=workout_days_db_id,
         filter={"and": [
             {"property": "Day", "select": {"equals": day_name}},
-            {"property": "Week Of", "date": {"equals": monday.isoformat()}},
+            {"property": "Week Of", "date": {"equals": monday}},
         ]},
         page_size=100,
     ))
@@ -1033,22 +1071,18 @@ def _recent_unique_sessions(entries: list[dict], limit: int = 3) -> list[dict]:
 
 
 def _format_best_logged(entry: dict) -> str:
-    load = _format_lbs(entry.get("load_lbs"))
-    reps = entry.get("reps") or 1
-    return f"{load} lbs × {reps} reps"
+    sets = entry.get("sets") or "?"
+    reps = entry.get("reps") or "?"
+    return f"{_fmt_load(entry.get('load_lbs'))} × {sets}×{reps}"
 
 
 def _format_recent_pr_lines(entries: list[dict], include_sets: bool = False) -> list[str]:
     lines = []
     for entry in entries:
-        load = _format_lbs(entry.get("load_lbs"))
-        sets = entry.get("sets")
-        reps = entry.get("reps") or 1
-        if include_sets and sets:
-            effort = f"{sets}×{reps}"
-        else:
-            effort = f"{reps} reps"
-        lines.append(f"• {entry.get('date') or 'Unknown date'} — {load} lbs × {effort}")
+        sets = entry.get("sets") or "?"
+        reps = entry.get("reps") or "?"
+        effort = f"{sets}×{reps}" if include_sets or sets != "?" else f"{reps} reps"
+        lines.append(f"• {entry.get('date') or 'Unknown date'} — {_fmt_load(entry.get('load_lbs'))} × {effort}")
     return lines
 
 
@@ -1083,14 +1117,14 @@ async def handle_cf_prs(message, notion, config, cf_pending=None):
     key = str(message.chat_id)
     if cf_pending is not None:
         cf_pending[key] = {"mode": "prs", "stage": "movement"}
-    await message.reply_text("🏆 My PRs — which movement?\n(Type name, e.g. 'back squat' or '6x back squat' for a target)", parse_mode="Markdown")
+    await message.reply_text("🏆 Which movement? (e.g. 'back squat' or '6x back squat')", parse_mode="Markdown")
 
 
 async def handle_cf_prs_reply(message, movement_text: str, notion, config, cf_pending) -> None:
     key = str(message.chat_id)
     requested_movement, target_reps = _parse_pr_request(movement_text)
     if not requested_movement:
-        await message.reply_text("🏆 My PRs — which movement?\n(Type name, e.g. 'back squat' or '6x back squat' for a target)", parse_mode="Markdown")
+        await message.reply_text("🏆 Which movement? (e.g. 'back squat' or '6x back squat')", parse_mode="Markdown")
         return
     match = await _match_movement_from_cache(notion, config, requested_movement, threshold=0.80)
     if not match:
@@ -1122,7 +1156,7 @@ async def handle_cf_prs_reply(message, movement_text: str, notion, config, cf_pe
         lines.extend(_format_recent_pr_lines(recent_sessions))
         lines.extend([
             "",
-            "💡 Tip: Type '6x back squat' to get a target for a specific rep scheme.",
+            f"💡 Tip: Type '6x {movement_name}' to get a target weight.",
         ])
     else:
         percent = _rep_percent(target_reps)
@@ -1210,7 +1244,7 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         confirm_msg += f"💪 Movement: {movement_name}\n"
         confirm_msg += f"📅 Date: {state.get('workout_date') or datetime.now(timezone.utc).date().isoformat()}\n"
         confirm_msg += f"📊 Scheme: {state.get('effort_scheme') or 'N/A'}\n"
-        confirm_msg += f"⚖️ Weight: {_format_lbs(state.get('weight_lbs'))}lbs\n"
+        confirm_msg += f"⚖️ Weight: {_fmt_load(state.get('weight_lbs'))}\n"
         await message.reply_text(confirm_msg, parse_mode="Markdown")
         await _prompt_session_feel(message, key, state, cf_pending)
         return
@@ -1321,6 +1355,16 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
 
 async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, config, cf_pending):
     state = cf_pending.get(cf_flow_key) or {}
+    if state.get("mode") == "strength" and state.get("stage") == "weight":
+        weight_lbs = _parse_weight_lbs(text)
+        if weight_lbs is None:
+            await message.reply_text("How much weight? (e.g. 20 lbs)", parse_mode="Markdown")
+            return
+        state["weight_lbs"] = weight_lbs
+        state["load_lbs"] = weight_lbs
+        cf_pending[cf_flow_key] = state
+        await _prompt_strength_notes_with_pr_context(message, cf_flow_key, notion, config, cf_pending)
+        return
     if state.get("mode") == "strength" and state.get("stage") == "movement":
         raw_input = text.strip()
         if not raw_input:
@@ -1360,15 +1404,12 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
             state["workout_date"] = date.today().isoformat()
             cf_pending[key] = state
 
-        state["stage"] = "notes"
-        cf_pending[key] = state
         logger.info(f"[CF_STATE_A] WROTE key={key!r} sets={state.get('sets')} weight={state.get('weight_lbs')} date={state.get('workout_date')}")
-        pr_context = None
-        try:
-            pr_context = await _recent_pr_context_for_notes(notion, config, movement_id, state["movement_name"])
-        except Exception as exc:
-            logger.warning("Skipping strength PR context for %s: %s", state.get("movement_name"), exc, exc_info=True)
-        await _send_notes_prompt(message, key, cf_pending, prefix=pr_context)
+        load_type = await asyncio.get_running_loop().run_in_executor(None, lambda: get_movement_load_type(notion, movement_id)) if movement_id else "External Load"
+        if load_type == "Bodyweight":
+            await _prompt_bodyweight_confirm(message, key, state, cf_pending)
+        else:
+            await _prompt_strength_notes_with_pr_context(message, key, notion, config, cf_pending)
         return
     if state.get("mode") == "wod" and state.get("stage") == "movement":
         if not state.get("format"):
@@ -1388,7 +1429,7 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
         movement_ids, names = await _resolve_movement_ids(movement_text, claude, notion, config, message)
         state["movements"] = names
         state["movement_page_ids"] = movement_ids
-        state["workout_structure"] = state.get("workout_structure") or ""
+        state["workout_structure"] = state.get("workout_structure") or raw_structure
         state["wod_name"] = workout_data.get("wod_name")
         raw_date = workout_data.get("date")
         state["workout_date"] = raw_date
@@ -1462,7 +1503,20 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
     if len(parts) < 2:
         await q.answer("Action unavailable.", show_alert=False)
         return
-    if parts[1] == "log_strength":
+    if parts[1] == "bw_no":
+        key = str(q.message.chat_id)
+        state = cf_pending.get(key, {})
+        state["weight_lbs"] = None
+        state["load_lbs"] = None
+        cf_pending[key] = state
+        await _prompt_strength_notes_with_pr_context(q.message, key, notion, config, cf_pending)
+    elif parts[1] == "bw_yes":
+        key = str(q.message.chat_id)
+        state = cf_pending.get(key, {})
+        state["stage"] = "weight"
+        cf_pending[key] = state
+        await q.message.reply_text("How much weight? (e.g. 20 lbs)", parse_mode="Markdown")
+    elif parts[1] == "log_strength":
         print("[DEBUG] Routing to handle_cf_strength_flow")
         await handle_cf_strength_flow(q.message, {}, claude, notion, config, cf_pending)
     elif parts[1] == "log_wod":
@@ -1698,7 +1752,7 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         cf_pending[key] = state
         print(f"[DEBUG] WOD format selected: {_format_label(parts[3])}")
         await q.edit_message_text(f"✅ Format: {_format_label(parts[3])}", parse_mode="Markdown")
-        if state.get("movement_page_ids"):
+        if state.get("movement_page_ids") or state.get("movements"):
             if _needs_time_cap_before_result(state) and state.get("time_cap_mins") is None:
                 await _prompt_wod_time_cap(q.message, key, state)
             else:
