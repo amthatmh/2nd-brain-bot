@@ -14,11 +14,18 @@ notion = None
 NOTION_ENV_DB = os.environ.get("ENV_DB_ID", "").strip()
 
 
+def _openweather_key() -> str:
+    return (
+        os.environ.get("OPENWEATHER_KEY", "")
+        or os.environ.get("OPENWEATHER_API_KEY", "")
+    )
+
+
+OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "") or os.environ.get("OPENWEATHER_API_KEY", "")
+
+
 def _get_openweather_key() -> str:
-    return os.environ.get("OPENWEATHER_KEY", "") or os.environ.get("OPENWEATHER_API_KEY", "")
-
-
-OPENWEATHER_KEY = _get_openweather_key()
+    return _openweather_key()
 
 
 def _resolve_state_dir() -> Path:
@@ -394,15 +401,15 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
 
 def _forecast_rows_for_coordinates(lat: float, lon: float, *, num_days: int, start_date: date | None = None, end_date: date | None = None) -> list[dict]:
     """Fetch and bucket OpenWeather 5-day/3-hour forecast rows for coordinates."""
-    openweather_key = _get_openweather_key()
-    log.info("_forecast_rows_for_coordinates: called with OPENWEATHER_KEY present=%s num_days=%d start=%s end=%s", bool(openweather_key), num_days, start_date, end_date)
-    if not openweather_key or num_days <= 0:
-        log.warning("_forecast_rows_for_coordinates: early exit — key_present=%s num_days=%d", bool(openweather_key), num_days)
+    key = _openweather_key()
+    log.info("_forecast_rows_for_coordinates: called with OPENWEATHER_KEY present=%s num_days=%d start=%s end=%s", bool(key), num_days, start_date, end_date)
+    if not key or num_days <= 0:
+        log.warning("_forecast_rows_for_coordinates: early exit — key_present=%s num_days=%d", bool(key), num_days)
         return []
     try:
         resp = httpx.get(
             "https://api.openweathermap.org/data/2.5/forecast",
-            params={"lat": lat, "lon": lon, "appid": openweather_key, "units": "metric", "cnt": 40},
+            params={"lat": lat, "lon": lon, "appid": key, "units": "metric", "cnt": 40},
             timeout=10,
         )
         resp.raise_for_status()
@@ -481,8 +488,9 @@ def fetch_multi_day_forecast(num_days: int) -> list[dict] | None:
 
 
 def fetch_trip_weather_range(departure_date: str, return_date: str, destination: str) -> list[dict]:
-    openweather_key = _get_openweather_key()
-    if not openweather_key:
+    key = _openweather_key()
+    if not key:
+        log.warning("fetch_trip_weather_range: OPENWEATHER_KEY not set")
         return []
     try:
         start = datetime.fromisoformat(departure_date).date()
@@ -492,7 +500,7 @@ def fetch_trip_weather_range(departure_date: str, return_date: str, destination:
     if end < start:
         return []
     try:
-        geo = httpx.get("https://api.openweathermap.org/geo/1.0/direct", params={"q": destination, "limit": 1, "appid": openweather_key}, timeout=10)
+        geo = httpx.get("https://api.openweathermap.org/geo/1.0/direct", params={"q": destination, "limit": 1, "appid": key}, timeout=10)
         geo.raise_for_status()
         places = geo.json()
         if not places:
@@ -502,6 +510,7 @@ def fetch_trip_weather_range(departure_date: str, return_date: str, destination:
         if lat is None or lon is None:
             return []
         log.info("fetch_trip_weather_range: geo resolved %s → lat=%s lon=%s", destination, lat, lon)
+        log.info("fetch_trip_weather_range: resolved %s → lat=%s lon=%s, calling forecast", destination, lat, lon)
         try:
             result = _forecast_rows_for_coordinates(float(lat), float(lon), num_days=(end - start).days + 1, start_date=start, end_date=end)
             log.info("fetch_trip_weather_range: got %d rows for %s", len(result), destination)
