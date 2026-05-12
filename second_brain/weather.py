@@ -1,3 +1,4 @@
+
 import json
 import logging
 import os
@@ -8,7 +9,7 @@ from pathlib import Path
 import httpx
 
 from second_brain.config import WEATHER_LOCATION, TZ, CLAUDE_MODEL
-
+from second_brain.config import OPENWEATHER_KEY, WEATHER_LOCATION, TZ, CLAUDE_MODEL
 log = logging.getLogger(__name__)
 notion = None
 NOTION_ENV_DB = os.environ.get("ENV_DB_ID", "").strip()
