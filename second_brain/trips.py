@@ -150,7 +150,7 @@ async def execute_trip(
     except Exception:
         days_until_departure = 0
     if days_until_departure > 5:
-        weather_summary, weather_flags = "Weather check scheduled 3 days before departure", []
+        weather_summary, weather_flags = WEATHER_PLACEHOLDER_SUMMARY, []
         needs_weather_refresh = True
     else:
         weather_summary, weather_flags = _build_trip_weather_summary(
@@ -471,7 +471,10 @@ def refresh_upcoming_trip_weather(
                     "and": [
                         {"property": "Departure Date", "date": {"on_or_after": today.isoformat()}},
                         {"property": "Departure Date", "date": {"on_or_before": upper.isoformat()}},
-                        {"property": "Weather Summary", "rich_text": {"equals": WEATHER_PLACEHOLDER_SUMMARY}},
+                        {"or": [
+                            {"property": "Weather Summary", "rich_text": {"equals": WEATHER_PLACEHOLDER_SUMMARY}},
+                            {"property": "Weather Summary", "rich_text": {"is_empty": True}},
+                        ]},
                     ]
                 },
                 "page_size": 50,
