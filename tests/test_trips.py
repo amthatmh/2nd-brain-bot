@@ -356,8 +356,10 @@ def test_refresh_upcoming_trip_weather_updates_rows():
     assert count == 1
     assert updated_pages
     assert query_calls[0]["filter"]["and"][-1] == {
-        "property": "Weather Summary",
-        "rich_text": {"equals": trips.WEATHER_PLACEHOLDER_SUMMARY},
+        "or": [
+            {"property": "Weather Summary", "rich_text": {"equals": trips.WEATHER_PLACEHOLDER_SUMMARY}},
+            {"property": "Weather Summary", "rich_text": {"is_empty": True}},
+        ]
     }
 
 
