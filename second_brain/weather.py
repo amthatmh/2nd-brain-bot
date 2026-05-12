@@ -14,13 +14,6 @@ notion = None
 NOTION_ENV_DB = os.environ.get("ENV_DB_ID", "").strip()
 
 
-def _openweather_key() -> str:
-    return (
-        os.environ.get("OPENWEATHER_KEY", "")
-        or os.environ.get("OPENWEATHER_API_KEY", "")
-    )
-
-
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "") or os.environ.get("OPENWEATHER_API_KEY", "")
 
 
@@ -194,7 +187,7 @@ def save_notion_env_location(location: str, lat: float, lon: float) -> None:
 
 def set_location(location: str) -> bool:
     global current_location, current_lat, current_lon
-    openweather_key = _get_openweather_key()
+    openweather_key = _openweather_key()
     if not openweather_key:
         return False
     try:
@@ -320,7 +313,7 @@ def set_location_smart(user_text: str, claude) -> bool:
             save_location_history(user_text)
             return True
     zip_match = re.search(r"\b\d{5}(?:-\d{4})?\b", user_text or "")
-    openweather_key = _get_openweather_key()
+    openweather_key = _openweather_key()
     if zip_match and openweather_key:
         zip_value = zip_match.group(0)
         try:
@@ -347,7 +340,7 @@ def clear_weather_cache() -> None:
 def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -> dict | None:
     if forecast_type not in {"current", "today", "tomorrow"}:
         return None
-    openweather_key = _get_openweather_key()
+    openweather_key = _openweather_key()
     if not openweather_key:
         return None
     cache_entry = weather_cache.get(forecast_type, {"timestamp": None, "data": None})
@@ -475,7 +468,7 @@ def _forecast_rows_for_coordinates(lat: float, lon: float, *, num_days: int, sta
 
 def fetch_multi_day_forecast(num_days: int) -> list[dict] | None:
     """Return up to num_days of forecast rows for the active weather location."""
-    openweather_key = _get_openweather_key()
+    openweather_key = _openweather_key()
     if not openweather_key or num_days <= 0:
         return None
     if current_lat is None or current_lon is None:
@@ -525,7 +518,7 @@ def fetch_trip_weather_range(departure_date: str, return_date: str, destination:
 
 
 def fetch_uvi_data() -> dict | None:
-    openweather_key = _get_openweather_key()
+    openweather_key = _openweather_key()
     if not openweather_key or current_lat is None or current_lon is None:
         return None
     try:
@@ -544,7 +537,7 @@ def fetch_uvi_data() -> dict | None:
 
 def fetch_daily_weather(days: int = 5, force_refresh: bool = False) -> list[dict]:
     """Return cached daily weather rows (today forward) from the shared One Call pull."""
-    openweather_key = _get_openweather_key()
+    openweather_key = _openweather_key()
     if not openweather_key or days <= 0:
         return []
     if current_lat is None or current_lon is None:
@@ -604,7 +597,7 @@ def fetch_daily_weather(days: int = 5, force_refresh: bool = False) -> list[dict
 
 async def fetch_weather_cache(bot) -> None:
     _ = bot
-    if not _get_openweather_key():
+    if not _openweather_key():
         return
     fetch_weather("current", force_refresh=True)
     fetch_weather("today", force_refresh=True)
