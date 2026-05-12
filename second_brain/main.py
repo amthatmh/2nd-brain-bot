@@ -96,6 +96,7 @@ from second_brain.scheduler_manager import UtilitySchedulerManager
 from second_brain.state import STATE
 from second_brain.utils import ExpiringDict, reply_notion_error
 from second_brain.http_utils import cors_headers
+from health.dashboard import create_health_dashboard_handler, load_steps_threshold_from_env_db as load_dashboard_steps_threshold
 from second_brain.services import task_parsing as task_parsing_service
 from second_brain.services import note_utils as note_utils_service
 from second_brain.handlers.commands import CommandHandlers
@@ -3965,6 +3966,15 @@ async def _record_steps_sync_result(result: dict) -> None:
 async def start_http_server() -> None:
     app    = web.Application()
     app.router.add_get("/habits-data", habits_data_handler)
+    app.router.add_get(
+        "/api/health-dashboard",
+        create_health_dashboard_handler(
+            notion=notion,
+            health_metrics_db_id=NOTION_HEALTH_METRICS_DB,
+            habit_log_db_id=NOTION_LOG_DB,
+            tz=TZ,
+        ),
+    )
     app.router.add_post("/log-habit", log_habit_http_handler)
     app.router.add_options("/log-habit", log_habit_http_handler)
     app.router.add_get("/health", lambda r: web.Response(text="ok"))
@@ -4621,6 +4631,7 @@ async def post_init(app: Application) -> None:
     notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB); _refresh_habit_cache_refs()
     # Load steps config from Notion ENV DB
     health_config.load_steps_threshold_from_notion_env(notion=notion, notion_env_db=NOTION_ENV_DB)
+    load_dashboard_steps_threshold(notion=notion, env_db_id=NOTION_ENV_DB)
     health_config.load_steps_config_from_notion_env(notion=notion, notion_env_db=NOTION_ENV_DB)
     global _app_bot
     _app_bot = app.bot
