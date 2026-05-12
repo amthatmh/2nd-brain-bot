@@ -395,15 +395,16 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
 
 def _forecast_rows_for_coordinates(lat: float, lon: float, *, num_days: int, start_date: date | None = None, end_date: date | None = None) -> list[dict]:
     """Fetch and bucket OpenWeather 5-day/3-hour forecast rows for coordinates."""
-    key = _openweather_key()
-    log.info("_forecast_rows_for_coordinates: called with OPENWEATHER_KEY present=%s num_days=%d start=%s end=%s", bool(key), num_days, start_date, end_date)
-    if not key or num_days <= 0:
-        log.warning("_forecast_rows_for_coordinates: early exit — key_present=%s num_days=%d", bool(key), num_days)
+    import os as _os
+    _key = _os.environ.get("OPENWEATHER_KEY", "").strip() or OPENWEATHER_KEY
+    log.info("_forecast_rows_for_coordinates: key_present=%s num_days=%d start=%s end=%s", bool(_key), num_days, start_date, end_date)
+    if not _key or num_days <= 0:
+        log.warning("_forecast_rows_for_coordinates: early exit key_present=%s num_days=%d", bool(_key), num_days)
         return []
     try:
         resp = httpx.get(
             "https://api.openweathermap.org/data/2.5/forecast",
-            params={"lat": lat, "lon": lon, "appid": key, "units": "metric", "cnt": 40},
+            params={"lat": lat, "lon": lon, "appid": _key, "units": "metric", "cnt": 40},
             timeout=10,
         )
         resp.raise_for_status()
