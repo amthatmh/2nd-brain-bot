@@ -17,7 +17,6 @@ from second_brain.healthtrack.metrics import (
 )
 from second_brain.healthtrack.routes import register_health_routes
 
-
 PAYLOAD = {
     "data": [
         {
@@ -34,11 +33,69 @@ PAYLOAD = {
 }
 
 
+SNAKE_CASE_PAYLOAD = {
+    "data": {
+        "metrics": [
+            {
+                "name": "weight_body_mass",
+                "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 76.86}],
+            },
+            {
+                "name": "body_fat_percentage",
+                "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 18.2}],
+            },
+            {
+                "name": "lean_body_mass",
+                "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 140.5}],
+            },
+            {
+                "name": "resting_heart_rate",
+                "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 58}],
+            },
+            {
+                "name": "heart_rate_variability",
+                "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 39.0}],
+            },
+            {
+                "name": "vo2_max",
+                "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 42.1}],
+            },
+            {
+                "name": "respiratory_rate",
+                "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 14.5}],
+            },
+            {
+                "name": "apple_exercise_time",
+                "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 32}],
+            },
+            {
+                "name": "active_energy",
+                "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 512.3}],
+            },
+            {
+                "name": "basal_energy_burned",
+                "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 1680.4}],
+            },
+            {
+                "name": "flights_climbed",
+                "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 8}],
+            },
+            {
+                "name": "headphone_audio_exposure",
+                "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 71.2}],
+            },
+        ]
+    }
+}
+
+
 class TestHealthMetricsParsing(unittest.TestCase):
     def test_parse_accepts_v2_metrics_wrapper(self):
         payload = {"data": {"metrics": PAYLOAD["data"]}}
 
-        date_str, values, skipped = parse_health_metrics_payload(payload, ZoneInfo("UTC"))
+        date_str, values, skipped = parse_health_metrics_payload(
+            payload, ZoneInfo("UTC")
+        )
 
         self.assertEqual(date_str, "2026-05-09")
         self.assertEqual(values["Weight (kg)"], 76.86)
@@ -46,16 +103,47 @@ class TestHealthMetricsParsing(unittest.TestCase):
         self.assertEqual(skipped, [])
 
     def test_parse_rejects_empty_v2_metrics_wrapper(self):
-        with self.assertRaisesRegex(MalformedHealthMetricsPayload, "data array is empty"):
+        with self.assertRaisesRegex(
+            MalformedHealthMetricsPayload, "data array is empty"
+        ):
             parse_health_metrics_payload({"data": {}}, ZoneInfo("UTC"))
 
     def test_parse_rejects_empty_v1_metrics_array(self):
-        with self.assertRaisesRegex(MalformedHealthMetricsPayload, "data array is empty"):
+        with self.assertRaisesRegex(
+            MalformedHealthMetricsPayload, "data array is empty"
+        ):
             parse_health_metrics_payload({"data": []}, ZoneInfo("UTC"))
 
     def test_parse_rejects_missing_data_key(self):
-        with self.assertRaisesRegex(MalformedHealthMetricsPayload, "top-level data array"):
+        with self.assertRaisesRegex(
+            MalformedHealthMetricsPayload, "top-level data array"
+        ):
             parse_health_metrics_payload({"metrics": []}, ZoneInfo("UTC"))
+
+    def test_parse_maps_all_standard_snake_case_metrics(self):
+        date_str, values, skipped = parse_health_metrics_payload(
+            SNAKE_CASE_PAYLOAD, ZoneInfo("UTC")
+        )
+
+        self.assertEqual(date_str, "2026-05-09")
+        self.assertEqual(skipped, [])
+        self.assertEqual(
+            values,
+            {
+                "Weight (kg)": 76.86,
+                "Body Fat %": 18.2,
+                "Lean Body Mass (lbs)": 140.5,
+                "Resting Heart Rate (bpm)": 58.0,
+                "HRV (ms)": 39.0,
+                "VO2 Max": 42.1,
+                "Respiratory Rate (brpm)": 14.5,
+                "Exercise Time (min)": 32.0,
+                "Active Energy (kcal)": 512.3,
+                "Resting Energy (kcal)": 1680.4,
+                "Flights Climbed": 8.0,
+                "Headphone Audio Exposure (dB)": 71.2,
+            },
+        )
 
     def test_parse_maps_known_metrics_and_skips_unknown(self):
         payload = {
@@ -68,7 +156,9 @@ class TestHealthMetricsParsing(unittest.TestCase):
             ]
         }
 
-        date_str, values, skipped = parse_health_metrics_payload(payload, ZoneInfo("UTC"))
+        date_str, values, skipped = parse_health_metrics_payload(
+            payload, ZoneInfo("UTC")
+        )
 
         self.assertEqual(date_str, "2026-05-09")
         self.assertEqual(values["Weight (kg)"], 76.86)

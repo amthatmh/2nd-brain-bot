@@ -15,6 +15,7 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 METRIC_PROPERTY_MAP: dict[str, str] = {
+    # Human-readable names sent by older Health Auto Export payloads.
     "Weight": "Weight (kg)",
     "Body Fat Percentage": "Body Fat %",
     "Lean Body Mass": "Lean Body Mass (lbs)",
@@ -27,6 +28,19 @@ METRIC_PROPERTY_MAP: dict[str, str] = {
     "Resting Energy": "Resting Energy (kcal)",
     "Flights Climbed": "Flights Climbed",
     "Headphone Audio Exposure": "Headphone Audio Exposure (dB)",
+    # Snake-case names sent by Health Auto Export v2.
+    "weight_body_mass": "Weight (kg)",
+    "body_fat_percentage": "Body Fat %",
+    "lean_body_mass": "Lean Body Mass (lbs)",
+    "resting_heart_rate": "Resting Heart Rate (bpm)",
+    "heart_rate_variability": "HRV (ms)",
+    "vo2_max": "VO2 Max",
+    "respiratory_rate": "Respiratory Rate (brpm)",
+    "apple_exercise_time": "Exercise Time (min)",
+    "active_energy": "Active Energy (kcal)",
+    "basal_energy_burned": "Resting Energy (kcal)",
+    "flights_climbed": "Flights Climbed",
+    "headphone_audio_exposure": "Headphone Audio Exposure (dB)",
 }
 
 
