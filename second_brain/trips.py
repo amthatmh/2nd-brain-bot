@@ -40,7 +40,7 @@ Return ONLY valid JSON, no markdown:
   \"destinations\": [\"city1\", \"city2\"],
   \"departure_date\": \"YYYY-MM-DD\",
   \"return_date\": \"YYYY-MM-DD\",
-  \"purpose\": \"Work\" | \"Personal\" | \"Both\",
+  \"purpose\": [\"Work\"] | [\"Personal\"] | [\"Work\", \"Personal\"],
   \"multiple_cities\": true | false
 }}
 """
@@ -48,7 +48,7 @@ Return ONLY valid JSON, no markdown:
         "destinations": _extract_destinations(text),
         "departure_date": None,
         "return_date": None,
-        "purpose": _infer_purpose(text),
+        "purpose_list": _infer_purpose_list(text),
         "multiple_cities": False,
     }
 
@@ -63,7 +63,7 @@ Return ONLY valid JSON, no markdown:
             "destinations": parsed.get("destinations") or fallback["destinations"],
             "departure_date": _resolve_trip_date(parsed.get("departure_date")),
             "return_date": _resolve_trip_date(parsed.get("return_date")),
-            "purpose": parsed.get("purpose") or fallback["purpose"],
+            "purpose_list": _normalize_purpose_list(parsed.get("purpose")) or fallback["purpose_list"],
             "multiple_cities": bool(parsed.get("multiple_cities")),
         }
     except Exception as exc:
@@ -89,15 +89,37 @@ def _extract_destinations(text: str) -> list[str]:
     return parts or ["Trip"]
 
 
-def _infer_purpose(text: str) -> str:
+def _infer_purpose_list(text: str) -> list[str]:
     lower = text.lower()
     has_work = "work" in lower or "site" in lower or "client" in lower
     has_personal = "personal" in lower or "family" in lower or "vacation" in lower
     if has_work and has_personal:
-        return "Both"
+        return ["Work", "Personal"]
     if has_personal:
-        return "Personal"
-    return "Work"
+        return ["Personal"]
+    return ["Work"]
+
+
+def _normalize_purpose_list(raw: object) -> list[str]:
+    if isinstance(raw, str):
+        raw_values = ["Work", "Personal"] if raw == "Both" else [raw]
+    elif isinstance(raw, list):
+        raw_values = raw
+    else:
+        raw_values = []
+
+    normalized: list[str] = []
+    for value in raw_values:
+        if not isinstance(value, str):
+            continue
+        token = value.strip()
+        if token == "Both":
+            for purpose in ("Work", "Personal"):
+                if purpose not in normalized:
+                    normalized.append(purpose)
+        elif token in {"Work", "Personal"} and token not in normalized:
+            normalized.append(token)
+    return normalized
 
 
 async def execute_trip(
@@ -110,6 +132,7 @@ async def execute_trip(
     set_awaiting_packing_feedback: Callable[[bool], None],
     fetch_weather: Callable[[str], dict | None] | None = None,
     fetch_trip_weather_range: Callable[[str, str, str], list[dict]] | None = None,
+    schedule_weather_refresh: Callable[[str, dict], None] | None = None,
 ) -> None:
     _ = (claude, set_awaiting_packing_feedback)
     trip = trip_map[key]
@@ -121,20 +144,29 @@ async def execute_trip(
 
     title = f"{', '.join(trip['destinations'])} — {format_trip_dates(trip['departure_date'], trip['return_date'])}"
 
-    weather_summary, weather_flags = _build_trip_weather_summary(
-        trip.get("departure_date"),
-        trip.get("return_date"),
-        ", ".join(trip.get("destinations") or []),
-        fetch_weather=fetch_weather,
-        fetch_trip_weather_range=fetch_trip_weather_range,
-    )
+    needs_weather_refresh = False
+    try:
+        days_until_departure = (date.fromisoformat(trip["departure_date"]) - date.today()).days
+    except Exception:
+        days_until_departure = 0
+    if days_until_departure > 5:
+        weather_summary, weather_flags = "Weather check scheduled 3 days before departure", []
+        needs_weather_refresh = True
+    else:
+        weather_summary, weather_flags = _build_trip_weather_summary(
+            trip.get("departure_date"),
+            trip.get("return_date"),
+            ", ".join(trip.get("destinations") or []),
+            fetch_weather=fetch_weather,
+            fetch_trip_weather_range=fetch_trip_weather_range,
+        )
     properties = {
         "Trip": {"title": [{"text": {"content": title}}]},
         "Departure Date": {"date": {"start": trip["departure_date"]}},
         "Return Date": {"date": {"start": trip["return_date"]}},
         "Destination(s)": {"rich_text": [{"text": {"content": ", ".join(trip.get("destinations") or [])}}]},
         "Duration": {"select": {"name": trip.get("duration_label") or ""}},
-        "Purpose": {"select": {"name": trip.get("purpose") or "Work"}},
+        "Purpose": {"multi_select": [{"name": purpose} for purpose in (trip.get("purpose_list") or ["Work"])]},
         "Field Work": {"multi_select": [{"name": item} for item in (trip.get("field_work_types") or []) if item and item != "None"]},
         "Multiple Sites": {"checkbox": bool(trip.get("multiple_sites"))},
         "Checked Luggage": {"checkbox": bool(trip.get("checked_luggage"))},
@@ -159,6 +191,10 @@ async def execute_trip(
         return
 
     page_id = (page or {}).get("id")
+    if page_id:
+        trip["notion_page_id"] = page_id
+        if needs_weather_refresh and schedule_weather_refresh:
+            schedule_weather_refresh(key, trip)
 
     blocks: list[dict] = []
     if page_id:
@@ -190,6 +226,7 @@ def build_packing_blocks(trip: dict, notion_client=None) -> list[dict]:
         raise ValueError("A Notion client is required to build packing blocks")
 
     field_work = {fw.lower() for fw in trip.get("field_work_types", []) if fw}
+    purpose_list = trip.get("purpose_list") or ["Work"]
 
     items = []
     cursor = None
@@ -211,8 +248,15 @@ def build_packing_blocks(trip: dict, notion_client=None) -> list[dict]:
             continue
         always = props.get("Always", {}).get("checkbox", False)
         fw_tags = _extract_multi_select(props.get("Field Work"))
-        matches_fw = bool(field_work & {tag.lower() for tag in fw_tags})
-        if not always and not matches_fw:
+        fw_tag_set = {tag.lower() for tag in fw_tags}
+        matches_fw = bool(field_work & fw_tag_set)
+        matches_purpose = (
+            ("work" in fw_tag_set and "Work" in purpose_list)
+            or ("personal" in fw_tag_set and "Personal" in purpose_list)
+            or (props.get("Work", {}).get("checkbox", False) and "Work" in purpose_list)
+            or (props.get("Personal", {}).get("checkbox", False) and "Personal" in purpose_list)
+        )
+        if not always and not matches_fw and not matches_purpose:
             continue
         category = _extract_select_or_text(props.get("Category")) or "Other"
         grouped.setdefault(category, []).append(name)
@@ -307,6 +351,15 @@ def _adapt_trip_properties_to_schema(notion, database_id: str, payload: dict) ->
                 adapted[target_name] = {"rich_text": [{"text": {"content": ", ".join(items) if items else "None"}}]}
             elif ptype == "select" and items:
                 adapted[target_name] = {"select": {"name": items[0]}}
+            continue
+        if name == "Purpose":
+            items = [x.get("name", "") for x in value.get("multi_select", []) if x.get("name")]
+            if ptype == "multi_select":
+                adapted[target_name] = {"multi_select": [{"name": item} for item in items]}
+            elif ptype == "rich_text":
+                adapted[target_name] = {"rich_text": [{"text": {"content": ", ".join(items)}}]}
+            elif ptype == "select" and items:
+                adapted[target_name] = {"select": {"name": "Both" if set(items) == {"Work", "Personal"} else items[0]}}
             continue
         if name == "Weather Flags":
             if "multi_select" in value:

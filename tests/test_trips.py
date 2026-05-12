@@ -1,6 +1,7 @@
 import os
 
 import asyncio
+from datetime import date, timedelta
 
 os.environ.setdefault("TELEGRAM_TOKEN", "test-token")
 os.environ.setdefault("NOTION_TOKEN", "test-token")
@@ -36,7 +37,7 @@ def _trip_map(departure_date="2026-05-14", return_date="2026-05-17"):
             "departure_date": departure_date,
             "return_date": return_date,
             "duration_label": "2-3 Days",
-            "purpose": "Work",
+            "purpose_list": ["Work"],
             "field_work_types": ["Site Survey"],
             "multiple_sites": True,
             "checked_luggage": False,
@@ -63,7 +64,7 @@ def test_execute_trip_saves_to_notion(monkeypatch):
                     "Return Date": {"type": "date"},
                     "Destination(s)": {"type": "rich_text"},
                     "Duration": {"type": "select"},
-                    "Purpose": {"type": "select"},
+                    "Purpose": {"type": "multi_select"},
                     "Field Work": {"type": "rich_text"},
                     "Multiple Sites": {"type": "checkbox"},
                     "Checked Luggage": {"type": "checkbox"},
@@ -86,6 +87,7 @@ def test_execute_trip_saves_to_notion(monkeypatch):
 
     assert created["parent"]["database_id"] == "c57f9edb-406d-4368-b32d-23f0ea2a0c66"
     assert created["properties"]["Trip"]["title"][0]["text"]["content"].startswith("Nashville TN")
+    assert created["properties"]["Purpose"] == {"multi_select": [{"name": "Work"}]}
     assert created["properties"]["Field Work"]["rich_text"][0]["text"]["content"] == "Site Survey"
     assert created["properties"]["Reminder Sent"] == {"checkbox": False}
     assert flag["value"] is False
@@ -114,7 +116,7 @@ def test_execute_trip_appends_native_packing_blocks(monkeypatch):
                     "Return Date": {"type": "date"},
                     "Destination(s)": {"type": "rich_text"},
                     "Duration": {"type": "select"},
-                    "Purpose": {"type": "select"},
+                    "Purpose": {"type": "multi_select"},
                     "Field Work": {"type": "multi_select"},
                     "Multiple Sites": {"type": "checkbox"},
                     "Checked Luggage": {"type": "checkbox"},
@@ -187,7 +189,7 @@ def test_parse_trip_message_falls_back_when_nlp_unavailable():
     parsed = trips.parse_trip_message("work and personal trip to Nashville TN, May 14-17", claude=None)
 
     assert parsed["destinations"] == ["Nashville TN"]
-    assert parsed["purpose"] == "Both"
+    assert parsed["purpose_list"] == ["Work", "Personal"]
     assert parsed["departure_date"] is None
     assert parsed["return_date"] is None
 
@@ -216,7 +218,7 @@ def test_execute_trip_uses_field_work_types_when_present(monkeypatch):
                     "Departure Date": {"type": "date"},
                     "Return Date": {"type": "date"},
                     "Destination(s)": {"type": "rich_text"},
-                    "Purpose": {"type": "select"},
+                    "Purpose": {"type": "multi_select"},
                     "Field Work Types": {"type": "rich_text"},
                 }
             }
@@ -255,7 +257,7 @@ def test_execute_trip_maps_weather_flags_to_multi_select(monkeypatch):
                     "Departure Date": {"type": "date"},
                     "Return Date": {"type": "date"},
                     "Destination(s)": {"type": "rich_text"},
-                    "Purpose": {"type": "select"},
+                    "Purpose": {"type": "multi_select"},
                     "Weather Flags": {"type": "multi_select"},
                     "Weather Summary": {"type": "rich_text"},
                 }
@@ -294,9 +296,11 @@ def test_trip_weather_summary_uses_trip_date_range():
 
 
 def test_trip_weather_summary_uses_placeholder_outside_five_day_window():
+    departure = (date.today() + timedelta(days=6)).isoformat()
+    return_date = (date.today() + timedelta(days=9)).isoformat()
     summary, flags = trips._build_trip_weather_summary(
-        "2026-05-14",
-        "2026-05-17",
+        departure,
+        return_date,
         "Nashville, TN",
         fetch_weather=lambda _: {"condition": "Rain", "temp_high": 31, "temp_low": 4, "precip_chance": 80},
         fetch_trip_weather_range=lambda *_: [
