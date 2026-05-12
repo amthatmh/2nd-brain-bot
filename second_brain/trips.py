@@ -430,21 +430,55 @@ def _build_trip_weather_summary(
     labels: list[str] = []
     flags: list[str] = []
     for bucket, item in snapshots:
+        label = bucket.title() if isinstance(bucket, str) else str(bucket)
         condition = item.get("condition", "Unknown")
+        condition_l = condition.lower()
+        description_l = item.get("description", "").lower()
         precip = int(item.get("precip_chance", 0))
         hi = item.get("temp_high", item.get("temp"))
         lo = item.get("temp_low", item.get("temp"))
-        labels.append(f"{bucket.title()}: {condition}, {lo}–{hi}°C, {precip}% rain")
-        condition_l = condition.lower()
-        if precip >= 40 or "rain" in condition_l or "drizzle" in condition_l or "thunder" in condition_l:
-            flags.append("Rain")
-        if hi is not None and hi >= 30:
-            flags.append("Hot")
-        if lo is not None and lo <= 5:
-            flags.append("Cold")
+        wind_max = item.get("wind_speed_max", 0) or 0
+
+        if precip >= 40 or "rain" in condition_l or "drizzle" in condition_l:
+            flags.append("🌧️ Rain likely")
+        if "thunder" in condition_l or "thunderstorm" in condition_l:
+            flags.append("⛈️ Thunderstorm")
+        if hi is not None and hi >= 35:
+            flags.append("🌡️ Extreme heat")
+        if lo is not None and lo <= 0:
+            flags.append("❄️ Freezing temps")
         if "snow" in condition_l or "sleet" in condition_l or "blizzard" in condition_l:
-            flags.append("Snow")
-    return " | ".join(labels), sorted(set(flags))
+            flags.append("🌨️ Snow")
+        if "fog" in condition_l or "mist" in condition_l or "haze" in condition_l:
+            flags.append("🌫️ Fog / Mist")
+        if wind_max >= 11:
+            flags.append("💨 High wind")
+
+        labels.append(
+            f"{label}: {condition}, {lo}–{hi}°C, {precip}% rain"
+        )
+    unique_flags = sorted(set(flags))
+    raw_data = " | ".join(labels)
+    field_work_types = destination  # destination is passed as a string; used for context
+    try:
+        import anthropic as _anthropic
+        _client = _anthropic.Anthropic()
+        prompt = (
+            f"You are a travel assistant helping someone prepare for a work trip to {destination}. "
+            f"Summarize this weather forecast in 2-3 concise sentences from a packing and preparation perspective. "
+            f"Mention any days with notable conditions. Do not use bullet points or markdown.\n\n"
+            f"Forecast: {raw_data}"
+        )
+        resp = _client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=150,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        summary = resp.content[0].text.strip()
+    except Exception as exc:
+        logger.warning("trip_weather_summary: Claude summarization failed: %s", exc)
+        summary = raw_data
+    return summary, unique_flags
 
 
 def _is_departure_within_forecast_window(
