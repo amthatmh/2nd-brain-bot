@@ -81,12 +81,21 @@ def parse_health_metrics_payload(body: dict, tz) -> tuple[str, dict[str, float],
     Returns ``(date_str, notion_property_values, skipped_metric_names)``.
     Unknown metrics are logged and skipped for forward compatibility.
     """
-    if not isinstance(body, dict) or "data" not in body or not isinstance(body.get("data"), list):
+    if not isinstance(body, dict) or "data" not in body:
         raise MalformedHealthMetricsPayload("payload must include a top-level data array")
 
-    metrics = body["data"]
+    data_field = body.get("data")
+    if isinstance(data_field, dict):
+        # Health Auto Export v2 with Batch Requests ON sends metrics nested here.
+        metrics = data_field.get("metrics", [])
+    elif isinstance(data_field, list):
+        # Health Auto Export v1 or Batch Requests OFF sends the metrics array directly.
+        metrics = data_field
+    else:
+        raise MalformedHealthMetricsPayload("payload must include a top-level data array")
+
     if not metrics:
-        raise MalformedHealthMetricsPayload("payload data array is empty")
+        raise MalformedHealthMetricsPayload("data array is empty")
 
     date_str: str | None = None
     values: dict[str, float] = {}

@@ -11,6 +11,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from second_brain.healthtrack.metrics import (
+    MalformedHealthMetricsPayload,
     handle_health_metrics_sync,
     parse_health_metrics_payload,
 )
@@ -34,6 +35,28 @@ PAYLOAD = {
 
 
 class TestHealthMetricsParsing(unittest.TestCase):
+    def test_parse_accepts_v2_metrics_wrapper(self):
+        payload = {"data": {"metrics": PAYLOAD["data"]}}
+
+        date_str, values, skipped = parse_health_metrics_payload(payload, ZoneInfo("UTC"))
+
+        self.assertEqual(date_str, "2026-05-09")
+        self.assertEqual(values["Weight (kg)"], 76.86)
+        self.assertEqual(values["HRV (ms)"], 39.0)
+        self.assertEqual(skipped, [])
+
+    def test_parse_rejects_empty_v2_metrics_wrapper(self):
+        with self.assertRaisesRegex(MalformedHealthMetricsPayload, "data array is empty"):
+            parse_health_metrics_payload({"data": {}}, ZoneInfo("UTC"))
+
+    def test_parse_rejects_empty_v1_metrics_array(self):
+        with self.assertRaisesRegex(MalformedHealthMetricsPayload, "data array is empty"):
+            parse_health_metrics_payload({"data": []}, ZoneInfo("UTC"))
+
+    def test_parse_rejects_missing_data_key(self):
+        with self.assertRaisesRegex(MalformedHealthMetricsPayload, "top-level data array"):
+            parse_health_metrics_payload({"metrics": []}, ZoneInfo("UTC"))
+
     def test_parse_maps_known_metrics_and_skips_unknown(self):
         payload = {
             "data": [
