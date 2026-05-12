@@ -192,6 +192,20 @@ def test_track_job_execution_respects_quiet_success_alert(monkeypatch):
     assert calls[0][2] is None
 
 
+def test_track_job_execution_respects_success_cooldown(monkeypatch):
+    calls = []
+    monkeypatch.setattr(alert_handlers, "alert_job_success", lambda *args, **kwargs: calls.append(args) or True)
+    job_tracker.load_alert_config("cooldown_unit", {"alert_on_success": "full", "success_cooldown_hours": 6})
+
+    @job_tracker.track_job_execution("cooldown_unit")
+    def sample():
+        return {"ok": True}
+
+    assert sample() == {"ok": True}
+    assert sample() == {"ok": True}
+    assert len(calls) == 1
+
+
 def test_track_job_execution_respects_after_3_failure_alert(monkeypatch):
     calls = []
     monkeypatch.setattr(alert_handlers, "alert_job_failure", lambda *args, **kwargs: calls.append(args) or True)

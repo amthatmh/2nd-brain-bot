@@ -263,10 +263,18 @@ def _alert_on_success(job_key: str, duration: float, result: Any, alert_config: 
     from utils.alert_handlers import alert_job_success
 
     alert_level = alert_config["alert_on_success"]
+    if alert_level not in {"full", "quiet"}:
+        return
+
+    cooldown_key = f"success_{job_key}"
+    if not check_alert_cooldown(cooldown_key, alert_config["success_cooldown_hours"]):
+        return
+
     if alert_level == "full":
         alert_job_success(job_key, duration, result)
     elif alert_level == "quiet":
         alert_job_success(job_key, duration, None)
+    set_alert_cooldown(cooldown_key)
 
 
 def _alert_on_overlap(job_key: str, baseline: Optional[float], duration: float, alert_config: Dict[str, Any]) -> None:
