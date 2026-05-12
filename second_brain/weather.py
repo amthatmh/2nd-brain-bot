@@ -386,18 +386,24 @@ def _forecast_rows_for_coordinates(lat: float, lon: float, *, num_days: int, sta
     """Fetch and bucket OpenWeather 5-day/3-hour forecast rows for coordinates."""
     if not OPENWEATHER_KEY or num_days <= 0:
         return []
-    resp = httpx.get(
-        "https://api.openweathermap.org/data/2.5/forecast",
-        params={"lat": lat, "lon": lon, "appid": OPENWEATHER_KEY, "units": "metric"},
-        timeout=10,
-    )
-    resp.raise_for_status()
+    try:
+        resp = httpx.get(
+            "https://api.openweathermap.org/data/2.5/forecast",
+            params={"lat": lat, "lon": lon, "appid": OPENWEATHER_KEY, "units": "metric"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        log.error("_forecast_rows_for_coordinates: HTTP failed lat=%s lon=%s: %s", lat, lon, e, exc_info=True)
+        return []
     rows = resp.json().get("list", [])
+    log.info("_forecast_rows_for_coordinates: API returned %d slots for lat=%s lon=%s", len(rows), lat, lon)
     today = datetime.now(TZ).date()
     if start_date is None:
         start_date = today
     if end_date is None:
         end_date = start_date + timedelta(days=num_days - 1)
+    log.info("_forecast_rows_for_coordinates: filtering for %s to %s", start_date, end_date)
 
     buckets: dict[date, dict] = {}
     for row in rows:
@@ -413,6 +419,7 @@ def _forecast_rows_for_coordinates(lat: float, lon: float, *, num_days: int, sta
         weather_item = (row.get("weather") or [{}])[0]
         item["conds"].append(weather_item.get("main", "Unknown"))
         item["descriptions"].append(weather_item.get("description", "Unknown"))
+    log.info("_forecast_rows_for_coordinates: bucketed %d days: %s", len(buckets), sorted(buckets))
 
     out: list[dict] = []
     for day in sorted(buckets)[:num_days]:
@@ -430,6 +437,7 @@ def _forecast_rows_for_coordinates(lat: float, lon: float, *, num_days: int, sta
                 "description": max(set(descriptions), key=descriptions.count).title(),
             }
         )
+    log.info("_forecast_rows_for_coordinates: returning %d rows", len(out))
     return out
 
 
@@ -467,7 +475,14 @@ def fetch_trip_weather_range(departure_date: str, return_date: str, destination:
         lon = places[0].get("lon")
         if lat is None or lon is None:
             return []
-        return _forecast_rows_for_coordinates(float(lat), float(lon), num_days=(end - start).days + 1, start_date=start, end_date=end)
+        log.info("fetch_trip_weather_range: geo resolved %s → lat=%s lon=%s", destination, lat, lon)
+        try:
+            result = _forecast_rows_for_coordinates(float(lat), float(lon), num_days=(end - start).days + 1, start_date=start, end_date=end)
+            log.info("fetch_trip_weather_range: got %d rows for %s", len(result), destination)
+            return result
+        except Exception as e:
+            log.error("fetch_trip_weather_range: _forecast_rows_for_coordinates failed for %s: %s", destination, e, exc_info=True)
+            return []
     except Exception as e:
         log.warning("Trip weather fetch failed for %s: %s", destination, e)
         return []
