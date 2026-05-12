@@ -89,6 +89,60 @@ SNAKE_CASE_PAYLOAD = {
 }
 
 
+HUMAN_READABLE_STANDARD_PAYLOAD = {
+    "data": [
+        {
+            "name": "Weight",
+            "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 76.86}],
+        },
+        {
+            "name": "Body Fat Percentage",
+            "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 18.2}],
+        },
+        {
+            "name": "Lean Body Mass",
+            "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 63.7}],
+        },
+        {
+            "name": "Resting Heart Rate",
+            "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 58}],
+        },
+        {
+            "name": "Heart Rate Variability",
+            "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 39.0}],
+        },
+        {
+            "name": "VO2 Max",
+            "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 42.1}],
+        },
+        {
+            "name": "Respiratory Rate",
+            "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 14.5}],
+        },
+        {
+            "name": "Apple Exercise Time",
+            "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 32}],
+        },
+        {
+            "name": "Active Energy",
+            "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 512.3}],
+        },
+        {
+            "name": "Resting Energy",
+            "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 1680.4}],
+        },
+        {
+            "name": "Flights Climbed",
+            "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 8}],
+        },
+        {
+            "name": "Headphone Audio Exposure",
+            "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 71.2}],
+        },
+    ]
+}
+
+
 class TestHealthMetricsParsing(unittest.TestCase):
     def test_parse_accepts_v2_metrics_wrapper(self):
         payload = {"data": {"metrics": PAYLOAD["data"]}}
@@ -121,18 +175,20 @@ class TestHealthMetricsParsing(unittest.TestCase):
             parse_health_metrics_payload({"metrics": []}, ZoneInfo("UTC"))
 
     def test_parse_maps_all_standard_snake_case_metrics(self):
-        date_str, values, skipped = parse_health_metrics_payload(
-            SNAKE_CASE_PAYLOAD, ZoneInfo("UTC")
-        )
+        with patch("second_brain.healthtrack.metrics.log.warning") as warning_log:
+            date_str, values, skipped = parse_health_metrics_payload(
+                SNAKE_CASE_PAYLOAD, ZoneInfo("UTC")
+            )
 
         self.assertEqual(date_str, "2026-05-09")
         self.assertEqual(skipped, [])
+        warning_log.assert_not_called()
         self.assertEqual(
             values,
             {
                 "Weight (kg)": 76.86,
                 "Body Fat %": 18.2,
-                "Lean Body Mass (lbs)": 140.5,
+                "Lean Body Mass (kg)": 140.5,
                 "Resting Heart Rate (bpm)": 58.0,
                 "HRV (ms)": 39.0,
                 "VO2 Max": 42.1,
@@ -144,6 +200,19 @@ class TestHealthMetricsParsing(unittest.TestCase):
                 "Headphone Audio Exposure (dB)": 71.2,
             },
         )
+
+    def test_parse_maps_all_standard_human_readable_metrics(self):
+        date_str, values, skipped = parse_health_metrics_payload(
+            HUMAN_READABLE_STANDARD_PAYLOAD, ZoneInfo("UTC")
+        )
+
+        self.assertEqual(date_str, "2026-05-09")
+        self.assertEqual(skipped, [])
+        self.assertEqual(values["Weight (kg)"], 76.86)
+        self.assertEqual(values["Lean Body Mass (kg)"], 63.7)
+        self.assertEqual(values["Resting Energy (kcal)"], 1680.4)
+        self.assertEqual(values["Headphone Audio Exposure (dB)"], 71.2)
+        self.assertEqual(len(values), 12)
 
     def test_parse_maps_known_metrics_and_skips_unknown(self):
         payload = {

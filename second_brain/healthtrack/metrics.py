@@ -18,7 +18,7 @@ METRIC_PROPERTY_MAP: dict[str, str] = {
     # Human-readable names sent by older Health Auto Export payloads.
     "Weight": "Weight (kg)",
     "Body Fat Percentage": "Body Fat %",
-    "Lean Body Mass": "Lean Body Mass (lbs)",
+    "Lean Body Mass": "Lean Body Mass (kg)",
     "Resting Heart Rate": "Resting Heart Rate (bpm)",
     "Heart Rate Variability": "HRV (ms)",
     "VO2 Max": "VO2 Max",
@@ -31,7 +31,7 @@ METRIC_PROPERTY_MAP: dict[str, str] = {
     # Snake-case names sent by Health Auto Export v2.
     "weight_body_mass": "Weight (kg)",
     "body_fat_percentage": "Body Fat %",
-    "lean_body_mass": "Lean Body Mass (lbs)",
+    "lean_body_mass": "Lean Body Mass (kg)",
     "resting_heart_rate": "Resting Heart Rate (bpm)",
     "heart_rate_variability": "HRV (ms)",
     "vo2_max": "VO2 Max",
@@ -101,14 +101,14 @@ def parse_health_metrics_payload(body: dict, tz) -> tuple[str, dict[str, float],
     data_field = body.get("data")
     if isinstance(data_field, dict):
         # Health Auto Export v2 with Batch Requests ON sends metrics nested here.
-        metrics = data_field.get("metrics", [])
+        metrics_array = data_field.get("metrics", [])
     elif isinstance(data_field, list):
         # Health Auto Export v1 or Batch Requests OFF sends the metrics array directly.
-        metrics = data_field
+        metrics_array = data_field
     else:
         raise MalformedHealthMetricsPayload("payload must include a top-level data array")
 
-    if not metrics:
+    if not metrics_array:
         raise MalformedHealthMetricsPayload("data array is empty")
 
     date_str: str | None = None
@@ -116,7 +116,7 @@ def parse_health_metrics_payload(body: dict, tz) -> tuple[str, dict[str, float],
     skipped: list[str] = []
     metric_names: list[str] = []
 
-    for metric in metrics:
+    for metric in metrics_array:
         if not isinstance(metric, dict):
             skipped.append(type(metric).__name__)
             log.warning("health_metrics: skipping non-object metric entry: %r", metric)
