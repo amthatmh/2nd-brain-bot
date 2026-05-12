@@ -199,18 +199,10 @@ class UtilitySchedulerManager:
     @staticmethod
     def _send_success_alert_if_needed(job_key: str, duration: float, result: Any, alert_config: dict[str, Any]) -> None:
         alert_level = alert_config["alert_on_success"]
-        if alert_level not in {"full", "quiet"}:
-            return
-
-        cooldown_key = f"success_{job_key}"
-        if not check_alert_cooldown(cooldown_key, alert_config["success_cooldown_hours"]):
-            return
-
         if alert_level == "full":
             alert_job_success(job_key, duration, result)
         elif alert_level == "quiet":
             alert_job_success(job_key, duration, None)
-        set_alert_cooldown(cooldown_key)
 
     @staticmethod
     def _send_overlap_alert_if_needed(

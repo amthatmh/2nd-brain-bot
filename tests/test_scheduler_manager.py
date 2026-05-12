@@ -193,7 +193,6 @@ def _reset_job_tracker_state() -> None:
     job_tracker._weekly_counters["executions"] = 0
     job_tracker._weekly_counters["failures"] = 0
     job_tracker._alert_cooldowns.clear()
-    job_tracker._alert_configs.clear()
 
 
 class _FakePages:
@@ -232,32 +231,6 @@ def test_execute_job_tracks_plain_handler_success(monkeypatch) -> None:
 
     assert job_tracker._job_metrics["plain_job"]["last_status"] == "success"
     assert job_tracker.get_weekly_metrics()["total_executions"] == 1
-
-
-def test_execute_job_respects_success_cooldown(monkeypatch) -> None:
-    import asyncio
-    import second_brain.scheduler_manager as scheduler_manager
-    from second_brain.monitoring import job_tracker
-
-    _reset_job_tracker_state()
-    calls = []
-    monkeypatch.setattr(scheduler_manager, "alert_job_success", lambda *args, **kwargs: calls.append(args) or True)
-    job_tracker.load_alert_config("plain_job", {"alert_on_success": "full", "success_cooldown_hours": 6})
-
-    manager = UtilitySchedulerManager(
-        notion=_FakeNotion(),
-        db_id="db",
-        scheduler=None,
-        bot=None,
-        chat_id="chat",
-        tz=timezone.utc,
-    )
-    manager.register_handler("plain_job", lambda bot: {"ok": True})
-
-    asyncio.run(manager._execute_job("plain_job", "page-id"))
-    asyncio.run(manager._execute_job("plain_job", "page-id"))
-
-    assert len(calls) == 1
 
 
 def test_execute_job_does_not_double_track_decorated_handler(monkeypatch) -> None:
