@@ -24,8 +24,9 @@ def _openweather_key() -> str:
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "") or os.environ.get("OPENWEATHER_API_KEY", "")
 
 
-def _get_openweather_key() -> str:
-    return _openweather_key()
+def _openweather_key() -> str:
+    from second_brain.config import OPENWEATHER_KEY as _cfg_key
+    return _cfg_key or os.environ.get("OPENWEATHER_KEY", "").strip() or os.environ.get("OPENWEATHER_API_KEY", "").strip()
 
 
 def _resolve_state_dir() -> Path:
