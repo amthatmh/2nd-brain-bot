@@ -50,6 +50,9 @@
     <footer class="footer">Data from Apple Health via Auto Export · Withings scale · <a href="/">HabitKit dashboard</a></footer>
   </main>
 <script>
+const API_BASE = 'https://worker-production-d366.up.railway.app';
+const RANGES = ['1m', '3m', '6m', 'all'];
+const cache = {};
 const charts = {};
 let currentRange = '1m';
 const metricDefs = {
@@ -65,19 +68,51 @@ const scoreInfo = {
 function applyTheme(theme){document.documentElement.dataset.theme=theme;localStorage.setItem('health_theme',theme);document.getElementById('themeToggle').textContent=theme==='dark'?'☾':'☀';}
 applyTheme(localStorage.getItem('health_theme')||'dark');
 document.getElementById('themeToggle').addEventListener('click',()=>applyTheme(document.documentElement.dataset.theme==='dark'?'light':'dark'));
-document.querySelectorAll('.range button').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('.range button').forEach(b=>b.classList.remove('active'));btn.classList.add('active');currentRange=btn.dataset.range;fetchDashboard(currentRange);}));
+document.querySelectorAll('.range button').forEach(btn=>btn.addEventListener('click',()=>{
+  document.querySelectorAll('.range button').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  currentRange=btn.dataset.range;
+  if(cache[currentRange]){
+    document.getElementById('errorBanner').style.display='none';
+    renderDashboard(cache[currentRange]);
+  }else{
+    fetchDashboard(currentRange);
+  }
+}));
+async function prefetchAll(){
+  document.getElementById('errorBanner').style.display='none';
+  setLoading();
+  await Promise.allSettled(
+    RANGES.map(range =>
+      fetch(`${API_BASE}/api/health-dashboard?range=${range}`)
+        .then(async res => {
+          const data = await res.json();
+          if(!res.ok) throw new Error(data.message || `HTTP ${res.status}`);
+          cache[range] = data;
+        })
+        .catch(err => console.warn(`Failed to fetch range ${range}:`, err))
+    )
+  );
+  if(cache['1m']){
+    renderDashboard(cache['1m']);
+  }else{
+    showErrorState('Could not load health data. Try refreshing.');
+  }
+}
 async function fetchDashboard(range='1m'){
   document.getElementById('errorBanner').style.display='none';
   setLoading();
   try{
-    const res = await fetch(`https://worker-production-d366.up.railway.app/api/health-dashboard?range=${range}`);
+    const res = await fetch(`${API_BASE}/api/health-dashboard?range=${range}`);
     const data = await res.json();
     if(!res.ok) throw new Error(data.message || `HTTP ${res.status}`);
+    cache[range] = data;
     renderDashboard(data);
-  }catch(err){console.error(err);document.getElementById('errorBanner').style.display='block';setEmpty('Could not load health data. Try again.');}
+  }catch(err){console.error(err);showErrorState('Could not load data for this range.');}
 }
 function setLoading(){document.getElementById('scores').innerHTML='<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>';document.getElementById('metrics').innerHTML='';document.getElementById('charts').innerHTML='<div class="loading">Loading charts…</div>';}
 function setEmpty(msg){destroyCharts();document.getElementById('scores').innerHTML=`<div class="empty">${msg}</div>`;document.getElementById('metrics').innerHTML='';document.getElementById('charts').innerHTML='';}
+function showErrorState(msg){document.getElementById('errorBanner').textContent=msg;document.getElementById('errorBanner').style.display='block';setEmpty(msg);}
 function renderDashboard(data){
   document.getElementById('lastUpdated').textContent = data.generated_at ? `Updated ${new Date(data.generated_at).toLocaleString()}` : 'Updated just now';
   renderScores(data); renderMetrics(data); renderCharts(data);
@@ -109,7 +144,7 @@ function makeBodyChart(m){const labels=labelsFor(m.weight,m.body_fat,m.lean_mass
 function makeCardioChart(m){const labels=labelsFor(m.resting_hr,m.hrv,m.vo2_max);charts.cardio=new Chart(document.getElementById('cardioChart'),{type:'line',data:{labels,datasets:[{label:'Resting HR',data:mapSeries(m.resting_hr,labels),borderColor:cssVar('--accent-red'),tension:.4,yAxisID:'y'},{label:'HRV',data:mapSeries(m.hrv,labels),borderColor:cssVar('--accent-green'),tension:.4,yAxisID:'y1'},{label:'VO2 Max',data:mapSeries(m.vo2_max,labels),borderColor:cssVar('--accent-blue'),tension:.4,yAxisID:'y1'}]},options:{...chartBase(),scales:{...chartBase().scales,y1:{position:'right',ticks:{color:cssVar('--text-secondary')},grid:{drawOnChartArea:false}}}}});}
 function makeActivityChart(weekly){const labels=weekly.map(w=>w.week);charts.activity=new Chart(document.getElementById('activityChart'),{type:'bar',data:{labels,datasets:[{label:'Workout days',data:weekly.map(w=>w.workout_days),backgroundColor:cssVar('--accent-blue')},{label:'Steps days',data:weekly.map(w=>w.steps_days),backgroundColor:cssVar('--accent-green')},{label:'Workout target',data:weekly.map(()=>3),type:'line',borderColor:cssVar('--accent-yellow'),pointRadius:0,borderDash:[5,5]},{label:'Steps target',data:weekly.map(()=>7),type:'line',borderColor:cssVar('--text-secondary'),pointRadius:0,borderDash:[3,5]}]},options:chartBase()});}
 function destroyCharts(){Object.values(charts).forEach(c=>c?.destroy());Object.keys(charts).forEach(k=>delete charts[k]);}
-fetchDashboard(currentRange);
+prefetchAll();
 </script>
 </body>
 </html>
