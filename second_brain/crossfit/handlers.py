@@ -336,6 +336,44 @@ def _store_extracted_strength_state(cf_pending: dict, key: str, extracted: dict 
     return state
 
 
+def _normalize_strength_movements(workout_result: dict | None, workout_data: dict | None = None) -> list[dict]:
+    """Return strength movements with per-movement sets/reps/load metadata."""
+    workout_result = workout_result or {}
+    workout_data = workout_data or {}
+    raw_movements = workout_result.get("movements") or []
+    if isinstance(raw_movements, dict):
+        raw_movements = [raw_movements]
+    if raw_movements and all(isinstance(item, dict) for item in raw_movements):
+        movements = []
+        for item in raw_movements:
+            movement_name = (item.get("movement") or item.get("name") or "").strip()
+            if not movement_name:
+                continue
+            movements.append({
+                "movement": movement_name,
+                "sets": item.get("sets") or 1,
+                "reps": item.get("reps") or 1,
+                "load_lbs": item.get("load_lbs"),
+            })
+        if movements:
+            return movements
+
+    extracted_names = workout_data.get("movements") or []
+    if isinstance(extracted_names, str):
+        extracted_names = [extracted_names]
+    movement_name = ", ".join(str(name).strip() for name in extracted_names if str(name).strip())
+    if not movement_name:
+        movement_name = (workout_result.get("movement") or "").strip()
+    if not movement_name:
+        return []
+    return [{
+        "movement": movement_name,
+        "sets": workout_data.get("sets") or workout_result.get("sets") or 1,
+        "reps": workout_data.get("reps") or workout_result.get("reps") or 1,
+        "load_lbs": workout_data.get("weight_lbs") if workout_data.get("weight_lbs") is not None else workout_result.get("load_lbs"),
+    }]
+
+
 def _has_complete_strength_metadata(state: dict) -> bool:
     return all(
         state.get(field) is not None
@@ -389,8 +427,8 @@ async def upsert_training_log_feel(notion, config: dict, date_str: str, rating: 
     logger.info(f"[FEEL] upsert complete date={date_str} rating={rating} action={'updated' if existing else 'created'}")
 
 
-async def _send_notes_prompt(message, key: str, cf_pending: dict, prefix: str | None = None) -> None:
-    prompt = "📝 Any notes about this session?\n(Reply with text, or tap Skip)"
+async def _send_notes_prompt(message, key: str, cf_pending: dict, prefix: str | None = None, body: str | None = None) -> None:
+    prompt = body or "📝 Any notes about this session?\n(Reply with text, or tap Skip)"
     if prefix:
         prompt = f"{prefix.rstrip()}\n\n{prompt}"
     await message.reply_text(prompt, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]))
@@ -423,7 +461,12 @@ async def _prompt_strength_notes_with_pr_context(message, key: str, notion, conf
         logger.warning("Skipping strength PR context for %s: %s", state.get("movement_name"), exc, exc_info=True)
     state["stage"] = "notes"
     cf_pending[key] = state
-    await _send_notes_prompt(message, key, cf_pending, prefix=pr_context)
+    movements = state.get("movements") or []
+    body = None
+    if len(movements) > 1:
+        names = ", ".join(m.get("movement") or "Movement" for m in movements)
+        body = f"📝 Any notes about this session?\nLogging {len(movements)} movements: {names}\n(Reply with text, or tap Skip)"
+    await _send_notes_prompt(message, key, cf_pending, prefix=pr_context, body=body)
 
 async def _prompt_session_feel(message, key: str, state: dict, cf_pending: dict) -> None:
     state["stage"] = "awaiting_feel"
@@ -698,11 +741,14 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
     else:
         state = cf_pending.get(key, {})
 
-    extracted_movements = workout_data.get("movements") or []
-    movement_text = ", ".join(extracted_movements) if extracted_movements else (workout_result.get("movement") or "").strip()
-    sets = state.get("sets") if state.get("sets") is not None else workout_result.get("sets")
-    reps = state.get("reps") if state.get("reps") is not None else workout_result.get("reps")
-    load_lbs = state.get("weight_lbs") if state.get("weight_lbs") is not None else workout_result.get("load_lbs")
+    movements = _normalize_strength_movements(workout_result, workout_data)
+    first_movement = movements[0] if movements else {}
+    movement_text = (first_movement.get("movement") or "").strip()
+    sets = first_movement.get("sets") if first_movement.get("sets") is not None else state.get("sets")
+    reps = first_movement.get("reps") if first_movement.get("reps") is not None else state.get("reps")
+    load_lbs = first_movement.get("load_lbs") if first_movement.get("load_lbs") is not None else state.get("weight_lbs")
+    if load_lbs is None:
+        load_lbs = workout_result.get("load_lbs")
     load_kg = state.get("weight_kg") if state.get("weight_kg") is not None else workout_result.get("load_kg")
     workout_date = state.get("workout_date")
     scheme = state.get("effort_scheme") or (f"{sets}x{reps}" if sets and reps else None)
@@ -716,6 +762,13 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
     state.update({
         "mode": "strength",
         "stage": "movement" if not movement_text else "notes",
+        "movements": movements or [{
+            "movement": movement_text,
+            "sets": sets or 1,
+            "reps": reps or 1,
+            "load_lbs": load_lbs,
+        }],
+        "current_movement_index": 0,
         "movement": movement_text,
         "movement_name": movement_text,
         "weight_lbs": load_lbs,
@@ -756,18 +809,21 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
         await message.reply_text("🏋️ Which movement did you train?", parse_mode="Markdown")
         return
     movement_ids, names = await _resolve_movement_ids(movement_text, claude, notion, config, message)
+    resolved_first_name = names[0] if names else movement_text
     cf_pending[key]["movement_page_ids"] = movement_ids
     cf_pending[key]["movement_page_id"] = movement_ids[0] if movement_ids else None
-    cf_pending[key]["movement"] = ", ".join(names) if names else movement_text
-    cf_pending[key]["movement_name"] = cf_pending[key]["movement"]
-    if movement_ids and await handle_gymnastics_level_check(message, movement_ids[0], cf_pending[key]["movement"], notion, config, cf_pending, key):
+    cf_pending[key]["movement"] = resolved_first_name
+    cf_pending[key]["movement_name"] = resolved_first_name
+    if cf_pending[key].get("movements"):
+        cf_pending[key]["movements"][0]["movement"] = resolved_first_name
+    if movement_ids and len(cf_pending[key].get("movements") or []) == 1 and await handle_gymnastics_level_check(message, movement_ids[0], cf_pending[key]["movement"], notion, config, cf_pending, key):
         return
     load_type = await asyncio.get_running_loop().run_in_executor(None, lambda: get_movement_load_type(notion, movement_ids[0])) if movement_ids else "External Load"
     if load_type == "Bodyweight":
         await _prompt_bodyweight_confirm(message, key, cf_pending[key], cf_pending)
         return
     has_complete_extraction = bool(raw_text and sets is not None and reps is not None and load_lbs is not None)
-    if has_complete_extraction:
+    if has_complete_extraction and len(cf_pending[key].get("movements") or []) <= 1:
         await _finalize_flow(message, key, notion, config, cf_pending, cf_pending[key].get("notes"))
         return
     await _prompt_strength_notes_with_pr_context(message, key, notion, config, cf_pending)
@@ -1178,74 +1234,93 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
     state = cf_pending.get(key) or {}
     logger.info(f"[CF_STATE_C] finalize key={key!r} state={state}")
     if state.get("mode") == "strength":
-        movement_name = state.get("movement_name") or state.get("movement") or "Unknown"
-        movement_id = state.get("movement_page_id") or await asyncio.get_running_loop().run_in_executor(
-            None, lambda: get_or_create_movement(notion, _cf_config(config, "NOTION_MOVEMENTS_DB"), movement_name)
-        )
-        effort_sets = state.get("sets")
-        effort_reps = state.get("reps")
-        if notes:
-            parsed_sets, parsed_reps = parse_rounds_reps(notes)
-            if parsed_sets and parsed_reps:
-                effort_sets, effort_reps = parsed_sets, parsed_reps
-            else:
-                rounds = parse_rounds_only(notes) or parse_emom_rounds(notes)
-                reps_only = parse_reps_only(notes)
-                if rounds:
-                    effort_sets = rounds
-                if reps_only:
-                    effort_reps = reps_only
-        effort_sets = int(effort_sets) if effort_sets is not None else None
-        effort_reps = int(effort_reps) if effort_reps is not None else None
-        if state.get("weight_lbs") is None and state.get("load_lbs") is not None:
-            state["weight_lbs"] = state.get("load_lbs")
-        if state.get("weight_kg") is None and state.get("load_kg") is not None:
-            state["weight_kg"] = state.get("load_kg")
-        state["sets"] = effort_sets
-        state["reps"] = effort_reps
-        if not state.get("effort_scheme") and effort_sets is not None and effort_reps is not None:
-            state["effort_scheme"] = f"{effort_sets}x{effort_reps}"
-        weekly_program_id = state.get("weekly_program_page_id") or await get_current_week_program_url(notion)
-        movement_ids = state.get("movement_page_ids") or [movement_id]
+        movements = state.get("movements") or [{
+            "movement": state.get("movement_name") or state.get("movement") or "Unknown",
+            "sets": state.get("sets"),
+            "reps": state.get("reps"),
+            "load_lbs": state.get("weight_lbs") if state.get("weight_lbs") is not None else state.get("load_lbs"),
+        }]
+        notes = notes if notes is not None else state.get("notes")
+        notes = notes or ""
         raw_log = state.get("raw_log") or ""
+        if notes:
+            raw_log = f"{raw_log}\n\nNotes: {notes}" if raw_log else f"Notes: {notes}"
+        workout_date = state.get("workout_date") or datetime.now(timezone.utc).date().isoformat()
+        weekly_program_id = state.get("weekly_program_page_id") or await get_current_week_program_url(notion)
+
         state_snapshot = dict(state)
         print(f"[DEBUG] Finalizing strength flow state before create_strength_log: {state_snapshot}")
         log.debug("Finalizing strength flow state before create_strength_log: %r", state_snapshot)
-        log.info(
-            "[CF_STATE] sets=%s reps=%s weight=%s date=%s",
-            state.get("sets"),
-            state.get("reps"),
-            state.get("weight_lbs"),
-            state.get("workout_date"),
-        )
-        workout_page_id = await asyncio.get_running_loop().run_in_executor(
-            None,
-            lambda: create_strength_log(
-                notion=notion,
-                workout_log_db_id=_cf_config(config, "NOTION_WORKOUT_LOG_DB"),
-                movement_page_id=movement_ids,
-                movement_name=movement_name,
-                load_lbs=float(state.get("weight_lbs")) if state.get("weight_lbs") is not None else None,
-                effort_sets=state.get("sets"),
-                effort_reps=state.get("reps"),
-                is_max_attempt=state.get("is_max_attempt", False),
-                weekly_program_page_id=weekly_program_id,
-                cycle_page_id=state.get("cycle_page_id"),
-                readiness=state.get("readiness"),
-                workout_date=state.get("workout_date"),
-                effort_scheme=state.get("effort_scheme"),
-                load_kg=state.get("weight_kg"),
-                raw_log=raw_log,
-            ),
-        )
-        state["last_workout_page_id"] = workout_page_id
+
+        created: list[str] = []
+        workout_page_ids: list[str] = []
+        for idx, movement in enumerate(movements):
+            movement_name = movement.get("movement") or state.get("movement_name") or state.get("movement") or "Unknown"
+            movement_page_id = None
+            if idx == 0:
+                movement_page_id = (state.get("movement_page_ids") or [state.get("movement_page_id")]) if len(movements) == 1 else state.get("movement_page_id")
+            if not movement_page_id:
+                movement_page_id = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda n=movement_name: get_or_create_movement(notion, _cf_config(config, "NOTION_MOVEMENTS_DB"), n),
+                )
+            effort_sets = int(movement.get("sets") or 1)
+            effort_reps = int(movement.get("reps") or 1)
+            load_lbs = movement.get("load_lbs")
+            if load_lbs is None and idx == 0:
+                load_lbs = state.get("weight_lbs") if state.get("weight_lbs") is not None else state.get("load_lbs")
+            load_lbs = float(load_lbs) if load_lbs is not None else None
+            effort_scheme = f"{effort_sets}x{effort_reps}"
+            log.info(
+                "[CF_STATE] movement=%s sets=%s reps=%s weight=%s date=%s",
+                movement_name,
+                effort_sets,
+                effort_reps,
+                load_lbs,
+                workout_date,
+            )
+            workout_page_id = await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda movement_page_id=movement_page_id, movement_name=movement_name, load_lbs=load_lbs, effort_sets=effort_sets, effort_reps=effort_reps, effort_scheme=effort_scheme: create_strength_log(
+                    notion=notion,
+                    workout_log_db_id=_cf_config(config, "NOTION_WORKOUT_LOG_DB"),
+                    movement_page_id=movement_page_id,
+                    movement_name=movement_name,
+                    load_lbs=load_lbs,
+                    effort_sets=effort_sets,
+                    effort_reps=effort_reps,
+                    is_max_attempt=state.get("is_max_attempt", False),
+                    weekly_program_page_id=weekly_program_id,
+                    cycle_page_id=state.get("cycle_page_id"),
+                    readiness=state.get("readiness"),
+                    workout_date=workout_date,
+                    effort_scheme=effort_scheme,
+                    load_kg=state.get("weight_kg") if idx == 0 else None,
+                    raw_log=raw_log,
+                ),
+            )
+            workout_page_ids.append(workout_page_id)
+            created.append(movement_name)
+
+        state["last_workout_page_id"] = workout_page_ids[-1] if workout_page_ids else None
+        state["last_workout_page_ids"] = workout_page_ids
         cf_pending[key] = state
-        confirm_msg = "✅ Strength logged to Workout Log v2!\n"
-        confirm_msg += f"💪 Movement: {movement_name}\n"
-        confirm_msg += f"📅 Date: {state.get('workout_date') or datetime.now(timezone.utc).date().isoformat()}\n"
-        confirm_msg += f"📊 Scheme: {state.get('effort_scheme') or 'N/A'}\n"
-        confirm_msg += f"⚖️ Weight: {_fmt_load(state.get('weight_lbs'))}\n"
-        await message.reply_text(confirm_msg, parse_mode="Markdown")
+        movement_summary = ", ".join(created)
+        scheme_summary = " | ".join(
+            f"{m.get('sets') or 1}x{m.get('reps') or 1} "
+            f"{'BW' if not m.get('load_lbs') else _format_lbs(m.get('load_lbs')) + ' lbs'}"
+            for m in movements
+        )
+        first_load = movements[0].get("load_lbs") if movements else None
+        await message.reply_text(
+            f"✅ Strength logged!\n\n"
+            f"🏋️ {movement_summary}\n"
+            f"📅 Date: {workout_date}\n"
+            f"📊 Scheme: {scheme_summary}\n"
+            f"⚖️ Weight: {_format_lbs(first_load) + 'lbs' if first_load else 'BW'}\n"
+            f"_Saved to Notion_",
+            parse_mode="Markdown",
+        )
         await _prompt_session_feel(message, key, state, cf_pending)
         return
     elif state.get("mode") == "wod":

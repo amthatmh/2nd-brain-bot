@@ -728,6 +728,17 @@ def validate_workout_days_db(notion, workout_days_db_id: str) -> list[str]:
         problems.append(f"Cannot retrieve Workout Days DB: {e}")
     return problems
 
+# NOTION FORMULA FIX REQUIRED (manual change in Notion):
+# calc_1rm_brzycki formula should be:
+#   if(prop("effort_reps") > 0 and prop("effort_reps") < 37
+#      and prop("load_lbs") > 0,
+#      prop("load_lbs") * 36 / (37 - prop("effort_reps")),
+#      0)
+# calc_1rm_epley formula should be:
+#   if(prop("effort_reps") > 0 and prop("effort_reps") <= 30
+#      and prop("load_lbs") > 0,
+#      prop("load_lbs") * (1 + prop("effort_reps") / 30.0),
+#      0)
 def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_name, load_lbs, effort_sets, effort_reps, is_max_attempt, weekly_program_page_id, cycle_page_id, readiness, workout_date=None, effort_scheme=None, load_kg=None, raw_log: str = ""):
     """Create a Section B strength/accessory log in Workout Log v2.
 
