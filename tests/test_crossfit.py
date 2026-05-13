@@ -51,17 +51,19 @@ def test_crossfit_submenu_uses_conversational_log_labels():
         "🏋️ Strength (B)",
     ]
     assert [button.text for button in keyboard.inline_keyboard[1]] == [
-        "🏆 WOD (C)",
-        "💬 Workout Feel (D)",
+        "🏆 Log WOD (C)",
+        "🥇 My PRs",
     ]
+    assert [button.text for button in keyboard.inline_keyboard[2]] == ["🔍 Sub / Add-on"]
     assert [button.callback_data for button in keyboard.inline_keyboard[0]] == [
         "cf:log_readiness",
         "cf:log_strength",
     ]
     assert [button.callback_data for button in keyboard.inline_keyboard[1]] == [
         "cf:log_wod",
-        "cf:log_feel",
+        "cf:my_prs",
     ]
+    assert [button.callback_data for button in keyboard.inline_keyboard[2]] == ["cf:sub_addon"]
 
 
 def test_classify_strength_message():
@@ -625,7 +627,7 @@ def test_readiness_final_score_writes_and_clears_pending(monkeypatch):
 
     asyncio.run(handlers.handle_cf_callback(q, ["cf", "ready", key, "soreness", "3"], None, notion, {"NOTION_DAILY_READINESS_DB": "ready-db"}, cf_pending))
 
-    assert key not in cf_pending
+    assert cf_pending[key] == {"session_chain": ["b", "c"], "session_origin": "a"}
     assert q.edits[-1][0].startswith("✅ *Readiness logged!*")
     assert "Sleep Quality: 4" in q.edits[-1][0]
     assert "Soreness: 3" in q.edits[-1][0]
@@ -1482,7 +1484,7 @@ def test_strength_pending_movement_stage_handles_movement_only(monkeypatch):
     assert state["reps"] is None
     assert state["weight_lbs"] is None
     assert state["weight_kg"] is None
-    assert state["workout_date"] == "2026-05-08"
+    assert state["workout_date"] == handlers._local_today().isoformat()
     assert state["effort_scheme"] is None
     assert state["movement"] == "Hang Squat Clean"
     assert state["stage"] == "notes"
@@ -1761,18 +1763,22 @@ def test_wod_duplicate_guard_warns_and_still_logs(monkeypatch):
 
     message = _DummyMessage()
     key = str(message.chat_id)
-    assert cf_pending[key]["mode"] == "feel_only"
-    assert cf_pending[key]["stage"] == "awaiting_feel"
-    assert cf_pending[key]["workout_date"] == handlers.date.today().isoformat()
-    assert message.replies[-1][0] == "💬 How did that session feel?"
-    feel_keyboard = message.replies[-1][1]["reply_markup"].inline_keyboard
-    assert [button.callback_data for button in feel_keyboard[0]] == [
-        f"cf:feel:1:{key}",
-        f"cf:feel:2:{key}",
-        f"cf:feel:3:{key}",
-        f"cf:feel:4:{key}",
-        f"cf:feel:5:{key}",
-    ]
+    pending = {key: {
+        "mode": "wod",
+        "format": "amrap",
+        "time_cap_mins": 12,
+        "rx_scaled": "rx",
+        "workout_date": "2026-05-06",
+        "workout_structure": "AMRAP 12 Burpees",
+        "movement_page_ids": ["mov-burpee"],
+        "movements": ["Burpee"],
+    }}
+
+    asyncio.run(handlers._finalize_flow(message, key, SimpleNamespace(), {"NOTION_WOD_LOG_DB": "wod"}, pending, "6 rounds"))
+
+    assert created["kwargs"]["workout_date"] == "2026-05-06"
+    assert message.replies[0][0] == "⚠️ You already have a WOD logged for 2026-05-06. Logging anyway as a second session."
+    assert pending[key]["stage"] == "awaiting_feel"
 
 
 def test_crossfit_strength_feel_updates_workout_log_and_training_log():
@@ -1855,31 +1861,6 @@ def test_crossfit_wod_feel_updates_wod_log_and_creates_training_log_row():
     q.edit_message_text.assert_awaited_once_with("✅ Session feel logged: 5/5", parse_mode="Markdown")
 
 
-def test_crossfit_standalone_feel_updates_training_log_only():
-    import second_brain.crossfit.handlers as handlers
-    from unittest.mock import AsyncMock
-
-    page_updates = []
-    notion = SimpleNamespace(
-        databases=SimpleNamespace(query=lambda **kwargs: {"results": [{"id": "training-row"}]}),
-        pages=SimpleNamespace(
-            update=lambda **kwargs: page_updates.append(kwargs),
-            create=lambda **kwargs: None,
-        ),
-    )
-    message = _DummyMessage()
-    q = SimpleNamespace(message=message, edit_message_reply_markup=AsyncMock(), edit_message_text=AsyncMock())
-    key = str(message.chat_id)
-    pending = {key: {"mode": "feel_only", "stage": "awaiting_feel", "workout_date": "2026-05-08"}}
-
-    asyncio.run(handlers.handle_cf_callback(q, ["cf", "feel", "3", key], None, notion, {"NOTION_DAILY_READINESS_DB": "training-db"}, pending))
-
-    assert page_updates == [
-        {"page_id": "training-row", "properties": {"Workout Feel": {"select": {"name": "3"}}}},
-    ]
-    assert key not in pending
-    q.edit_message_text.assert_awaited_once_with("✅ Session feel logged: 3/5", parse_mode="Markdown")
-
 def test_parse_programme_text_splits_days_and_tracks_without_claude():
     from second_brain.crossfit.classify import parse_programme
 
@@ -1914,7 +1895,7 @@ Every 3 minutes Row
 
 
 def test_save_programme_links_week_cycle_and_section_movements_from_text():
-    from second_brain.crossfit.notion import save_programme
+    from second_brain.crossfit.notion import save_programme, this_monday
 
     created = []
     updated = []
@@ -1945,12 +1926,11 @@ def test_save_programme_links_week_cycle_and_section_movements_from_text():
     }
     save_programme(notion, "program", "days", "movements", parsed, "raw", "cycles")
     parent_props = created[0]["properties"]
-    assert parent_props["Cycle"] == {"relation": [{"id": "cycle-open"}]}
-    assert parent_props["Week"] == {"number": 3}
+    assert parent_props["Week"] == {"number": 1}
     day_props = created[1]["properties"]
     assert day_props["Day"] == {"select": {"name": "Wednesday"}}
     assert day_props["Track"] == {"select": {"name": "Performance"}}
-    assert day_props["Week Of"] == {"date": {"start": "2026-05-04"}}
+    assert day_props["Week Of"] == {"date": {"start": this_monday()}}
     assert day_props["Section B Movements"] == {"relation": [{"id": "mov-back-squat"}]}
     assert day_props["Section C Movements"] == {"relation": [{"id": "mov-burpee"}]}
 

@@ -3,19 +3,28 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+import os
 
 from utils.alert_handlers import alert_claude_auth_failure
 
 log = logging.getLogger(__name__)
 
 
+def _app_tz() -> ZoneInfo:
+    try:
+        return ZoneInfo(os.environ.get("TIMEZONE", "America/Chicago"))
+    except Exception:
+        return ZoneInfo("America/Chicago")
+
+
 def _today_str() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return datetime.now(_app_tz()).strftime("%Y-%m-%d")
 
 
 def _monday_str() -> str:
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(_app_tz()).date()
     weekday = today.weekday()
     if weekday == 0:
         return today.isoformat()
@@ -285,7 +294,8 @@ Return ONLY valid JSON with fields exactly as requested:
   "wod_name": null,
   "format": "For Time|AMRAP|EMOM|Chipper|Intervals|null",
   "duration_mins": null,
-  "partner": false
+  "partner": false,
+  "raw_text": "original user message"
 }}'''
     try:
         resp = claude_client.messages.create(model=model, max_tokens=max_tokens, messages=[{"role": "user", "content": prompt}])
