@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 import inspect
 import logging
 import os
 import re
+from zoneinfo import ZoneInfo
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from utils.date_parser import parse_date
@@ -21,6 +22,48 @@ from .weekly_program import get_current_week_program_url, get_todays_workout_day
 
 log = logging.getLogger(__name__)
 logger = log
+
+
+def _app_tz() -> ZoneInfo:
+    try:
+        return ZoneInfo(os.environ.get("TIMEZONE", "America/Chicago"))
+    except Exception:
+        return ZoneInfo("America/Chicago")
+
+
+def _local_today() -> date:
+    return datetime.now(_app_tz()).date()
+
+
+def _chain_keyboard(next_step: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Yes", callback_data=f"cf:chain_yes:{next_step}"),
+            InlineKeyboardButton("❌ No", callback_data="cf:chain_no"),
+        ],
+        [InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")],
+    ])
+
+
+async def _ask_chain_next(message, key: str, cf_pending: dict, next_step: str, origin: str | None = None) -> None:
+    existing = cf_pending.get(key, {})
+    chain = list(existing.get("session_chain") or [])
+    if next_step not in chain:
+        chain.append(next_step)
+    cf_pending[key] = {
+        "session_chain": chain,
+        "session_origin": origin or existing.get("session_origin") or next_step,
+    }
+    question = "💪 Did you do Section B (Strength) today?" if next_step == "b" else "🏆 Did you do Section C (WOD) today?"
+    await message.reply_text(question, reply_markup=_chain_keyboard(next_step))
+
+
+def _preserve_chain_state(state: dict) -> dict:
+    return {
+        name: state[name]
+        for name in ("session_chain", "session_origin")
+        if state.get(name) is not None
+    }
 
 
 READINESS_FIELDS = [
@@ -61,7 +104,7 @@ def _readiness_keyboard(field: str, values: dict[str, str], message_id: int) -> 
     return InlineKeyboardMarkup([[
         InlineKeyboardButton(f"{emoji} {score}", callback_data=f"{prefix}:{score}:{message_id}")
         for score, emoji in labels.items()
-    ]])
+    ], [InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]])
 
 
 def _readiness_progress_text(values: dict[str, str], next_field: str | None = None) -> str:
@@ -97,7 +140,7 @@ async def _maybe_await(value):
 async def upsert_training_log_field(notion, date_str: str, field_name: str, rating: str, daily_readiness_db_id: str | None = None):
     """Upsert a feel rating into the Training Log (Daily Readiness) database."""
     db_id = (daily_readiness_db_id or os.environ.get("NOTION_DAILY_READINESS_DB") or "").strip()
-    date_str = date_str or date.today().isoformat()
+    date_str = date_str or _local_today().isoformat()
     logger.info(f"[FEEL_WRITE] db={db_id} date={date_str} field={field_name} rating={rating}")
     if not db_id:
         logger.error("[FEEL_WRITE_ERROR] NOTION_DAILY_READINESS_DB is not configured")
@@ -407,12 +450,12 @@ async def _prompt_ambiguous_workout_date(message, key: str, state: dict, result)
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton(result.label_a or result.option_a or "Option A", callback_data=f"cf:date_pick:a:{key}"),
         InlineKeyboardButton(result.label_b or result.option_b or "Option B", callback_data=f"cf:date_pick:b:{key}"),
-    ]])
+    ], [InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]])
     await message.reply_text("📅 Which date did you mean?", reply_markup=keyboard)
 
 
 def _apply_parsed_workout_date(state: dict, raw_date: str | None):
-    result = parse_date(raw_date)
+    result = parse_date(raw_date, today=_local_today())
     if result.ambiguous:
         return result
     state["workout_date"] = result.resolved
@@ -420,18 +463,12 @@ def _apply_parsed_workout_date(state: dict, raw_date: str | None):
 
 
 
-async def upsert_training_log_feel(notion, config: dict, date_str: str, rating: int) -> None:
-    """Record session feel side effects and emit the production audit log line."""
-    del notion, config
-    existing = False
-    logger.info(f"[FEEL] upsert complete date={date_str} rating={rating} action={'updated' if existing else 'created'}")
-
 
 async def _send_notes_prompt(message, key: str, cf_pending: dict, prefix: str | None = None, body: str | None = None) -> None:
     prompt = body or "📝 Any notes about this session?\n(Reply with text, or tap Skip)"
     if prefix:
         prompt = f"{prefix.rstrip()}\n\n{prompt}"
-    await message.reply_text(prompt, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]))
+    await message.reply_text(prompt, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")], [InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]]))
 
 
 
@@ -448,7 +485,7 @@ async def _prompt_bodyweight_confirm(message, key: str, state: dict, cf_pending:
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("No", callback_data="cf:bw_no"),
         InlineKeyboardButton("Yes — add weight", callback_data="cf:bw_yes"),
-    ]])
+    ], [InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]])
     await message.reply_text("💪 Any load added? (e.g. weighted vest)", reply_markup=keyboard)
 
 
@@ -534,7 +571,7 @@ async def _prompt_wod_result_notes(message, key: str, state: dict) -> None:
     prompt_message = await message.reply_text(
         prompt,
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")], [InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]]),
     )
     state["result_prompt_message_id"] = getattr(prompt_message, "message_id", None)
     state["_result_prompt_message_id_message"] = prompt_message
@@ -563,7 +600,7 @@ async def _prompt_wod_time_cap(message, key: str, state: dict) -> None:
         "• 14\n\n"
         "Or tap Skip.",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")]]),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")], [InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]]),
     )
     state["time_cap_prompt_message_id"] = getattr(prompt_message, "message_id", None)
     state["_time_cap_prompt_message_id_message"] = prompt_message
@@ -787,7 +824,7 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
     cf_pending[key] = state
     logger.info(f"[CF_STATE_A] key={key!r} type={type(key)} sets={cf_pending[key].get('sets')} weight={cf_pending[key].get('weight_lbs')} date={cf_pending[key].get('workout_date')}")
     raw_date = state.get("workout_date")
-    date_result = parse_date(raw_date)
+    date_result = parse_date(raw_date, today=_local_today())
 
     if date_result.ambiguous:
         state["_date_option_a"] = date_result.option_a
@@ -798,7 +835,7 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton(date_result.label_a, callback_data=f"cf:date_pick:a:{key}"),
             InlineKeyboardButton(date_result.label_b, callback_data=f"cf:date_pick:b:{key}"),
-        ]])
+        ], [InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]])
         await message.reply_text("📅 Which date did you mean?", reply_markup=keyboard)
         return
 
@@ -806,7 +843,7 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
         state["workout_date"] = date_result.resolved
         cf_pending[key] = state
     if not movement_text:
-        await message.reply_text("🏋️ Which movement did you train?", parse_mode="Markdown")
+        await message.reply_text("🏋️ Which movement did you train?", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]]))
         return
     movement_ids, names = await _resolve_movement_ids(movement_text, claude, notion, config, message)
     resolved_first_name = names[0] if names else movement_text
@@ -854,14 +891,19 @@ async def handle_cf_wod_flow(message, workout_result, notion, config, cf_pending
     except Exception:
         workout_structure = ""
 
+    existing_state = cf_pending.get(key, {})
+    chain_state = _preserve_chain_state(existing_state)
+    section_c_structure = (todays_workout or {}).get("Section C") or ""
     cf_pending[key] = {
+        **chain_state,
         "mode": "wod",
         "stage": "format",
-        "format": workout_result.get("format"),
+        "format": workout_result.get("format") or (todays_workout or {}).get("Section C Format"),
         "todays_workout": todays_workout,
         "movements": movement_names,
+        "movement_page_ids": (todays_workout or {}).get("Section C Movements") or [],
         "raw_log": workout_result.get("raw_text") or "",
-        "workout_structure": workout_structure,
+        "workout_structure": workout_result.get("workout_structure") or workout_result.get("raw_text") or section_c_structure or workout_structure,
     }
     await message.reply_text(
         "🏋️ What format was the WOD?",
@@ -975,7 +1017,7 @@ def _select_name(props: dict, key: str, default: str = "") -> str:
 
 
 async def _workout_day_rows_for_today(notion, workout_days_db_id: str) -> tuple[str, list[dict]]:
-    today = date.today()
+    today = _local_today()
     monday = this_monday()
     day_name = today.strftime("%A")
     results = await _maybe_await(notion_call(
@@ -1127,9 +1169,10 @@ def _recent_unique_sessions(entries: list[dict], limit: int = 3) -> list[dict]:
 
 
 def _format_best_logged(entry: dict) -> str:
-    sets = entry.get("sets") or "?"
+    sets = entry.get("sets")
     reps = entry.get("reps") or "?"
-    return f"{_fmt_load(entry.get('load_lbs'))} × {sets}×{reps}"
+    effort = f"{reps} reps" if sets in (None, 1) else f"{sets}×{reps}"
+    return f"{_fmt_load(entry.get('load_lbs'))} × {effort}"
 
 
 def _format_recent_pr_lines(entries: list[dict], include_sets: bool = False) -> list[str]:
@@ -1137,7 +1180,7 @@ def _format_recent_pr_lines(entries: list[dict], include_sets: bool = False) -> 
     for entry in entries:
         sets = entry.get("sets") or "?"
         reps = entry.get("reps") or "?"
-        effort = f"{sets}×{reps}" if include_sets or sets != "?" else f"{reps} reps"
+        effort = f"{reps} reps" if (not include_sets and sets in ("?", 1)) else f"{sets}×{reps}"
         lines.append(f"• {entry.get('date') or 'Unknown date'} — {_fmt_load(entry.get('load_lbs'))} × {effort}")
     return lines
 
@@ -1245,7 +1288,7 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         raw_log = state.get("raw_log") or ""
         if notes:
             raw_log = f"{raw_log}\n\nNotes: {notes}" if raw_log else f"Notes: {notes}"
-        workout_date = state.get("workout_date") or datetime.now(timezone.utc).date().isoformat()
+        workout_date = state.get("workout_date") or _local_today().isoformat()
         weekly_program_id = state.get("weekly_program_page_id") or await get_current_week_program_url(notion)
 
         state_snapshot = dict(state)
@@ -1355,7 +1398,7 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         workout_structure = state.get("workout_structure") or ""
         wod_name = state.get("wod_name")
         wod_format = _format_label(state.get("format"))
-        workout_date = state.get("workout_date") or date.today().isoformat()
+        workout_date = state.get("workout_date") or _local_today().isoformat()
         state["workout_date"] = workout_date
         print(f"[DEBUG] Time cap: {time_cap_mins}")
         print(f"[DEBUG] Workout structure: {workout_structure}")
@@ -1433,7 +1476,7 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
     if state.get("mode") == "strength" and state.get("stage") == "weight":
         weight_lbs = _parse_weight_lbs(text)
         if weight_lbs is None:
-            await message.reply_text("How much weight? (e.g. 20 lbs)", parse_mode="Markdown")
+            await message.reply_text("How much weight? (e.g. 20 lbs)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]]))
             return
         state["weight_lbs"] = weight_lbs
         state["load_lbs"] = weight_lbs
@@ -1461,7 +1504,7 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
 
         raw_date = state.get("raw_workout_date") or state.get("workout_date")
         if raw_date:
-            date_result = parse_date(raw_date)
+            date_result = parse_date(raw_date, today=_local_today())
             if date_result.ambiguous:
                 state["_date_option_a"] = date_result.option_a
                 state["_date_option_b"] = date_result.option_b
@@ -1470,13 +1513,13 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
                 keyboard = InlineKeyboardMarkup([[
                     InlineKeyboardButton(date_result.label_a, callback_data=f"cf:date_pick:a:{key}"),
                     InlineKeyboardButton(date_result.label_b, callback_data=f"cf:date_pick:b:{key}"),
-                ]])
+                ], [InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]])
                 await message.reply_text("📅 Which date did you mean?", reply_markup=keyboard)
                 return
             state["workout_date"] = date_result.resolved
             cf_pending[key] = state
         else:
-            state["workout_date"] = date.today().isoformat()
+            state["workout_date"] = _local_today().isoformat()
             cf_pending[key] = state
 
         logger.info(f"[CF_STATE_A] WROTE key={key!r} sets={state.get('sets')} weight={state.get('weight_lbs')} date={state.get('workout_date')}")
@@ -1510,14 +1553,14 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
         state["workout_date"] = raw_date
         state["raw_workout_date"] = _extract_raw_workout_date(raw_structure) or raw_date
         if raw_date or state.get("raw_workout_date"):
-            date_result = parse_date(state.get("raw_workout_date") or raw_date)
+            date_result = parse_date(state.get("raw_workout_date") or raw_date, today=_local_today())
             if date_result.ambiguous:
                 cf_pending[cf_flow_key] = state
                 await _prompt_ambiguous_workout_date(message, cf_flow_key, state, date_result)
                 return
             state["workout_date"] = date_result.resolved
         else:
-            state["workout_date"] = date.today().isoformat()
+            state["workout_date"] = _local_today().isoformat()
         cf_pending[cf_flow_key] = state
         print(f"[DEBUG] Movements: {names}")
         print(f"[DEBUG] Workout structure: {state['workout_structure']}")
@@ -1590,21 +1633,34 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         state = cf_pending.get(key, {})
         state["stage"] = "weight"
         cf_pending[key] = state
-        await q.message.reply_text("How much weight? (e.g. 20 lbs)", parse_mode="Markdown")
+        await q.message.reply_text("How much weight? (e.g. 20 lbs)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]]))
     elif parts[1] == "log_strength":
         print("[DEBUG] Routing to handle_cf_strength_flow")
+        key = str(q.message.chat_id)
+        cf_pending[key] = {"session_chain": ["c"], "session_origin": "b"}
         await handle_cf_strength_flow(q.message, {}, claude, notion, config, cf_pending)
     elif parts[1] == "log_wod":
         print("[DEBUG] Routing to handle_cf_wod_flow")
-        await handle_cf_wod_flow(q.message, {}, notion, config, cf_pending)
-    elif parts[1] == "log_feel":
         key = str(q.message.chat_id)
-        cf_pending[key] = {
-            "mode": "feel_only",
-            "stage": "awaiting_feel",
-            "workout_date": date.today().isoformat(),
-        }
-        await q.message.reply_text("💬 How did that session feel?", reply_markup=session_feel_keyboard(key))
+        cf_pending[key] = {"session_origin": "c"}
+        await handle_cf_wod_flow(q.message, {}, notion, config, cf_pending)
+    elif parts[1] == "chain_yes" and len(parts) == 3:
+        key = str(q.message.chat_id)
+        step = parts[2]
+        state = cf_pending.get(key, {})
+        chain = list(state.get("session_chain") or [])
+        if step in chain:
+            chain.remove(step)
+        cf_pending[key] = {"session_chain": chain, "session_origin": state.get("session_origin") or step}
+        if step == "b":
+            await handle_cf_strength_flow(q.message, {}, claude, notion, config, cf_pending)
+        elif step == "c":
+            await handle_cf_wod_flow(q.message, {}, notion, config, cf_pending)
+        else:
+            await q.answer("Action unavailable.", show_alert=False)
+    elif parts[1] == "chain_no":
+        cf_pending.pop(str(q.message.chat_id), None)
+        await q.message.reply_text("✅ Session complete.")
     elif parts[1] == "date_pick" and len(parts) >= 4:
         choice = parts[2]   # "a" or "b"
         key = parts[3]
@@ -1650,7 +1706,7 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
                 if not state.get("movement"):
                     state["stage"] = "movement"
                     cf_pending[key] = state
-                    await q.message.reply_text("🏋️ Which movement did you train?", parse_mode="Markdown")
+                    await q.message.reply_text("🏋️ Which movement did you train?", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]]))
                 else:
                     state["stage"] = "notes"
                     cf_pending[key] = state
@@ -1721,8 +1777,9 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
                 await q.edit_message_text(f"❌ Error logging readiness: {e}", reply_markup=None)
                 return
             print("[DEBUG] Readiness logged successfully")
-            cf_pending.pop(key, None)
+            cf_pending[key] = {"session_chain": ["b", "c"], "session_origin": "a"}
             await q.edit_message_text(_readiness_final_text(values), parse_mode="Markdown", reply_markup=None)
+            await q.message.reply_text("💪 Did you do Section B (Strength) today?", reply_markup=_chain_keyboard("b"))
             return
 
         state["stage"] = next_field
@@ -1759,8 +1816,9 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
                     await q.edit_message_text(f"❌ Error logging readiness: {e}", reply_markup=None)
                     return
                 print("[DEBUG] Readiness logged successfully")
-                cf_pending.pop(key, None)
+                cf_pending[key] = {"session_chain": ["b", "c"], "session_origin": "a"}
                 await q.edit_message_text(_readiness_final_text(values), parse_mode="Markdown", reply_markup=None)
+                await q.message.reply_text("💪 Did you do Section B (Strength) today?", reply_markup=_chain_keyboard("b"))
                 return
             state["stage"] = next_field
             cf_pending[key] = state
@@ -1809,8 +1867,9 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
                 await q.edit_message_text(f"❌ Error logging readiness: {e}", reply_markup=None)
                 return
             print("[DEBUG] Readiness logged successfully")
-            cf_pending.pop(key, None)
+            cf_pending[key] = {"session_chain": ["b", "c"], "session_origin": "a"}
             await q.edit_message_text(_readiness_final_text(values), parse_mode="Markdown", reply_markup=None)
+            await q.message.reply_text("💪 Did you do Section B (Strength) today?", reply_markup=_chain_keyboard("b"))
             return
 
         state["stage"] = next_field
@@ -1858,7 +1917,7 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         state["session_feel"] = int(rating)
         cf_pending[key] = state
         mode = state.get("mode")
-        workout_date = state.get("workout_date") or date.today().isoformat()
+        workout_date = state.get("workout_date") or _local_today().isoformat()
         daily_readiness_db_id = _cf_config(config, "NOTION_DAILY_READINESS_DB")
         try:
             if mode == "strength":
@@ -1889,8 +1948,6 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
                 else:
                     logger.warning("[FEEL_C] missing last_wod_page_id key=%r state=%r", key, state)
                 await upsert_training_log_field(notion, workout_date, "WOD Feel", rating, daily_readiness_db_id)
-            elif mode == "feel_only":
-                await upsert_training_log_field(notion, workout_date, "Workout Feel", rating, daily_readiness_db_id)
             else:
                 logger.warning("[FEEL] Unknown feel mode=%r key=%r", mode, key)
         except Exception as e:
@@ -1898,8 +1955,15 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
             cf_pending.pop(key, None)
             await q.edit_message_text(f"❌ Error logging session feel: {e}", parse_mode="Markdown")
             return
+        chain = list(state.get("session_chain") or [])
+        origin = state.get("session_origin")
         cf_pending.pop(key, None)
         await q.edit_message_text(f"✅ Session feel logged: {rating}/5", parse_mode="Markdown")
+        if mode == "strength" and "c" in chain:
+            cf_pending[key] = {"session_chain": chain, "session_origin": origin}
+            await q.message.reply_text("🏆 Did you do Section C (WOD) today?", reply_markup=_chain_keyboard("c"))
+        elif mode == "wod":
+            cf_pending.pop(key, None)
     elif parts[1] == "skip" and len(parts) == 3:
         key = parts[2]
         logger.info(f"[CF_STATE_B] skip received key={key!r} type={type(key)} cf_pending_keys={list(cf_pending.keys())}")
@@ -1925,7 +1989,7 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
             await _finalize_flow(q.message, key, notion, config, cf_pending, None)
     elif parts[1] == "cancel":
         cf_pending.pop(str(q.message.chat_id), None)
-        await q.edit_message_text("❌ CrossFit action canceled.")
+        await q.message.reply_text("❌ Session cancelled.")
     elif parts[1] == "levelok" and len(parts) == 3:
         key = parts[2]
         state = cf_pending.get(key, {})

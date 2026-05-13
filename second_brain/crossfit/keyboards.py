@@ -13,12 +13,11 @@ def crossfit_submenu_keyboard(readiness_logged: bool = True) -> InlineKeyboardMa
             InlineKeyboardButton("🏋️ Strength (B)", callback_data="cf:log_strength"),
         ],
         [
-            InlineKeyboardButton("🏆 WOD (C)", callback_data="cf:log_wod"),
-            InlineKeyboardButton("💬 Workout Feel (D)", callback_data="cf:log_feel"),
+            InlineKeyboardButton("🏆 Log WOD (C)", callback_data="cf:log_wod"),
+            InlineKeyboardButton("🥇 My PRs", callback_data="cf:my_prs"),
         ],
         [
-            InlineKeyboardButton("🥇 My PRs", callback_data="cf:my_prs"),
-            InlineKeyboardButton("🔄 Sub / Add-on", callback_data="cf:sub_addon"),
+            InlineKeyboardButton("🔍 Sub / Add-on", callback_data="cf:sub_addon"),
         ],
         [
             InlineKeyboardButton("❌ Cancel", callback_data="cf:cancel"),
@@ -31,19 +30,20 @@ def wod_format_keyboard(key: str) -> InlineKeyboardMarkup:
     rows = []
     for i in range(0, len(formats), 2):
         rows.append([InlineKeyboardButton(f[0], callback_data=f"cf:fmt:{key}:{f[1]}") for f in formats[i:i + 2]])
+    rows.append([InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")])
     return InlineKeyboardMarkup(rows)
 
 
 def result_type_keyboard(key: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("⏱ Time", callback_data=f"cf:rt:{key}:time"), InlineKeyboardButton("🔄 Rounds+Reps", callback_data=f"cf:rt:{key}:rounds_reps")], [InlineKeyboardButton("💪 Reps", callback_data=f"cf:rt:{key}:reps"), InlineKeyboardButton("🏋️ Load", callback_data=f"cf:rt:{key}:load")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("⏱ Time", callback_data=f"cf:rt:{key}:time"), InlineKeyboardButton("🔄 Rounds+Reps", callback_data=f"cf:rt:{key}:rounds_reps")], [InlineKeyboardButton("💪 Reps", callback_data=f"cf:rt:{key}:reps"), InlineKeyboardButton("🏋️ Load", callback_data=f"cf:rt:{key}:load")], [InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]])
 
 
 def rx_scaled_keyboard(key: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Rx", callback_data=f"cf:rx:{key}:rx"), InlineKeyboardButton("📉 Scaled", callback_data=f"cf:rx:{key}:scaled"), InlineKeyboardButton("🔧 Modified", callback_data=f"cf:rx:{key}:modified")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Rx", callback_data=f"cf:rx:{key}:rx"), InlineKeyboardButton("📉 Scaled", callback_data=f"cf:rx:{key}:scaled"), InlineKeyboardButton("🔧 Modified", callback_data=f"cf:rx:{key}:modified")], [InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]])
 
 
 def partner_keyboard(key: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("👥 Partner WOD", callback_data=f"cf:partner:{key}:yes"), InlineKeyboardButton("🙋 Solo", callback_data=f"cf:partner:{key}:no")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("👥 Partner WOD", callback_data=f"cf:partner:{key}:yes"), InlineKeyboardButton("🙋 Solo", callback_data=f"cf:partner:{key}:no")], [InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]])
 
 
 def session_feel_keyboard(key: str) -> InlineKeyboardMarkup:
@@ -53,11 +53,11 @@ def session_feel_keyboard(key: str) -> InlineKeyboardMarkup:
         InlineKeyboardButton("😐 3", callback_data=f"cf:feel:3:{key}"),
         InlineKeyboardButton("💪 4", callback_data=f"cf:feel:4:{key}"),
         InlineKeyboardButton("🔥 5", callback_data=f"cf:feel:5:{key}"),
-    ]])
+    ], [InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]])
 
 def readiness_keyboard(key: str, field: str) -> InlineKeyboardMarkup:
     labels = {"1": "😴", "2": "😕", "3": "😐", "4": "🙂", "5": "💪"}
-    return InlineKeyboardMarkup([[InlineKeyboardButton(f"{v} {k}", callback_data=f"cf:ready:{key}:{field}:{k}") for k, v in labels.items()]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton(f"{v} {k}", callback_data=f"cf:ready:{key}:{field}:{k}") for k, v in labels.items()], [InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]])
 
 
 def my_level_keyboard(key: str, steps) -> InlineKeyboardMarkup:

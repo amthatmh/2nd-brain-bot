@@ -3,12 +3,24 @@ import asyncio
 import json
 import os
 import re
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from second_brain.notion import notion_call
 from .nlp import fuzzy_match_movements, normalize_movement_name
 import logging
 
 log = logging.getLogger(__name__)
+
+
+def _app_tz() -> ZoneInfo:
+    try:
+        return ZoneInfo(os.environ.get("TIMEZONE", "America/Chicago"))
+    except Exception:
+        return ZoneInfo("America/Chicago")
+
+
+def _local_today() -> date:
+    return datetime.now(_app_tz()).date()
 
 
 def _title(props, key="Name"):
@@ -65,6 +77,33 @@ def get_or_create_movement(notion, movements_db_id: str, name: str) -> str:
 
 
 
+MOVEMENT_BLOCKLIST = {
+    "accumulate",
+    "build",
+    "cool down",
+    "cooldown",
+    "effort",
+    "every",
+    "flow",
+    "for quality",
+    "for time",
+    "interval",
+    "minutes",
+    "practice",
+    "rest",
+    "round",
+    "rounds",
+    "section",
+    "section b",
+    "section c",
+    "strategy",
+    "time cap",
+    "warm up",
+    "warm-up",
+    "work",
+}
+
+
 MOVEMENT_ALIAS_MAP = [
     (r"russian\s+(kb|kettlebell)\s+swing", "Kettlebell Swing"),
     (r"american\s+(kb|kettlebell)\s+swing", "American Kettlebell Swing"),
@@ -107,6 +146,13 @@ MOVEMENT_ALIAS_MAP = [
 
 def normalise_movement_name(raw: str) -> list[str]:
     s = (raw or "").strip()
+    compact = re.sub(r"\s+", " ", s.lower()).strip(" :-–—")
+    if not compact or compact in MOVEMENT_BLOCKLIST:
+        return []
+    if re.fullmatch(r"(?:amrap|emom|tabata|chipper|for time|rest|work)(?:\s+\d+)?", compact):
+        return []
+    if re.fullmatch(r"\d+(?::\d{2})?(?:\s*(?:min|mins|minutes|sec|seconds|m|meters?|cal|cals|calories))?", compact):
+        return []
 
     slash_parts = re.split(r"\s*/\s*", s)
     if len(slash_parts) > 1 and all(re.search(r"[a-zA-Z]{3,}", p) for p in slash_parts):
@@ -139,6 +185,9 @@ def normalise_movement_name(raw: str) -> list[str]:
         r"(?i)\b(swings|jumps|dips|lunges|squats|rows|burpees|climbs)\b",
         lambda m: m.group(0).rstrip("s"), s,
     )
+    compact = re.sub(r"\s+", " ", s.lower()).strip(" :-–—")
+    if compact in MOVEMENT_BLOCKLIST or len(compact) <= 1:
+        return []
     return [s] if s else []
 
 
@@ -299,7 +348,7 @@ def _rich_text_chunks(text: str, limit: int = 1900) -> list[dict]:
 
 
 def this_monday() -> str:
-    today = date.today()
+    today = _local_today()
     weekday = today.weekday()  # Mon=0 Sun=6
     if weekday == 0:
         return today.isoformat()
@@ -751,7 +800,7 @@ def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_na
     del cycle_page_id
     del effort_scheme
     del load_kg
-    workout_date = workout_date or datetime.now(timezone.utc).date().isoformat()
+    workout_date = workout_date or _local_today().isoformat()
     movement_ids = movement_page_id if isinstance(movement_page_id, list) else [movement_page_id]
     props = {
         "Name": {"title": [{"text": {"content": f"{workout_date} — Strength"}}]},
@@ -778,7 +827,7 @@ def get_today_workout_structure(notion, workout_days_db_id: str) -> str:
     if not notion or not workout_days_db_id:
         return ""
 
-    today = date.today()
+    today = _local_today()
     day_name = today.strftime("%A")
     monday = (today - timedelta(days=today.weekday())).isoformat()
 
@@ -853,7 +902,7 @@ def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mi
     # workout_date argument for new callers.
     if workout_date is None and isinstance(readiness, str):
         workout_date = readiness
-    workout_date = workout_date or datetime.now(timezone.utc).date().isoformat()
+    workout_date = workout_date or _local_today().isoformat()
     props = {
         "Name": {"title": [{"text": {"content": f"{(wod_name or wod_format)} — {workout_date}"}}]},
         "Date": {"date": {"start": workout_date}},
@@ -887,35 +936,6 @@ def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mi
     page = notion_call(notion.pages.create, parent={"database_id": wod_log_db_id}, properties=props)
     return page["id"]
 
-
-def upsert_training_log_feel(notion, daily_readiness_db_id: str, rating, workout_date: str | None = None) -> str | None:
-    """Upsert standalone workout feel onto the Daily Readiness entry for a date."""
-    workout_date = workout_date or datetime.now(timezone.utc).date().isoformat()
-    if not daily_readiness_db_id:
-        raise ValueError("NOTION_DAILY_READINESS_DB is not configured")
-    properties = {
-        "Workout Feel": {"select": {"name": str(rating)}},
-    }
-    results = notion_call(
-        notion.databases.query,
-        database_id=daily_readiness_db_id,
-        filter={"property": "Date", "date": {"equals": workout_date}},
-        page_size=1,
-    ).get("results", [])
-    if results:
-        page_id = results[0]["id"]
-        notion_call(notion.pages.update, page_id=page_id, properties=properties)
-        return page_id
-    page = notion_call(
-        notion.pages.create,
-        parent={"database_id": daily_readiness_db_id},
-        properties={
-            "Name": {"title": [{"text": {"content": f"Workout Feel — {workout_date}"}}]},
-            "Date": {"date": {"start": workout_date}},
-            **properties,
-        },
-    )
-    return page.get("id")
 
 
 def _relation_names(notion, relation_items: list[dict]) -> list[str]:
