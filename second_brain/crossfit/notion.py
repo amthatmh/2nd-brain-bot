@@ -4,12 +4,14 @@ import json
 import os
 import re
 from datetime import date, datetime, timedelta
+import zoneinfo
 from zoneinfo import ZoneInfo
 from second_brain.notion import notion_call
 from .nlp import fuzzy_match_movements, normalize_movement_name
 import logging
 
 log = logging.getLogger(__name__)
+_CF_TZ = zoneinfo.ZoneInfo("America/Chicago")
 
 
 def _app_tz() -> ZoneInfo:
@@ -20,8 +22,123 @@ def _app_tz() -> ZoneInfo:
 
 
 def _local_today() -> date:
-    return datetime.now(_app_tz()).date()
+    return datetime.now(_CF_TZ).date()
 
+
+
+MOVEMENT_BLOCKLIST_PATTERNS = [
+    r"^clean[\s-]?up",
+    r"^warm[\s-]?up",
+    r"^\d{1,2}:\d{2}",
+    r"^rest\b", r"^recovery\b",
+    r"^prioritize\b", r"^practice\b",
+    r"^aim\b", r"^avoid\b", r"^build\b",
+    r"^expect\b", r"^scale\b", r"^substitute\b",
+    r"^stagger\b", r"^roughly\b",
+    r"^training\s+notes?\b",
+    r"^you\s+\w+", r"^this\s+(emom|amrap|wod|workout|will|is)\b",
+    r"^there\s+is\b", r"^get\s+off\b", r"^run\s+together\b",
+    r"^split\s+the\b", r"^each\s+movement\b",
+    r"^the\s+\w+", r"^if\s+you\b", r"^it\s+may\b",
+    r"^as\s+the\b", r"^hang\s+from\b", r"^but\s+allows?\b",
+    r"^this\s+workout\b", r"^other\b", r"^rep\s+scheme\b",
+]
+
+
+def is_valid_movement_candidate(name: str) -> bool:
+    s = (name or "").strip()
+    if not s:
+        return False
+    for pattern in MOVEMENT_BLOCKLIST_PATTERNS:
+        if re.search(pattern, s, re.IGNORECASE):
+            return False
+    if len(s.split()) >= 5:
+        return False
+    if re.search(r"[,\.](?!\d)", s):
+        return False
+    return True
+
+
+def load_movement_library(notion, movements_db_id: str) -> dict[str, str]:
+    """Load all movements + aliases from NOTION_MOVEMENTS_DB."""
+    cache: dict[str, str] = {}
+    cursor = None
+    while True:
+        resp = notion_call(
+            notion.databases.query,
+            database_id=movements_db_id,
+            start_cursor=cursor,
+            page_size=100,
+        )
+        for page in resp.get("results", []):
+            props = page.get("properties", {})
+            name = "".join(c.get("plain_text", "") for c in props.get("Name", {}).get("title", [])).strip()
+            if name:
+                cache[name.lower()] = page["id"]
+            aliases_text = "".join(c.get("plain_text", "") for c in props.get("Aliases", {}).get("rich_text", [])).strip()
+            for alias in re.split(r"[,;]+", aliases_text):
+                alias = alias.strip().lower()
+                if alias:
+                    cache[alias] = page["id"]
+        if not resp.get("has_more"):
+            break
+        cursor = resp.get("next_cursor")
+    log.info("load_movement_library: %d entries", len(cache))
+    return cache
+
+
+def match_movement(name: str, movement_cache: dict[str, str], threshold: int = 80) -> str | None:
+    """Match name against loaded library. Returns page_id or None. Never creates pages."""
+    from rapidfuzz import process, fuzz
+    if not name or not movement_cache:
+        return None
+    key = name.strip().lower()
+    lowered = {str(k).lower(): v for k, v in movement_cache.items()}
+    if key in lowered:
+        return lowered[key]
+    simple_key = re.sub(r"[^a-z0-9 ]+", " ", key)
+    simple_key = re.sub(r"\s+", " ", simple_key).strip()
+    for candidate, page_id in lowered.items():
+        simple_candidate = re.sub(r"[^a-z0-9 ]+", " ", candidate)
+        simple_candidate = re.sub(r"\s+", " ", simple_candidate).strip()
+        singular_candidate = re.sub(r"\b(\w+)s\b", r"\1", simple_candidate)
+        if simple_key and (simple_key in simple_candidate or simple_key in singular_candidate):
+            return page_id
+    result = process.extractOne(key, lowered.keys(), scorer=fuzz.token_sort_ratio, score_cutoff=threshold)
+    if result:
+        matched_key, score, _ = result
+        log.debug("match_movement: '%s'→'%s' score=%d", name, matched_key, score)
+        return lowered[matched_key]
+    log.debug("match_movement: no match for '%s'", name)
+    return None
+
+
+def get_available_tracks_today(notion, workout_days_db_id: str) -> list[dict]:
+    """Return list of {track, page_id} dicts for today's Workout Days rows."""
+    if not workout_days_db_id:
+        return []
+    today = datetime.now(_CF_TZ).date()
+    day_name = today.strftime("%A")
+    monday = (today - timedelta(days=today.weekday())).isoformat()
+    try:
+        results = notion_call(
+            notion.databases.query,
+            database_id=workout_days_db_id,
+            filter={"and": [
+                {"property": "Day", "select": {"equals": day_name}},
+                {"property": "Week Of", "date": {"equals": monday}},
+            ]},
+            page_size=5,
+        ).get("results", [])
+    except Exception as e:
+        log.warning("get_available_tracks_today: %s", e)
+        return []
+    out = []
+    for r in results:
+        track = (r["properties"].get("Track", {}).get("select") or {}).get("name")
+        if track:
+            out.append({"track": track, "page_id": r["id"]})
+    return out
 
 def _title(props, key="Name"):
     try:return props[key]["title"][0]["plain_text"]
@@ -218,23 +335,7 @@ def _plain_rich_text(props: dict, key: str) -> str:
 def _load_movement_cache_sync(notion, movements_db_id: str) -> dict[str, str]:
     if not notion or not movements_db_id:
         return {}
-    cache: dict[str, str] = {}
-    start_cursor = None
-    while True:
-        kwargs = {"database_id": movements_db_id, "page_size": 100}
-        if start_cursor:
-            kwargs["start_cursor"] = start_cursor
-        res = notion_call(notion.databases.query, **kwargs)
-        for page in res.get("results", []):
-            name = _title(page.get("properties", {}))
-            if name:
-                cache[name] = page.get("id")
-        if not res.get("has_more"):
-            break
-        start_cursor = res.get("next_cursor")
-        if not start_cursor:
-            break
-    return cache
+    return load_movement_library(notion, movements_db_id)
 
 
 def _run_fuzzy_match_sync(names: list[str], cache: dict[str, str]):
@@ -273,7 +374,8 @@ def _movement_names_from_text(section_text: str, movement_cache: dict[str, str])
     return sorted(found, key=lambda name: (section_text.lower().find(name.lower()), name))
 
 
-def _resolve_section_movements(section: dict, movement_cache: dict[str, str], notion, movements_db_id: str) -> list[str]:
+def _resolve_section_movements(section: dict, movement_cache: dict[str, str], notion=None, movements_db_id: str = "") -> list[str]:
+    del notion, movements_db_id
     section = section or {}
     candidates: list[str] = []
     for name in section.get("movements") or []:
@@ -286,21 +388,17 @@ def _resolve_section_movements(section: dict, movement_cache: dict[str, str], no
                 candidates.append(canonical)
 
     resolved: list[str] = []
-    for extracted_name, matched_name, score in _run_fuzzy_match_sync(candidates, movement_cache):
-        canonical_names = normalise_movement_name(extracted_name) or [extracted_name]
-        canonical = canonical_names[0] if canonical_names else extracted_name
-        if matched_name and score >= 0.70:
-            mid = movement_cache.get(matched_name)
-            if mid and mid not in resolved:
-                resolved.append(mid)
-            if canonical and mid:
-                movement_cache.setdefault(canonical, mid)
-            continue
-        if canonical and movements_db_id:
-            mid = get_or_create_movement(notion, movements_db_id, canonical)
-            movement_cache.setdefault(canonical, mid)
-            if mid not in resolved:
-                resolved.append(mid)
+    for raw_name in candidates:
+        for canonical in normalise_movement_name(raw_name):
+            if not canonical or not is_valid_movement_candidate(canonical):
+                log.debug("programme: blocked '%s'", canonical)
+                continue
+            mid = match_movement(canonical, movement_cache)
+            if mid:
+                if mid not in resolved:
+                    resolved.append(mid)
+            else:
+                log.info("programme: no library match for '%s' — skipped", canonical)
     return resolved
 
 
@@ -348,13 +446,8 @@ def _rich_text_chunks(text: str, limit: int = 1900) -> list[dict]:
 
 
 def this_monday() -> str:
-    today = _local_today()
-    weekday = today.weekday()  # Mon=0 Sun=6
-    if weekday == 0:
-        return today.isoformat()
-    if weekday <= 4:
-        return (today - timedelta(days=weekday)).isoformat()
-    return (today + timedelta(days=7 - weekday)).isoformat()
+    today = datetime.now(_CF_TZ).date()
+    return (today - timedelta(days=today.weekday())).isoformat()
 
 
 def infer_section_b_type(section_b: dict) -> str:
@@ -501,7 +594,7 @@ def get_current_week_programme(notion, program_db_id: str):
     except Exception: parsed = None
     return {"page_id": p["id"], "name": _title(props), "full_program": full_text, "week_label": _title(props), "days_parsed": parsed}
 
-def save_programme(notion, program_db_id: str, workout_days_db_id: str, movements_db_id: str, parsed: dict, full_text: str, cycles_db_id: str | None = None) -> str:
+def save_programme(notion, program_db_id: str, workout_days_db_id: str, movements_db_id: str, parsed: dict, full_text: str, cycles_db_id: str | None = None, movement_cache: dict | None = None) -> str:
     if "tracks" not in parsed and "days" in parsed:
         parsed = {
             "week_label": parsed.get("week_label"),
@@ -528,7 +621,7 @@ def save_programme(notion, program_db_id: str, workout_days_db_id: str, movement
         log.error("save_programme: failed to create Weekly Programs row: %s", e)
         raise
 
-    movement_cache: dict[str, str] = _load_movement_cache_sync(notion, movements_db_id) if movements_db_id else {}
+    movement_cache: dict[str, str] = dict(movement_cache or (_load_movement_cache_sync(notion, movements_db_id) if movements_db_id else {}))
     program_movement_ids: set[str] = set()
     if movements_db_id:
         all_movement_names = _extract_unique_movement_names(parsed)
@@ -621,6 +714,7 @@ def save_programme_from_notion_row(
     parsed: dict,
     program_db_id: str | None = None,
     cycles_db_id: str | None = None,
+    movement_cache: dict | None = None,
 ) -> dict:
     """
     Like save_programme() but writes Workout Days rows linked to an
@@ -649,7 +743,7 @@ def save_programme_from_notion_row(
     except Exception as e:
         log.warning("save_programme_from_notion_row: could not update parent name: %s", e)
 
-    movement_cache: dict[str, str] = _load_movement_cache_sync(notion, movements_db_id) if movements_db_id else {}
+    movement_cache: dict[str, str] = dict(movement_cache or (_load_movement_cache_sync(notion, movements_db_id) if movements_db_id else {}))
     program_movement_ids: set[str] = set()
     day_movement_ids: set[str] = set()
     all_names = _extract_unique_movement_names(parsed)
@@ -788,7 +882,7 @@ def validate_workout_days_db(notion, workout_days_db_id: str) -> list[str]:
 #      and prop("load_lbs") > 0,
 #      prop("load_lbs") * (1 + prop("effort_reps") / 30.0),
 #      0)
-def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_name, load_lbs, effort_sets, effort_reps, is_max_attempt, weekly_program_page_id, cycle_page_id, readiness, workout_date=None, effort_scheme=None, load_kg=None, raw_log: str = ""):
+def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_name, load_lbs, effort_sets, effort_reps, is_max_attempt, weekly_program_page_id, cycle_page_id, readiness, workout_date=None, effort_scheme=None, load_kg=None, raw_log: str = "", workout_day_id: str | None = None):
     """Create a Section B strength/accessory log in Workout Log v2.
 
     Readiness is intentionally ignored in Phase 1 because readiness now lives
@@ -814,6 +908,8 @@ def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_na
     props = {key: value for key, value in props.items() if value is not None}
     if raw_log:
         props["Log"] = {"rich_text": _rich_text_chunks(raw_log)}
+    if workout_day_id:
+        props["Workout Structure"] = {"relation": [{"id": workout_day_id}]}
     page = notion_call(notion.pages.create, parent={"database_id": workout_log_db_id}, properties=props)
     return page["id"]
 
@@ -891,7 +987,7 @@ def notion_query_wod_log_by_date(notion, wod_log_db_id: str, workout_date: str, 
     ).get("results", [])
 
 
-def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mins, result_type, result_seconds, result_rounds, result_reps, rx_scaled, scaling_notes, is_partner, wod_name, movement_page_ids, weekly_program_page_id, readiness, workout_date=None, workout_structure: str = "", raw_log: str = ""):
+def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mins, result_type, result_seconds, result_rounds, result_reps, rx_scaled, scaling_notes, is_partner, wod_name, movement_page_ids, weekly_program_page_id, readiness, workout_date=None, workout_structure: str = "", raw_log: str = "", workout_day_id: str | None = None):
     """Create a Section C WOD log in the dedicated WOD Log database.
 
     Readiness is intentionally ignored in Phase 1 because readiness now lives
@@ -929,8 +1025,8 @@ def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mi
         props["WOD Name"] = {"rich_text": [{"text": {"content": str(wod_name)}}]}
     if raw_log:
         props["Log"] = {"rich_text": _rich_text_chunks(raw_log)}
-    if workout_structure:
-        props["Workout Structure"] = {"rich_text": _rich_text_chunks(str(workout_structure))}
+    if workout_day_id:
+        props["Workout Structure"] = {"relation": [{"id": workout_day_id}]}
     if scaling_notes:
         props["Scaling Notes"] = {"rich_text": [{"text": {"content": str(scaling_notes)}}]}
     page = notion_call(notion.pages.create, parent={"database_id": wod_log_db_id}, properties=props)
