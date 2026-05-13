@@ -474,6 +474,11 @@ _todo_picker_counter = 0
 _v10_counter = 0
 _entertainment_counter = 0
 habit_cache: dict[str, dict] = STATE.habit_cache
+
+# ── HabitKit data cache ───────────────────────────────────────────────────
+_habits_data_cache: dict = {}
+_HABITS_CACHE_TTL_SECONDS = 3600  # 1 hour
+
 _habit_selections: dict[int, dict[str, object]] = {}
 
 def _store_habit_selection_session(message_id: int, habits: list[dict], selected: set[str] | None = None) -> None:
@@ -3752,9 +3757,21 @@ async def run_cinema_sync(bot, *, force: bool = False) -> dict[str, int | str]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def habits_data_handler(request: web.Request) -> web.Response:
+    global _habits_data_cache
+    now = datetime.now(TZ)
+
+    if _habits_data_cache.get("payload") and _habits_data_cache.get("generated_at"):
+        age = (now - _habits_data_cache["generated_at"]).total_seconds()
+        if age < _HABITS_CACHE_TTL_SECONDS:
+            return web.Response(
+                text=json.dumps(_habits_data_cache["payload"]),
+                content_type="application/json",
+                headers=cors_headers(),
+            )
+
     try:
         habits_sorted = sorted(habit_cache.values(), key=lambda h: h["sort"])
-        today    = datetime.now(TZ).date()
+        today    = now.date()
         num_days = WEEKS_HISTORY * 7
         start_dt = today - timedelta(days=num_days - 1)
 
@@ -3867,12 +3884,13 @@ async def habits_data_handler(request: web.Request) -> web.Response:
             })
 
         payload = {
-            "generated":    datetime.now(TZ).isoformat(),
+            "generated":    now.isoformat(),
             "habits":       habits_out,
             "dates":        all_dates,
             "todayDate":    today.isoformat(),
             "weeksHistory": WEEKS_HISTORY,
         }
+        _habits_data_cache = {"payload": payload, "generated_at": now}
         return web.Response(
             text=json.dumps(payload),
             content_type="application/json",
@@ -3885,6 +3903,8 @@ async def habits_data_handler(request: web.Request) -> web.Response:
 
 
 async def log_habit_http_handler(request: web.Request) -> web.Response:
+    global _habits_data_cache
+
     if request.method == "OPTIONS":
         return web.Response(status=204, headers=cors_headers())
 
@@ -3916,6 +3936,8 @@ async def log_habit_http_handler(request: web.Request) -> web.Response:
             )
 
         log_habit(matched["page_id"], matched["name"], source="🌐 HabitKit")
+        _habits_data_cache = {}
+        log.info("habits_data_cache: invalidated after HabitKit log")
         return web.Response(
             text=json.dumps({"ok": True, "alreadyLogged": False, "habitName": matched["name"]}),
             content_type="application/json",
