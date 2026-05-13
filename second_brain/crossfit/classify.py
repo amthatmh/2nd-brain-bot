@@ -4,12 +4,14 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta
+import zoneinfo
 from zoneinfo import ZoneInfo
 import os
 
 from utils.alert_handlers import alert_claude_auth_failure
 
 log = logging.getLogger(__name__)
+_TZ = zoneinfo.ZoneInfo("America/Chicago")
 
 
 def _app_tz() -> ZoneInfo:
@@ -20,17 +22,12 @@ def _app_tz() -> ZoneInfo:
 
 
 def _today_str() -> str:
-    return datetime.now(_app_tz()).strftime("%Y-%m-%d")
+    return datetime.now(_TZ).strftime("%Y-%m-%d")
 
 
 def _monday_str() -> str:
-    today = datetime.now(_app_tz()).date()
-    weekday = today.weekday()
-    if weekday == 0:
-        return today.isoformat()
-    if weekday <= 4:
-        return (today - timedelta(days=weekday)).isoformat()
-    return (today + timedelta(days=7 - weekday)).isoformat()
+    today = datetime.now(_TZ).date()
+    return (today - timedelta(days=today.weekday())).isoformat()
 
 
 def _extract_json(raw: str) -> dict:
@@ -285,7 +282,7 @@ Return ONLY valid JSON with fields exactly as requested:
   "type": "strength|conditioning|programme|none",
   "confidence": "low|medium|high",
   "movement": "single strength movement name or null",
-  "movements": ["list", "of", "movement", "names"],
+  "movements": ["strength objects or conditioning movement-name strings"],
   "load_lbs": null,
   "load_kg": null,
   "sets": null,

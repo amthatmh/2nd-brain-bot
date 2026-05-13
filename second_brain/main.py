@@ -123,8 +123,10 @@ from second_brain.crossfit.handlers import (
 from second_brain.crossfit.keyboards import crossfit_submenu_keyboard
 from second_brain.crossfit.nlp import load_movements_cache
 from second_brain.crossfit.readiness import check_readiness_logged_today
-from second_brain.crossfit.notion import parse_weekly_program_text, save_programme_from_notion_row, this_monday
+from second_brain.crossfit.notion import load_movement_library, parse_weekly_program_text, save_programme_from_notion_row, this_monday
 from second_brain.entertainment import log as ent_log
+
+MOVEMENT_CACHE: dict[str, str] = {}
 
 
 def _apply_shared_date_parse(payload: dict) -> object:
@@ -1578,6 +1580,35 @@ async def handle_v10_callback(q, parts: list[str]) -> bool:
     return False
 
 
+
+def _crossfit_config(**extra) -> dict:
+    cfg = {
+        "NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB,
+        "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB,
+        "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB,
+        "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB,
+        "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB,
+        "NOTION_CYCLES_DB": NOTION_CYCLES_DB,
+        "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB,
+        "NOTION_DAILY_READINESS_DB": NOTION_DAILY_READINESS_DB,
+        "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS,
+        "MOVEMENT_CACHE": MOVEMENT_CACHE,
+    }
+    cfg.update(extra)
+    return cfg
+
+
+async def cmd_cf_reload_movements(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    del context
+    global MOVEMENT_CACHE
+    if not NOTION_MOVEMENTS_DB:
+        await update.effective_message.reply_text("⚠️ NOTION_MOVEMENTS_DB is not configured")
+        return
+    MOVEMENT_CACHE = await asyncio.get_running_loop().run_in_executor(None, lambda: load_movement_library(notion, NOTION_MOVEMENTS_DB))
+    MOVEMENTS_CACHE.clear()
+    MOVEMENTS_CACHE.update(MOVEMENT_CACHE)
+    await update.effective_message.reply_text(f"✅ Movement library reloaded ({len(MOVEMENT_CACHE)} entries)")
+
 async def route_classified_message_v10(message, text: str) -> None:
     thinking = await message.reply_text("🧠 Got it...")
     if NOTION_WORKOUT_LOG_DB or NOTION_WOD_LOG_DB or NOTION_WORKOUT_PROGRAM_DB:
@@ -1597,9 +1628,9 @@ async def route_classified_message_v10(message, text: str) -> None:
             workout_result["raw_text"] = text
             await thinking.delete()
             if workout_result.get("type") == "strength":
-                await handle_cf_strength_flow(message, workout_result, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB, "NOTION_DAILY_READINESS_DB": NOTION_DAILY_READINESS_DB}, cf_pending)
+                await handle_cf_strength_flow(message, workout_result, claude, notion, _crossfit_config(), cf_pending)
             else:
-                await handle_cf_wod_flow(message, workout_result, notion, {"NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_DAILY_READINESS_DB": NOTION_DAILY_READINESS_DB}, cf_pending)
+                await handle_cf_wod_flow(message, workout_result, notion, _crossfit_config(), cf_pending)
             return
     if await wl.handle_photo_followup(notion, message, text):
         await thinking.delete()
@@ -2274,7 +2305,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     cf_flow_key = context.user_data.get("cf_flow_key")
     if cf_flow_key and cf_flow_key in cf_pending:
-        await handle_cf_text_reply(message, text, cf_flow_key, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB, "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB, "NOTION_DAILY_READINESS_DB": NOTION_DAILY_READINESS_DB}, cf_pending)
+        await handle_cf_text_reply(message, text, cf_flow_key, claude, notion, _crossfit_config(), cf_pending)
         return
 
     match_force = re.match(r"force:\s*(.+)$", text, re.IGNORECASE)
@@ -2472,7 +2503,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         else:
             context.user_data["cf_flow_key"] = str(q.message.chat_id)
-        await handle_cf_callback(q, parts, claude, notion, {"NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB, "NOTION_WOD_LOG_DB": NOTION_WOD_LOG_DB, "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB, "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB, "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB, "NOTION_CYCLES_DB": NOTION_CYCLES_DB, "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS, "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB, "NOTION_DAILY_READINESS_DB": NOTION_DAILY_READINESS_DB}, cf_pending)
+        await handle_cf_callback(q, parts, claude, notion, _crossfit_config(), cf_pending)
         return
 
     if parts[0] == "kind_task" and len(parts) == 2:
@@ -4131,7 +4162,7 @@ def _create_cycle_row(cycle_name: str) -> str:
 
 
 def _current_week_sunday_iso() -> str:
-    today = date.today()
+    today = local_today()
     days_until_sunday = (6 - today.weekday()) % 7
     if days_until_sunday == 0:
         days_until_sunday = 7
@@ -4193,6 +4224,7 @@ async def process_pending_programmes(bot) -> None:
                     parsed,
                     NOTION_WORKOUT_PROGRAM_DB,
                     NOTION_CYCLES_DB,
+                    MOVEMENT_CACHE,
                 ),
             )
             days_created = result["days_created"]
@@ -4579,18 +4611,12 @@ async def post_init(app: Application) -> None:
         log.warning("Entertainment schema load failed at startup: %s", e)
 
     try:
+        global MOVEMENT_CACHE
         if NOTION_MOVEMENTS_DB:
-            print("[STARTUP] Loading movements cache...")
-            loaded_movements = await load_movements_cache(notion, NOTION_MOVEMENTS_DB)
+            MOVEMENT_CACHE = await asyncio.get_running_loop().run_in_executor(None, lambda: load_movement_library(notion, NOTION_MOVEMENTS_DB))
             MOVEMENTS_CACHE.clear()
-            MOVEMENTS_CACHE.update(loaded_movements)
-            print(f"[STARTUP] Loaded {len(MOVEMENTS_CACHE)} movements")
-            if "Hang Squat Clean" in MOVEMENTS_CACHE:
-                print("[STARTUP] ✓ 'Hang Squat Clean' found in cache")
-            else:
-                print("[STARTUP] ✗ 'Hang Squat Clean' NOT in cache - BUG!")
-                print(f"[STARTUP] Available movements: {list(MOVEMENTS_CACHE.keys())}")
-            log.info("Loaded %d CrossFit movements into cache", len(MOVEMENTS_CACHE))
+            MOVEMENTS_CACHE.update(MOVEMENT_CACHE)
+            log.info("Movement library loaded: %d entries", len(MOVEMENT_CACHE))
     except Exception as e:
         log.warning("CrossFit movement cache load failed at startup: %s", e)
 
@@ -5037,6 +5063,7 @@ def main() -> None:
         test_channel_send=test_channel_send,
     )
     app.add_handler(CommandHandler("refreshweather", cmd_refreshweather))
+    app.add_handler(CommandHandler("cf_reload_movements", cmd_cf_reload_movements))
     log.info(f"🤖 Second Brain bot starting ({APP_VERSION})...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
