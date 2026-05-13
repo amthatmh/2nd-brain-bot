@@ -7,10 +7,10 @@ responses in memory so browser reloads do not hit Notion every time.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
-import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -24,11 +24,10 @@ log = logging.getLogger(__name__)
 
 VALID_RANGES = {"1m", "3m", "6m", "all"}
 RANGE_DAYS = {"1m": 30, "3m": 90, "6m": 180}
-CACHE_TTL_SECONDS = 30 * 60
+_health_dashboard_cache: dict = {}  # key: range string → {payload, generated_at}
+_HEALTH_CACHE_TTL_SECONDS = 3600  # 1 hour
 DEFAULT_STEPS_THRESHOLD = 10000
 STEPS_THRESHOLD = DEFAULT_STEPS_THRESHOLD
-
-_RESPONSE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 METRIC_DEFS: dict[str, dict[str, str]] = {
     "weight": {"property": "Weight (kg)", "unit": "kg", "good": "down"},
@@ -382,7 +381,7 @@ def create_health_dashboard_handler(*, notion, health_metrics_db_id: str, habit_
         raise RuntimeError("NOTION_HABIT_LOG_DB/NOTION_LOG_DB is required for /api/health-dashboard")
 
     async def health_dashboard_handler(request: web.Request) -> web.Response:
-        range_value = request.query.get("range", "1m").lower()
+        range_value = request.rel_url.query.get("range", "1m").lower()
         if range_value not in VALID_RANGES:
             return web.json_response(
                 {"error": "invalid_range", "message": "range must be one of 1m, 3m, 6m, all"},
@@ -390,10 +389,16 @@ def create_health_dashboard_handler(*, notion, health_metrics_db_id: str, habit_
                 headers=cors_headers(),
             )
 
-        now = time.time()
-        cached = _RESPONSE_CACHE.get(range_value)
-        if cached and now - cached[0] < CACHE_TTL_SECONDS:
-            return web.json_response(cached[1], headers=cors_headers())
+        now = datetime.now(tz)
+        cached = _health_dashboard_cache.get(range_value)
+        if cached and cached.get("generated_at"):
+            age = (now - cached["generated_at"]).total_seconds()
+            if age < _HEALTH_CACHE_TTL_SECONDS:
+                return web.Response(
+                    text=json.dumps(cached["payload"]),
+                    content_type="application/json",
+                    headers=cors_headers(),
+                )
 
         try:
             payload = build_dashboard_payload(
@@ -403,8 +408,12 @@ def create_health_dashboard_handler(*, notion, health_metrics_db_id: str, habit_
                 range_value=range_value,
                 tz=tz,
             )
-            _RESPONSE_CACHE[range_value] = (now, payload)
-            return web.json_response(payload, headers=cors_headers())
+            _health_dashboard_cache[range_value] = {"payload": payload, "generated_at": now}
+            return web.Response(
+                text=json.dumps(payload),
+                content_type="application/json",
+                headers=cors_headers(),
+            )
         except Exception as exc:  # noqa: BLE001 - HTTP handler returns JSON errors.
             log.exception("/api/health-dashboard error: %s", exc)
             return web.json_response(
@@ -419,7 +428,7 @@ def create_health_dashboard_handler(*, notion, health_metrics_db_id: str, habit_
 # TEST: GET /api/health-dashboard (no param) → defaults to 1m range
 # TEST: GET /api/health-dashboard?range=3m → returns 3 months of data
 # TEST: GET /api/health-dashboard?range=all → returns all rows
-# TEST: Response cached — second call within 30min does not re-query Notion
+# TEST: Response cached — second call within 1 hour does not re-query Notion
 # TEST: range=6m with only 3 weeks of data → scores null, status="no_data"
 # TEST: Notion DB unreachable → returns HTTP 500 with JSON error body
 # TEST: Workout habit name "💪 Workout" matches correctly (emoji included)

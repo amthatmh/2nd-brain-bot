@@ -141,6 +141,22 @@
     .loading{display:flex;align-items:center;justify-content:center;height:200px;color:var(--muted);font-size:.95rem;gap:12px}
     .spinner{width:20px;height:20px;border:2px solid rgba(244,123,136,.35);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
     @keyframes spin{to{transform:rotate(360deg)}}
+    .skeleton{
+      background:linear-gradient(90deg,rgba(255,255,255,0.06) 25%,rgba(255,255,255,0.12) 50%,rgba(255,255,255,0.06) 75%);
+      background-size:200% 100%;
+      animation:shimmer 1.5s infinite;
+      border-radius:8px;
+    }
+    [data-theme="light"] .skeleton{
+      background:linear-gradient(90deg,#e8e8ec 25%,#f0f0f5 50%,#e8e8ec 75%);
+      background-size:200% 100%;
+      animation:shimmer 1.5s infinite;
+    }
+    @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+    .skeleton-card{border-radius:12px;padding:20px;margin-bottom:16px;background:var(--bg-card,rgba(255,255,255,0.05))}
+    .skeleton-title{height:20px;width:40%;margin-bottom:12px}
+    .skeleton-subtitle{height:14px;width:60%;margin-bottom:16px}
+    .skeleton-grid{height:80px;width:100%}
     .error-msg{color:var(--accent);padding:20px;text-align:center;font-size:.9rem}
     @media(max-width:980px){.stats{grid-template-columns:repeat(2,1fr)}}
     @media(max-width:680px){
@@ -191,9 +207,7 @@
         <div class="chip" id="weeksChip">— weeks</div>
       </div>
       <div class="panel-sub">Weeks run Monday→Sunday top-to-bottom · today is outlined · future days are faded</div>
-      <div class="cards" id="cards">
-        <div class="loading"><div class="spinner"></div> Fetching from Notion…</div>
-      </div>
+      <div class="cards" id="cards"></div>
     </section>
 
   </div>
@@ -257,6 +271,21 @@ function formatLocalDateKey(date) {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+function renderSkeleton() {
+  const container = document.getElementById('cards');
+  if (!container) return;
+  let html = '';
+  for (let i = 0; i < 4; i++) {
+    html += `
+      <div class="skeleton-card">
+        <div class="skeleton skeleton-title"></div>
+        <div class="skeleton skeleton-subtitle"></div>
+        <div class="skeleton skeleton-grid"></div>
+      </div>`;
+  }
+  container.innerHTML = html;
 }
 
 async function loadData() {
@@ -404,7 +433,10 @@ function render(data) {
 
 }
 
-loadData();
+document.addEventListener('DOMContentLoaded', () => {
+  renderSkeleton();
+  loadData();
+});
 setInterval(loadData, 5*60*1000);
 window.addEventListener('focus', loadData);
 document.addEventListener('visibilitychange', refreshIfVisible);
