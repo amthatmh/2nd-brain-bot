@@ -481,10 +481,9 @@ async def handle_steps_sync(
         )
 
     # ── For today above threshold, or any yesterday sync: upsert Notion entry ──
-    # TEMPORARILY DISABLED for historical backfill — restore after import complete
-    # if not (is_today or is_yesterday):
-    #     log.info("steps: received data for %s (not today/yesterday), skipping", date_str)
-    #     return _sync_result("skipped", reason="old_date")
+    if not (is_today or is_yesterday):
+        log.info("steps: received data for %s (not today/yesterday), skipping", date_str)
+        return _sync_result("skipped", reason="old_date")
 
     # Resolve habit page_id (check memory first)
     habit_page_id = _find_steps_habit_page_id(notion, habit_db_id, habit_name)
