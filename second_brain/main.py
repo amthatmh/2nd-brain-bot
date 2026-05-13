@@ -96,7 +96,7 @@ from second_brain.scheduler_manager import UtilitySchedulerManager
 from second_brain.state import STATE
 from second_brain.utils import ExpiringDict, reply_notion_error
 from second_brain.http_utils import cors_headers
-from health.dashboard import create_health_dashboard_handler, load_steps_threshold_from_env_db as load_dashboard_steps_threshold
+from second_brain.healthtrack.dashboard import create_health_dashboard_handler, load_steps_threshold_from_env_db as load_dashboard_steps_threshold
 from second_brain.services import task_parsing as task_parsing_service
 from second_brain.services import note_utils as note_utils_service
 from second_brain.handlers.commands import CommandHandlers
