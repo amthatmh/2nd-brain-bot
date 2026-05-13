@@ -116,6 +116,22 @@ def test_classify_workout_message_short_text_not_programme():
     assert result["type"] == "strength"
 
 
+
+def test_classify_strength_message_preserves_per_movement_fields():
+    c = _FakeClaude('{"type":"strength","confidence":"high","movement":"Push Press","movements":[{"movement":"Push Press","sets":4,"reps":3,"load_lbs":105},{"movement":"Push Jerk","sets":4,"reps":5,"load_lbs":105}],"load_lbs":105,"load_kg":null,"sets":4,"reps":3,"is_max_attempt":false,"wod_name":null,"format":null,"duration_mins":null,"partner":false}')
+
+    out = classify_workout_message("4 sets of 3x105 lb push press + 4 sets of 5x105lb push jerk", c, "model", 1000)
+
+    assert out["movement"] == "Push Press"
+    assert out["sets"] == 4
+    assert out["reps"] == 3
+    assert out["load_lbs"] == 105
+    assert out["movements"] == [
+        {"movement": "Push Press", "sets": 4, "reps": 3, "load_lbs": 105},
+        {"movement": "Push Jerk", "sets": 4, "reps": 5, "load_lbs": 105},
+    ]
+
+
 def test_parse_rounds_reps():
     assert parse_rounds_reps("8+5") == (8, 5)
     assert parse_rounds_reps("8 rounds 5 reps") == (8, 5)
@@ -869,6 +885,66 @@ def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
     assert "How did that session feel?" in message.replies[-1][0]
     assert not any("Any notes" in reply[0] for reply in message.replies)
 
+
+
+
+def test_finalize_flow_creates_one_strength_log_per_movement(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    created = []
+    created_movements = []
+
+    async def fake_week(notion):
+        del notion
+        return "week-1"
+
+    def fake_get_or_create(notion, db_id, name):
+        del notion
+        created_movements.append((db_id, name))
+        return f"mov-{name.lower().replace(' ', '-')}"
+
+    def fake_create_strength_log(**kwargs):
+        created.append(kwargs)
+        return f"log-{len(created)}"
+
+    monkeypatch.setattr(handlers, "get_current_week_program_url", fake_week)
+    monkeypatch.setattr(handlers, "get_or_create_movement", fake_get_or_create)
+    monkeypatch.setattr(handlers, "create_strength_log", fake_create_strength_log)
+
+    message = _DummyMessage()
+    pending = {
+        "123": {
+            "mode": "strength",
+            "movement_page_id": "mov-push-press",
+            "movement_name": "Push Press",
+            "workout_date": "2026-05-06",
+            "raw_log": "raw session",
+            "movements": [
+                {"movement": "Push Press", "sets": 4, "reps": 3, "load_lbs": 105},
+                {"movement": "Push Jerk", "sets": 4, "reps": 5, "load_lbs": 105},
+            ],
+        }
+    }
+
+    asyncio.run(handlers._finalize_flow(message, "123", SimpleNamespace(), {"NOTION_WORKOUT_LOG_DB": "workout-log", "NOTION_MOVEMENTS_DB": "movements"}, pending, "felt crisp"))
+
+    assert len(created) == 2
+    assert created[0]["movement_page_id"] == "mov-push-press"
+    assert created[0]["movement_name"] == "Push Press"
+    assert created[0]["effort_sets"] == 4
+    assert created[0]["effort_reps"] == 3
+    assert created[0]["load_lbs"] == 105.0
+    assert created[1]["movement_page_id"] == "mov-push-jerk"
+    assert created[1]["movement_name"] == "Push Jerk"
+    assert created[1]["effort_sets"] == 4
+    assert created[1]["effort_reps"] == 5
+    assert created[1]["load_lbs"] == 105.0
+    assert created[0]["workout_date"] == created[1]["workout_date"] == "2026-05-06"
+    assert created[0]["raw_log"] == created[1]["raw_log"] == "raw session\n\nNotes: felt crisp"
+    assert created_movements == [("movements", "Push Jerk")]
+    assert pending["123"]["last_workout_page_ids"] == ["log-1", "log-2"]
+    assert "Push Press, Push Jerk" in message.replies[-2][0]
+    assert "4x3 105 lbs | 4x5 105 lbs" in message.replies[-2][0]
 
 
 def test_strength_flow_disambiguates_slash_date_before_notes(monkeypatch):

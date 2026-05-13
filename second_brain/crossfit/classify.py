@@ -232,7 +232,7 @@ Today is {_today_str()}.
 Message: "{text}"
 
 Classify into exactly ONE type:
-STRENGTH — strength lifting, skill, or accessory work. Return a single "movement" when identifiable.
+STRENGTH — strength lifting, skill, or accessory work. Return a single top-level "movement" when identifiable, and return per-movement data in "movements".
 CONDITIONING — for WODs, metcons, AMRAPs, For Time workouts.
   Extract ALL movements mentioned (e.g. burpees, wall balls, pull-ups).
   Return as "movements" array. Empty array if none identifiable.
@@ -244,6 +244,32 @@ PROGRAMME — user pasting a full weekly gym programme.
   A message over 300 characters containing day names and movement descriptions
   should be classified as PROGRAMME even if day count is unclear.
 NONE ...
+
+STRENGTH extraction rules:
+- For strength entries, "movements" must be an array of objects, one per movement, shaped like:
+  [{{"movement": "Push Press", "sets": 4, "reps": 3, "load_lbs": 105}}]
+- If multiple movements are present each with their own rep scheme, populate the "movements" array with one entry per movement.
+- Multiple movements may be separated by "+", "and", newline, or comma when each has its own rep scheme.
+- If only one movement, "movements" array has one entry.
+- Always populate top-level fields from the first movement for backward compatibility.
+- Top-level "sets": integer — number of sets (from "N sets of" prefix or NxM first term).
+- Top-level "reps": integer — reps per set (from MxLOAD second term or NxM second term).
+- Top-level "load_lbs": number — weight in lbs (null if bodyweight or not specified).
+
+Parsing rules for sets/reps/load:
+- "4 sets of 3x105 lb" → sets=4, reps=3, load_lbs=105
+  (unit after M means M is load; leading "N sets of" is the set count)
+- "3x105 lb" with no set prefix → sets=1, reps=3, load_lbs=105
+- "5x3 at 225" → sets=5, reps=3, load_lbs=225
+- "5x3x225" → sets=5, reps=3, load_lbs=225
+- "3x105" with no unit → sets=3, reps=105, load_lbs=null
+  (ambiguous without unit — treat N as sets, M as reps)
+- "4 sets of 5x105lb" → sets=4, reps=5, load_lbs=105
+- Patterns like "N sets of MxLOAD unit" always mean: sets=N, reps=M, load=LOAD
+- "touch n go" or "TNG" prefix does not affect sets/reps/load parsing.
+
+CONDITIONING extraction rules:
+- For conditioning entries, "movements" remains an array of movement-name strings.
 
 Return ONLY valid JSON with fields exactly as requested:
 {{
@@ -273,6 +299,12 @@ Return ONLY valid JSON with fields exactly as requested:
     if not movements and result.get("movement"):
         movements = [result["movement"]]
     result["movements"] = movements
+    if result.get("type") == "strength" and movements and isinstance(movements[0], dict):
+        first = movements[0]
+        result["movement"] = first.get("movement") or result.get("movement")
+        result["sets"] = first.get("sets")
+        result["reps"] = first.get("reps")
+        result["load_lbs"] = first.get("load_lbs")
     result["raw_text"] = text
     return result
 
