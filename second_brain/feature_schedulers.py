@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 @track_job_execution("trip_weather_refresh")
 async def handle_trip_weather_refresh(bot=None) -> dict:
     """Utility Scheduler job wrapper for refreshing trip weather."""
-    from second_brain.main import handle_trip_weather_refresh as _handle_trip_weather_refresh
+    from second_brain.trips import handle_trip_weather_refresh as _handle_trip_weather_refresh
 
     return await _handle_trip_weather_refresh(bot)
 
