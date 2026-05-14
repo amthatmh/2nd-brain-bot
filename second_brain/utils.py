@@ -51,7 +51,7 @@ def num_emoji(n: int) -> str:
 
 
 def next_weekday(weekday: int) -> date:
-    today = date.today()
+    today = local_today()
     days_ahead = (weekday - today.weekday()) % 7
     if days_ahead == 0:
         days_ahead = 7

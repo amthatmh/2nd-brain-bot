@@ -104,7 +104,6 @@ from second_brain.config import (
     CLAUDE_MAX_TOK,
     CLAUDE_PARSE_MAX_TOKENS,
     NOTION_MOVEMENTS_DB,
-    NOTION_CYCLES_DB,
     NOTION_WORKOUT_PROGRAM_DB,
     NOTION_WORKOUT_DAYS_DB,
     NOTION_WORKOUT_LOG_DB,
@@ -146,7 +145,7 @@ from second_brain.handler_registry import register_core_handlers
 from second_brain.scheduler_manager import UtilitySchedulerManager
 from second_brain.rules.engine import RuleEngine
 from second_brain.state import STATE
-from second_brain.utils import ExpiringDict, local_today, reply_notion_error
+from second_brain.utils import ExpiringDict, local_today, next_weekday, reply_notion_error
 from second_brain.http_utils import cors_headers
 from second_brain.healthtrack.dashboard import create_health_dashboard_handler, load_steps_threshold_from_env_db as load_dashboard_steps_threshold
 from second_brain.services import task_parsing as task_parsing_service
@@ -565,14 +564,6 @@ TOPIC_OPTIONS = [
 ]
 _URL_RE = re.compile(r"https?://[^\s\)\]>\"']+", re.IGNORECASE)
 
-
-
-def next_weekday(weekday: int) -> date:
-    today = local_today()
-    days_ahead = (weekday - today.weekday()) % 7
-    if days_ahead == 0:
-        days_ahead = 7
-    return today + timedelta(days=days_ahead)
 
 
 def _has_explicit_personal_or_work_context(text: str) -> bool:
@@ -1753,7 +1744,7 @@ def _crossfit_config(**extra) -> dict:
         "NOTION_MOVEMENTS_DB": NOTION_MOVEMENTS_DB,
         "NOTION_WORKOUT_PROGRAM_DB": NOTION_WORKOUT_PROGRAM_DB,
         "NOTION_WORKOUT_DAYS_DB": NOTION_WORKOUT_DAYS_DB,
-        "NOTION_CYCLES_DB": NOTION_CYCLES_DB,
+        "NOTION_CYCLES_DB": os.getenv("NOTION_CYCLES_DB", ""),
         "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB,
         "NOTION_DAILY_READINESS_DB": NOTION_DAILY_READINESS_DB,
         "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS,
@@ -4354,35 +4345,6 @@ def startup_notion_health_check() -> None:
 
 
 
-def _notion_title_text(props: dict, key: str = "Name") -> str:
-    title = props.get(key, {}).get("title", []) or []
-    return "".join(part.get("plain_text") or part.get("text", {}).get("content", "") for part in title).strip()
-
-
-def _count_notion_database_rows(database_id: str, filter_payload: dict | None = None) -> int:
-    return len(query_all(notion, database_id, filter=filter_payload, page_size=100))
-
-
-def _create_cycle_row(cycle_name: str) -> str:
-    page = notion_call(
-        notion.pages.create,
-        parent={"database_id": NOTION_CYCLES_DB},
-        properties={
-            "Name": {"title": [{"text": {"content": cycle_name}}]},
-            "Start Date": {"date": {"start": this_monday()}},
-        },
-    )
-    return page["id"]
-
-
-def _current_week_sunday_iso() -> str:
-    today = local_today()
-    days_until_sunday = (6 - today.weekday()) % 7
-    if days_until_sunday == 0:
-        days_until_sunday = 7
-    return (today + timedelta(days=days_until_sunday)).isoformat()
-
-
 async def process_pending_programmes(bot) -> None:
     """Poll Weekly Programs DB for unprocessed rows and parse/save asynchronously."""
     if not NOTION_WORKOUT_PROGRAM_DB:
@@ -4437,7 +4399,7 @@ async def process_pending_programmes(bot) -> None:
                     NOTION_MOVEMENTS_DB,
                     parsed,
                     NOTION_WORKOUT_PROGRAM_DB,
-                    NOTION_CYCLES_DB,
+                    os.getenv("NOTION_CYCLES_DB", ""),
                     MOVEMENTS_CACHE,
                 ),
             )
