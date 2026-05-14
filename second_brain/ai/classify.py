@@ -90,6 +90,20 @@ HABIT — user saying they completed a recurring habit RIGHT NOW.
 ENTERTAINMENT_LOG — user logged media/event they watched or attended.
 TASK — something to be done in the future (default if nothing else matches).
 
+CRITICAL SPLITTING RULES:
+- Do NOT split on periods, commas, or newlines.
+- ONLY split into multiple intents if you see explicit delimiters:
+  * Uppercase AND keyword: "Task A AND Task B" → 2 tasks
+  * Numbered list: "1. Task 2. Task" → 2 tasks
+  * Bullet list: "• Task • Task" → 2 tasks
+- If there are NO explicit delimiters, treat as ONE task (even if multiple sentences).
+- For single tasks, extract metadata (due date, labels) from the full text.
+
+Examples:
+- "Add work task: Send Stephen Door drop information. Due today" → 1 TASK (due_date: today)
+- "Send Stephen door drop info AND schedule meeting AND review proposal" → 3 TASKS (warn user to confirm)
+- "Task 1. Send report 2. Schedule call" → 2 TASKS
+
 If confidence is low on watchlist/wantslist/photo, return task instead.
 "Watch:" prefix = always watchlist, high confidence.
 "want:" prefix = always wantslist, high confidence.
@@ -104,7 +118,7 @@ If WANTSLIST: {{"type":"wantslist","item":"clean item name","category":"Tech|Hom
 If PHOTO: {{"type":"photo","subject":"clean scene/subject description","confidence":"high|low"}}
 If NOTE: {{"type":"note","content":"clean note content","confidence":"high|low"}}
 If HABIT: {{"type":"habit","habit_name":"exact name from {habit_names} or null","confidence":"high|low"}}
-If ENTERTAINMENT_LOG: {{"type":"entertainment_log","log_type":"cinema|performance|sport","title":"extracted name of film/show/event","venue":"venue if mentioned, else null","date":"{today_local.isoformat()}","notes":"extra detail if mentioned, else null","favourite":false,"confidence":"high|low"}}
+If ENTERTAINMENT_LOG: {{"type":"entertainment_log","log_type":"cinema|performance|sport","title":"extracted name of film/show/event","venue":"venue if mentioned, else null","date":"{today_local.isoformat()}","notes":"extra detail if mentioned, else null","favourite":<true or false>,"confidence":"high|low"}}
 If TASK: {{"type":"task","task_name":"clean concise action","deadline_days":<integer or null>,"context":"one of: 💼 Work | 🏠 Personal | 🏃 Health | 🤝 Collab","confidence":"high|low","recurring":"None|🔁 Daily|📅 Weekly|🗓️ Monthly|📆 Quarterly","repeat_day":"Mon|Tue|Wed|Thu|Fri|Sat|Sun|1st..31st|Last or null"}}"""
     try:
         resp = claude.messages.create(

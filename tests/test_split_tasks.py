@@ -34,8 +34,15 @@ def test_split_tasks_keeps_multiline_schedule_command_together():
     assert main.split_tasks(text) == [text]
 
 
-def test_split_tasks_still_splits_clear_batch_lines():
+def test_split_tasks_keeps_plain_multiline_messages_together():
     main = load_main_module()
     text = "Buy milk\nCall mom\nFile expenses"
+
+    assert main.split_tasks(text) == [text]
+
+
+def test_split_tasks_still_splits_explicit_bullet_batches():
+    main = load_main_module()
+    text = "- Buy milk\n- Call mom\n- File expenses"
 
     assert main.split_tasks(text) == ["Buy milk", "Call mom", "File expenses"]

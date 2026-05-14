@@ -6,15 +6,62 @@ import re
 
 
 def split_tasks(text: str, bullet_re: re.Pattern[str]) -> list[str]:
+    """Split tasks only on explicit multi-task delimiters.
+
+    Periods, commas, and plain newlines often carry task metadata (for
+    example, "Send report. Due today"), so they are intentionally kept as
+    a single task unless the user uses numbered items, bullet items, or AND.
+    """
+    original = text.strip()
+    if not original:
+        return [text]
+
     lines = [l.strip() for l in text.splitlines() if l.strip()]
-    if any(bullet_re.match(l) for l in lines):
-        tasks = [bullet_re.sub("", l).strip() for l in lines if bullet_re.match(l)]
-        return tasks if len(tasks) > 1 else [text]
-    if len(lines) > 1:
-        lower = text.lower()
-        if re.search(r"\bschedule\b.*\brecurring\b", lower) and re.search(r"\bevery\b", lower):
-            return [text]
-        return lines
+
+    # Numbered lists, either one item per line or inline: "1. A 2) B".
+    numbered_line_pattern = r"^\s*\d+[.)]\s+"
+    numbered_lines = [l for l in lines if re.match(numbered_line_pattern, l)]
+    if len(numbered_lines) >= 2:
+        return [re.sub(numbered_line_pattern, "", l).strip() for l in numbered_lines]
+
+    inline_numbered_pattern = r"(?:^|\s)\d+[.)]\s+"
+    inline_numbered_matches = list(re.finditer(inline_numbered_pattern, text))
+    if len(inline_numbered_matches) >= 2:
+        tasks: list[str] = []
+        for idx, match in enumerate(inline_numbered_matches):
+            start = match.end()
+            end = inline_numbered_matches[idx + 1].start() if idx + 1 < len(inline_numbered_matches) else len(text)
+            task = text[start:end].strip(" \t\n-•*")
+            if task:
+                tasks.append(task)
+        if len(tasks) >= 2:
+            return tasks
+
+    # Bullets must be explicit list markers; do not treat plain newlines as a batch.
+    bulleted_lines = [l for l in lines if bullet_re.match(l)]
+    if len(bulleted_lines) >= 2:
+        return [bullet_re.sub("", l).strip() for l in bulleted_lines]
+
+    # Inline bullet characters (•/*) can also denote an explicit list.
+    inline_bullet_pattern = r"(?:^|\s)[•*]\s+"
+    inline_bullet_matches = list(re.finditer(inline_bullet_pattern, text))
+    if len(inline_bullet_matches) >= 2:
+        tasks = []
+        for idx, match in enumerate(inline_bullet_matches):
+            start = match.end()
+            end = inline_bullet_matches[idx + 1].start() if idx + 1 < len(inline_bullet_matches) else len(text)
+            task = text[start:end].strip(" \t\n-•*")
+            if task:
+                tasks.append(task)
+        if len(tasks) >= 2:
+            return tasks
+
+    # AND is the only prose delimiter that intentionally creates a batch.
+    if re.search(r"\s+AND\s+", text):
+        tasks = [t.strip() for t in re.split(r"\s+AND\s+", text) if t.strip()]
+        if len(tasks) >= 2:
+            return tasks
+
     return [text]
 
 
@@ -29,17 +76,29 @@ def looks_like_crossfit_programme(text: str) -> bool:
 
 
 def looks_like_task_batch(text: str, bullet_re: re.Pattern[str]) -> bool:
+    """Return True only when explicit multi-task delimiters are present."""
     if looks_like_crossfit_programme(text):
         return False
+
     lines = [l.strip() for l in text.splitlines() if l.strip()]
-    if len(lines) <= 1:
-        return False
-    numbered_or_bulleted = sum(1 for l in lines if bullet_re.match(l))
-    if numbered_or_bulleted >= 2:
+
+    if re.search(r"\s+AND\s+", text):
+        if len([t for t in re.split(r"\s+AND\s+", text) if t.strip()]) >= 2:
+            return True
+
+    numbered_line_pattern = r"^\d+[.)]\s+"
+    if sum(1 for l in lines if re.match(numbered_line_pattern, l)) >= 2:
         return True
-    lead = lines[0].lower()
-    if lead in {"add", "todo", "to-do", "tasks"}:
+
+    if len(list(re.finditer(r"(?:^|\s)\d+[.)]\s+", text))) >= 2:
         return True
+
+    if sum(1 for l in lines if bullet_re.match(l)) >= 2:
+        return True
+
+    if len(list(re.finditer(r"(?:^|\s)[•*]\s+", text))) >= 2:
+        return True
+
     return False
 
 
