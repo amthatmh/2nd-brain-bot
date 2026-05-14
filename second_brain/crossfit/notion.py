@@ -5,6 +5,7 @@ import os
 import re
 from datetime import date, datetime, timedelta
 from second_brain.notion import notion_call
+from second_brain.notion.properties import query_all
 from second_brain.utils import local_today
 from .nlp import fuzzy_match_movements, normalize_movement_name
 import logging
@@ -47,27 +48,16 @@ def is_valid_movement_candidate(name: str) -> bool:
 def load_movement_library(notion, movements_db_id: str) -> dict[str, str]:
     """Load all movements + aliases from NOTION_MOVEMENTS_DB."""
     cache: dict[str, str] = {}
-    cursor = None
-    while True:
-        resp = notion_call(
-            notion.databases.query,
-            database_id=movements_db_id,
-            start_cursor=cursor,
-            page_size=100,
-        )
-        for page in resp.get("results", []):
-            props = page.get("properties", {})
-            name = "".join(c.get("plain_text", "") for c in props.get("Name", {}).get("title", [])).strip()
-            if name:
-                cache[name.lower()] = page["id"]
-            aliases_text = "".join(c.get("plain_text", "") for c in props.get("Aliases", {}).get("rich_text", [])).strip()
-            for alias in re.split(r"[,;]+", aliases_text):
-                alias = alias.strip().lower()
-                if alias:
-                    cache[alias] = page["id"]
-        if not resp.get("has_more"):
-            break
-        cursor = resp.get("next_cursor")
+    for page in query_all(notion, movements_db_id, page_size=100):
+        props = page.get("properties", {})
+        name = "".join(c.get("plain_text", "") for c in props.get("Name", {}).get("title", [])).strip()
+        if name:
+            cache[name.lower()] = page["id"]
+        aliases_text = "".join(c.get("plain_text", "") for c in props.get("Aliases", {}).get("rich_text", [])).strip()
+        for alias in re.split(r"[,;]+", aliases_text):
+            alias = alias.strip().lower()
+            if alias:
+                cache[alias] = page["id"]
     log.info("load_movement_library: %d entries", len(cache))
     return cache
 

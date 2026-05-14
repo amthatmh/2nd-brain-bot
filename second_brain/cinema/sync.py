@@ -8,6 +8,8 @@ from difflib import SequenceMatcher
 
 import httpx
 
+from second_brain.notion.properties import query_all
+
 TMDB_BASE = "https://api.themoviedb.org/3"
 TMDB_MOVIE_URL_BASE = "https://www.themoviedb.org/movie"
 
@@ -270,22 +272,10 @@ def _load_existing_favourites(notion, fave_db_id: str | None, title_prop_name: s
     if not fave_db_id:
         return favourites
 
-    cursor = None
-    while True:
-        query = {
-            "database_id": fave_db_id,
-            "page_size": 100,
-        }
-        if cursor:
-            query["start_cursor"] = cursor
-        response = notion.databases.query(**query)
-        for row in response.get("results", []):
-            title = _plain_text(row.get("properties", {}).get(title_prop_name, {}))
-            if title:
-                favourites.add(_normalize_title(title))
-        if not response.get("has_more"):
-            break
-        cursor = response.get("next_cursor")
+    for row in query_all(notion, fave_db_id, page_size=100):
+        title = _plain_text(row.get("properties", {}).get(title_prop_name, {}))
+        if title:
+            favourites.add(_normalize_title(title))
     return favourites
 
 
@@ -370,21 +360,7 @@ async def sync_cinema_log_to_notion(
     title_property = _resolve_cinema_title_property(notion, cinema_db_id)
     query_filter = _build_cinema_query_filter(title_property)
 
-    rows: list[dict] = []
-    cursor = None
-    while True:
-        q = {
-            "database_id": cinema_db_id,
-            "filter": query_filter,
-            "page_size": 100,
-        }
-        if cursor:
-            q["start_cursor"] = cursor
-        response = notion.databases.query(**q)
-        rows.extend(response.get("results", []))
-        if not response.get("has_more"):
-            break
-        cursor = response.get("next_cursor")
+    rows = query_all(notion, cinema_db_id, filter=query_filter, page_size=100)
 
     stats["scanned"] = len(rows)
     fave_fields = _detect_favourite_db_fields(notion, fave_db_id)

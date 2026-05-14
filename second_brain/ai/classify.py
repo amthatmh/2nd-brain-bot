@@ -2,19 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from typing import Any
 
 import anthropic
 
+from second_brain.ai.client import strip_json_fences
 from utils.alert_handlers import alert_claude_auth_failure
-
-
-_JSON_FENCE_RE = re.compile(r"^```(?:json)?|```$", re.MULTILINE)
-
-
-def _strip_markdown_json(text: str) -> str:
-    return _JSON_FENCE_RE.sub("", text).strip()
 
 
 async def claude_classify(
@@ -37,7 +30,7 @@ async def claude_classify(
                 ),
             )
             text = msg.content[0].text if msg.content else "{}"
-            return json.loads(_strip_markdown_json(text) or "{}")
+            return json.loads(strip_json_fences(text) or "{}")
         except Exception as exc:  # noqa: BLE001
             last_error = exc
             transient = any(token in str(exc).lower() for token in ("rate", "529", "timeout", "tempor"))
@@ -129,7 +122,7 @@ If TASK: {{"type":"task","task_name":"clean concise action","deadline_days":<int
     except Exception as exc:
         alert_claude_auth_failure(str(exc))
         raise
-    raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
+    raw = strip_json_fences(resp.content[0].text.strip())
     return json.loads(raw)
 
 
@@ -155,7 +148,7 @@ Return ONLY valid JSON, no markdown:
             max_tokens=150,
             messages=[{"role": "user", "content": prompt}],
         )
-        raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
+        raw = strip_json_fences(resp.content[0].text.strip())
         result = json.loads(raw)
         valid_topics = [t for t in result.get("topics", []) if t in topic_options]
         return {"title": result.get("title", title or url)[:200], "topics": valid_topics or ["💡 Ideas"]}

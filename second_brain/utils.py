@@ -8,14 +8,13 @@ from zoneinfo import ZoneInfo
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from second_brain.config import NUMBER_EMOJIS, TZ as _DEFAULT_TZ
+from second_brain.services.task_parsing import split_tasks  # noqa: F401
 
 
 def local_today(tz: ZoneInfo | None = None) -> date:
     """Return today's date in the app timezone (or tz if provided)."""
     return datetime.now(tz or _DEFAULT_TZ).date()
 
-
-_BULLET_RE = re.compile(r"^[\s]*(?:[-•*]|\d+[.):])\s+", re.MULTILINE)
 
 
 class ExpiringDict(dict):
@@ -57,14 +56,6 @@ def next_weekday(weekday: int) -> date:
     if days_ahead == 0:
         days_ahead = 7
     return today + timedelta(days=days_ahead)
-
-
-def split_tasks(text: str) -> list[str]:
-    chunks = [c.strip(" -•\t") for c in _BULLET_RE.split(text) if c.strip()]
-    if len(chunks) <= 1:
-        lines = [l.strip(" -•\t") for l in text.splitlines() if l.strip()]
-        return lines if len(lines) > 1 else [text.strip()]
-    return chunks
 
 
 def _normalize_task_name(text: str) -> str:

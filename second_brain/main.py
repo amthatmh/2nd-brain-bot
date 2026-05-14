@@ -131,6 +131,7 @@ from second_brain.config import (
     ASANA_ARCHIVE_ORPHANS,
 )
 from second_brain.notion import notion_call
+from second_brain.notion.properties import query_all
 from second_brain.notion import habits as notion_habits
 from second_brain.notion import tasks as notion_tasks
 from second_brain import keyboards as kb
@@ -395,27 +396,14 @@ def load_notion_env_config() -> dict[str, str]:
 
     try:
         config: dict[str, str] = {}
-        cursor = None
-        while True:
-            query_args = {"database_id": NOTION_ENV_DB}
-            if cursor:
-                query_args["start_cursor"] = cursor
-            results = notion.databases.query(**query_args)
-
-            for row in results.get("results", []):
-                props = row.get("properties", {})
-                name_parts = props.get("Name", {}).get("title", [])
-                name = "".join(p.get("plain_text", "") for p in name_parts).strip()
-                value_parts = props.get("Value", {}).get("rich_text", [])
-                value = value_parts[0].get("text", {}).get("content", "").strip() if value_parts else ""
-                if name and value:
-                    config[name] = value
-
-            if not results.get("has_more"):
-                break
-            cursor = results.get("next_cursor")
-            if not cursor:
-                break
+        for row in query_all(notion, NOTION_ENV_DB, page_size=None):
+            props = row.get("properties", {})
+            name_parts = props.get("Name", {}).get("title", [])
+            name = "".join(p.get("plain_text", "") for p in name_parts).strip()
+            value_parts = props.get("Value", {}).get("rich_text", [])
+            value = value_parts[0].get("text", {}).get("content", "").strip() if value_parts else ""
+            if name and value:
+                config[name] = value
 
         return config
     except Exception as e:
@@ -723,20 +711,13 @@ def _is_muted() -> bool:
 
 def notion_query_all(database_id: str, **kwargs) -> list[dict]:
     """Return all rows from a Notion database query (handles pagination)."""
-    rows: list[dict] = []
-    cursor = None
-
-    while True:
-        query_args = dict(kwargs)
-        if cursor:
-            query_args["start_cursor"] = cursor
-        resp = notion.databases.query(database_id=database_id, **query_args)
-        rows.extend(resp.get("results", []))
-        if not resp.get("has_more"):
-            break
-        cursor = resp.get("next_cursor")
-
-    return rows
+    return query_all(
+        notion,
+        database_id,
+        filter=kwargs.pop("filter", None),
+        sorts=kwargs.pop("sorts", None),
+        page_size=kwargs.pop("page_size", None),
+    )
 
 
 def load_digest_slots() -> list[dict]:
@@ -4417,22 +4398,7 @@ def _notion_title_text(props: dict, key: str = "Name") -> str:
 
 
 def _count_notion_database_rows(database_id: str, filter_payload: dict | None = None) -> int:
-    count = 0
-    start_cursor = None
-    while True:
-        kwargs = {"database_id": database_id, "page_size": 100}
-        if filter_payload:
-            kwargs["filter"] = filter_payload
-        if start_cursor:
-            kwargs["start_cursor"] = start_cursor
-        result = notion_call(notion.databases.query, **kwargs)
-        count += len(result.get("results", []) or [])
-        if not result.get("has_more"):
-            break
-        start_cursor = result.get("next_cursor")
-        if not start_cursor:
-            break
-    return count
+    return len(query_all(notion, database_id, filter=filter_payload, page_size=100))
 
 
 def _create_cycle_row(cycle_name: str) -> str:
@@ -4534,19 +4500,7 @@ async def process_pending_programmes(bot) -> None:
             try:
                 new_cycle = props.get("New Cycle", {}).get("checkbox", False)
                 if new_cycle:
-                    all_rows = []
-                    start_cursor = None
-                    while True:
-                        kwargs = {"database_id": NOTION_WORKOUT_PROGRAM_DB, "page_size": 100}
-                        if start_cursor:
-                            kwargs["start_cursor"] = start_cursor
-                        page = notion_call(notion.databases.query, **kwargs)
-                        all_rows.extend(page.get("results", []))
-                        if not page.get("has_more"):
-                            break
-                        start_cursor = page.get("next_cursor")
-                        if not start_cursor:
-                            break
+                    all_rows = query_all(notion, NOTION_WORKOUT_PROGRAM_DB, page_size=100)
                     cycle_num = max(
                         (r.get("properties", {}).get("Cycle", {}).get("number") or 0 for r in all_rows),
                         default=0,

@@ -9,6 +9,7 @@ from pathlib import Path
 import httpx
 
 from second_brain.config import OPENWEATHER_KEY as _CONFIG_OPENWEATHER_KEY, WEATHER_LOCATION, TZ, CLAUDE_MODEL
+from second_brain.utils import ExpiringDict
 log = logging.getLogger(__name__)
 notion = None
 NOTION_ENV_DB = os.environ.get("ENV_DB_ID", "").strip()
@@ -49,12 +50,7 @@ location_history_fallback_file = Path(__file__).resolve().parents[1] / ".second_
 current_location: str = ""
 current_lat: float | None = None
 current_lon: float | None = None
-weather_cache: dict[str, dict] = {
-    "current": {"timestamp": None, "data": None},
-    "today": {"timestamp": None, "data": None},
-    "tomorrow": {"timestamp": None, "data": None},
-    "daily": {"timestamp": None, "data": None},
-}
+weather_cache: ExpiringDict = ExpiringDict(ttl_seconds=3600)
 
 
 def _location_state_files() -> list[Path]:
@@ -337,8 +333,7 @@ def set_location_smart(user_text: str, claude) -> bool:
 
 def clear_weather_cache() -> None:
     """Clear all weather payloads after the active location changes."""
-    for key in weather_cache:
-        weather_cache[key] = {"timestamp": None, "data": None}
+    weather_cache.clear()
 
 
 def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -> dict | None:
@@ -347,12 +342,9 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
     openweather_key = _openweather_key()
     if not openweather_key:
         return None
-    cache_entry = weather_cache.get(forecast_type, {"timestamp": None, "data": None})
-    now = datetime.now(TZ)
-    ttl = timedelta(hours=24 if forecast_type == "tomorrow" else 3)
-    if not force_refresh and cache_entry.get("timestamp") and cache_entry.get("data"):
-        if now - cache_entry["timestamp"] <= ttl:
-            return cache_entry["data"]
+    cached_result = weather_cache.get(forecast_type)
+    if not force_refresh and cached_result is not None:
+        return cached_result
     try:
         if current_lat is None or current_lon is None:
             if not set_location(WEATHER_LOCATION):
@@ -390,7 +382,7 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
             conds = [(r.get("weather") or [{}])[0].get("main", "Unknown") for r in bucket]
             mode_condition = max(set(conds), key=conds.count)
             result = {"temp_high": round(max(highs)), "temp_low": round(min(lows)), "condition": mode_condition, "precip_chance": int(round(max(pops) * 100))}
-        weather_cache[forecast_type] = {"timestamp": now, "data": result}
+        weather_cache[forecast_type] = result
         return result
     except Exception as e:
         log.error("Weather fetch failed (%s): %s", forecast_type, e)
@@ -577,15 +569,8 @@ def fetch_daily_weather(days: int = 5, force_refresh: bool = False) -> list[dict
         if not set_location(WEATHER_LOCATION):
             return []
 
-    now = datetime.now(TZ)
-    cache_entry = weather_cache.get("daily", {"timestamp": None, "data": None})
-    cached_rows = cache_entry.get("data") or []
-    if (
-        not force_refresh
-        and cache_entry.get("timestamp")
-        and len(cached_rows) >= days
-        and now - cache_entry["timestamp"] <= timedelta(hours=3)
-    ):
+    cached_rows = weather_cache.get("daily") or []
+    if not force_refresh and len(cached_rows) >= days:
         return cached_rows[:days]
 
     try:
@@ -619,7 +604,7 @@ def fetch_daily_weather(days: int = 5, force_refresh: bool = False) -> list[dict
                     "sunset": datetime.fromtimestamp(item.get("sunset", 0), timezone.utc).astimezone(TZ).isoformat() if item.get("sunset") else None,
                 }
             )
-        weather_cache["daily"] = {"timestamp": now, "data": rows}
+        weather_cache["daily"] = rows
         return rows[:days]
     except Exception as e:
         log.error("Daily weather fetch failed: %s", e)

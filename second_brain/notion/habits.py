@@ -6,62 +6,22 @@ import re
 import logging
 from typing import Any
 
+from second_brain.utils import ExpiringDict
+from second_brain.notion.properties import (
+    extract_checkbox,
+    extract_date,
+    extract_formula,
+    extract_number,
+    extract_plain_text,
+    extract_rich_text,
+    extract_select,
+    extract_title,
+    get_property_by_name,
+)
+
 
 log = logging.getLogger(__name__)
-habit_cache: dict[str, dict[str, Any]] = {}
-
-
-def _plain_text_from_property(prop: dict[str, Any] | None) -> str:
-    """Extract readable text from a Notion property payload."""
-    if not prop:
-        return ""
-
-    prop_type = prop.get("type")
-    if prop_type == "select":
-        return ((prop.get("select") or {}).get("name") or "").strip()
-    if prop_type == "rich_text":
-        rich = prop.get("rich_text") or []
-        return "".join(
-            (item.get("plain_text") or (item.get("text") or {}).get("content") or "")
-            for item in rich
-            if isinstance(item, dict)
-        ).strip()
-    if prop_type == "number":
-        value = prop.get("number")
-        if isinstance(value, (int, float)):
-            return str(int(value))
-    if prop_type == "formula":
-        formula = prop.get("formula") or {}
-        if formula.get("type") == "number" and isinstance(formula.get("number"), (int, float)):
-            return str(int(formula["number"]))
-        if formula.get("type") == "string":
-            return (formula.get("string") or "").strip()
-
-    # Legacy / loose payloads in tests and integrations.
-    if isinstance(prop.get("rich_text"), list):
-        return "".join(
-            (item.get("plain_text") or (item.get("text") or {}).get("content") or "")
-            for item in prop["rich_text"]
-            if isinstance(item, dict)
-        ).strip()
-    if isinstance(prop.get("number"), (int, float)):
-        return str(int(prop["number"]))
-    if isinstance(prop.get("name"), str):
-        return prop["name"].strip()
-    return ""
-
-
-def _get_property_by_name(props: dict[str, Any], name: str) -> tuple[str | None, dict[str, Any] | None]:
-    """Return a Notion property by exact or whitespace/case-insensitive name."""
-    prop = props.get(name)
-    if prop is not None:
-        return name, prop
-
-    normalized_name = name.strip().casefold()
-    for key, value in props.items():
-        if key.strip().casefold() == normalized_name:
-            return key, value
-    return None, None
+habit_cache: ExpiringDict = ExpiringDict(ttl_seconds=1800)
 
 
 def _parse_show_after(props: dict[str, Any], habit_name: str | None) -> str | None:
@@ -70,7 +30,8 @@ def _parse_show_after(props: dict[str, Any], habit_name: str | None) -> str | No
         available_props = list(props.keys())
         log.info("DEBUG: Available properties for habit %s: %s", habit_name, available_props)
 
-        show_after_key, show_after_prop = _get_property_by_name(props, "Show After")
+        show_after_prop = get_property_by_name(props, "Show After")
+        show_after_key = "Show After" if show_after_prop else None
         if not show_after_prop:
             log.warning("DEBUG: 'Show After' property not found in props for habit %s", habit_name)
             return None
@@ -81,7 +42,7 @@ def _parse_show_after(props: dict[str, Any], habit_name: str | None) -> str | No
             show_after_prop.get("type"),
             show_after_prop,
         )
-        show_after_raw = _plain_text_from_property(show_after_prop).strip()
+        show_after_raw = extract_plain_text(show_after_prop).strip()
         if re.match(r"^\d{2}:\d{2}$", show_after_raw):
             log.info("DEBUG: Parsed show_after=%s for habit %s", show_after_raw, habit_name)
             return show_after_raw
@@ -99,7 +60,7 @@ def _parse_show_after(props: dict[str, Any], habit_name: str | None) -> str | No
 def extract_habit_frequency(props: dict[str, Any]) -> int | None:
     """Return weekly frequency target from a Notion habit page properties dict."""
     for field in ("Frequency Per Week", "Frequency"):
-        text = _plain_text_from_property(props.get(field))
+        text = extract_plain_text(props.get(field))
         if not text:
             continue
         match = re.search(r"\d+", text)
@@ -108,7 +69,7 @@ def extract_habit_frequency(props: dict[str, Any]) -> int | None:
             if value > 0:
                 return value
 
-    label = _plain_text_from_property(props.get("Frequency Label"))
+    label = extract_plain_text(props.get("Frequency Label"))
     if label:
         match = re.search(r"\d+", label)
         if match:
@@ -127,24 +88,21 @@ def load_habit_cache(*, notion: Any, notion_habit_db: str) -> None:
             database_id=notion_habit_db,
             filter={"property": "Active", "checkbox": {"equals": True}},
         )
-        habit_cache = {}
+        habit_cache.clear()
         for page in results.get("results", []):
             p = page["properties"]
-            title_parts = p.get("Habit", {}).get("title", [])
-            name = title_parts[0]["text"]["content"] if title_parts else None
+            name = extract_title(p.get("Habit")) or None
             if not name:
                 continue
 
             def sel(key: str) -> str | None:
-                s = p.get(key, {}).get("select")
-                return s["name"] if s else None
+                return extract_select(p.get(key)) or None
 
             def num(key: str) -> int | float | None:
-                return p.get(key, {}).get("number")
+                return extract_number(p.get(key))
 
             def txt(key: str) -> str | None:
-                parts = p.get(key, {}).get("rich_text", [])
-                return parts[0]["text"]["content"] if parts else None
+                return extract_rich_text(p.get(key)) or None
 
             parsed_frequency = extract_habit_frequency(p)
             frequency_label = txt("Frequency Label")
@@ -197,19 +155,13 @@ def get_active_habits_for_trigger(
     for page in results:
         try:
             props = page.get("properties", {})
-            title_parts = props.get("Habit", {}).get("title", [])
-            name = title_parts[0].get("plain_text") if title_parts else "Unknown"
+            name = extract_title(props.get("Habit")) or "Unknown"
             time_prop = props.get("Time", {})
-            time_str = ""
-            if time_prop.get("type") == "select":
-                time_str = (time_prop.get("select") or {}).get("name") or ""
-            elif time_prop.get("type") == "rich_text":
-                rich = time_prop.get("rich_text", [])
-                time_str = (rich[0].get("plain_text") if rich else "") or ""
+            time_str = extract_select(time_prop) or extract_rich_text(time_prop)
             time_str = time_str.strip() or "—"
             time_minutes = parse_time_to_minutes(time_str if time_str != "—" else None)
             frequency = extract_habit_frequency(props)
-            show_after_raw = _plain_text_from_property(props.get("Show After"))
+            show_after_raw = extract_plain_text(props.get("Show After"))
             show_after = show_after_raw if (show_after_raw and re.match(r"^\d{2}:\d{2}$", show_after_raw)) else None
             completion_count = count_habit_completions_this_week(page["id"])
             if frequency and frequency > 0 and completion_count >= frequency:
@@ -223,7 +175,7 @@ def get_active_habits_for_trigger(
                     "frequency": frequency,
                     "completion_count": completion_count,
                     "show_after": show_after,
-                    "weather_gated": props.get("Weather Gated", {}).get("checkbox", False),
+                    "weather_gated": extract_checkbox(props.get("Weather Gated")),
                 }
             )
         except Exception as e:
@@ -260,7 +212,6 @@ def get_habits_by_time(
 
 
 def query_tasks_by_auto_horizon(*, notion: Any, notion_db_id: str, horizons: list[str]) -> list[dict]:
-    from second_brain.notion import tasks as notion_tasks
     results = notion.databases.query(
         database_id=notion_db_id,
         filter={
@@ -276,10 +227,10 @@ def query_tasks_by_auto_horizon(*, notion: Any, notion_db_id: str, horizons: lis
         tasks.append(
             {
                 "page_id": page["id"],
-                "name": notion_tasks._get_prop(p, "Name", "title") or "Untitled",
-                "auto_horizon": notion_tasks._get_prop(p, "Auto Horizon", "formula") or "",
-                "context": notion_tasks._get_prop(p, "Context", "select") or "",
-                "deadline": notion_tasks._get_prop(p, "Deadline", "date"),
+                "name": extract_title(p.get("Name")) or "Untitled",
+                "auto_horizon": extract_formula(p.get("Auto Horizon")) or "",
+                "context": extract_select(p.get("Context")) or "",
+                "deadline": extract_date(p.get("Deadline")),
             }
         )
     return tasks
