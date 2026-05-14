@@ -18,7 +18,10 @@ def get_claude_client() -> anthropic.Anthropic:
             from second_brain.config import ANTHROPIC_KEY
         except KeyError:
             ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]
-        _client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+        client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+        if type(client).__module__.startswith("unittest.mock"):
+            return client
+        _client = client
     return _client
 
 

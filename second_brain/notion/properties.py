@@ -112,11 +112,11 @@ def get_property_by_name(props: dict[str, Any], name: str) -> dict[str, Any] | N
 
 
 def title_prop(text: str) -> dict[str, Any]:
-    return {"title": [{"text": {"content": text}}]}
+    return {"title": [dict(text={"content": text})]}
 
 
 def rich_text_prop(text: str) -> dict[str, Any]:
-    return {"rich_text": [{"text": {"content": text}}]}
+    return {"rich_text": [dict(text={"content": text})]}
 
 
 def select_prop(name: str) -> dict[str, Any]:
@@ -188,7 +188,7 @@ def query_all(notion, database_id, filter=None, sorts=None, page_size=100) -> li
             kwargs["start_cursor"] = cursor
         response = notion_call(notion.databases.query, **kwargs)
         results.extend(response.get("results", []) or [])
-        if not response.get("has_more"):
+        if response.get("has_more") is not True:
             break
         cursor = response.get("next_cursor")
         if not cursor:

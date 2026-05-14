@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, date
 from second_brain.config import NUMBER_EMOJIS, HORIZON_LABELS, TZ
 from second_brain.notion import tasks as notion_tasks
 from second_brain import weather as wx
+from second_brain.utils import local_today
 
 
 def num_emoji(n: int) -> str:
@@ -142,14 +143,18 @@ def format_week_view(view_type: str) -> tuple[str, list[dict]]:
 
     return "\n".join(lines), shown
 
-def format_reminder_snapshot(mode: str = "priority", limit: int = 8) -> str:
-    today = local_today()
+def format_reminder_snapshot(notion_client=None, notion_db_id: str | None = None, tz=TZ, *, mode: str = "priority", limit: int = 8) -> str:
+    notion_client = notion_client or globals().get("notion")
+    notion_db_id = notion_db_id or globals().get("NOTION_DB_ID")
+    if notion_client is None or not notion_db_id:
+        raise ValueError("notion_client and notion_db_id are required")
+    today = local_today(tz)
     today_str = today.isoformat()
-    date_str = datetime.now(TZ).strftime("%A, %B %-d")
-    all_tasks = notion_tasks.get_all_active_tasks(notion, NOTION_DB_ID)
+    date_str = datetime.now(tz).strftime("%A, %B %-d")
+    all_tasks = notion_tasks.get_all_active_tasks(notion_client, notion_db_id)
     overdue = [t for t in all_tasks if t["deadline"] and t["deadline"] < today_str]
     today_tasks = [t for t in all_tasks if t.get("deadline") == today_str and t not in overdue]
-    quick_refresh_tasks = notion_tasks.get_quick_refresh_tasks(notion, NOTION_DB_ID, limit=max(limit, 10))
+    quick_refresh_tasks = notion_tasks.get_quick_refresh_tasks(notion_client, notion_db_id, limit=max(limit, 10))
     open_count = len(all_tasks)
 
     if mode == "all_open":

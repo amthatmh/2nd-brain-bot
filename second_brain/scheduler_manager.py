@@ -19,6 +19,7 @@ from second_brain.notion.properties import (
     extract_select,
     extract_title,
     query_all,
+    rich_text_prop,
 )
 from second_brain.monitoring import (
     check_alert_cooldown,
@@ -494,7 +495,7 @@ class UtilitySchedulerManager:
     def _notion_rich_text(value: str) -> dict[str, Any]:
         if not value:
             return {"rich_text": []}
-        return {"rich_text": [{"text": {"content": value[:500]}}]}
+        return rich_text_prop(value[:500])
 
     @staticmethod
     def _extract_text(prop: dict[str, Any]) -> str | None:

@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Optional
 
 from second_brain.notion import notion_call
+from second_brain.notion.properties import rich_text_prop, title_prop
 
 
 async def _maybe_await(value):
@@ -59,14 +60,14 @@ async def log_daily_readiness(
 
     today = datetime.now().strftime("%Y-%m-%d")
     properties = {
-        "Name": {"title": [{"text": {"content": f"Readiness — {today}"}}]},
+        "Name": title_prop(f"Readiness — {today}"),
         "Date": {"date": {"start": today}},
         "Sleep Quality": {"select": {"name": sleep_quality}},
         "Energy": {"select": {"name": energy}},
         "Mood": {"select": {"name": mood}},
         "Stress": {"select": {"name": stress}},
         "Soreness": {"select": {"name": soreness}},
-        "Notes": {"rich_text": [{"text": {"content": notes}}]} if notes else None,
+        "Notes": rich_text_prop(notes) if notes else None,
         "HRV": {"number": hrv} if hrv is not None else None,
         "Resting HR": {"number": resting_hr} if resting_hr is not None else None,
         "Weekly Program": {"relation": [{"id": weekly_program_id}] if weekly_program_id else []},

@@ -71,12 +71,3 @@ def is_muted(mute_until, tz) -> bool:
     if not mute_until:
         return False
     return datetime.now(tz) < mute_until
-
-
-def format_reminder_snapshot(fmt_module, local_today_fn, notion, notion_db_id, tz, notion_tasks, *, mode: str = "priority", limit: int = 8) -> str:
-    fmt_module.local_today = local_today_fn
-    fmt_module.notion = notion
-    fmt_module.NOTION_DB_ID = notion_db_id
-    fmt_module.TZ = tz
-    fmt_module.notion_tasks = notion_tasks
-    return fmt_module.format_reminder_snapshot(mode=mode, limit=limit)

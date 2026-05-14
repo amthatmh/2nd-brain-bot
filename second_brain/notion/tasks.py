@@ -196,8 +196,9 @@ def get_quick_refresh_tasks(notion: NotionClient, notion_db_id: str, limit: int 
 
 
 def get_recurring_templates(notion: NotionClient, notion_db_id: str) -> list[dict]:
-    results = notion.databases.query(
-        database_id=notion_db_id,
+    pages = query_all(
+        notion,
+        notion_db_id,
         filter={
             "and": [
                 {"property": "Recurring", "select": {"does_not_equal": "None"}},
@@ -206,7 +207,7 @@ def get_recurring_templates(notion: NotionClient, notion_db_id: str) -> list[dic
         },
     )
     templates = []
-    for page in results.get("results", []):
+    for page in pages:
         p = page["properties"]
         templates.append({
             "page_id": page["id"],
@@ -334,7 +335,7 @@ def spawn_recurring_instance(notion: NotionClient, notion_db_id: str, template: 
     notion.pages.create(
         parent={"database_id": notion_db_id},
         properties={
-            "Name": {"title": [{"text": {"content": template["name"]}}]},
+            "Name": title_prop(template["name"]),
             "Deadline": {"date": {"start": today.isoformat()}},
             "Context": {"select": {"name": template["context"]}},
             "Source": {"select": {"name": "✏️ Manual"}},

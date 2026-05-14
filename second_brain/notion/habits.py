@@ -18,6 +18,7 @@ from second_brain.notion.properties import (
     extract_select,
     extract_title,
     get_property_by_name,
+    title_prop,
 )
 
 
@@ -243,7 +244,7 @@ def log_habit(
 ) -> None:
     today = datetime.now().astimezone().date().isoformat()
     props = {
-        "Entry": {"title": [{"text": {"content": habit_name}}]},
+        "Entry": title_prop(habit_name),
         "Habit": {"relation": [{"id": habit_page_id}]},
         "Completed": {"checkbox": True},
         "Date": {"date": {"start": today}},
