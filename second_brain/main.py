@@ -170,14 +170,13 @@ from second_brain.crossfit.handlers import (
     handle_cf_text_reply,
     handle_cf_upload_programme,
     handle_cf_wod_flow,
+    reload_movement_library,
 )
 from second_brain.crossfit.keyboards import crossfit_submenu_keyboard
-from second_brain.crossfit.nlp import load_movements_cache
 from second_brain.crossfit.readiness import check_readiness_logged_today
-from second_brain.crossfit.notion import load_movement_library, parse_weekly_program_text, save_programme_from_notion_row, this_monday
+from second_brain.crossfit.notion import parse_weekly_program_text, save_programme_from_notion_row, this_monday
 from second_brain.entertainment import log as ent_log
 
-MOVEMENT_CACHE: dict[str, str] = {}
 
 
 def _apply_shared_date_parse(payload: dict) -> object:
@@ -198,35 +197,6 @@ def _date_pick_keyboard(scope: str, key: str, result) -> InlineKeyboardMarkup:
         InlineKeyboardButton(result.label_a or result.option_a or "Option A", callback_data=f"date_pick:{scope}:a:{key}"),
         InlineKeyboardButton(result.label_b or result.option_b or "Option B", callback_data=f"date_pick:{scope}:b:{key}"),
     ]])
-
-# Backward-compatible entertainment symbols for existing tests/patch targets.
-parse_explicit_entertainment_log = ent_log.parse_explicit_entertainment_log
-entertainment_schemas = ent_log.entertainment_schemas
-pending_sport_competition_map = ent_log.pending_sport_competition_map
-_build_common_entertainment_props = ent_log._build_common_entertainment_props
-_normalize_entertainment_datetime = ent_log._normalize_entertainment_datetime
-_parse_cinema_inline_context = ent_log._parse_cinema_inline_context
-_strip_cinema_structured_notes = ent_log._strip_cinema_structured_notes
-_strip_datetime_from_notes = ent_log._strip_datetime_from_notes
-_strip_seat_from_notes = ent_log._strip_seat_from_notes
-_extract_cinema_visit_details = ent_log._extract_cinema_visit_details
-_entertainment_save_error_text = ent_log._entertainment_save_error_text
-_build_sport_competition_props = ent_log._build_sport_competition_props
-_ent_log_create_entertainment_log_entry = ent_log.create_entertainment_log_entry
-
-
-def _sync_ent_log_runtime() -> None:
-    ent_log.notion_call = notion_call
-    ent_log.NOTION_CINEMA_LOG_DB = NOTION_CINEMA_LOG_DB
-    ent_log.NOTION_PERFORMANCE_LOG_DB = NOTION_PERFORMANCE_LOG_DB
-    ent_log.NOTION_SPORTS_LOG_DB = NOTION_SPORTS_LOG_DB
-    ent_log.NOTION_FAVE_DB = NOTION_FAVE_DB
-
-
-def create_entertainment_log_entry(notion, payload: dict) -> tuple[str, bool]:
-    _sync_ent_log_runtime()
-    return _ent_log_create_entertainment_log_entry(notion, payload)
-
 
 def _entertainment_rule_entry_data(payload: dict) -> dict:
     """Build normalized rule-engine entry data from an entertainment payload."""
@@ -261,8 +231,7 @@ async def _execute_entertainment_rules(payload: dict) -> bool:
 
 
 async def handle_entertainment_log(notion, message, payload: dict) -> None:
-    _sync_ent_log_runtime()
-    entry_id, fav_saved = create_entertainment_log_entry(notion, payload)
+    entry_id, fav_saved = ent_log.create_entertainment_log_entry(notion, payload)
     rule_fav_saved = await _execute_entertainment_rules(payload)
     title = payload.get("title", "Untitled")
     log_type = payload.get("log_type", "cinema")
@@ -292,32 +261,27 @@ async def handle_entertainment_log(notion, message, payload: dict) -> None:
 
 
 async def _maybe_prompt_explicit_venue(notion, message, payload: dict, raw_text: str) -> bool:
-    _sync_ent_log_runtime()
     return await ent_log._maybe_prompt_explicit_venue(notion, message, payload, raw_text)
 
 
 def load_entertainment_schemas(notion) -> None:
-    _sync_ent_log_runtime()
     ent_log.load_entertainment_schemas(notion)
 
 
 
 def _resolve_known_cinema_venue(venue: str | None, schema: dict) -> str | None:
-    _sync_ent_log_runtime()
     resolver = ent_log._resolve_known_cinema_venue
     resolved = resolver(notion, venue, schema)
     return resolved
 
 
 def _find_existing_cinema_venue(title: str, schema: dict) -> str | None:
-    _sync_ent_log_runtime()
     finder = ent_log._find_existing_cinema_venue
     match = finder(notion, title, schema)
     return match
 
 
 def _suggest_known_venue(payload: dict) -> tuple[str | None, str | None]:
-    _sync_ent_log_runtime()
     suggester = ent_log._suggest_known_venue
     suggestion = suggester(notion, payload)
     return suggestion
@@ -1812,7 +1776,6 @@ def _crossfit_config(**extra) -> dict:
         "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB,
         "NOTION_DAILY_READINESS_DB": NOTION_DAILY_READINESS_DB,
         "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS,
-        "MOVEMENT_CACHE": MOVEMENT_CACHE,
     }
     cfg.update(extra)
     return cfg
@@ -1820,14 +1783,13 @@ def _crossfit_config(**extra) -> dict:
 
 async def cmd_cf_reload_movements(update: Update, context: ContextTypes.DEFAULT_TYPE):
     del context
-    global MOVEMENT_CACHE
     if not NOTION_MOVEMENTS_DB:
         await update.effective_message.reply_text("⚠️ NOTION_MOVEMENTS_DB is not configured")
         return
-    MOVEMENT_CACHE = await asyncio.get_running_loop().run_in_executor(None, lambda: load_movement_library(notion, NOTION_MOVEMENTS_DB))
-    MOVEMENTS_CACHE.clear()
-    MOVEMENTS_CACHE.update(MOVEMENT_CACHE)
-    await update.effective_message.reply_text(f"✅ Movement library reloaded ({len(MOVEMENT_CACHE)} entries)")
+    await asyncio.get_running_loop().run_in_executor(
+        None, lambda: reload_movement_library(notion, NOTION_MOVEMENTS_DB)
+    )
+    await update.effective_message.reply_text(f"✅ Movement library reloaded ({len(MOVEMENTS_CACHE)} entries)")
 
 async def route_classified_message_v10(message, text: str) -> None:
     thinking = await message.reply_text("🧠 Got it...")
@@ -3146,7 +3108,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             payload["title"] = raw_text
         payload.setdefault("date", local_today().isoformat())
         try:
-            entry_id, fav_saved = create_entertainment_log_entry(notion, payload)
+            entry_id, fav_saved = ent_log.create_entertainment_log_entry(notion, payload)
             rule_fav_saved = await _execute_entertainment_rules(payload)
             label = ENTERTAINMENT_LOG_LABELS.get(payload.get("log_type"), "Entertainment")
             suffix = "\n🎞️ Added to Favourite Films" if (fav_saved or rule_fav_saved) and payload.get("log_type") == "cinema" else ""
@@ -4510,7 +4472,7 @@ async def process_pending_programmes(bot) -> None:
                     parsed,
                     NOTION_WORKOUT_PROGRAM_DB,
                     NOTION_CYCLES_DB,
-                    MOVEMENT_CACHE,
+                    MOVEMENTS_CACHE,
                 ),
             )
             days_created = result["days_created"]
@@ -4903,12 +4865,11 @@ async def post_init(app: Application) -> None:
         log.info("Rule engine initialized successfully")
 
     try:
-        global MOVEMENT_CACHE
         if NOTION_MOVEMENTS_DB:
-            MOVEMENT_CACHE = await asyncio.get_running_loop().run_in_executor(None, lambda: load_movement_library(notion, NOTION_MOVEMENTS_DB))
-            MOVEMENTS_CACHE.clear()
-            MOVEMENTS_CACHE.update(MOVEMENT_CACHE)
-            log.info("Movement library loaded: %d entries", len(MOVEMENT_CACHE))
+            await asyncio.get_running_loop().run_in_executor(
+                None, lambda: reload_movement_library(notion, NOTION_MOVEMENTS_DB)
+            )
+            log.info("Movement library loaded: %d entries", len(MOVEMENTS_CACHE))
     except Exception as e:
         log.warning("CrossFit movement cache load failed at startup: %s", e)
 
@@ -5014,11 +4975,13 @@ async def post_init(app: Application) -> None:
         )
 
         from second_brain.healthtrack.scheduler import register_handlers as healthtrack_register
-        from second_brain.cinema.scheduler import register_handlers as cinema_register
-        from second_brain.weather_scheduler import register_handlers as weather_register
-        from second_brain.tasks.scheduler import register_handlers as tasks_register
-        from second_brain.trips_scheduler import register_handlers as trips_register
-        from second_brain.daily_log_scheduler import register_handlers as daily_log_register
+        from second_brain.feature_schedulers import (
+            register_cinema_handlers as cinema_register,
+            register_daily_log_handlers as daily_log_register,
+            register_tasks_handlers as tasks_register,
+            register_trips_handlers as trips_register,
+            register_weather_handlers as weather_register,
+        )
 
         healthtrack_register(utility_manager)
         cinema_register(utility_manager)
