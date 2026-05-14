@@ -831,7 +831,9 @@ def _run_capture(raw_text: str, force_create: bool = False,
                  context_override: str | None = None,
                  deadline_override: int | None = None) -> dict:
     try:
-        result        = ai_classify.classify_message(claude, CLAUDE_MODEL, raw_text, list(habit_cache.keys()), bool(NOTION_WATCHLIST_DB), bool(NOTION_WANTSLIST_V2_DB), bool(NOTION_PHOTO_DB), bool(NOTION_NOTES_DB), local_today())
+        habit_names = list(habit_cache.keys())
+        today = local_today()
+        result        = ai_classify.classify_message(claude, CLAUDE_MODEL, raw_text, habit_names, bool(NOTION_WATCHLIST_DB), bool(NOTION_WANTSLIST_V2_DB), bool(NOTION_PHOTO_DB), bool(NOTION_NOTES_DB), today)
         task_name     = result.get("task_name") or raw_text
         deadline_days = result.get("deadline_days")
         ctx           = context_override or result.get("context", "🏠 Personal")
@@ -960,6 +962,8 @@ async def complete_task_by_page_id(message, page_id: str, name: str) -> None:
 async def _classify_task_texts(task_texts: list[str]) -> list[dict]:
     """Classify multiple task texts concurrently."""
     loop = asyncio.get_running_loop()
+    habit_names = list(habit_cache.keys())
+    today = local_today()
     return await asyncio.gather(*[
         loop.run_in_executor(
             None,
@@ -967,12 +971,12 @@ async def _classify_task_texts(task_texts: list[str]) -> list[dict]:
             claude,
             CLAUDE_MODEL,
             task_text,
-            list(habit_cache.keys()),
+            habit_names,
             bool(NOTION_WATCHLIST_DB),
             bool(NOTION_WANTSLIST_V2_DB),
             bool(NOTION_PHOTO_DB),
             bool(NOTION_NOTES_DB),
-            local_today(),
+            today,
         )
         for task_text in task_texts
     ])
@@ -1142,7 +1146,9 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
         return
 
     try:
-        result        = ai_classify.classify_message(claude, CLAUDE_MODEL, raw_text, list(habit_cache.keys()), bool(NOTION_WATCHLIST_DB), bool(NOTION_WANTSLIST_V2_DB), bool(NOTION_PHOTO_DB), bool(NOTION_NOTES_DB), local_today())
+        habit_names = list(habit_cache.keys())
+        today = local_today()
+        result        = ai_classify.classify_message(claude, CLAUDE_MODEL, raw_text, habit_names, bool(NOTION_WATCHLIST_DB), bool(NOTION_WANTSLIST_V2_DB), bool(NOTION_PHOTO_DB), bool(NOTION_NOTES_DB), today)
         task_name     = result.get("task_name") or raw_text
         deadline_days = result.get("deadline_days")
         ctx           = result.get("context", "🏠 Personal")
