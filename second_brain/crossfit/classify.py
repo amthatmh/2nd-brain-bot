@@ -3,32 +3,22 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timedelta
-import zoneinfo
-from zoneinfo import ZoneInfo
-import os
 
 from second_brain.ai.client import strip_json_fences
+from second_brain.crossfit.utils import (
+    DAY_CANONICAL,
+    DAY_HEADER_RE,
+    DAY_NAMES,
+    SECTION_HEADER_RE,
+    TIME_MARKER_RE,
+    TRACK_HEADER_RE,
+    TRACK_NAMES,
+    _monday_str,
+    _today_str,
+)
 from utils.alert_handlers import alert_claude_auth_failure
 
 log = logging.getLogger(__name__)
-_TZ = zoneinfo.ZoneInfo("America/Chicago")
-
-
-def _app_tz() -> ZoneInfo:
-    try:
-        return ZoneInfo(os.environ.get("TIMEZONE", "America/Chicago"))
-    except Exception:
-        return ZoneInfo("America/Chicago")
-
-
-def _today_str() -> str:
-    return datetime.now(_TZ).strftime("%Y-%m-%d")
-
-
-def _monday_str() -> str:
-    today = datetime.now(_TZ).date()
-    return (today - timedelta(days=today.weekday())).isoformat()
 
 
 def _parse_json_response(raw: str) -> dict:
@@ -67,27 +57,6 @@ def _parse_json_response(raw: str) -> dict:
         text,
         0,
     )
-
-
-DAY_NAMES = [
-    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
-    "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY",
-]
-
-TRACK_NAMES = {"PERFORMANCE": "Performance", "FITNESS": "Fitness", "HYROX": "Hyrox"}
-DAY_CANONICAL = {
-    "MONDAY": "Monday",
-    "TUESDAY": "Tuesday",
-    "WEDNESDAY": "Wednesday",
-    "THURSDAY": "Thursday",
-    "FRIDAY": "Friday",
-    "SATURDAY": "Saturday",
-    "SUNDAY": "Sunday",
-}
-DAY_HEADER_RE = re.compile(r"(?im)^[ \t]*(MONDAY|TUESDAY|WEDNESDAY|THURSDAY|FRIDAY|SATURDAY|SUNDAY)[ \t]*:?.*$")
-TRACK_HEADER_RE = re.compile(r"(?im)^[ \t]*(PERFORMANCE|FITNESS|HYROX)[ \t]*:?.*$")
-SECTION_HEADER_RE = re.compile(r"(?im)^[ \t]*[*_`]*(?:SECTION[ \t]*)?([BC])[*_`]*[ \t]*[\.)][ \t]+(.*)$")
-TIME_MARKER_RE = re.compile(r"(?im)^\s*\w[\w\s]+—\s*\d{1,2}:\d{2}-\d{1,2}:\d{2}\s*$")
 
 
 def _split_by_headers(text: str, header_re: re.Pattern) -> list[tuple[str, str]]:

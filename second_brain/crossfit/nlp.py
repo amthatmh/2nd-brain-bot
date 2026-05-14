@@ -42,6 +42,7 @@ except ImportError:  # pragma: no cover - fallback for minimal test envs
             return (2 * common / (len(a_tokens) + len(b_tokens))) * 100
 
 from second_brain.ai.client import strip_json_fences
+from second_brain.crossfit.utils import _app_tz
 from second_brain.notion import notion_call
 
 log = logging.getLogger(__name__)
@@ -234,7 +235,7 @@ async def extract_workout_data(
     most common date/scheme/load patterns and preserves the raw text as movement.
     """
     if current_date is None:
-        current_date = datetime.now()
+        current_date = datetime.now(_app_tz())
     if not log_message:
         return _empty_workout_data()
     if claude_client is None:
