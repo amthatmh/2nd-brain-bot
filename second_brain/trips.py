@@ -440,13 +440,13 @@ def _build_trip_weather_summary(
         wind_max = item.get("wind_speed_max", 0) or 0
 
         if precip >= 40 or "rain" in condition_l or "drizzle" in condition_l:
-            flags.append("🌧️ Rain likely")
+            flags.append("Rain")
         if "thunder" in condition_l or "thunderstorm" in condition_l:
             flags.append("⛈️ Thunderstorm")
-        if hi is not None and hi >= 35:
-            flags.append("🌡️ Extreme heat")
-        if lo is not None and lo <= 0:
-            flags.append("❄️ Freezing temps")
+        if hi is not None and hi >= 30:
+            flags.append("Hot")
+        if lo is not None and lo <= 5:
+            flags.append("Cold")
         if "snow" in condition_l or "sleet" in condition_l or "blizzard" in condition_l:
             flags.append("🌨️ Snow")
         if "fog" in condition_l or "mist" in condition_l or "haze" in condition_l:

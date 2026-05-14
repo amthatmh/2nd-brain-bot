@@ -6,11 +6,8 @@ from datetime import date, datetime, timedelta
 
 from notion_client import Client as NotionClient
 
-from second_brain.config import HORIZON_DEADLINE_OFFSETS, TZ
-
-
-def local_today() -> date:
-    return datetime.now(TZ).date()
+from second_brain.config import HORIZON_DEADLINE_OFFSETS
+from second_brain.utils import local_today
 
 
 def _deadline_prop(days: int | None) -> dict:

@@ -2,6 +2,19 @@
 
 from types import SimpleNamespace
 
+import os
+
+os.environ.setdefault("TELEGRAM_TOKEN", "test-token")
+os.environ.setdefault("TELEGRAM_CHAT_ID", "1")
+os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
+os.environ.setdefault("NOTION_TOKEN", "test-token")
+os.environ.setdefault("NOTION_DB_ID", "test-db")
+os.environ.setdefault("NOTION_HABIT_DB", "test-db")
+os.environ.setdefault("NOTION_LOG_DB", "test-db")
+os.environ.setdefault("NOTION_NOTES_DB", "test-db")
+os.environ.setdefault("NOTION_DIGEST_SELECTOR_DB", "test-db")
+os.environ.setdefault("NOTION_STREAK_DB", "test-db")
+
 import asyncio
 
 from second_brain.crossfit.classify import classify_workout_message
@@ -1484,7 +1497,7 @@ def test_strength_pending_movement_stage_handles_movement_only(monkeypatch):
     assert state["reps"] is None
     assert state["weight_lbs"] is None
     assert state["weight_kg"] is None
-    assert state["workout_date"] == handlers._local_today().isoformat()
+    assert state["workout_date"] == handlers.local_today().isoformat()
     assert state["effort_scheme"] is None
     assert state["movement"] == "Hang Squat Clean"
     assert state["stage"] == "notes"

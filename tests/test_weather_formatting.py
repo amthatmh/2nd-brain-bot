@@ -10,6 +10,7 @@ os.environ.setdefault("NOTION_HABIT_DB", "test-db")
 os.environ.setdefault("NOTION_LOG_DB", "test-db")
 os.environ.setdefault("NOTION_NOTES_DB", "test-db")
 os.environ.setdefault("NOTION_DIGEST_SELECTOR_DB", "test-db")
+os.environ.setdefault("NOTION_STREAK_DB", "test-db")
 os.environ.setdefault("OPENWEATHER_KEY", "test-openweather-key")
 
 from second_brain import formatters as fmt

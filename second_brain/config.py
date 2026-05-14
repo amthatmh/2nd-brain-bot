@@ -47,8 +47,16 @@ NOTION_CINEMA_LOG_DB = os.environ.get("NOTION_CINEMA_LOG_DB", os.environ.get("NO
 NOTION_PERFORMANCE_LOG_DB = os.environ.get("NOTION_PERFORMANCE_LOG_DB", "").strip()
 NOTION_SPORTS_LOG_DB = os.environ.get("NOTION_SPORTS_LOG_DB", os.environ.get("NOTION_SPORTS_DB", "")).strip()
 NOTION_FAVE_DB = os.environ.get("NOTION_FAVE_DB", "").strip()
+NOTION_HEALTH_METRICS_DB = os.environ.get("NOTION_HEALTH_METRICS_DB", "").strip()
+NOTION_STREAK_DB = os.environ["NOTION_STREAK_DB"]
 NOTION_ENV_DB = os.environ.get("ENV_DB_ID", "").strip()
 NOTION_BOOT_LOG_DB = os.environ.get("NOTION_BOOT_LOG_DB", "").strip()
+
+ASANA_SYNC_INTERVAL: int = int(os.environ.get("ASANA_SYNC_INTERVAL", "60"))
+HTTP_PORT: int = int(os.environ.get("PORT", "8080"))
+WEEKS_HISTORY: int = int(os.environ.get("WEEKS_HISTORY", "52"))
+APP_VERSION: str = os.environ.get("APP_VERSION", "v13.3.0")
+UV_THRESHOLD: float = float(os.environ.get("UV_THRESHOLD", "3"))
 
 ASANA_PAT = os.environ.get("ASANA_PAT", "")
 ASANA_PROJECT_GID = os.environ.get("ASANA_PROJECT_GID", "")
