@@ -7,7 +7,7 @@ import logging
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from second_brain.utils import ExpiringDict, get_current_monday
+from second_brain.utils import ExpiringDict, get_current_monday, parse_time_to_minutes
 from second_brain.notion.properties import (
     extract_checkbox,
     extract_date,
@@ -137,7 +137,6 @@ def get_active_habits_for_trigger(
     *,
     notion_query_all: Any,
     notion_habit_db: str,
-    parse_time_to_minutes: Any,
     count_habit_completions_this_week: Any,
 ) -> list[dict]:
     """
@@ -191,7 +190,6 @@ def get_habits_by_time(
     time_filter: str,
     notion_query_all: Any,
     notion_habit_db: str,
-    parse_time_to_minutes: Any,
     count_habit_completions_this_week: Any,
     habit_capped_this_week: Any,
 ) -> list[dict]:
@@ -203,7 +201,6 @@ def get_habits_by_time(
     habits = get_active_habits_for_trigger(
         notion_query_all=notion_query_all,
         notion_habit_db=notion_habit_db,
-        parse_time_to_minutes=parse_time_to_minutes,
         count_habit_completions_this_week=count_habit_completions_this_week,
     )
     return [

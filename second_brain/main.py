@@ -75,6 +75,7 @@ from second_brain.healthtrack.steps import (
 from second_brain.healthtrack.scheduler import check_and_create_steps_entry
 import second_brain.config as _config_module
 _config_module = importlib.reload(_config_module)
+import second_brain.config as config
 from second_brain.config import (
     TELEGRAM_TOKEN,
     MY_CHAT_ID,
@@ -128,7 +129,6 @@ from second_brain.config import (
     ASANA_WORKSPACE_GID,
     ASANA_SYNC_SOURCE,
     ASANA_ARCHIVE_ORPHANS,
-    parse_hhmm_env,
 )
 from second_brain.notion import notion_call
 from second_brain.notion.properties import (
@@ -151,7 +151,7 @@ from second_brain.notion import tasks as notion_tasks
 from second_brain import keyboards as kb
 from second_brain import formatters as fmt
 from second_brain import digest as digest_helpers
-from second_brain.mute import load_mute_state, save_mute_state, is_muted as mute_is_muted
+from second_brain import mute as mute_helpers
 from second_brain.utils import parse_time_to_minutes
 from second_brain.digest import (
     get_digest_config,
@@ -290,7 +290,7 @@ def _resolve_state_dir() -> Path:
         return fallback
 
 # ── Config ───────────────────────────────────────────────────────────────────
-_rc_h, _rc_m = parse_hhmm_env("RECURRING_CHECK_TIME", "7:00", log)
+_rc_h, _rc_m = config.parse_hhmm_env("RECURRING_CHECK_TIME", "7:00")
 
 def get_current_monday() -> date:
     """Return Monday date for the current week in local time."""
@@ -393,13 +393,13 @@ _cf_counter = 0
 _entertainment_counter = 0
 habit_cache: dict[str, dict] = STATE.habit_cache
 # Preserve prior module-level semantics when this entrypoint is reloaded in tests or workers.
-STATE.counter_done_picker = 0
-STATE.counter_todo_picker = 0
-STATE.counter_v10 = 0
+STATE.done_picker_counter = 0
+STATE.todo_picker_counter = 0
+STATE.v10_counter = 0
 STATE.habits_data_cache = ExpiringDict(ttl_seconds=300)
 STATE.mute_until = None
-STATE.signoff_notes = {"second_brain": "", "brian_ii": ""}
-STATE.claude_activity = []
+STATE.signoff_notes_today = {"second_brain": "", "brian_ii": ""}
+STATE.claude_activity_today = []
 
 _habit_selections: dict[int, dict[str, object]] = {}
 
@@ -569,13 +569,13 @@ def next_repeat_day_date(
     return None
 
 def _load_mute_state() -> None:
-    STATE.mute_until = load_mute_state(mute_state_file, TZ, log)
+    STATE.mute_until = mute_helpers.load_mute_state(mute_state_file, TZ, log)
 
 def _save_mute_state() -> None:
-    save_mute_state(STATE.mute_until, mute_state_file, log)
+    mute_helpers.save_mute_state(STATE.mute_until, mute_state_file, log)
 
 def _is_muted() -> bool:
-    if not mute_is_muted(STATE.mute_until, TZ):
+    if not mute_helpers.is_muted(STATE.mute_until, TZ):
         if STATE.mute_until is None:
             return False
         STATE.mute_until = None
@@ -634,8 +634,8 @@ async def start_note_capture_flow(message, text: str) -> None:
         await create_or_prompt_task(message, text)
         return
 
-    note_key = str(STATE.counter_v10)
-    STATE.counter_v10 += 1
+    note_key = str(STATE.v10_counter)
+    STATE.v10_counter += 1
     try:
         topics = notion_notes.fetch_note_topics_from_notion(notion, NOTION_NOTES_DB)
     except Exception as e:
@@ -770,18 +770,18 @@ def is_on_pace(habit: dict) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def store_signoff_note(project: str, text: str) -> None:
-    if project not in STATE.signoff_notes:
+    if project not in STATE.signoff_notes_today:
         log.warning("Unknown signoff project: %s", project)
         return
-    STATE.signoff_notes[project] = text.strip()
+    STATE.signoff_notes_today[project] = text.strip()
     log.info("Signoff note stored for %s: %s", project, text[:80])
 
 def is_muted() -> bool:
     return _is_muted()
 
 def get_and_clear_project_signoff_notes() -> dict[str, str]:
-    notes = STATE.signoff_notes.copy()
-    STATE.signoff_notes = {"second_brain": "", "brian_ii": ""}
+    notes = STATE.signoff_notes_today.copy()
+    STATE.signoff_notes_today = {"second_brain": "", "brian_ii": ""}
     return notes
 
 async def trigger_signoff_now(message, note: str | None = None, project: str = "second_brain") -> None:
@@ -804,13 +804,13 @@ def track_claude_activity(text: str) -> None:
     if not cleaned:
         return
     timestamp = datetime.now(TZ).strftime("%H:%M")
-    STATE.claude_activity.append(f"{timestamp} — {cleaned[:200]}")
-    if len(STATE.claude_activity) > 60:
-        STATE.claude_activity = STATE.claude_activity[-60:]
+    STATE.claude_activity_today.append(f"{timestamp} — {cleaned[:200]}")
+    if len(STATE.claude_activity_today) > 60:
+        STATE.claude_activity_today = STATE.claude_activity_today[-60:]
 
 def get_and_clear_claude_activity() -> list[str]:
-    items = STATE.claude_activity
-    STATE.claude_activity = []
+    items = STATE.claude_activity_today
+    STATE.claude_activity_today = []
     return items
 
 def _resolve_monthly_target_day(repeat_day: str, today: date) -> int | None:
@@ -1220,7 +1220,7 @@ async def open_done_picker(message) -> None:
     if not tasks:
         await message.reply_text("✅ Nothing open in Today or overdue right now.")
         return
-    key = str(STATE.counter_done_picker); STATE.counter_done_picker += 1
+    key = str(STATE.done_picker_counter); STATE.done_picker_counter += 1
     done_picker_map[key] = tasks
     await message.reply_text("Which task should be marked done?", reply_markup=kb.done_picker_keyboard(key, done_picker_map, page=0))
 
@@ -1266,8 +1266,8 @@ async def cmd_todo(message, context: ContextTypes.DEFAULT_TYPE | None = None) ->
     if not tasks:
         await message.reply_text("✅ Nothing open in Today or overdue right now.")
         return
-    key = str(STATE.counter_todo_picker)
-    STATE.counter_todo_picker += 1
+    key = str(STATE.todo_picker_counter)
+    STATE.todo_picker_counter += 1
     todo_picker_map[key] = tasks
     await message.reply_text(
         "✅ *What did you get done?*",
@@ -2626,8 +2626,8 @@ async def post_init(app: Application) -> None:
     await app.bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=MY_CHAT_ID))
 
 def _next_done_picker_key() -> int:
-    key = STATE.counter_done_picker
-    STATE.counter_done_picker += 1
+    key = STATE.done_picker_counter
+    STATE.done_picker_counter += 1
     return key
 
 def _command_handlers() -> CommandHandlers:
