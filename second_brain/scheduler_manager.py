@@ -12,6 +12,14 @@ import time
 from datetime import datetime, timezone as dt_timezone
 from typing import Any, Callable
 
+from second_brain.notion.properties import (
+    extract_checkbox,
+    extract_number,
+    extract_rich_text,
+    extract_select,
+    extract_title,
+    query_all,
+)
 from second_brain.monitoring import (
     check_alert_cooldown,
     get_alert_config,
@@ -437,18 +445,7 @@ class UtilitySchedulerManager:
         )
 
     def _query_all_rows(self) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        cursor: str | None = None
-        while True:
-            kwargs: dict[str, Any] = {"database_id": self._db_id}
-            if cursor:
-                kwargs["start_cursor"] = cursor
-            resp = self._notion.databases.query(**kwargs)
-            rows.extend(resp.get("results", []))
-            if not resp.get("has_more"):
-                break
-            cursor = resp.get("next_cursor")
-        return rows
+        return query_all(self._notion, self._db_id)
 
     def _update_notion_loaded_at(self, page_id: str, iso_timestamp: str) -> None:
         self._update_notion_status(page_id, status=None, error=None, loaded_at=iso_timestamp)
@@ -501,29 +498,22 @@ class UtilitySchedulerManager:
 
     @staticmethod
     def _extract_text(prop: dict[str, Any]) -> str | None:
-        for field in ("title", "rich_text"):
-            items = prop.get(field, []) or []
-            if items:
-                return "".join(item.get("plain_text", "") for item in items).strip() or None
-        if prop.get("select"):
-            return (prop["select"].get("name") or "").strip() or None
-        return None
+        return extract_title(prop) or extract_rich_text(prop) or extract_select(prop) or None
 
     @staticmethod
     def _extract_number(prop: dict[str, Any]) -> float | None:
-        value = prop.get("number")
+        value = extract_number(prop)
         return float(value) if value is not None else None
 
     @staticmethod
     def _extract_select(prop: dict[str, Any]) -> str | None:
-        select = prop.get("select")
-        return select.get("name") if select else None
+        return extract_select(prop) or None
 
     @staticmethod
     def _extract_checkbox(prop: dict[str, Any], *, default: bool) -> bool:
         if "checkbox" not in prop:
             return default
-        return bool(prop.get("checkbox"))
+        return extract_checkbox(prop)
 
     @staticmethod
     def _utc_iso() -> str:

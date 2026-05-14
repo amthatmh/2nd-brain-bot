@@ -6,33 +6,22 @@ import inspect
 import logging
 import os
 import re
-from zoneinfo import ZoneInfo
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from utils.date_parser import parse_date
 
 from .classify import parse_programme
 from .keyboards import level_confirm_keyboard, my_level_keyboard, rx_scaled_keyboard, session_feel_keyboard, wod_format_keyboard
-from .notion import create_strength_log, create_wod_log, get_available_tracks_today, get_movement_category, get_movement_details, get_movement_load_type, get_progressions_for_movement, get_today_workout_structure, match_movement, normalise_movement_name, notion_query_wod_log_by_date, save_programme, set_current_level, this_monday
+from .notion import create_strength_log, create_wod_log, get_available_tracks_today, get_movement_category, get_movement_details, get_movement_load_type, get_or_create_movement, get_progressions_for_movement, get_today_workout_structure, match_movement, normalise_movement_name, notion_query_wod_log_by_date, save_programme, set_current_level, this_monday
 from .nlp import extract_movements_from_log, extract_workout_data, fuzzy_match_movements, load_movements_cache
 from .readiness import check_readiness_logged_today, log_daily_readiness
 from second_brain.notion import notion_call
+from second_brain.utils import local_today
 from .weekly_program import get_current_week_program_url, get_todays_workout_day
 
 
 log = logging.getLogger(__name__)
 logger = log
-
-
-def _app_tz() -> ZoneInfo:
-    try:
-        return ZoneInfo(os.environ.get("TIMEZONE", "America/Chicago"))
-    except Exception:
-        return ZoneInfo("America/Chicago")
-
-
-def _local_today() -> date:
-    return datetime.now(_app_tz()).date()
 
 
 def _chain_keyboard(next_step: str) -> InlineKeyboardMarkup:
@@ -140,7 +129,7 @@ async def _maybe_await(value):
 async def upsert_training_log_field(notion, date_str: str, field_name: str, rating: str, daily_readiness_db_id: str | None = None):
     """Upsert a feel rating into the Training Log (Daily Readiness) database."""
     db_id = (daily_readiness_db_id or os.environ.get("NOTION_DAILY_READINESS_DB") or "").strip()
-    date_str = date_str or _local_today().isoformat()
+    date_str = date_str or local_today().isoformat()
     logger.info(f"[FEEL_WRITE] db={db_id} date={date_str} field={field_name} rating={rating}")
     if not db_id:
         logger.error("[FEEL_WRITE_ERROR] NOTION_DAILY_READINESS_DB is not configured")
@@ -186,6 +175,19 @@ async def upsert_training_log_field(notion, date_str: str, field_name: str, rati
 
 # Global movement cache loaded lazily and refreshed at bot startup.
 MOVEMENTS_CACHE: dict[str, str] = {}
+
+
+def reload_movement_library(notion, db_id: str) -> None:
+    """Load the movement library into MOVEMENTS_CACHE in-place."""
+    import asyncio
+
+    from second_brain.crossfit.notion import load_movement_library
+
+    new_data = load_movement_library(notion, db_id)
+    MOVEMENTS_CACHE.clear()
+    MOVEMENTS_CACHE.update(new_data)
+
+
 DEFAULT_WOD_LOG_DB_ID = "f94bd9bc79384b53b18bf3d2afaf9881"
 DEFAULT_MOVEMENTS_DB_ID = "ecf5ac8381ce41a98fa804a1694977bb"
 
@@ -259,11 +261,11 @@ async def query_wod_log_by_date(notion, wod_log_db_id: str, workout_date: str, w
 
 async def _ensure_movements_cache(notion, config: dict) -> dict[str, str]:
     if not MOVEMENTS_CACHE:
-        print("[DEBUG] Movement cache empty; loading lazily")
+        log.debug("Movement cache empty; loading lazily")
         loaded_movements = await load_movements_cache(notion, _cf_config(config, "NOTION_MOVEMENTS_DB"))
         MOVEMENTS_CACHE.clear()
         MOVEMENTS_CACHE.update(loaded_movements)
-        print(f"[DEBUG] Lazy-loaded {len(MOVEMENTS_CACHE)} movements into cache")
+        log.debug("Lazy-loaded %d movements into cache", len(MOVEMENTS_CACHE))
     return MOVEMENTS_CACHE
 
 
@@ -442,7 +444,7 @@ async def _prompt_ambiguous_workout_date(message, key: str, state: dict, result)
 
 
 def _apply_parsed_workout_date(state: dict, raw_date: str | None):
-    result = parse_date(raw_date, today=_local_today())
+    result = parse_date(raw_date, today=local_today())
     if result.ambiguous:
         return result
     state["workout_date"] = result.resolved
@@ -787,7 +789,7 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
         cf_pending[str(user_id)] = state
         cf_pending[key] = state
         logger.info(f"[CF_STATE_A] WROTE key={key!r} uid={user_id!r} sets={state.get('sets')} weight={state.get('weight_lbs')} date={state.get('workout_date')}")
-        print(f"[DEBUG] Extracted workout data: {workout_data}")
+        log.debug("Extracted workout data: %r", workout_data)
         state = _store_extracted_strength_state(cf_pending, key, workout_data, raw_text)
     else:
         state = cf_pending.get(key, {})
@@ -804,11 +806,15 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
     workout_date = state.get("workout_date")
     scheme = state.get("effort_scheme") or (f"{sets}x{reps}" if sets and reps else None)
 
-    print("[DEBUG] Using extracted data:")
-    print(f"  Date: {workout_date}")
-    print(f"  Sets: {sets}, Reps: {reps}")
-    print(f"  Weight: {load_lbs}lbs / {load_kg}kg")
-    print(f"  Scheme: {scheme}")
+    log.debug(
+        "Using extracted data: Date=%s Sets=%s Reps=%s Weight=%slbs / %skg Scheme=%s",
+        workout_date,
+        sets,
+        reps,
+        load_lbs,
+        load_kg,
+        scheme,
+    )
 
     state.update({
         "mode": "strength",
@@ -838,7 +844,7 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
     cf_pending[key] = state
     logger.info(f"[CF_STATE_A] key={key!r} type={type(key)} sets={cf_pending[key].get('sets')} weight={cf_pending[key].get('weight_lbs')} date={cf_pending[key].get('workout_date')}")
     raw_date = state.get("workout_date")
-    date_result = parse_date(raw_date, today=_local_today())
+    date_result = parse_date(raw_date, today=local_today())
 
     if date_result.ambiguous:
         state["_date_option_a"] = date_result.option_a
@@ -864,17 +870,17 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
     resolved_names = []
     for m in cf_pending[key].get("movements") or []:
         name = (m.get("movement") or "").strip()
-        mid = match_movement(name, movement_cache)
-        if mid:
-            movement_ids.append(mid)
-            resolved_names.append(name)
-            continue
-        # Test/backward-compatible path still uses the match-only resolver; it
-        # never creates pages and returns empty when the library has no match.
+        # Resolve through the canonical extraction path first so aliases can be
+        # normalized even when a stale global cache contains a direct match.
         fallback_ids, fallback_names = await _resolve_movement_ids(name, claude, notion, config, None)
         if fallback_ids:
             movement_ids.extend(fallback_ids)
             resolved_names.extend(fallback_names or [name])
+            continue
+        mid = match_movement(name, movement_cache)
+        if mid:
+            movement_ids.append(mid)
+            resolved_names.append(name)
             continue
         await message.reply_text(
             f"❓ *{name}* isn't in your movement library.\n\n"
@@ -915,9 +921,9 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
 
 async def handle_cf_wod_flow(message, workout_result, notion, config, cf_pending):
     workout_result = workout_result or {}
-    print("[DEBUG] WOD Log: Starting flow, showing format selection")
+    log.debug("WOD Log: Starting flow, showing format selection")
     target_wod_db = _cf_config(config, "NOTION_WOD_LOG_DB")
-    print(f"[DEBUG] WOD Log DB configured as: {target_wod_db}")
+    log.debug("WOD Log DB configured as: %s", target_wod_db)
     if not target_wod_db:
         await message.reply_text("⚠️ CrossFit WOD Log isn't configured yet.", parse_mode="Markdown")
         return
@@ -1066,7 +1072,7 @@ def _select_name(props: dict, key: str, default: str = "") -> str:
 
 
 async def _workout_day_rows_for_today(notion, workout_days_db_id: str) -> tuple[str, list[dict]]:
-    today = _local_today()
+    today = local_today()
     monday = this_monday()
     day_name = today.strftime("%A")
     results = await _maybe_await(notion_call(
@@ -1337,27 +1343,36 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         raw_log = state.get("raw_log") or ""
         if notes:
             raw_log = f"{raw_log}\n\nNotes: {notes}" if raw_log else f"Notes: {notes}"
-        workout_date = state.get("workout_date") or _local_today().isoformat()
+        workout_date = state.get("workout_date") or local_today().isoformat()
         weekly_program_id = state.get("weekly_program_page_id") or await get_current_week_program_url(notion)
         workout_day_id = state.get("workout_day_id")
         movement_cache = config.get("MOVEMENT_CACHE") or MOVEMENTS_CACHE or {}
 
         state_snapshot = dict(state)
-        print(f"[DEBUG] Finalizing strength flow state before create_strength_log: {state_snapshot}")
         log.debug("Finalizing strength flow state before create_strength_log: %r", state_snapshot)
 
         created: list[str] = []
         workout_page_ids: list[str] = []
         for idx, movement in enumerate(movements):
-            movement_name = movement.get("movement") or state.get("movement_name") or state.get("movement") or "Unknown"
-            movement_page_id = None
             existing_ids = list(state.get("movement_page_ids") or [])
+            if len(movements) == 1:
+                movement_name = state.get("movement_name") or movement.get("movement") or state.get("movement") or "Unknown"
+            else:
+                movement_name = movement.get("movement") or state.get("movement_name") or state.get("movement") or "Unknown"
+            movement_page_id = None
             if idx < len(existing_ids):
                 movement_page_id = existing_ids[idx]
             if not movement_page_id and idx == 0:
                 movement_page_id = state.get("movement_page_id")
             if not movement_page_id:
                 movement_page_id = match_movement(movement_name, movement_cache)
+            if not movement_page_id:
+                movements_db_id = _cf_config(config, "NOTION_MOVEMENTS_DB")
+                if movements_db_id:
+                    movement_page_id = await asyncio.get_running_loop().run_in_executor(
+                        None,
+                        lambda movement_name=movement_name: get_or_create_movement(notion, movements_db_id, movement_name),
+                    )
             if not movement_page_id:
                 log.warning("finalize: no library match for '%s' — skipped", movement_name)
                 continue
@@ -1376,9 +1391,10 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 load_lbs,
                 workout_date,
             )
+            movement_page_arg = (existing_ids or [movement_page_id]) if len(movements) == 1 else movement_page_id
             workout_page_id = await asyncio.get_running_loop().run_in_executor(
                 None,
-                lambda movement_page_id=movement_page_id, movement_name=movement_name, load_lbs=load_lbs, effort_sets=effort_sets, effort_reps=effort_reps, effort_scheme=effort_scheme: create_strength_log(
+                lambda movement_page_id=movement_page_arg, movement_name=movement_name, load_lbs=load_lbs, effort_sets=effort_sets, effort_reps=effort_reps, effort_scheme=effort_scheme: create_strength_log(
                     notion=notion,
                     workout_log_db_id=_cf_config(config, "NOTION_WORKOUT_LOG_DB"),
                     movement_page_id=movement_page_id,
@@ -1431,7 +1447,7 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
             await message.reply_text("❌ Error: WOD format not set. Please start over.", parse_mode="Markdown")
             cf_pending.pop(key, None)
             return
-        print(f"[DEBUG] Writing WOD log with format: {_format_label(state.get('format'))}")
+        log.debug("Writing WOD log with format: %s", _format_label(state.get('format')))
         result_type = _infer_result_type(state.get("format"))
         result_seconds = None
         result_rounds = None
@@ -1458,10 +1474,10 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         workout_day_id = state.get("workout_day_id")
         wod_name = state.get("wod_name")
         wod_format = _format_label(state.get("format"))
-        workout_date = state.get("workout_date") or _local_today().isoformat()
+        workout_date = state.get("workout_date") or local_today().isoformat()
         state["workout_date"] = workout_date
-        print(f"[DEBUG] Time cap: {time_cap_mins}")
-        print(f"[DEBUG] Workout structure: {workout_structure}")
+        log.debug("Time cap: %s", time_cap_mins)
+        log.debug("Workout structure: %s", workout_structure)
 
         existing = await query_wod_log_by_date(notion, target_wod_db, workout_date, wod_format)
         if existing:
@@ -1474,6 +1490,12 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         movement_cache = config.get("MOVEMENT_CACHE") or MOVEMENTS_CACHE or {}
         for name in movement_names:
             mid = match_movement(name, movement_cache)
+            if not mid and _cf_config(config, "NOTION_MOVEMENTS_DB"):
+                try:
+                    mid = get_or_create_movement(notion, _cf_config(config, "NOTION_MOVEMENTS_DB"), name)
+                except Exception as exc:
+                    log.warning("Could not resolve WOD movement '%s': %s", name, exc)
+                    mid = None
             if mid and mid not in movement_ids:
                 movement_ids.append(mid)
         state["movement_page_ids"] = movement_ids
@@ -1573,7 +1595,7 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
 
         raw_date = state.get("raw_workout_date") or state.get("workout_date")
         if raw_date:
-            date_result = parse_date(raw_date, today=_local_today())
+            date_result = parse_date(raw_date, today=local_today())
             if date_result.ambiguous:
                 state["_date_option_a"] = date_result.option_a
                 state["_date_option_b"] = date_result.option_b
@@ -1588,7 +1610,7 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
             state["workout_date"] = date_result.resolved
             cf_pending[key] = state
         else:
-            state["workout_date"] = _local_today().isoformat()
+            state["workout_date"] = local_today().isoformat()
             cf_pending[key] = state
 
         logger.info(f"[CF_STATE_A] WROTE key={key!r} sets={state.get('sets')} weight={state.get('weight_lbs')} date={state.get('workout_date')}")
@@ -1624,17 +1646,17 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
         state["workout_date"] = raw_date
         state["raw_workout_date"] = _extract_raw_workout_date(raw_structure) or raw_date
         if raw_date or state.get("raw_workout_date"):
-            date_result = parse_date(state.get("raw_workout_date") or raw_date, today=_local_today())
+            date_result = parse_date(state.get("raw_workout_date") or raw_date, today=local_today())
             if date_result.ambiguous:
                 cf_pending[cf_flow_key] = state
                 await _prompt_ambiguous_workout_date(message, cf_flow_key, state, date_result)
                 return
             state["workout_date"] = date_result.resolved
         else:
-            state["workout_date"] = _local_today().isoformat()
+            state["workout_date"] = local_today().isoformat()
         cf_pending[cf_flow_key] = state
-        print(f"[DEBUG] Movements: {names}")
-        print(f"[DEBUG] Workout structure: {state['workout_structure']}")
+        log.debug("Movements: %s", names)
+        log.debug("Workout structure: %s", state['workout_structure'])
         cf_pending[cf_flow_key] = state
         if _needs_time_cap_before_result(state):
             await _prompt_wod_time_cap(message, cf_flow_key, state)
@@ -1650,7 +1672,7 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
             "time_cap_prompt_message_id",
             f"{_wod_time_cap_question_text(state)} {_markdown_bold_value(display_value)}",
         )
-        print(f"[DEBUG] Time cap: {state.get('time_cap_mins')} minutes")
+        log.debug("Time cap: %s minutes", state.get('time_cap_mins'))
         cf_pending[cf_flow_key] = state
         await _prompt_wod_result_before_rx(message, cf_flow_key, state)
         return
@@ -1688,7 +1710,7 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         await q.edit_message_reply_markup(reply_markup=None)
     except Exception:
         pass
-    print(f"[DEBUG] CrossFit callback parts: {parts}")
+    log.debug("CrossFit callback parts: %s", parts)
     if len(parts) < 2:
         await q.answer("Action unavailable.", show_alert=False)
         return
@@ -1728,12 +1750,12 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
             return
         await _send_notes_prompt(q.message, key, cf_pending)
     elif parts[1] == "log_strength":
-        print("[DEBUG] Routing to handle_cf_strength_flow")
+        log.debug("Routing to handle_cf_strength_flow")
         key = str(q.message.chat_id)
         cf_pending[key] = {"session_chain": ["c"], "session_origin": "b"}
         await handle_cf_strength_flow(q.message, {}, claude, notion, config, cf_pending)
     elif parts[1] == "log_wod":
-        print("[DEBUG] Routing to handle_cf_wod_flow")
+        log.debug("Routing to handle_cf_wod_flow")
         key = str(q.message.chat_id)
         cf_pending[key] = {"session_origin": "c"}
         await handle_cf_wod_flow(q.message, {}, notion, config, cf_pending)
@@ -1852,8 +1874,8 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         try:
             next_field = READINESS_ORDER[field_index + 1]
         except IndexError:
-            print(f"[DEBUG] All readiness scores collected: {values}")
-            print("[DEBUG] Calling log_daily_readiness...")
+            log.debug("All readiness scores collected: %s", values)
+            log.debug("Calling log_daily_readiness...")
             try:
                 await log_daily_readiness(
                     notion,
@@ -1865,11 +1887,11 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
                     daily_readiness_db_id=_cf_config(config, "NOTION_DAILY_READINESS_DB"),
                 )
             except Exception as e:
-                print(f"[ERROR] Readiness logging failed: {e}")
+                log.error("Readiness logging failed: %s", e)
                 log.exception("Readiness logging failed")
                 await q.edit_message_text(f"❌ Error logging readiness: {e}", reply_markup=None)
                 return
-            print("[DEBUG] Readiness logged successfully")
+            log.debug("Readiness logged successfully")
             cf_pending[key] = {"session_chain": ["b", "c"], "session_origin": "a"}
             await q.edit_message_text(_readiness_final_text(values), parse_mode="Markdown", reply_markup=None)
             await q.message.reply_text("💪 Did you do Section B (Strength) today?", reply_markup=_chain_keyboard("b"))
@@ -1891,8 +1913,8 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
             try:
                 next_field = READINESS_ORDER[READINESS_ORDER.index(field) + 1]
             except (ValueError, IndexError):
-                print(f"[DEBUG] All readiness scores collected: {values}")
-                print("[DEBUG] Calling log_daily_readiness...")
+                log.debug("All readiness scores collected: %s", values)
+                log.debug("Calling log_daily_readiness...")
                 try:
                     await log_daily_readiness(
                         notion,
@@ -1904,11 +1926,11 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
                         daily_readiness_db_id=_cf_config(config, "NOTION_DAILY_READINESS_DB"),
                     )
                 except Exception as e:
-                    print(f"[ERROR] Readiness logging failed: {e}")
+                    log.error("Readiness logging failed: %s", e)
                     log.exception("Readiness logging failed")
                     await q.edit_message_text(f"❌ Error logging readiness: {e}", reply_markup=None)
                     return
-                print("[DEBUG] Readiness logged successfully")
+                log.debug("Readiness logged successfully")
                 cf_pending[key] = {"session_chain": ["b", "c"], "session_origin": "a"}
                 await q.edit_message_text(_readiness_final_text(values), parse_mode="Markdown", reply_markup=None)
                 await q.message.reply_text("💪 Did you do Section B (Strength) today?", reply_markup=_chain_keyboard("b"))
@@ -1942,8 +1964,8 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         try:
             next_field = READINESS_ORDER[field_index + 1]
         except IndexError:
-            print(f"[DEBUG] All readiness scores collected: {values}")
-            print("[DEBUG] Calling log_daily_readiness...")
+            log.debug("All readiness scores collected: %s", values)
+            log.debug("Calling log_daily_readiness...")
             try:
                 await log_daily_readiness(
                     notion,
@@ -1955,11 +1977,11 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
                     daily_readiness_db_id=_cf_config(config, "NOTION_DAILY_READINESS_DB"),
                 )
             except Exception as e:
-                print(f"[ERROR] Readiness logging failed: {e}")
+                log.error("Readiness logging failed: %s", e)
                 log.exception("Readiness logging failed")
                 await q.edit_message_text(f"❌ Error logging readiness: {e}", reply_markup=None)
                 return
-            print("[DEBUG] Readiness logged successfully")
+            log.debug("Readiness logged successfully")
             cf_pending[key] = {"session_chain": ["b", "c"], "session_origin": "a"}
             await q.edit_message_text(_readiness_final_text(values), parse_mode="Markdown", reply_markup=None)
             await q.message.reply_text("💪 Did you do Section B (Strength) today?", reply_markup=_chain_keyboard("b"))
@@ -1977,7 +1999,7 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         state = cf_pending.get(key, {"mode": "wod"})
         state["format"] = parts[3]
         cf_pending[key] = state
-        print(f"[DEBUG] WOD format selected: {_format_label(parts[3])}")
+        log.debug("WOD format selected: %s", _format_label(parts[3]))
         await q.edit_message_text(f"✅ Format: {_format_label(parts[3])}", parse_mode="Markdown")
         if state.get("movement_page_ids") or state.get("movements"):
             if _needs_time_cap_before_result(state) and state.get("time_cap_mins") is None:
@@ -2010,7 +2032,7 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         state["session_feel"] = int(rating)
         cf_pending[key] = state
         mode = state.get("mode")
-        workout_date = state.get("workout_date") or _local_today().isoformat()
+        workout_date = state.get("workout_date") or local_today().isoformat()
         daily_readiness_db_id = _cf_config(config, "NOTION_DAILY_READINESS_DB")
         try:
             if mode == "strength":

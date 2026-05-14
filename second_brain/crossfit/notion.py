@@ -4,27 +4,13 @@ import json
 import os
 import re
 from datetime import date, datetime, timedelta
-import zoneinfo
-from zoneinfo import ZoneInfo
 from second_brain.notion import notion_call
+from second_brain.notion.properties import query_all
+from second_brain.utils import local_today
 from .nlp import fuzzy_match_movements, normalize_movement_name
 import logging
 
 log = logging.getLogger(__name__)
-_CF_TZ = zoneinfo.ZoneInfo("America/Chicago")
-
-
-def _app_tz() -> ZoneInfo:
-    try:
-        return ZoneInfo(os.environ.get("TIMEZONE", "America/Chicago"))
-    except Exception:
-        return ZoneInfo("America/Chicago")
-
-
-def _local_today() -> date:
-    return datetime.now(_CF_TZ).date()
-
-
 
 MOVEMENT_BLOCKLIST_PATTERNS = [
     r"^clean[\s-]?up",
@@ -62,27 +48,16 @@ def is_valid_movement_candidate(name: str) -> bool:
 def load_movement_library(notion, movements_db_id: str) -> dict[str, str]:
     """Load all movements + aliases from NOTION_MOVEMENTS_DB."""
     cache: dict[str, str] = {}
-    cursor = None
-    while True:
-        resp = notion_call(
-            notion.databases.query,
-            database_id=movements_db_id,
-            start_cursor=cursor,
-            page_size=100,
-        )
-        for page in resp.get("results", []):
-            props = page.get("properties", {})
-            name = "".join(c.get("plain_text", "") for c in props.get("Name", {}).get("title", [])).strip()
-            if name:
-                cache[name.lower()] = page["id"]
-            aliases_text = "".join(c.get("plain_text", "") for c in props.get("Aliases", {}).get("rich_text", [])).strip()
-            for alias in re.split(r"[,;]+", aliases_text):
-                alias = alias.strip().lower()
-                if alias:
-                    cache[alias] = page["id"]
-        if not resp.get("has_more"):
-            break
-        cursor = resp.get("next_cursor")
+    for page in query_all(notion, movements_db_id, page_size=100):
+        props = page.get("properties", {})
+        name = "".join(c.get("plain_text", "") for c in props.get("Name", {}).get("title", [])).strip()
+        if name:
+            cache[name.lower()] = page["id"]
+        aliases_text = "".join(c.get("plain_text", "") for c in props.get("Aliases", {}).get("rich_text", [])).strip()
+        for alias in re.split(r"[,;]+", aliases_text):
+            alias = alias.strip().lower()
+            if alias:
+                cache[alias] = page["id"]
     log.info("load_movement_library: %d entries", len(cache))
     return cache
 
@@ -117,7 +92,7 @@ def get_available_tracks_today(notion, workout_days_db_id: str) -> list[dict]:
     """Return list of {track, page_id} dicts for today's Workout Days rows."""
     if not workout_days_db_id:
         return []
-    today = datetime.now(_CF_TZ).date()
+    today = local_today()
     day_name = today.strftime("%A")
     monday = (today - timedelta(days=today.weekday())).isoformat()
     try:
@@ -446,7 +421,7 @@ def _rich_text_chunks(text: str, limit: int = 1900) -> list[dict]:
 
 
 def this_monday() -> str:
-    today = datetime.now(_CF_TZ).date()
+    today = local_today()
     return (today - timedelta(days=today.weekday())).isoformat()
 
 
@@ -894,7 +869,7 @@ def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_na
     del cycle_page_id
     del effort_scheme
     del load_kg
-    workout_date = workout_date or _local_today().isoformat()
+    workout_date = workout_date or local_today().isoformat()
     movement_ids = movement_page_id if isinstance(movement_page_id, list) else [movement_page_id]
     props = {
         "Name": {"title": [{"text": {"content": f"{workout_date} — Strength"}}]},
@@ -923,7 +898,7 @@ def get_today_workout_structure(notion, workout_days_db_id: str) -> str:
     if not notion or not workout_days_db_id:
         return ""
 
-    today = _local_today()
+    today = local_today()
     day_name = today.strftime("%A")
     monday = (today - timedelta(days=today.weekday())).isoformat()
 
@@ -998,7 +973,7 @@ def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mi
     # workout_date argument for new callers.
     if workout_date is None and isinstance(readiness, str):
         workout_date = readiness
-    workout_date = workout_date or _local_today().isoformat()
+    workout_date = workout_date or local_today().isoformat()
     props = {
         "Name": {"title": [{"text": {"content": f"{(wod_name or wod_format)} — {workout_date}"}}]},
         "Date": {"date": {"start": workout_date}},

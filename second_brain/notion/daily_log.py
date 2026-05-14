@@ -6,7 +6,15 @@ import re
 from datetime import datetime, timedelta
 from typing import Any
 
-from second_brain.notion import tasks as notion_tasks
+from second_brain.notion.properties import (
+    date_prop,
+    extract_rich_text,
+    extract_title,
+    number_prop,
+    query_all,
+    rich_text_prop,
+    title_prop,
+)
 from utils.alert_handlers import alert_claude_auth_failure
 
 log = logging.getLogger(__name__)
@@ -90,27 +98,6 @@ If no work happened on {date_label} in {scope_description}, return all fields as
         }
 
 
-def _query_all(notion, database_id: str, filter_obj: dict | None = None, sorts: list[dict] | None = None) -> list[dict]:
-    results: list[dict] = []
-    cursor = None
-    while True:
-        kwargs: dict[str, Any] = {"database_id": database_id}
-        if filter_obj:
-            kwargs["filter"] = filter_obj
-        if sorts:
-            kwargs["sorts"] = sorts
-        if cursor:
-            kwargs["start_cursor"] = cursor
-        resp = notion.databases.query(**kwargs)
-        results.extend(resp.get("results", []))
-        if not resp.get("has_more"):
-            break
-        cursor = resp.get("next_cursor")
-        if not cursor:
-            break
-    return results
-
-
 def get_recent_carried_forward(notion, notion_daily_log_db: str, tz, days: int = 3) -> list[dict]:
     """
     Fetch Carried Forward content from the last N Daily Log entries.
@@ -133,15 +120,8 @@ def get_recent_carried_forward(notion, notion_daily_log_db: str, tz, days: int =
         for page in results.get("results", []):
             props = page.get("properties", {})
 
-            title_parts = props.get("Date", {}).get("title", [])
-            date_label = "".join(
-                part.get("text", {}).get("content", "") for part in title_parts
-            ).strip()
-
-            cf_parts = props.get("Carried Forward", {}).get("rich_text", [])
-            carried_forward = "".join(
-                part.get("text", {}).get("content", "") for part in cf_parts
-            ).strip()
+            date_label = extract_title(props.get("Date"))
+            carried_forward = extract_rich_text(props.get("Carried Forward"))
 
             if date_label and carried_forward:
                 entries.append({
@@ -278,10 +258,10 @@ async def generate_daily_log(
     log.info("generate_daily_log: starting for %s", today_str)
     completed_tasks: list[str] = []
     try:
-        done_pages = _query_all(
+        done_pages = query_all(
             notion,
             notion_db_id,
-            filter_obj={
+            filter={
                 "and": [
                     {"property": "Done", "checkbox": {"equals": True}},
                     {"timestamp": "last_edited_time", "last_edited_time": {"on_or_after": today_str}},
@@ -291,21 +271,21 @@ async def generate_daily_log(
         for p in done_pages:
             if (p.get("last_edited_time") or "")[:10] != today_str:
                 continue
-            completed_tasks.append(notion_tasks._get_prop(p.get("properties", {}), "Name", "title") or "Untitled")
+            completed_tasks.append(extract_title(p.get("properties", {}).get("Name")) or "Untitled")
     except Exception as e:
         log.warning("generate_daily_log: timestamp filter failed, using broad fallback: %s", e)
         try:
-            done_pages = _query_all(notion, notion_db_id, filter_obj={"property": "Done", "checkbox": {"equals": True}})
+            done_pages = query_all(notion, notion_db_id, filter={"property": "Done", "checkbox": {"equals": True}})
             for p in done_pages:
                 if (p.get("last_edited_time") or "")[:10] == today_str:
-                    completed_tasks.append(notion_tasks._get_prop(p.get("properties", {}), "Name", "title") or "Untitled")
+                    completed_tasks.append(extract_title(p.get("properties", {}).get("Name")) or "Untitled")
         except Exception as inner_e:
             log.error("generate_daily_log: error fetching completed tasks: %s", inner_e)
 
     deferred_tasks = []
     try:
         deferred_results = notion.databases.query(database_id=notion_db_id, filter={"and": [{"property": "Done", "checkbox": {"equals": False}}, {"property": "Deadline", "date": {"equals": today_str}}]})
-        deferred_tasks = [notion_tasks._get_prop(p["properties"], "Name", "title") or "Untitled" for p in deferred_results.get("results", [])]
+        deferred_tasks = [extract_title(p["properties"].get("Name")) or "Untitled" for p in deferred_results.get("results", [])]
     except Exception as e:
         log.error("generate_daily_log: error fetching deferred tasks: %s", e)
 
@@ -313,8 +293,7 @@ async def generate_daily_log(
     try:
         habit_log_results = notion.databases.query(database_id=notion_log_db, filter={"and": [{"property": "Completed", "checkbox": {"equals": True}}, {"property": "Date", "date": {"equals": today_str}}]})
         for p in habit_log_results.get("results", []):
-            entry_parts = p["properties"].get("Entry", {}).get("title", [])
-            entry_text = "".join(part.get("text", {}).get("content", "") for part in entry_parts)
+            entry_text = extract_title(p["properties"].get("Entry"))
             habit_name = entry_text.split(" — ")[0].strip()
             if habit_name:
                 habits_logged.append(habit_name)
@@ -327,8 +306,7 @@ async def generate_daily_log(
         if notion_notes_db:
             notes_results = notion.databases.query(database_id=notion_notes_db, filter={"property": "Date Created", "date": {"equals": today_str}})
             for p in notes_results.get("results", []):
-                title_parts = p["properties"].get("Title", {}).get("title", [])
-                title_text = "".join(part.get("text", {}).get("content", "") for part in title_parts).strip()
+                title_text = extract_title(p["properties"].get("Title"))
                 if title_text:
                     notes_captured.append(title_text)
     except Exception as e:
@@ -494,34 +472,26 @@ CRITICAL RULES:
         log.warning("generate_daily_log: could not retrieve daily log schema: %s", e)
 
     props: dict[str, Any] = {
-        "Date": {"title": [{"text": {"content": date_label}}]},
-        "Tasks Completed": {"number": len(completed_tasks)},
-        "Habits Logged": {"number": habits_count},
-        "Generated At": {
-            "date": {
-                "start": datetime.now(tz).isoformat(),
-            }
-        },
+        "Date": title_prop(date_label),
+        "Tasks Completed": number_prop(len(completed_tasks)),
+        "Habits Logged": number_prop(habits_count),
+        "Generated At": date_prop(datetime.now(tz).isoformat()),
     }
     if summary:
-        props["Summary"] = {"rich_text": [{"text": {"content": summary[:2000]}}]}
+        props["Summary"] = rich_text_prop(summary[:2000])
     if key_learnings:
-        props["Key Learnings"] = {"rich_text": [{"text": {"content": key_learnings[:2000]}}]}
+        props["Key Learnings"] = rich_text_prop(key_learnings[:2000])
     if code_logic and daily_log_db_properties.get("Code Changes"):
-        props["Code Changes"] = {"rich_text": [{"text": {"content": code_logic[:2000]}}]}
+        props["Code Changes"] = rich_text_prop(code_logic[:2000])
     if signoff_sb or signoff_b2:
         combined_signoff = []
         if signoff_sb:
             combined_signoff.append(f"[Second Brain] {signoff_sb}")
         if signoff_b2:
             combined_signoff.append(f"[Brian II] {signoff_b2}")
-        props["Signoff Note"] = {
-            "rich_text": [{"text": {"content": "\n\n".join(combined_signoff)[:2000]}}]
-        }
+        props["Signoff Note"] = rich_text_prop("\n\n".join(combined_signoff)[:2000])
     if carried_forward:
-        props["Carried Forward"] = {
-            "rich_text": [{"text": {"content": carried_forward[:2000]}}]
-        }
+        props["Carried Forward"] = rich_text_prop(carried_forward[:2000])
 
     try:
         existing_page_id = get_existing_daily_log(notion, notion_daily_log_db, date_label)

@@ -33,6 +33,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.main = load_main_module()
+        cls.ent_log = importlib.import_module("second_brain.entertainment.log")
 
     def test_performance_schema_venue_select_not_confused_with_source(self):
         schema = {
@@ -43,7 +44,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
             "Notes": "rich_text",
         }
 
-        props = self.main._build_common_entertainment_props(
+        props = self.ent_log._build_common_entertainment_props(
             schema,
             title="ABBA Voyage",
             when_iso="2026-04-26",
@@ -62,7 +63,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
             "Notes": "rich_text",
         }
 
-        props = self.main._build_common_entertainment_props(
+        props = self.ent_log._build_common_entertainment_props(
             schema,
             title="Dune",
             when_iso="2026-04-26",
@@ -77,7 +78,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         )
 
     def test_parse_explicit_log_command_for_sport(self):
-        parsed = self.main.parse_explicit_entertainment_log("/log sport Cubs vs Sox at Wrigley")
+        parsed = self.ent_log.parse_explicit_entertainment_log("/log sport Cubs vs Sox at Wrigley")
 
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed["type"], "entertainment_log")
@@ -86,7 +87,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["venue"], "Wrigley")
 
     def test_parse_explicit_log_command_maps_movie_keyword_to_cinema(self):
-        parsed = self.main.parse_explicit_entertainment_log("/log movie The Drama at AMC Roosevelt Collection 16")
+        parsed = self.ent_log.parse_explicit_entertainment_log("/log movie The Drama at AMC Roosevelt Collection 16")
 
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed["type"], "entertainment_log")
@@ -95,7 +96,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["venue"], "AMC Roosevelt Collection 16")
 
     def test_parse_explicit_cinema_preserves_venue_and_datetime_with_structured_tail(self):
-        parsed = self.main.parse_explicit_entertainment_log(
+        parsed = self.ent_log.parse_explicit_entertainment_log(
             "/log cinema The Drama at AMC Roosevelt Collection 16 on 2026/04/30 at 20:40 Seat D6 Auditorium D5 Mark favourite"
         )
 
@@ -108,7 +109,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertTrue(parsed["favourite"])
 
     def test_parse_explicit_performance_parses_date_time_and_tail_notes(self):
-        parsed = self.main.parse_explicit_entertainment_log(
+        parsed = self.ent_log.parse_explicit_entertainment_log(
             "/log performance The Drama at Martin Theatre on 2026/04/29 at 20:40 Seat D6"
         )
 
@@ -120,7 +121,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["notes"], "Seat D6")
 
     def test_parse_explicit_log_command_for_sports_plural_and_action_verb(self):
-        parsed = self.main.parse_explicit_entertainment_log("/log Sports watched Bears vs Arsenal at Soldier Field")
+        parsed = self.ent_log.parse_explicit_entertainment_log("/log Sports watched Bears vs Arsenal at Soldier Field")
 
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed["log_type"], "sport")
@@ -128,7 +129,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["venue"], "Soldier Field")
 
     def test_parse_explicit_log_command_extracts_trailing_date_and_time(self):
-        parsed = self.main.parse_explicit_entertainment_log(
+        parsed = self.ent_log.parse_explicit_entertainment_log(
             "/log sport Bears vs Arsenal at Soldier Field on 2026-04-27 at 21:00"
         )
 
@@ -138,7 +139,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["date"], "2026-04-27T21:00:00")
 
     def test_parse_explicit_log_command_extracts_date_and_time_without_second_at(self):
-        parsed = self.main.parse_explicit_entertainment_log(
+        parsed = self.ent_log.parse_explicit_entertainment_log(
             "/log sport Bears vs Dodgers at Soldier Field on 2026/02/02 21:00"
         )
 
@@ -148,7 +149,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["date"], "2026-02-02T21:00:00")
 
     def test_parse_explicit_cinema_handles_relative_day_and_compact_time(self):
-        parsed = self.main.parse_explicit_entertainment_log(
+        parsed = self.ent_log.parse_explicit_entertainment_log(
             "/log movie Mother Mary at AMC Roosevelt today at 1920"
         )
 
@@ -160,8 +161,8 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
 
 
     def test_parse_explicit_cinema_strips_temporal_tokens_and_prefers_explicit_spelled_date(self):
-        with patch("second_brain.entertainment.log._local_today", return_value=date(2026, 5, 9)):
-            parsed = self.main.parse_explicit_entertainment_log(
+        with patch("second_brain.entertainment.log.local_today", return_value=date(2026, 5, 9)):
+            parsed = self.ent_log.parse_explicit_entertainment_log(
                 "/log cinema Devil Wears Prada 2 yesterday May 8th 4pm at AMC Newcity"
             )
 
@@ -171,8 +172,8 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["venue"], "AMC Newcity")
 
     def test_parse_explicit_performance_preserves_literal_venue_and_strips_datetime_tokens(self):
-        with patch("second_brain.entertainment.log._local_today", return_value=date(2026, 5, 9)):
-            parsed = self.main.parse_explicit_entertainment_log(
+        with patch("second_brain.entertainment.log.local_today", return_value=date(2026, 5, 9)):
+            parsed = self.ent_log.parse_explicit_entertainment_log(
                 "/log performance Naomi Watanabe May 8th at The Vic Theatre at 7:30pm"
             )
 
@@ -182,8 +183,8 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["venue"], "The Vic Theatre")
 
     def test_parse_explicit_log_without_date_uses_same_day_local_default(self):
-        with patch("second_brain.entertainment.log._local_today", return_value=date(2026, 5, 9)):
-            parsed = self.main.parse_explicit_entertainment_log("/log cinema Sinners at AMC Newcity")
+        with patch("second_brain.entertainment.log.local_today", return_value=date(2026, 5, 9)):
+            parsed = self.ent_log.parse_explicit_entertainment_log("/log cinema Sinners at AMC Newcity")
 
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed["title"], "Sinners")
@@ -192,8 +193,8 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
 
 
     def test_parse_explicit_log_keeps_year_like_title_numbers_without_time_marker(self):
-        with patch("second_brain.entertainment.log._local_today", return_value=date(2026, 5, 9)):
-            parsed = self.main.parse_explicit_entertainment_log("/log cinema 2001 at AMC Newcity")
+        with patch("second_brain.entertainment.log.local_today", return_value=date(2026, 5, 9)):
+            parsed = self.ent_log.parse_explicit_entertainment_log("/log cinema 2001 at AMC Newcity")
 
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed["title"], "2001")
@@ -201,13 +202,13 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["venue"], "AMC Newcity")
 
     def test_maybe_prompt_explicit_venue_does_not_silently_substitute_literal_input(self):
-        self.main.NOTION_PERFORMANCE_LOG_DB = "performances_db"
-        self.main.entertainment_schemas["performances"] = {
+        self.ent_log.NOTION_PERFORMANCE_LOG_DB = "performances_db"
+        self.ent_log.entertainment_schemas["performances"] = {
             "Name": "title",
             "Place": "status",
             "Date": "date",
         }
-        self.main.notion_call = MagicMock(return_value={
+        self.ent_log.notion_call = MagicMock(return_value={
             "results": [
                 {
                     "properties": {
@@ -225,13 +226,13 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         }
 
         import asyncio
-        prompted = asyncio.run(self.main._maybe_prompt_explicit_venue(self.main.notion, AsyncMock(), payload, "raw"))
+        prompted = asyncio.run(self.ent_log._maybe_prompt_explicit_venue(self.main.notion, AsyncMock(), payload, "raw"))
 
         self.assertFalse(prompted)
         self.assertEqual(payload["venue"], "The Vic Theatre")
 
     def test_extract_cinema_visit_details(self):
-        seat, auditorium = self.main._extract_cinema_visit_details("Seat D6, Auditorium D5, 20:40")
+        seat, auditorium = self.ent_log._extract_cinema_visit_details("Seat D6, Auditorium D5, 20:40")
         self.assertEqual(seat, "D6")
         self.assertEqual(auditorium, 5)
 
@@ -242,7 +243,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
             "Place": "status",
             "Notes": "rich_text",
         }
-        props = self.main._build_common_entertainment_props(
+        props = self.ent_log._build_common_entertainment_props(
             schema,
             title="Dune",
             when_iso="2026-04-26",
@@ -252,14 +253,14 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(props["Place"]["status"]["name"], "AMC Roosevelt Collection 16")
 
     def test_normalize_entertainment_datetime_extracts_time_from_notes(self):
-        normalized = self.main._normalize_entertainment_datetime(
+        normalized = self.ent_log._normalize_entertainment_datetime(
             "2026-04-26",
             "Seat D6, Auditorium D5, 20:40",
         )
         self.assertEqual(normalized, "2026-04-26T20:40:00")
 
     def test_strip_cinema_structured_notes_removes_redundant_fields(self):
-        cleaned = self.main._strip_cinema_structured_notes("Seat D6, Auditorium D5, 20:40")
+        cleaned = self.ent_log._strip_cinema_structured_notes("Seat D6, Auditorium D5, 20:40")
         self.assertIsNone(cleaned)
 
     def test_find_existing_cinema_venue_uses_previous_logs(self):
@@ -268,8 +269,8 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
             "Place": "status",
             "Date": "date",
         }
-        self.main.NOTION_CINEMA_LOG_DB = "cinema_db"
-        self.main.notion_call = MagicMock(return_value={
+        self.ent_log.NOTION_CINEMA_LOG_DB = "cinema_db"
+        self.ent_log.notion_call = MagicMock(return_value={
             "results": [
                 {
                     "properties": {
@@ -279,11 +280,11 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
                 }
             ]
         })
-        venue = self.main._find_existing_cinema_venue("The Drama", schema)
+        venue = self.ent_log._find_existing_cinema_venue(self.main.notion, "The Drama", schema)
         self.assertEqual(venue, "AMC Roosevelt Collection 16")
 
     def test_parse_cinema_inline_context(self):
-        parsed = self.main._parse_cinema_inline_context(
+        parsed = self.ent_log._parse_cinema_inline_context(
             "The Drama at AMC Roosevelt Collection 16 on 2026/04/27 at 20:40 Seat D6 Auditorium D5"
         )
         self.assertEqual(parsed["title"], "The Drama")
@@ -293,8 +294,8 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["tail"], "Seat D6 Auditorium D5")
 
     def test_create_cinema_entry_parses_inline_title_to_fix_date_place_notes(self):
-        self.main.NOTION_CINEMA_LOG_DB = "cinema_db"
-        self.main.entertainment_schemas["cinema"] = {
+        self.ent_log.NOTION_CINEMA_LOG_DB = "cinema_db"
+        self.ent_log.entertainment_schemas["cinema"] = {
             "Film": "title",
             "Date": "date",
             "Place": "status",
@@ -317,8 +318,8 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
                 return {"results": []}
             return {}
 
-        self.main.notion_call = fake_notion_call
-        page_id, fav_saved = self.main.create_entertainment_log_entry(self.main.notion, {
+        self.ent_log.notion_call = fake_notion_call
+        page_id, fav_saved = self.ent_log.create_entertainment_log_entry(self.main.notion, {
             "log_type": "cinema",
             "title": "The Drama at AMC Roosevelt Collection 16 on 2026/04/27 at 20:40 Seat D6 Auditorium D5",
             "date": "2026-04-27",
@@ -330,8 +331,8 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertFalse(fav_saved)
 
     def test_create_performance_entry_lazy_loads_schema_when_missing(self):
-        self.main.NOTION_PERFORMANCE_LOG_DB = "performances_db"
-        self.main.entertainment_schemas.pop("performances", None)
+        self.ent_log.NOTION_PERFORMANCE_LOG_DB = "performances_db"
+        self.ent_log.entertainment_schemas.pop("performances", None)
 
         def fake_notion_call(fn, **kwargs):
             if fn == self.main.notion.databases.retrieve:
@@ -352,8 +353,8 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
                 return {"id": "perf-1"}
             return {}
 
-        self.main.notion_call = fake_notion_call
-        page_id, fav_saved = self.main.create_entertainment_log_entry(self.main.notion, {
+        self.ent_log.notion_call = fake_notion_call
+        page_id, fav_saved = self.ent_log.create_entertainment_log_entry(self.main.notion, {
             "log_type": "performance",
             "title": "The Drama",
             "date": "2026-04-29T20:40:00",
@@ -365,8 +366,8 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertFalse(fav_saved)
 
     def test_create_performance_entry_retries_without_select_fields_on_write_error(self):
-        self.main.NOTION_PERFORMANCE_LOG_DB = "performances_db"
-        self.main.entertainment_schemas["performances"] = {
+        self.ent_log.NOTION_PERFORMANCE_LOG_DB = "performances_db"
+        self.ent_log.entertainment_schemas["performances"] = {
             "Name": "title",
             "Date": "date",
             "Venue": "select",
@@ -390,8 +391,8 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
                 return {"id": "perf-2"}
             return {}
 
-        self.main.notion_call = fake_notion_call
-        page_id, fav_saved = self.main.create_entertainment_log_entry(self.main.notion, {
+        self.ent_log.notion_call = fake_notion_call
+        page_id, fav_saved = self.ent_log.create_entertainment_log_entry(self.main.notion, {
             "log_type": "performance",
             "title": "The Drama",
             "date": "2026-04-29T20:40:00",
@@ -404,13 +405,13 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(calls["create"], 2)
 
     def test_suggest_known_venue_returns_best_cinema_match(self):
-        self.main.NOTION_CINEMA_LOG_DB = "cinema_db"
-        self.main.entertainment_schemas["cinema"] = {
+        self.ent_log.NOTION_CINEMA_LOG_DB = "cinema_db"
+        self.ent_log.entertainment_schemas["cinema"] = {
             "Film": "title",
             "Venue": "select",
             "Date": "date",
         }
-        self.main.notion_call = MagicMock(return_value={
+        self.ent_log.notion_call = MagicMock(return_value={
             "results": [
                 {
                     "properties": {
@@ -420,7 +421,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
                 }
             ]
         })
-        original, suggested = self.main._suggest_known_venue({
+        original, suggested = self.ent_log._suggest_known_venue(self.main.notion, {
             "log_type": "cinema",
             "venue": "AMC Roosevelt",
         })
@@ -428,13 +429,13 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(suggested, "AMC Roosevelt Collection 16")
 
     def test_suggest_known_venue_works_for_performance_logs(self):
-        self.main.NOTION_PERFORMANCE_LOG_DB = "performances_db"
-        self.main.entertainment_schemas["performances"] = {
+        self.ent_log.NOTION_PERFORMANCE_LOG_DB = "performances_db"
+        self.ent_log.entertainment_schemas["performances"] = {
             "Name": "title",
             "Place": "status",
             "Date": "date",
         }
-        self.main.notion_call = MagicMock(return_value={
+        self.ent_log.notion_call = MagicMock(return_value={
             "results": [
                 {
                     "properties": {
@@ -444,7 +445,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
                 }
             ]
         })
-        original, suggested = self.main._suggest_known_venue({
+        original, suggested = self.ent_log._suggest_known_venue(self.main.notion, {
             "log_type": "performance",
             "venue": "martin",
         })
@@ -452,7 +453,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(suggested, "Martin Theatre")
 
     def test_entertainment_save_error_text_for_missing_performance_schema(self):
-        msg = self.main._entertainment_save_error_text(
+        msg = self.ent_log._entertainment_save_error_text(
             ValueError("Performances schema is unavailable"),
             {"log_type": "performance"},
         )
@@ -463,6 +464,7 @@ class TestEntertainmentEnvFallbacks(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.main = load_main_module()
+        cls.ent_log = importlib.import_module("second_brain.entertainment.log")
 
     def test_performance_log_env_var_is_loaded(self):
         env = dict(REQUIRED_ENV)
@@ -480,8 +482,8 @@ class TestEntertainmentEnvFallbacks(unittest.TestCase):
             "Place": "status",
             "Date": "date",
         }
-        self.main.NOTION_CINEMA_LOG_DB = "cinema_db"
-        self.main.notion_call = MagicMock(return_value={
+        self.ent_log.NOTION_CINEMA_LOG_DB = "cinema_db"
+        self.ent_log.notion_call = MagicMock(return_value={
             "results": [
                 {
                     "properties": {
@@ -491,12 +493,12 @@ class TestEntertainmentEnvFallbacks(unittest.TestCase):
                 }
             ]
         })
-        normalized = self.main._resolve_known_cinema_venue("amc roosevelt", schema)
+        normalized = self.ent_log._resolve_known_cinema_venue(self.main.notion, "amc roosevelt", schema)
         self.assertEqual(normalized, "AMC Roosevelt Collection 16")
 
     def test_inline_date_does_not_override_payload_date_but_adds_time(self):
-        self.main.NOTION_CINEMA_LOG_DB = "cinema_db"
-        self.main.entertainment_schemas["cinema"] = {
+        self.ent_log.NOTION_CINEMA_LOG_DB = "cinema_db"
+        self.ent_log.entertainment_schemas["cinema"] = {
             "Film": "title",
             "Date": "date",
             "Place": "status",
@@ -516,8 +518,8 @@ class TestEntertainmentEnvFallbacks(unittest.TestCase):
                 return {"results": []}
             return {}
 
-        self.main.notion_call = fake_notion_call
-        page_id, _ = self.main.create_entertainment_log_entry(self.main.notion, {
+        self.ent_log.notion_call = fake_notion_call
+        page_id, _ = self.ent_log.create_entertainment_log_entry(self.main.notion, {
             "log_type": "cinema",
             "title": "The Drama at AMC Roosevelt Collection 16 on 2026/04/27 at 20:40 Seat D6 Auditorium D5",
             "date": "2026-04-25",
@@ -533,7 +535,7 @@ class TestEntertainmentEnvFallbacks(unittest.TestCase):
             "date": "date",
             "place": "status",
         }
-        props = self.main._build_common_entertainment_props(
+        props = self.ent_log._build_common_entertainment_props(
             schema,
             title="The Drama",
             when_iso="2026-04-28T20:40:00",
@@ -543,12 +545,12 @@ class TestEntertainmentEnvFallbacks(unittest.TestCase):
         self.assertEqual(props["place"]["status"]["name"], "AMC Roosevelt Collection 16")
 
     def test_strip_datetime_from_notes_removes_redundant_time(self):
-        cleaned = self.main._strip_datetime_from_notes("21:00 Venue: Soldier Field")
+        cleaned = self.ent_log._strip_datetime_from_notes("21:00 Venue: Soldier Field")
         self.assertEqual(cleaned, "Venue: Soldier Field")
 
     def test_create_sports_entry_extracts_time_and_cleans_notes(self):
-        self.main.NOTION_SPORTS_LOG_DB = "sports_db"
-        self.main.entertainment_schemas["sports"] = {
+        self.ent_log.NOTION_SPORTS_LOG_DB = "sports_db"
+        self.ent_log.entertainment_schemas["sports"] = {
             "Game": "title",
             "Date": "date",
             "Notes": "rich_text",
@@ -564,8 +566,8 @@ class TestEntertainmentEnvFallbacks(unittest.TestCase):
                 return {"id": "sport-page-1"}
             return {}
 
-        self.main.notion_call = fake_notion_call
-        page_id, fav_saved = self.main.create_entertainment_log_entry(self.main.notion, {
+        self.ent_log.notion_call = fake_notion_call
+        page_id, fav_saved = self.ent_log.create_entertainment_log_entry(self.main.notion, {
             "log_type": "sport",
             "title": "Cubs vs Dodgers",
             "date": "2026-02-01",
@@ -577,8 +579,8 @@ class TestEntertainmentEnvFallbacks(unittest.TestCase):
         self.assertFalse(fav_saved)
 
     def test_create_sports_entry_maps_seat_to_seat_column(self):
-        self.main.NOTION_SPORTS_LOG_DB = "sports_db"
-        self.main.entertainment_schemas["sports"] = {
+        self.ent_log.NOTION_SPORTS_LOG_DB = "sports_db"
+        self.ent_log.entertainment_schemas["sports"] = {
             "Game": "title",
             "Date": "date",
             "Notes": "rich_text",
@@ -594,8 +596,8 @@ class TestEntertainmentEnvFallbacks(unittest.TestCase):
                 return {"id": "sport-page-2"}
             return {}
 
-        self.main.notion_call = fake_notion_call
-        page_id, fav_saved = self.main.create_entertainment_log_entry(self.main.notion, {
+        self.ent_log.notion_call = fake_notion_call
+        page_id, fav_saved = self.ent_log.create_entertainment_log_entry(self.main.notion, {
             "log_type": "sport",
             "title": "The Movie",
             "date": "2026-04-26T20:35:00",
@@ -611,12 +613,13 @@ class TestEntertainmentLogFollowups(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls):
         cls.main = load_main_module()
+        cls.ent_log = importlib.import_module("second_brain.entertainment.log")
 
     async def test_handle_entertainment_log_prompts_competition_for_sports(self):
         message = MagicMock()
         message.chat = MagicMock(id=1)
         message.reply_text = AsyncMock()
-        with patch.object(self.main, "create_entertainment_log_entry", return_value=("sport-page", False)):
+        with patch.object(self.ent_log, "create_entertainment_log_entry", return_value=("sport-page", False)):
             await self.main.handle_entertainment_log(self.main.notion, message, {
                 "log_type": "sport",
                 "title": "Cubs vs Dodgers",
@@ -627,12 +630,12 @@ class TestEntertainmentLogFollowups(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.reply_text.await_count, 2)
         second_call_text = message.reply_text.await_args_list[1].args[0]
         self.assertIn("competition", second_call_text.lower())
-        self.assertEqual(self.main.pending_sport_competition_map[1]["page_id"], "sport-page")
+        self.assertEqual(self.ent_log.pending_sport_competition_map[1]["page_id"], "sport-page")
 
     async def test_handle_message_text_sets_sport_competition_followup(self):
-        self.main.pending_sport_competition_map.clear()
-        self.main.pending_sport_competition_map[1] = {"page_id": "sport-page"}
-        self.main.entertainment_schemas["sports"] = {"Competition": "select"}
+        self.ent_log.pending_sport_competition_map.clear()
+        self.ent_log.pending_sport_competition_map[1] = {"page_id": "sport-page"}
+        self.ent_log.entertainment_schemas["sports"] = {"Competition": "select"}
         self.main.notion_call = MagicMock()
         self.main.route_classified_message_v10 = AsyncMock()
 
@@ -651,7 +654,7 @@ class TestEntertainmentLogFollowups(unittest.IsolatedAsyncioTestCase):
             page_id="sport-page",
             properties={"Competition": {"select": {"name": "Major League Baseball"}}},
         )
-        self.assertNotIn(1, self.main.pending_sport_competition_map)
+        self.assertNotIn(1, self.ent_log.pending_sport_competition_map)
         self.main.route_classified_message_v10.assert_not_called()
 
 

@@ -8,12 +8,20 @@ import re
 from datetime import date, timedelta
 from typing import Callable
 
+from second_brain.ai.client import get_claude_client
 from second_brain.config import (
     CLAUDE_MODEL,
     NOTION_PACKING_ITEMS_DB,
     NOTION_TRIPS_DB,
 )
 from second_brain.notion import notion_call
+from second_brain.notion.properties import (
+    extract_multi_select,
+    extract_rich_text,
+    extract_select,
+    extract_title,
+    query_all,
+)
 from utils.date_parser import parse_date
 
 logger = logging.getLogger(__name__)
@@ -228,26 +236,16 @@ def build_packing_blocks(trip: dict, notion_client=None) -> list[dict]:
     field_work = {fw.lower() for fw in trip.get("field_work_types", []) if fw}
     purpose_list = trip.get("purpose_list") or ["Work"]
 
-    items = []
-    cursor = None
-    while True:
-        kwargs = {"database_id": NOTION_PACKING_ITEMS_DB}
-        if cursor:
-            kwargs["start_cursor"] = cursor
-        resp = notion_call(notion_client.databases.query, **kwargs)
-        items.extend(resp.get("results", []))
-        if not resp.get("has_more"):
-            break
-        cursor = resp.get("next_cursor")
+    items = query_all(notion_client, NOTION_PACKING_ITEMS_DB, page_size=None)
 
     grouped: dict[str, list[str]] = {}
     for page in items:
         props = page.get("properties", {})
-        name = _extract_title(props)
+        name = extract_title(props.get("Item"))
         if not name:
             continue
         always = props.get("Always", {}).get("checkbox", False)
-        fw_tags = _extract_multi_select(props.get("Field Work"))
+        fw_tags = extract_multi_select(props.get("Field Work"))
         fw_tag_set = {tag.lower() for tag in fw_tags}
         matches_fw = bool(field_work & fw_tag_set)
         matches_purpose = (
@@ -258,7 +256,7 @@ def build_packing_blocks(trip: dict, notion_client=None) -> list[dict]:
         )
         if not always and not matches_fw and not matches_purpose:
             continue
-        category = _extract_select_or_text(props.get("Category")) or "Other"
+        category = extract_select(props.get("Category")) or extract_rich_text(props.get("Category")) or "Other"
         grouped.setdefault(category, []).append(name)
 
     blocks: list[dict] = []
@@ -284,42 +282,6 @@ def build_packing_blocks(trip: dict, notion_client=None) -> list[dict]:
                 }
             )
     return blocks
-
-
-def _extract_title(props: dict) -> str:
-    """Extract plain text from whichever property has type == 'title'."""
-    for prop in props.values():
-        if prop.get("type") == "title":
-            return "".join(rich_text.get("plain_text", "") for rich_text in prop.get("title", [])).strip()
-    return ""
-
-
-def _extract_select_or_text(prop: dict | None) -> str:
-    """Extract string from a select or rich_text Notion property."""
-    if not prop:
-        return ""
-    prop_type = prop.get("type")
-    if prop_type == "select":
-        return (prop.get("select") or {}).get("name", "").strip()
-    if prop_type == "rich_text":
-        return "".join(rich_text.get("plain_text", "") for rich_text in prop.get("rich_text", [])).strip()
-    return ""
-
-
-def _extract_multi_select(prop: dict | None) -> list[str]:
-    """Extract tag names from multi_select, select, or rich_text Notion properties."""
-    if not prop:
-        return []
-    prop_type = prop.get("type")
-    if prop_type == "multi_select":
-        return [option.get("name", "") for option in prop.get("multi_select", []) if option.get("name")]
-    if prop_type == "select":
-        name = (prop.get("select") or {}).get("name", "")
-        return [name] if name else []
-    if prop_type == "rich_text":
-        text = "".join(rich_text.get("plain_text", "") for rich_text in prop.get("rich_text", [])).strip()
-        return [part.strip() for part in re.split(r"[,;/|]", text) if part.strip()]
-    return []
 
 
 def _normalize_notion_database_id(raw_id: str) -> str:
@@ -440,13 +402,13 @@ def _build_trip_weather_summary(
         wind_max = item.get("wind_speed_max", 0) or 0
 
         if precip >= 40 or "rain" in condition_l or "drizzle" in condition_l:
-            flags.append("🌧️ Rain likely")
+            flags.append("Rain")
         if "thunder" in condition_l or "thunderstorm" in condition_l:
             flags.append("⛈️ Thunderstorm")
-        if hi is not None and hi >= 35:
-            flags.append("🌡️ Extreme heat")
-        if lo is not None and lo <= 0:
-            flags.append("❄️ Freezing temps")
+        if hi is not None and hi >= 30:
+            flags.append("Hot")
+        if lo is not None and lo <= 5:
+            flags.append("Cold")
         if "snow" in condition_l or "sleet" in condition_l or "blizzard" in condition_l:
             flags.append("🌨️ Snow")
         if "fog" in condition_l or "mist" in condition_l or "haze" in condition_l:
@@ -461,15 +423,14 @@ def _build_trip_weather_summary(
     raw_data = " | ".join(labels)
     field_work_types = destination  # destination is passed as a string; used for context
     try:
-        import anthropic as _anthropic
-        _client = _anthropic.Anthropic()
+        client = get_claude_client()
         prompt = (
             f"You are a travel assistant helping someone prepare for a work trip to {destination}. "
             f"Summarize this weather forecast in 2-3 concise sentences from a packing and preparation perspective. "
             f"Mention any days with notable conditions. Do not use bullet points or markdown.\n\n"
             f"Forecast: {raw_data}"
         )
-        resp = _client.messages.create(
+        resp = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=150,
             messages=[{"role": "user", "content": prompt}],
@@ -510,33 +471,24 @@ def refresh_upcoming_trip_weather(
         return 0
     today = date.today()
     upper = today + timedelta(days=lookahead_days)
-    rows: list[dict] = []
-    cursor = None
-    while True:
-        try:
-            kwargs = {
-                "database_id": database_id,
-                "filter": {
-                    "and": [
-                        {"property": "Departure Date", "date": {"on_or_after": today.isoformat()}},
-                        {"property": "Departure Date", "date": {"on_or_before": upper.isoformat()}},
-                        {"or": [
-                            {"property": "Weather Summary", "rich_text": {"equals": WEATHER_PLACEHOLDER_SUMMARY}},
-                            {"property": "Weather Summary", "rich_text": {"is_empty": True}},
-                        ]},
-                    ]
-                },
-                "page_size": 50,
-            }
-            if cursor:
-                kwargs["start_cursor"] = cursor
-            resp = notion.databases.query(**kwargs)
-        except Exception:
-            return 0
-        rows.extend(resp.get("results", []))
-        if not resp.get("has_more"):
-            break
-        cursor = resp.get("next_cursor")
+    try:
+        rows = query_all(
+            notion,
+            database_id,
+            filter={
+                "and": [
+                    {"property": "Departure Date", "date": {"on_or_after": today.isoformat()}},
+                    {"property": "Departure Date", "date": {"on_or_before": upper.isoformat()}},
+                    {"or": [
+                        {"property": "Weather Summary", "rich_text": {"equals": WEATHER_PLACEHOLDER_SUMMARY}},
+                        {"property": "Weather Summary", "rich_text": {"is_empty": True}},
+                    ]},
+                ]
+            },
+            page_size=50,
+        )
+    except Exception:
+        return 0
     updated = 0
     for row in rows:
         props = row.get("properties", {})

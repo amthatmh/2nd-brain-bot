@@ -8,7 +8,6 @@ import os
 import re
 from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
-from zoneinfo import ZoneInfo
 
 from second_brain.config import (
     NOTION_CINEMA_LOG_DB,
@@ -17,7 +16,7 @@ from second_brain.config import (
     NOTION_SPORTS_LOG_DB,
 )
 from second_brain.notion import notion_call, notion_call_async
-from second_brain.utils import reply_notion_error
+from second_brain.utils import local_today, reply_notion_error
 from utils.date_parser import parse_date
 
 
@@ -25,15 +24,6 @@ log = logging.getLogger(__name__)
 
 entertainment_schemas: dict[str, dict] = {}
 pending_sport_competition_map: dict[int, dict] = {}
-
-
-def _local_today() -> date:
-    """Return today's date in the configured app timezone."""
-    try:
-        tz = ZoneInfo(os.environ.get("TIMEZONE", "America/Chicago"))
-    except Exception:
-        tz = ZoneInfo("America/Chicago")
-    return datetime.now(tz).date()
 
 
 def _cleanup_extracted_text(text: str | None) -> str:
@@ -120,7 +110,7 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
     raw_venue = None
     extracted_notes = None
     favourite = False
-    today = _local_today()
+    today = local_today()
 
     if log_type == "cinema":
         rest_without_favourite, favourite = _extract_favourite_marker(rest)
@@ -568,7 +558,7 @@ def create_entertainment_log_entry(notion, payload: dict) -> tuple[str, bool]:
     if not title:
         raise ValueError("Entertainment log missing title")
 
-    when_iso = payload.get("date") or _local_today().isoformat()
+    when_iso = payload.get("date") or local_today().isoformat()
     venue = payload.get("venue")
     notes = payload.get("notes")
     favourite = bool(payload.get("favourite"))
@@ -690,7 +680,7 @@ async def handle_entertainment_log(notion, message, payload: dict) -> None:
     log_type = payload.get("log_type", "cinema")
     venue = payload.get("venue")
     notes = payload.get("notes")
-    when_iso = payload.get("date") or _local_today().isoformat()
+    when_iso = payload.get("date") or local_today().isoformat()
 
     summary_lines = [
         f"✅ Logged to { {'cinema': 'Cinema', 'performance': 'Performance', 'sport': 'Sports'}.get(log_type, 'Entertainment') }",

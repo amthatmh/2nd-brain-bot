@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import os
 import re
 from datetime import datetime, timedelta
@@ -41,6 +42,8 @@ except ImportError:  # pragma: no cover - fallback for minimal test envs
             return (2 * common / (len(a_tokens) + len(b_tokens))) * 100
 
 from second_brain.notion import notion_call
+
+log = logging.getLogger(__name__)
 
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 EXPECTED_MOVEMENTS_DB_ID = "ecf5ac8381ce41a98fa804a1694977bb"
@@ -148,18 +151,18 @@ def _fallback_extract_workout_data(log_message: str, current_date: datetime) -> 
         data["sets"] = int(sets_reps_pattern.group(1))
         data["reps"] = int(sets_reps_pattern.group(2))
         data["scheme"] = f"{data['sets']}x{data['reps']}"
-        print(f"[DEBUG] Fallback sets/reps: {data['sets']}x{data['reps']}")
+        log.debug("Fallback sets/reps: %sx%s", data['sets'], data['reps'])
     elif scheme_pattern:
         data["sets"] = int(scheme_pattern.group(1))
         data["reps"] = int(scheme_pattern.group(2))
         data["scheme"] = f"{data['sets']}x{data['reps']}"
-        print(f"[DEBUG] Fallback sets/reps: {data['sets']}x{data['reps']}")
+        log.debug("Fallback sets/reps: %sx%s", data['sets'], data['reps'])
     else:
         rounds = re.search(r"\b(\d+)\s+rounds?\b", lower, re.IGNORECASE)
         if rounds:
             data["sets"] = int(rounds.group(1))
             data["scheme"] = f"{data['sets']} rounds"
-            print(f"[DEBUG] Fallback rounds: {data['sets']}")
+            log.debug("Fallback rounds: %s", data['sets'])
 
     weight_pattern = re.search(
         r"\b(\d+(?:\.\d+)?)\s*(lbs?|pounds?|kg|#)(?:\b|\s|$)",
@@ -175,11 +178,11 @@ def _fallback_extract_workout_data(log_message: str, current_date: datetime) -> 
         else:
             data["weight_lbs"] = round(amount, 1)
             data["weight_kg"] = round(amount * 0.453592, 1)
-        print(f"[DEBUG] Fallback weight: {data['weight_lbs']}lbs")
+        log.debug("Fallback weight: %slbs", data['weight_lbs'])
 
     if re.search(r"\byesterday\b", lower, re.IGNORECASE):
         data["date"] = (current_date - timedelta(days=1)).strftime("%Y-%m-%d")
-        print(f"[DEBUG] Fallback date: {data['date']}")
+        log.debug("Fallback date: %s", data['date'])
     else:
         date_pattern = re.search(
             r"\bon\s+(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b",
@@ -194,7 +197,7 @@ def _fallback_extract_workout_data(log_message: str, current_date: datetime) -> 
                 year += 2000
             try:
                 data["date"] = datetime(year, month, day).strftime("%Y-%m-%d")
-                print(f"[DEBUG] Fallback date: {data['date']}")
+                log.debug("Fallback date: %s", data['date'])
             except ValueError:
                 data["date"] = None
 
@@ -318,11 +321,11 @@ Output: {{"movements":["Wall Walks","Hang Power Clean","Burpee","V-Up"],"date":n
         workout_data = _normalise_workout_data(parsed, log_message)
         fallback_data = _fallback_extract_workout_data(log_message, current_date)
         workout_data = _apply_fallback_workout_metadata(workout_data, fallback_data)
-        print(f"[DEBUG] Extracted workout data: {workout_data}")
+        log.debug("Extracted workout data: %r", workout_data)
         return workout_data
     except Exception as e:
         alert_claude_auth_failure(str(e))
-        print(f"[ERROR] Workout data extraction failed: {e}")
+        log.error("Workout data extraction failed: %s", e)
         return _fallback_extract_workout_data(log_message, current_date)
 
 
@@ -354,7 +357,7 @@ def normalize_movement_name(name: str) -> str:
             word = word[:-1]
         words.append(word)
     normalized = " ".join(words)
-    print(f"[DEBUG] Normalized {original!r} → {normalized!r}")
+    log.debug("Normalized %r → %r", original, normalized)
     return normalized
 
 
@@ -403,8 +406,8 @@ async def fuzzy_match_movements(
         if normalized and normalized not in normalized_cache:
             normalized_cache[normalized] = (name, page_id)
 
-    print(f"[DEBUG] Normalized cache has {len(normalized_cache)} entries")
-    print(f"[DEBUG] Sample normalized movements: {list(normalized_cache.keys())[:5]}")
+    log.debug("Normalized cache has %d entries", len(normalized_cache))
+    log.debug("Sample normalized movements: %s", list(normalized_cache.keys())[:5])
 
     for movement in extracted_movements:
         movement = (movement or "").strip()
@@ -415,7 +418,7 @@ async def fuzzy_match_movements(
             continue
 
         normalized_input = normalize_movement_name(movement)
-        print(f"[DEBUG] Matching {normalized_input!r} against cache...")
+        log.debug("Matching %r against cache...", normalized_input)
         scored_candidates = []
         for normalized_candidate in normalized_cache:
             score = _movement_match_score(normalized_input, normalized_candidate)
@@ -442,12 +445,12 @@ async def fuzzy_match_movements(
 
             tied_candidates.sort(key=tie_break_key)
             best_normalized_name, best_score = tied_candidates[0]
-            print(f"[DEBUG] Multiple tied matches for {movement!r}, preferring: {best_normalized_name!r}")
+            log.debug("Multiple tied matches for %r, preferring: %r", movement, best_normalized_name)
         else:
             best_normalized_name, best_score = scored_candidates[0]
 
         original_name, _url = normalized_cache[best_normalized_name]
-        print(f"[DEBUG] Best match: {original_name!r} (score: {best_score:.2f})")
+        log.debug("Best match: %r (score: %.2f)", original_name, best_score)
         matched_results.append((movement, original_name, best_score))
 
     return matched_results
@@ -461,11 +464,9 @@ async def load_movements_cache(notion_client, movements_db_id: Optional[str] = N
     instead of page URLs because Notion relation properties require IDs.
     """
     movements_db_id = (movements_db_id or os.getenv("NOTION_MOVEMENTS_DB") or EXPECTED_MOVEMENTS_DB_ID).strip()
-    print(f"[DEBUG] Loading movements from DB: {movements_db_id}")
+    log.debug("Loading movements from DB: %s", movements_db_id)
     if movements_db_id != EXPECTED_MOVEMENTS_DB_ID:
-        print(
-            f"[ERROR] Wrong movements DB! Expected {EXPECTED_MOVEMENTS_DB_ID}, got {movements_db_id}"
-        )
+        log.error("Wrong movements DB! Expected %s, got %s", EXPECTED_MOVEMENTS_DB_ID, movements_db_id)
     if not movements_db_id or notion_client is None:
         return {}
 
@@ -489,8 +490,8 @@ async def load_movements_cache(notion_client, movements_db_id: Optional[str] = N
         if not start_cursor:
             break
 
-    print(f"[DEBUG] Loaded {len(cache)} movements into cache")
-    print(f"[DEBUG] Sample movements: {list(cache.keys())[:5]}")
+    log.debug("Loaded %d movements into cache", len(cache))
+    log.debug("Sample movements: %s", list(cache.keys())[:5])
     return cache
 
 

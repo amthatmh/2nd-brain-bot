@@ -5,6 +5,7 @@ import asyncio
 import os
 import json
 import re
+import importlib
 import logging
 import calendar
 import subprocess
@@ -72,7 +73,55 @@ from second_brain.healthtrack.steps import (
     migrate_steps_entry_titles,
 )
 from second_brain.healthtrack.scheduler import check_and_create_steps_entry
+import second_brain.config as _config_module
+_config_module = importlib.reload(_config_module)
 from second_brain.config import (
+    TELEGRAM_TOKEN,
+    MY_CHAT_ID,
+    ALERT_CHAT_ID,
+    ALERT_THREAD_ID,
+    ANTHROPIC_KEY,
+    NOTION_TOKEN,
+    NOTION_DB_ID,
+    NOTION_HABIT_DB,
+    NOTION_LOG_DB,
+    NOTION_HEALTH_METRICS_DB,
+    NOTION_STREAK_DB,
+    NOTION_CINEMA_LOG_DB,
+    NOTION_PERFORMANCE_LOG_DB,
+    NOTION_SPORTS_LOG_DB,
+    NOTION_FAVE_DB,
+    NOTION_NOTES_DB,
+    NOTION_DIGEST_SELECTOR_DB,
+    NOTION_UTILITY_SCHEDULER_DB,
+    NOTION_DAILY_LOG_DB,
+    NOTION_PACKING_ITEMS_DB,
+    NOTION_TRIPS_DB,
+    OPENWEATHER_KEY,
+    WEATHER_LOCATION,
+    TZ,
+    CLAUDE_MODEL,
+    CLAUDE_MAX_TOK,
+    CLAUDE_PARSE_MAX_TOKENS,
+    NOTION_MOVEMENTS_DB,
+    NOTION_CYCLES_DB,
+    NOTION_WORKOUT_PROGRAM_DB,
+    NOTION_WORKOUT_DAYS_DB,
+    NOTION_WORKOUT_LOG_DB,
+    NOTION_WOD_LOG_DB,
+    NOTION_PROGRESSIONS_DB,
+    NOTION_DAILY_READINESS_DB,
+    NOTION_WATCHLIST_DB,
+    NOTION_WANTSLIST_V2_DB,
+    NOTION_PHOTO_DB,
+    NOTION_ENV_DB,
+    NOTION_BOOT_LOG_DB,
+    ASANA_SYNC_INTERVAL,
+    HTTP_PORT,
+    WEEKS_HISTORY,
+    APP_VERSION,
+    UV_THRESHOLD,
+    TMDB_BASE,
     FEATURES,
     UTILITY_SCHEDULER_RELOAD_MINUTES,
     ASANA_PAT,
@@ -82,6 +131,7 @@ from second_brain.config import (
     ASANA_ARCHIVE_ORPHANS,
 )
 from second_brain.notion import notion_call
+from second_brain.notion.properties import query_all
 from second_brain.notion import habits as notion_habits
 from second_brain.notion import tasks as notion_tasks
 from second_brain import keyboards as kb
@@ -96,7 +146,7 @@ from second_brain.handler_registry import register_core_handlers
 from second_brain.scheduler_manager import UtilitySchedulerManager
 from second_brain.rules.engine import RuleEngine
 from second_brain.state import STATE
-from second_brain.utils import ExpiringDict, reply_notion_error
+from second_brain.utils import ExpiringDict, local_today, reply_notion_error
 from second_brain.http_utils import cors_headers
 from second_brain.healthtrack.dashboard import create_health_dashboard_handler, load_steps_threshold_from_env_db as load_dashboard_steps_threshold
 from second_brain.services import task_parsing as task_parsing_service
@@ -121,14 +171,13 @@ from second_brain.crossfit.handlers import (
     handle_cf_text_reply,
     handle_cf_upload_programme,
     handle_cf_wod_flow,
+    reload_movement_library,
 )
 from second_brain.crossfit.keyboards import crossfit_submenu_keyboard
-from second_brain.crossfit.nlp import load_movements_cache
 from second_brain.crossfit.readiness import check_readiness_logged_today
-from second_brain.crossfit.notion import load_movement_library, parse_weekly_program_text, save_programme_from_notion_row, this_monday
+from second_brain.crossfit.notion import parse_weekly_program_text, save_programme_from_notion_row, this_monday
 from second_brain.entertainment import log as ent_log
 
-MOVEMENT_CACHE: dict[str, str] = {}
 
 
 def _apply_shared_date_parse(payload: dict) -> object:
@@ -149,35 +198,6 @@ def _date_pick_keyboard(scope: str, key: str, result) -> InlineKeyboardMarkup:
         InlineKeyboardButton(result.label_a or result.option_a or "Option A", callback_data=f"date_pick:{scope}:a:{key}"),
         InlineKeyboardButton(result.label_b or result.option_b or "Option B", callback_data=f"date_pick:{scope}:b:{key}"),
     ]])
-
-# Backward-compatible entertainment symbols for existing tests/patch targets.
-parse_explicit_entertainment_log = ent_log.parse_explicit_entertainment_log
-entertainment_schemas = ent_log.entertainment_schemas
-pending_sport_competition_map = ent_log.pending_sport_competition_map
-_build_common_entertainment_props = ent_log._build_common_entertainment_props
-_normalize_entertainment_datetime = ent_log._normalize_entertainment_datetime
-_parse_cinema_inline_context = ent_log._parse_cinema_inline_context
-_strip_cinema_structured_notes = ent_log._strip_cinema_structured_notes
-_strip_datetime_from_notes = ent_log._strip_datetime_from_notes
-_strip_seat_from_notes = ent_log._strip_seat_from_notes
-_extract_cinema_visit_details = ent_log._extract_cinema_visit_details
-_entertainment_save_error_text = ent_log._entertainment_save_error_text
-_build_sport_competition_props = ent_log._build_sport_competition_props
-_ent_log_create_entertainment_log_entry = ent_log.create_entertainment_log_entry
-
-
-def _sync_ent_log_runtime() -> None:
-    ent_log.notion_call = notion_call
-    ent_log.NOTION_CINEMA_LOG_DB = NOTION_CINEMA_LOG_DB
-    ent_log.NOTION_PERFORMANCE_LOG_DB = NOTION_PERFORMANCE_LOG_DB
-    ent_log.NOTION_SPORTS_LOG_DB = NOTION_SPORTS_LOG_DB
-    ent_log.NOTION_FAVE_DB = NOTION_FAVE_DB
-
-
-def create_entertainment_log_entry(notion, payload: dict) -> tuple[str, bool]:
-    _sync_ent_log_runtime()
-    return _ent_log_create_entertainment_log_entry(notion, payload)
-
 
 def _entertainment_rule_entry_data(payload: dict) -> dict:
     """Build normalized rule-engine entry data from an entertainment payload."""
@@ -212,8 +232,7 @@ async def _execute_entertainment_rules(payload: dict) -> bool:
 
 
 async def handle_entertainment_log(notion, message, payload: dict) -> None:
-    _sync_ent_log_runtime()
-    entry_id, fav_saved = create_entertainment_log_entry(notion, payload)
+    entry_id, fav_saved = ent_log.create_entertainment_log_entry(notion, payload)
     rule_fav_saved = await _execute_entertainment_rules(payload)
     title = payload.get("title", "Untitled")
     log_type = payload.get("log_type", "cinema")
@@ -243,32 +262,27 @@ async def handle_entertainment_log(notion, message, payload: dict) -> None:
 
 
 async def _maybe_prompt_explicit_venue(notion, message, payload: dict, raw_text: str) -> bool:
-    _sync_ent_log_runtime()
     return await ent_log._maybe_prompt_explicit_venue(notion, message, payload, raw_text)
 
 
 def load_entertainment_schemas(notion) -> None:
-    _sync_ent_log_runtime()
     ent_log.load_entertainment_schemas(notion)
 
 
 
 def _resolve_known_cinema_venue(venue: str | None, schema: dict) -> str | None:
-    _sync_ent_log_runtime()
     resolver = ent_log._resolve_known_cinema_venue
     resolved = resolver(notion, venue, schema)
     return resolved
 
 
 def _find_existing_cinema_venue(title: str, schema: dict) -> str | None:
-    _sync_ent_log_runtime()
     finder = ent_log._find_existing_cinema_venue
     match = finder(notion, title, schema)
     return match
 
 
 def _suggest_known_venue(payload: dict) -> tuple[str | None, str | None]:
-    _sync_ent_log_runtime()
     suggester = ent_log._suggest_known_venue
     suggestion = suggester(notion, payload)
     return suggestion
@@ -311,64 +325,7 @@ def _resolve_state_dir() -> Path:
         return fallback
 
 # ── Config ───────────────────────────────────────────────────────────────────
-TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
-MY_CHAT_ID      = int(os.environ["TELEGRAM_CHAT_ID"])
-ALERT_CHAT_ID_RAW = os.getenv("ALERT_CHANNEL_ID", "").strip()
-ALERT_CHAT_ID   = int(ALERT_CHAT_ID_RAW) if ALERT_CHAT_ID_RAW else None
-ALERT_THREAD_ID = int(os.environ["TELEGRAM_ALERT_THREAD_ID"]) if os.environ.get("TELEGRAM_ALERT_THREAD_ID") else None
-ANTHROPIC_KEY   = os.environ["ANTHROPIC_API_KEY"]
-NOTION_TOKEN    = os.environ["NOTION_TOKEN"]
-NOTION_DB_ID    = os.environ["NOTION_DB_ID"]
-NOTION_HABIT_DB = os.environ["NOTION_HABIT_DB"]
-NOTION_LOG_DB   = os.environ["NOTION_LOG_DB"]
-# Required at startup so /api/v1/health-sync never discovers a missing DB at request time.
-NOTION_HEALTH_METRICS_DB = os.environ.get("NOTION_HEALTH_METRICS_DB", "").strip()
-NOTION_STREAK_DB = os.environ["NOTION_STREAK_DB"]
-NOTION_CINEMA_LOG_DB = os.environ.get("NOTION_CINEMA_LOG_DB", os.environ.get("NOTION_CINEMA_DB", "")).strip()
-NOTION_PERFORMANCE_LOG_DB = os.environ.get("NOTION_PERFORMANCE_LOG_DB", "").strip()
-NOTION_SPORTS_LOG_DB = os.environ.get("NOTION_SPORTS_LOG_DB", os.environ.get("NOTION_SPORTS_DB", "")).strip()
-NOTION_FAVE_DB = os.environ.get("NOTION_FAVE_DB", "").strip()
-NOTION_NOTES_DB = os.environ["NOTION_NOTES_DB"]    # 📒 Notes
-NOTION_DIGEST_SELECTOR_DB = os.environ["NOTION_DIGEST_SELECTOR_DB"]
-NOTION_UTILITY_SCHEDULER_DB = os.environ.get("NOTION_UTILITY_SCHEDULER_DB", "").strip()
-ASANA_SYNC_INTERVAL = int(os.environ.get("ASANA_SYNC_INTERVAL", "60"))
-NOTION_DAILY_LOG_DB = os.environ.get("NOTION_DAILY_LOG_DB", "")
-NOTION_PACKING_ITEMS_DB = os.environ.get("NOTION_PACKING_ITEMS_DB", "")
-NOTION_TRIPS_DB         = os.environ.get("NOTION_TRIPS_DB", "")
-OPENWEATHER_KEY     = os.environ.get("OPENWEATHER_KEY", "")
-
-TZ           = ZoneInfo(os.environ.get("TIMEZONE", "America/Chicago"))
 _rc_h, _rc_m = main_helpers.parse_hhmm_env("RECURRING_CHECK_TIME", "7:00", log)
-
-CLAUDE_MODEL   = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
-CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
-CLAUDE_PARSE_MAX_TOKENS = int(os.environ.get("CLAUDE_PARSE_MAX_TOKENS", "4000"))
-NOTION_MOVEMENTS_DB = os.environ.get("NOTION_MOVEMENTS_DB", "ecf5ac8381ce41a98fa804a1694977bb").strip()
-NOTION_CYCLES_DB = os.environ.get("NOTION_CYCLES_DB", "")
-NOTION_WORKOUT_PROGRAM_DB = os.environ.get("NOTION_WEEKLY_PROGRAMS_DB") or os.environ.get("NOTION_WORKOUT_PROGRAM_DB", "")
-NOTION_WORKOUT_DAYS_DB = os.environ.get("NOTION_WORKOUT_DAYS_DB", "")
-NOTION_WORKOUT_LOG_DB = os.environ.get("NOTION_WORKOUT_LOG_DB", "")
-NOTION_WOD_LOG_DB = os.environ.get("NOTION_WOD_LOG_DB", "f94bd9bc79384b53b18bf3d2afaf9881").strip()
-NOTION_PROGRESSIONS_DB = os.environ.get("NOTION_PROGRESSIONS_DB", "")
-NOTION_DAILY_READINESS_DB = os.environ.get("NOTION_DAILY_READINESS_DB", "")
-HTTP_PORT      = int(os.environ.get("PORT", "8080"))
-WEEKS_HISTORY  = int(os.environ.get("WEEKS_HISTORY", "52"))
-APP_VERSION    = os.environ.get("APP_VERSION", "v13.3.0")
-OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "").strip()
-WEATHER_LOCATION = os.environ.get("WEATHER_LOCATION", "Chicago,IL").strip()
-NOTION_ENV_DB = os.environ.get("ENV_DB_ID", "").strip()
-NOTION_BOOT_LOG_DB = os.environ.get("NOTION_BOOT_LOG_DB", "").strip()
-UV_THRESHOLD = float(os.environ.get("UV_THRESHOLD", "3"))
-
-NOTION_WATCHLIST_DB    = os.environ.get("NOTION_WATCHLIST_DB", "")
-NOTION_WANTSLIST_V2_DB = os.environ.get("NOTION_WANTSLIST_V2_DB", "")
-NOTION_PHOTO_DB        = os.environ.get("NOTION_PHOTO_DB", "")
-TMDB_BASE              = "https://api.themoviedb.org/3"
-
-
-def local_today() -> date:
-    """Return today's date in the configured app timezone."""
-    return datetime.now(TZ).date()
 
 
 def get_current_monday() -> date:
@@ -403,27 +360,14 @@ def load_notion_env_config() -> dict[str, str]:
 
     try:
         config: dict[str, str] = {}
-        cursor = None
-        while True:
-            query_args = {"database_id": NOTION_ENV_DB}
-            if cursor:
-                query_args["start_cursor"] = cursor
-            results = notion.databases.query(**query_args)
-
-            for row in results.get("results", []):
-                props = row.get("properties", {})
-                name_parts = props.get("Name", {}).get("title", [])
-                name = "".join(p.get("plain_text", "") for p in name_parts).strip()
-                value_parts = props.get("Value", {}).get("rich_text", [])
-                value = value_parts[0].get("text", {}).get("content", "").strip() if value_parts else ""
-                if name and value:
-                    config[name] = value
-
-            if not results.get("has_more"):
-                break
-            cursor = results.get("next_cursor")
-            if not cursor:
-                break
+        for row in query_all(notion, NOTION_ENV_DB, page_size=None):
+            props = row.get("properties", {})
+            name_parts = props.get("Name", {}).get("title", [])
+            name = "".join(p.get("plain_text", "") for p in name_parts).strip()
+            value_parts = props.get("Value", {}).get("rich_text", [])
+            value = value_parts[0].get("text", {}).get("content", "").strip() if value_parts else ""
+            if name and value:
+                config[name] = value
 
         return config
     except Exception as e:
@@ -731,20 +675,13 @@ def _is_muted() -> bool:
 
 def notion_query_all(database_id: str, **kwargs) -> list[dict]:
     """Return all rows from a Notion database query (handles pagination)."""
-    rows: list[dict] = []
-    cursor = None
-
-    while True:
-        query_args = dict(kwargs)
-        if cursor:
-            query_args["start_cursor"] = cursor
-        resp = notion.databases.query(database_id=database_id, **query_args)
-        rows.extend(resp.get("results", []))
-        if not resp.get("has_more"):
-            break
-        cursor = resp.get("next_cursor")
-
-    return rows
+    return query_all(
+        notion,
+        database_id,
+        filter=kwargs.pop("filter", None),
+        sorts=kwargs.pop("sorts", None),
+        page_size=kwargs.pop("page_size", None),
+    )
 
 
 def load_digest_slots() -> list[dict]:
@@ -1820,7 +1757,6 @@ def _crossfit_config(**extra) -> dict:
         "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB,
         "NOTION_DAILY_READINESS_DB": NOTION_DAILY_READINESS_DB,
         "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS,
-        "MOVEMENT_CACHE": MOVEMENT_CACHE,
     }
     cfg.update(extra)
     return cfg
@@ -1828,14 +1764,13 @@ def _crossfit_config(**extra) -> dict:
 
 async def cmd_cf_reload_movements(update: Update, context: ContextTypes.DEFAULT_TYPE):
     del context
-    global MOVEMENT_CACHE
     if not NOTION_MOVEMENTS_DB:
         await update.effective_message.reply_text("⚠️ NOTION_MOVEMENTS_DB is not configured")
         return
-    MOVEMENT_CACHE = await asyncio.get_running_loop().run_in_executor(None, lambda: load_movement_library(notion, NOTION_MOVEMENTS_DB))
-    MOVEMENTS_CACHE.clear()
-    MOVEMENTS_CACHE.update(MOVEMENT_CACHE)
-    await update.effective_message.reply_text(f"✅ Movement library reloaded ({len(MOVEMENT_CACHE)} entries)")
+    await asyncio.get_running_loop().run_in_executor(
+        None, lambda: reload_movement_library(notion, NOTION_MOVEMENTS_DB)
+    )
+    await update.effective_message.reply_text(f"✅ Movement library reloaded ({len(MOVEMENTS_CACHE)} entries)")
 
 async def route_classified_message_v10(message, text: str) -> None:
     thinking = await message.reply_text("🧠 Got it...")
@@ -2585,14 +2520,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # tmdb_pick/skip/cancel  — watchlist TMDB picker
     # confirm_batch/cancel_batch:{message_id} — explicit multi-task confirmation
     # save_task/cancel_task:{message_id} — low-confidence task preview
-    print(f"[DEBUG] Callback received: {q.data}")
+    log.debug("Callback received: %s", q.data)
     parts = q.data.split(":")
     if len(parts) == 1 and q.data.startswith("cf_"):
         parts = ["cf", q.data.removeprefix("cf_")]
-        print(f"[DEBUG] Normalized CrossFit callback to: {':'.join(parts)}")
+        log.debug("Normalized CrossFit callback to: %s", ":".join(parts))
     if parts[:2] == ["cf", "A"]:
         parts = ["cf", "log_readiness", *parts[2:]]
-        print(f"[DEBUG] Normalized CrossFit readiness callback to: {':'.join(parts)}")
+        log.debug("Normalized CrossFit readiness callback to: %s", ":".join(parts))
     if parts[0] == "hl":
         parts[0] = "hc"
     if parts[0] == "confirm_batch" and len(parts) == 2:
@@ -3154,7 +3089,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             payload["title"] = raw_text
         payload.setdefault("date", local_today().isoformat())
         try:
-            entry_id, fav_saved = create_entertainment_log_entry(notion, payload)
+            entry_id, fav_saved = ent_log.create_entertainment_log_entry(notion, payload)
             rule_fav_saved = await _execute_entertainment_rules(payload)
             label = ENTERTAINMENT_LOG_LABELS.get(payload.get("log_type"), "Entertainment")
             suffix = "\n🎞️ Added to Favourite Films" if (fav_saved or rule_fav_saved) and payload.get("log_type") == "cinema" else ""
@@ -4425,22 +4360,7 @@ def _notion_title_text(props: dict, key: str = "Name") -> str:
 
 
 def _count_notion_database_rows(database_id: str, filter_payload: dict | None = None) -> int:
-    count = 0
-    start_cursor = None
-    while True:
-        kwargs = {"database_id": database_id, "page_size": 100}
-        if filter_payload:
-            kwargs["filter"] = filter_payload
-        if start_cursor:
-            kwargs["start_cursor"] = start_cursor
-        result = notion_call(notion.databases.query, **kwargs)
-        count += len(result.get("results", []) or [])
-        if not result.get("has_more"):
-            break
-        start_cursor = result.get("next_cursor")
-        if not start_cursor:
-            break
-    return count
+    return len(query_all(notion, database_id, filter=filter_payload, page_size=100))
 
 
 def _create_cycle_row(cycle_name: str) -> str:
@@ -4518,7 +4438,7 @@ async def process_pending_programmes(bot) -> None:
                     parsed,
                     NOTION_WORKOUT_PROGRAM_DB,
                     NOTION_CYCLES_DB,
-                    MOVEMENT_CACHE,
+                    MOVEMENTS_CACHE,
                 ),
             )
             days_created = result["days_created"]
@@ -4542,19 +4462,7 @@ async def process_pending_programmes(bot) -> None:
             try:
                 new_cycle = props.get("New Cycle", {}).get("checkbox", False)
                 if new_cycle:
-                    all_rows = []
-                    start_cursor = None
-                    while True:
-                        kwargs = {"database_id": NOTION_WORKOUT_PROGRAM_DB, "page_size": 100}
-                        if start_cursor:
-                            kwargs["start_cursor"] = start_cursor
-                        page = notion_call(notion.databases.query, **kwargs)
-                        all_rows.extend(page.get("results", []))
-                        if not page.get("has_more"):
-                            break
-                        start_cursor = page.get("next_cursor")
-                        if not start_cursor:
-                            break
+                    all_rows = query_all(notion, NOTION_WORKOUT_PROGRAM_DB, page_size=100)
                     cycle_num = max(
                         (r.get("properties", {}).get("Cycle", {}).get("number") or 0 for r in all_rows),
                         default=0,
@@ -4911,12 +4819,11 @@ async def post_init(app: Application) -> None:
         log.info("Rule engine initialized successfully")
 
     try:
-        global MOVEMENT_CACHE
         if NOTION_MOVEMENTS_DB:
-            MOVEMENT_CACHE = await asyncio.get_running_loop().run_in_executor(None, lambda: load_movement_library(notion, NOTION_MOVEMENTS_DB))
-            MOVEMENTS_CACHE.clear()
-            MOVEMENTS_CACHE.update(MOVEMENT_CACHE)
-            log.info("Movement library loaded: %d entries", len(MOVEMENT_CACHE))
+            await asyncio.get_running_loop().run_in_executor(
+                None, lambda: reload_movement_library(notion, NOTION_MOVEMENTS_DB)
+            )
+            log.info("Movement library loaded: %d entries", len(MOVEMENTS_CACHE))
     except Exception as e:
         log.warning("CrossFit movement cache load failed at startup: %s", e)
 
@@ -5023,11 +4930,13 @@ async def post_init(app: Application) -> None:
         )
 
         from second_brain.healthtrack.scheduler import register_handlers as healthtrack_register
-        from second_brain.cinema.scheduler import register_handlers as cinema_register
-        from second_brain.weather_scheduler import register_handlers as weather_register
-        from second_brain.tasks.scheduler import register_handlers as tasks_register
-        from second_brain.trips_scheduler import register_handlers as trips_register
-        from second_brain.daily_log_scheduler import register_handlers as daily_log_register
+        from second_brain.feature_schedulers import (
+            register_cinema_handlers as cinema_register,
+            register_daily_log_handlers as daily_log_register,
+            register_tasks_handlers as tasks_register,
+            register_trips_handlers as trips_register,
+            register_weather_handlers as weather_register,
+        )
 
         healthtrack_register(utility_manager)
         cinema_register(utility_manager)

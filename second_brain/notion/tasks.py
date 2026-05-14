@@ -6,11 +6,18 @@ from datetime import date, datetime, timedelta
 
 from notion_client import Client as NotionClient
 
-from second_brain.config import HORIZON_DEADLINE_OFFSETS, TZ
-
-
-def local_today() -> date:
-    return datetime.now(TZ).date()
+from second_brain.config import HORIZON_DEADLINE_OFFSETS
+from second_brain.utils import local_today
+from second_brain.notion.properties import (
+    checkbox_filter,
+    extract_date,
+    extract_formula,
+    extract_select,
+    extract_title,
+    query_all,
+    select_prop,
+    title_prop,
+)
 
 
 def _deadline_prop(days: int | None) -> dict:
@@ -29,25 +36,6 @@ def _parse_deadline(raw_deadline: str | None) -> date | None:
             return date.fromisoformat(raw_deadline[:10])
         except Exception:
             return None
-
-
-def _get_prop(props: dict, key: str, kind: str):
-    prop = props.get(key, {})
-    if kind == "title":
-        parts = prop.get("title", [])
-        return parts[0]["text"]["content"] if parts else None
-    if kind == "select":
-        sel = prop.get("select")
-        return sel["name"] if sel else None
-    if kind == "formula":
-        f = prop.get("formula", {})
-        return f.get("string") or f.get("number") or None
-    if kind == "date":
-        d = prop.get("date")
-        return d["start"] if d else None
-    if kind == "checkbox":
-        return prop.get("checkbox", False)
-    return None
 
 
 def _task_sort_key(task: dict) -> tuple[int, str, str]:
@@ -74,14 +62,14 @@ def _normalize_task_name(text: str) -> str:
 def create_task(notion: NotionClient, notion_db_id: str, name: str, deadline_days: int | None, context: str,
                 recurring: str = "None", repeat_day: str | None = None) -> str:
     props = {
-        "Name":      {"title":  [{"text": {"content": name}}]},
+        "Name":      title_prop(name),
         "Deadline":  _deadline_prop(deadline_days),
-        "Context":   {"select": {"name": context}},
-        "Source":    {"select": {"name": "📱 Telegram"}},
-        "Recurring": {"select": {"name": recurring}},
+        "Context":   select_prop(context),
+        "Source":    select_prop("📱 Telegram"),
+        "Recurring": select_prop(recurring),
     }
     if repeat_day:
-        props["Repeat Day"] = {"select": {"name": repeat_day}}
+        props["Repeat Day"] = select_prop(repeat_day)
     page = notion.pages.create(parent={"database_id": notion_db_id}, properties=props)
     return page["id"]
 
@@ -109,25 +97,15 @@ def set_last_generated(notion: NotionClient, page_id: str, d: date) -> None:
 
 
 def get_all_active_tasks(notion: NotionClient, notion_db_id: str) -> list[dict]:
-    cursor = None
-    results: list[dict] = []
-    while True:
-        kwargs = {"database_id": notion_db_id, "filter": {"property": "Done", "checkbox": {"equals": False}}}
-        if cursor:
-            kwargs["start_cursor"] = cursor
-        response = notion.databases.query(**kwargs)
-        results.extend(response.get("results", []))
-        if not response.get("has_more"):
-            break
-        cursor = response.get("next_cursor")
+    results = query_all(notion, notion_db_id, filter=checkbox_filter("Done", False))
 
     return [
         {
             "page_id": p["id"],
-            "name": _get_prop(p["properties"], "Name", "title") or "Untitled",
-            "auto_horizon": _get_prop(p["properties"], "Auto Horizon", "formula") or "",
-            "context": _get_prop(p["properties"], "Context", "select") or "",
-            "deadline": _get_prop(p["properties"], "Deadline", "date"),
+            "name": extract_title(p["properties"].get("Name")) or "Untitled",
+            "auto_horizon": extract_formula(p["properties"].get("Auto Horizon")) or "",
+            "context": extract_select(p["properties"].get("Context")) or "",
+            "deadline": extract_date(p["properties"].get("Deadline")),
         }
         for p in results
     ]
@@ -232,13 +210,13 @@ def get_recurring_templates(notion: NotionClient, notion_db_id: str) -> list[dic
         p = page["properties"]
         templates.append({
             "page_id": page["id"],
-            "name": _get_prop(p, "Name", "title") or "Untitled",
-            "auto_horizon": _get_prop(p, "Auto Horizon", "formula") or "🔴 Today",
-            "context": _get_prop(p, "Context", "select") or "🏠 Personal",
-            "recurring": _get_prop(p, "Recurring", "select") or "None",
-            "repeat_day": _get_prop(p, "Repeat Day", "select"),
-            "last_generated": _get_prop(p, "Last Generated", "date"),
-            "deadline": _get_prop(p, "Deadline", "date"),
+            "name": extract_title(p.get("Name")) or "Untitled",
+            "auto_horizon": extract_formula(p.get("Auto Horizon")) or "🔴 Today",
+            "context": extract_select(p.get("Context")) or "🏠 Personal",
+            "recurring": extract_select(p.get("Recurring")) or "None",
+            "repeat_day": extract_select(p.get("Repeat Day")),
+            "last_generated": extract_date(p.get("Last Generated")),
+            "deadline": extract_date(p.get("Deadline")),
         })
     return templates
 
@@ -378,17 +356,17 @@ def process_recurring_tasks(notion: NotionClient, notion_db_id: str) -> int:
 def handle_done_recurring(notion: NotionClient, notion_db_id: str, page_id: str) -> bool:
     result = notion.pages.retrieve(page_id=page_id)
     p = result["properties"]
-    recurring = _get_prop(p, "Recurring", "select") or "None"
+    recurring = extract_select(p.get("Recurring")) or "None"
     if recurring == "None":
         return False
     spawn_recurring_instance(notion, notion_db_id, {
         "page_id": page_id,
-        "name": _get_prop(p, "Name", "title") or "Untitled",
-        "auto_horizon": _get_prop(p, "Auto Horizon", "formula") or "🔴 Today",
-        "context": _get_prop(p, "Context", "select") or "🏠 Personal",
+        "name": extract_title(p.get("Name")) or "Untitled",
+        "auto_horizon": extract_formula(p.get("Auto Horizon")) or "🔴 Today",
+        "context": extract_select(p.get("Context")) or "🏠 Personal",
         "recurring": recurring,
-        "repeat_day": _get_prop(p, "Repeat Day", "select"),
-        "last_generated": _get_prop(p, "Last Generated", "date"),
-        "deadline": _get_prop(p, "Deadline", "date"),
+        "repeat_day": extract_select(p.get("Repeat Day")),
+        "last_generated": extract_date(p.get("Last Generated")),
+        "deadline": extract_date(p.get("Deadline")),
     })
     return True
