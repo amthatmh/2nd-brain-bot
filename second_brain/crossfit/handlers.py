@@ -175,6 +175,19 @@ async def upsert_training_log_field(notion, date_str: str, field_name: str, rati
 
 # Global movement cache loaded lazily and refreshed at bot startup.
 MOVEMENTS_CACHE: dict[str, str] = {}
+
+
+def reload_movement_library(notion, db_id: str) -> None:
+    """Load the movement library into MOVEMENTS_CACHE in-place."""
+    import asyncio
+
+    from second_brain.crossfit.notion import load_movement_library
+
+    new_data = load_movement_library(notion, db_id)
+    MOVEMENTS_CACHE.clear()
+    MOVEMENTS_CACHE.update(new_data)
+
+
 DEFAULT_WOD_LOG_DB_ID = "f94bd9bc79384b53b18bf3d2afaf9881"
 DEFAULT_MOVEMENTS_DB_ID = "ecf5ac8381ce41a98fa804a1694977bb"
 
