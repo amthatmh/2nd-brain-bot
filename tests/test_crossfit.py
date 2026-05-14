@@ -606,7 +606,7 @@ def test_wod_callback_starts_wod_flow_prompt():
     assert "configured yet" not in q.message.replies[-1][0]
 
 
-def test_readiness_final_score_writes_and_clears_pending(monkeypatch):
+def test_readiness_final_score_defaults_to_no_chain_and_clears_pending(monkeypatch):
     import second_brain.crossfit.handlers as handlers
 
     class _DummyQuery:
@@ -640,7 +640,8 @@ def test_readiness_final_score_writes_and_clears_pending(monkeypatch):
 
     asyncio.run(handlers.handle_cf_callback(q, ["cf", "ready", key, "soreness", "3"], None, notion, {"NOTION_DAILY_READINESS_DB": "ready-db"}, cf_pending))
 
-    assert cf_pending[key] == {"session_chain": ["b", "c"], "session_origin": "a"}
+    assert key not in cf_pending
+    assert q.message.replies == []
     assert q.edits[-1][0].startswith("✅ *Readiness logged!*")
     assert "Sleep Quality: 4" in q.edits[-1][0]
     assert "Soreness: 3" in q.edits[-1][0]
@@ -653,6 +654,52 @@ def test_readiness_final_score_writes_and_clears_pending(monkeypatch):
         "soreness": "3",
         "daily_readiness_db_id": "ready-db",
     }
+
+
+def test_readiness_final_score_chains_when_requested(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    class _DummyQuery:
+        def __init__(self):
+            self.message = _DummyMessage()
+            self.edits = []
+
+        async def answer(self, *args, **kwargs):
+            pass
+
+        async def edit_message_text(self, text, **kwargs):
+            self.edits.append((text, kwargs))
+
+    async def fake_log_daily_readiness(notion, **kwargs):
+        return {"id": "readiness-page"}
+
+    monkeypatch.setattr(handlers, "log_daily_readiness", fake_log_daily_readiness)
+    q = _DummyQuery()
+    key = str(q.message.chat_id)
+    cf_pending = {
+        key: {
+            "mode": "readiness",
+            "stage": "soreness",
+            "readiness": {"sleep_quality": "4", "energy": "5", "mood": "4", "stress": "2"},
+            "chain_after": True,
+        }
+    }
+    notion = SimpleNamespace()
+
+    asyncio.run(
+        handlers.handle_cf_callback(
+            q,
+            ["cf", "ready", key, "soreness", "3"],
+            None,
+            notion,
+            {"NOTION_DAILY_READINESS_DB": "ready-db"},
+            cf_pending,
+        )
+    )
+
+    assert cf_pending[key] == {"session_chain": ["b", "c"], "session_origin": "a"}
+    assert q.message.replies[-1][0] == "💪 Did you do Section B (Strength) today?"
+    assert q.message.replies[-1][1].get("reply_markup") is not None
 
 
 def test_readiness_progressive_callback_edits_single_message(monkeypatch):
