@@ -32,6 +32,8 @@ from typing import Any
 from urllib import parse, request
 from urllib.error import HTTPError, URLError
 
+from second_brain.notion.properties import query_all
+
 log = logging.getLogger(__name__)
 
 ASANA_BASE_URL = "https://app.asana.com/api/1.0"
@@ -151,23 +153,15 @@ class GidCache:
     def rebuild(self, notion, database_id: str) -> None:
         """Full rebuild from Notion. Call on startup, periodically, and on miss."""
         fresh: dict[str, str] = {}
-        cursor: str | None = None
-        while True:
-            kwargs: dict[str, Any] = {
-                "database_id": database_id,
-                "filter": {"property": "Asana Task ID", "rich_text": {"is_not_empty": True}},
-                "page_size": 100,
-            }
-            if cursor:
-                kwargs["start_cursor"] = cursor
-            result = notion.databases.query(**kwargs)
-            for page in result.get("results", []):
-                gid = _read_rich_text(page, "Asana Task ID")
-                if gid:
-                    fresh[gid] = page["id"]
-            if not result.get("has_more"):
-                break
-            cursor = result.get("next_cursor")
+        for page in query_all(
+            notion,
+            database_id,
+            filter={"property": "Asana Task ID", "rich_text": {"is_not_empty": True}},
+            page_size=100,
+        ):
+            gid = _read_rich_text(page, "Asana Task ID")
+            if gid:
+                fresh[gid] = page["id"]
 
         with self._lock:
             self._map = fresh

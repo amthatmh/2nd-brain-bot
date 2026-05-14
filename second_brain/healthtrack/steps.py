@@ -38,6 +38,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from second_brain.monitoring import track_job_execution
+from second_brain.notion.properties import query_all
 
 log = logging.getLogger(__name__)
 
@@ -199,51 +200,42 @@ def migrate_steps_entry_titles(
     try:
         renamed = 0
         skipped = 0
-        start_cursor = None
+        pages = query_all(
+            notion,
+            log_db_id,
+            filter={
+                "property": "Habit",
+                "relation": {"contains": habit_page_id},
+            },
+            page_size=None,
+        )
 
-        while True:
-            query_kwargs = {
-                "database_id": log_db_id,
-                "filter": {
-                    "property": "Habit",
-                    "relation": {"contains": habit_page_id},
-                },
-            }
-            if start_cursor:
-                query_kwargs["start_cursor"] = start_cursor
+        for page in pages:
+            props = page.get("properties", {})
+            title_items = props.get("Entry", {}).get("title", [])
+            current_title = title_items[0].get("plain_text", "") if title_items else ""
 
-            results = notion.databases.query(**query_kwargs)
+            if current_title == "Steps":
+                skipped += 1
+                continue
 
-            for page in results.get("results", []):
-                props = page.get("properties", {})
-                title_items = props.get("Entry", {}).get("title", [])
-                current_title = title_items[0].get("plain_text", "") if title_items else ""
-
-                if current_title == "Steps":
-                    skipped += 1
-                    continue
-
-                if current_title.startswith("Steps") or not current_title:
-                    notion.pages.update(
-                        page_id=page["id"],
-                        properties={
-                            "Entry": {
-                                "title": [{"text": {"content": "Steps"}}],
-                            },
+            if current_title.startswith("Steps") or not current_title:
+                notion.pages.update(
+                    page_id=page["id"],
+                    properties={
+                        "Entry": {
+                            "title": [{"text": {"content": "Steps"}}],
                         },
-                    )
-                    renamed += 1
-                    log.info(
-                        "steps: renamed entry %s from %r to 'Steps'",
-                        page["id"],
-                        current_title,
-                    )
-                else:
-                    skipped += 1
-
-            if not results.get("has_more"):
-                break
-            start_cursor = results.get("next_cursor")
+                    },
+                )
+                renamed += 1
+                log.info(
+                    "steps: renamed entry %s from %r to 'Steps'",
+                    page["id"],
+                    current_title,
+                )
+            else:
+                skipped += 1
 
         log.info("steps: migration complete — renamed=%d skipped=%d", renamed, skipped)
         return {"renamed": renamed, "skipped": skipped}

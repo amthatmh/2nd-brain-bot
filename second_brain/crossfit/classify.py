@@ -8,6 +8,7 @@ import zoneinfo
 from zoneinfo import ZoneInfo
 import os
 
+from second_brain.ai.client import strip_json_fences
 from utils.alert_handlers import alert_claude_auth_failure
 
 log = logging.getLogger(__name__)
@@ -30,9 +31,9 @@ def _monday_str() -> str:
     return (today - timedelta(days=today.weekday())).isoformat()
 
 
-def _extract_json(raw: str) -> dict:
+def _parse_json_response(raw: str) -> dict:
     """Parse JSON from Claude response, with truncation recovery."""
-    text = re.sub(r"```(?:json)?|```", "", raw).strip()
+    text = strip_json_fences(raw)
 
     try:
         return json.loads(text)
@@ -54,7 +55,7 @@ def _extract_json(raw: str) -> dict:
             truncated += ']' * max(0, open_brackets)
             try:
                 result = json.loads(truncated)
-                log.warning("_extract_json: recovered partial JSON (%d chars truncated)", len(text) - len(truncated))
+                log.warning("_parse_json_response: recovered partial JSON (%d chars truncated)", len(text) - len(truncated))
                 return result
             except json.JSONDecodeError:
                 pass
@@ -299,7 +300,7 @@ Return ONLY valid JSON with fields exactly as requested:
     except Exception as e:
         alert_claude_auth_failure(str(e))
         raise
-    result = _extract_json(resp.content[0].text)
+    result = _parse_json_response(resp.content[0].text)
     movements = result.get("movements") or []
     if isinstance(movements, str):
         movements = [movements]
@@ -392,6 +393,6 @@ Rules:
     except Exception as e:
         alert_claude_auth_failure(str(e))
         raise
-    result = _extract_json(resp.content[0].text)
+    result = _parse_json_response(resp.content[0].text)
     result["week_label"] = f"Week of {monday}"
     return result
