@@ -2285,11 +2285,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # save_task/cancel_task:{message_id} — low-confidence task preview
     log.debug("Callback received: %s", q.data)
     parts = q.data.split(":")
+    cf_chain_after_readiness = parts[:2] == ["cf", "log_readiness"]
     if len(parts) == 1 and q.data.startswith("cf_"):
         parts = ["cf", q.data.removeprefix("cf_")]
+        cf_chain_after_readiness = parts[:2] == ["cf", "log_readiness"]
         log.debug("Normalized CrossFit callback to: %s", ":".join(parts))
     if parts[:2] == ["cf", "A"]:
         parts = ["cf", "log_readiness", *parts[2:]]
+        cf_chain_after_readiness = False
         log.debug("Normalized CrossFit readiness callback to: %s", ":".join(parts))
     if parts[0] == "hl":
         parts[0] = "hc"
@@ -2477,7 +2480,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         else:
             context.user_data["cf_flow_key"] = str(q.message.chat_id)
-        await handle_cf_callback(q, parts, claude, notion, _crossfit_config(), cf_pending)
+        await handle_cf_callback(
+            q,
+            parts,
+            claude,
+            notion,
+            _crossfit_config(),
+            cf_pending,
+            chain_after=cf_chain_after_readiness,
+        )
         return
 
     if parts[0] == "kind_task" and len(parts) == 2:
