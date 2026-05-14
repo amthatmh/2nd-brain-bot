@@ -10,6 +10,7 @@ import httpx
 
 from second_brain.config import OPENWEATHER_KEY as _CONFIG_OPENWEATHER_KEY, WEATHER_LOCATION, TZ, CLAUDE_MODEL
 from second_brain.utils import ExpiringDict
+from second_brain.notion.properties import rich_text_prop, title_prop
 log = logging.getLogger(__name__)
 notion = None
 NOTION_ENV_DB = os.environ.get("ENV_DB_ID", "").strip()
@@ -174,11 +175,11 @@ def save_notion_env_location(location: str, lat: float, lon: float) -> None:
     try:
         results = notion.databases.query(database_id=NOTION_ENV_DB, filter={"property": "Name", "title": {"equals": "Location"}})
         rows = results.get("results", [])
-        props = {"Value": {"rich_text": [{"text": {"content": location}}]}, "Lat": {"number": lat}, "Lon": {"number": lon}}
+        props = {"Value": rich_text_prop(location), "Lat": {"number": lat}, "Lon": {"number": lon}}
         if rows:
             notion.pages.update(page_id=rows[0]["id"], properties=props)
         else:
-            props["Name"] = {"title": [{"text": {"content": "Location"}}]}
+            props["Name"] = title_prop("Location")
             notion.pages.create(parent={"database_id": NOTION_ENV_DB}, properties=props)
         log.info("Location saved to Notion ENV: %s (%.4f, %.4f)", location, lat, lon)
     except Exception as e:

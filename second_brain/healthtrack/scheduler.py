@@ -11,6 +11,7 @@ from second_brain.healthtrack.steps import (
     _find_existing_log_entry,
     _find_steps_habit_page_id,
 )
+from second_brain.notion.properties import title_prop
 
 if TYPE_CHECKING:
     from second_brain.scheduler_manager import UtilitySchedulerManager
@@ -107,7 +108,7 @@ async def check_and_create_steps_entry(
         new_entry = notion.pages.create(
             parent={"database_id": target_log_db_id},
             properties={
-                "Entry": {"title": [{"text": {"content": "Steps"}}]},
+                "Entry": title_prop("Steps"),
                 "Habit": {"relation": [{"id": habit_page_id}]},
                 "Date": {"date": {"start": today_str}},
                 "Source": {"select": {"name": "Scheduler"}},

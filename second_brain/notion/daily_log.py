@@ -108,8 +108,9 @@ def get_recent_carried_forward(notion, notion_daily_log_db: str, tz, days: int =
         return []
     try:
         cutoff = (datetime.now(tz).date() - timedelta(days=days)).isoformat()
-        results = notion.databases.query(
-            database_id=notion_daily_log_db,
+        rows = query_all(
+            notion,
+            notion_daily_log_db,
             filter={
                 "property": "Generated At",
                 "date": {"on_or_after": cutoff},
@@ -117,7 +118,7 @@ def get_recent_carried_forward(notion, notion_daily_log_db: str, tz, days: int =
             sorts=[{"property": "Generated At", "direction": "ascending"}],
         )
         entries = []
-        for page in results.get("results", []):
+        for page in rows:
             props = page.get("properties", {})
 
             date_label = extract_title(props.get("Date"))
@@ -284,15 +285,15 @@ async def generate_daily_log(
 
     deferred_tasks = []
     try:
-        deferred_results = notion.databases.query(database_id=notion_db_id, filter={"and": [{"property": "Done", "checkbox": {"equals": False}}, {"property": "Deadline", "date": {"equals": today_str}}]})
-        deferred_tasks = [extract_title(p["properties"].get("Name")) or "Untitled" for p in deferred_results.get("results", [])]
+        deferred_pages = query_all(notion, notion_db_id, filter={"and": [{"property": "Done", "checkbox": {"equals": False}}, {"property": "Deadline", "date": {"equals": today_str}}]})
+        deferred_tasks = [extract_title(p["properties"].get("Name")) or "Untitled" for p in deferred_pages]
     except Exception as e:
         log.error("generate_daily_log: error fetching deferred tasks: %s", e)
 
     habits_logged = []
     try:
-        habit_log_results = notion.databases.query(database_id=notion_log_db, filter={"and": [{"property": "Completed", "checkbox": {"equals": True}}, {"property": "Date", "date": {"equals": today_str}}]})
-        for p in habit_log_results.get("results", []):
+        habit_log_pages = query_all(notion, notion_log_db, filter={"and": [{"property": "Completed", "checkbox": {"equals": True}}, {"property": "Date", "date": {"equals": today_str}}]})
+        for p in habit_log_pages:
             entry_text = extract_title(p["properties"].get("Entry"))
             habit_name = entry_text.split(" — ")[0].strip()
             if habit_name:
@@ -304,8 +305,8 @@ async def generate_daily_log(
     notes_captured = []
     try:
         if notion_notes_db:
-            notes_results = notion.databases.query(database_id=notion_notes_db, filter={"property": "Date Created", "date": {"equals": today_str}})
-            for p in notes_results.get("results", []):
+            note_pages = query_all(notion, notion_notes_db, filter={"property": "Date Created", "date": {"equals": today_str}})
+            for p in note_pages:
                 title_text = extract_title(p["properties"].get("Title"))
                 if title_text:
                     notes_captured.append(title_text)

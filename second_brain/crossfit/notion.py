@@ -5,7 +5,11 @@ import os
 import re
 from datetime import date, datetime, timedelta
 from second_brain.notion import notion_call
-from second_brain.notion.properties import query_all
+from second_brain.notion.properties import (
+    query_all,
+    rich_text_prop,
+    title_prop,
+)
 from second_brain.utils import local_today
 from .nlp import fuzzy_match_movements, normalize_movement_name
 import logging
@@ -160,7 +164,7 @@ def get_or_create_movement(notion, movements_db_id: str, name: str) -> str:
         return found["page_id"]
     primary_patterns = infer_primary_patterns(name)
     properties = {
-        "Name": {"title": [{"text": {"content": name}}]},
+        "Name": title_prop(name),
         "Category": {"multi_select": [{"name": "Compound"}]},
         "Primary Pattern": {"multi_select": [{"name": pattern} for pattern in primary_patterns]},
     }
@@ -585,7 +589,7 @@ def save_programme(notion, program_db_id: str, workout_days_db_id: str, movement
             notion.pages.create,
             parent={"database_id": program_db_id},
             properties={
-                "Name": {"title": [{"text": {"content": week_label}}]},
+                "Name": title_prop(week_label),
                 "Full Program": {"rich_text": _rich_text_chunks(full_text)},
                 **_weekly_program_metadata_props(cycle_id, week_number, monday_iso),
             },
@@ -637,7 +641,7 @@ def save_programme(notion, program_db_id: str, workout_days_db_id: str, movement
                 continue
 
             props: dict = {
-                "Name": {"title": [{"text": {"content": f"{day} — {track} — {week_label}"}}]},
+                "Name": title_prop(f"{day} — {track} — {week_label}"),
                 "Day": {"select": {"name": day}},
                 "Track": {"select": {"name": track}},
                 "Week": {"relation": [{"id": parent_page_id}]},
@@ -711,7 +715,7 @@ def save_programme_from_notion_row(
             notion.pages.update,
             page_id=parent_page_id,
             properties={
-                "Name": {"title": [{"text": {"content": week_label}}]},
+                "Name": title_prop(week_label),
                 "Start Date": {"date": {"start": monday_iso}},
             },
         )
@@ -734,7 +738,7 @@ def save_programme_from_notion_row(
 
     # keep Weekly Programs metadata in sync (aggregate movement relation)
     try:
-        parent_props = {"Name": {"title": [{"text": {"content": week_label}}]}}
+        parent_props = {"Name": title_prop(week_label)}
         if program_movement_ids:
             parent_props["Movements"] = {"relation": [{"id": mid} for mid in sorted(program_movement_ids)]}
             parent_props["Movement Summary"] = {"rich_text": _rich_text_chunks(", ".join(sorted(all_names)[:25]))}
@@ -762,7 +766,7 @@ def save_programme_from_notion_row(
                 continue
 
             props: dict = {
-                "Name": {"title": [{"text": {"content": f"{day} — {track} — {week_label}"}}]},
+                "Name": title_prop(f"{day} — {track} — {week_label}"),
                 "Day": {"select": {"name": day}},
                 "Track": {"select": {"name": track}},
                 "Week": {"relation": [{"id": parent_page_id}]},
@@ -872,7 +876,7 @@ def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_na
     workout_date = workout_date or local_today().isoformat()
     movement_ids = movement_page_id if isinstance(movement_page_id, list) else [movement_page_id]
     props = {
-        "Name": {"title": [{"text": {"content": f"{workout_date} — Strength"}}]},
+        "Name": title_prop(f"{workout_date} — Strength"),
         "Date": {"date": {"start": workout_date}},
         "effort_sets": {"number": effort_sets} if effort_sets is not None else None,
         "effort_reps": {"number": effort_reps} if effort_reps is not None else None,
@@ -975,7 +979,7 @@ def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mi
         workout_date = readiness
     workout_date = workout_date or local_today().isoformat()
     props = {
-        "Name": {"title": [{"text": {"content": f"{(wod_name or wod_format)} — {workout_date}"}}]},
+        "Name": title_prop(f"{(wod_name or wod_format)} — {workout_date}"),
         "Date": {"date": {"start": workout_date}},
         "Format": {"select": {"name": wod_format}},
         "Result Type": {"select": {"name": result_type}},
@@ -997,13 +1001,13 @@ def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mi
     if weekly_program_page_id:
         props["Weekly Program"] = {"relation": [{"id": weekly_program_page_id}]}
     if wod_name:
-        props["WOD Name"] = {"rich_text": [{"text": {"content": str(wod_name)}}]}
+        props["WOD Name"] = rich_text_prop(str(wod_name))
     if raw_log:
         props["Log"] = {"rich_text": _rich_text_chunks(raw_log)}
     if workout_day_id:
         props["Workout Structure"] = {"relation": [{"id": workout_day_id}]}
     if scaling_notes:
-        props["Scaling Notes"] = {"rich_text": [{"text": {"content": str(scaling_notes)}}]}
+        props["Scaling Notes"] = rich_text_prop(str(scaling_notes))
     page = notion_call(notion.pages.create, parent={"database_id": wod_log_db_id}, properties=props)
     return page["id"]
 

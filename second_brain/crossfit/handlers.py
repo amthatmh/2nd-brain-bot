@@ -18,6 +18,7 @@ from .readiness import check_readiness_logged_today, log_daily_readiness
 from second_brain.notion import notion_call
 from second_brain.utils import local_today
 from .weekly_program import get_current_week_program_url, get_todays_workout_day
+from second_brain.notion.properties import title_prop
 
 
 log = logging.getLogger(__name__)
@@ -162,7 +163,7 @@ async def upsert_training_log_field(notion, date_str: str, field_name: str, rati
                     notion.pages.create,
                     parent={"database_id": db_id},
                     properties={
-                        "Name": {"title": [{"text": {"content": f"{date_str} — Training"}}]},
+                        "Name": title_prop(f"{date_str} — Training"),
                         "Date": {"date": {"start": date_str}},
                         **props,
                     },

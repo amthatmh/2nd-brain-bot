@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from second_brain.notion.properties import title_prop
 
 log = logging.getLogger(__name__)
 
@@ -239,7 +240,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if awaiting_packing_feedback and not command_head.startswith('/'):
         _set_main_global("awaiting_packing_feedback", False)
         try:
-            notion.pages.create(parent={"database_id": NOTION_PACKING_ITEMS_DB}, properties={"Item": {"title": [{"text": {"content": text[:100]}}]}, "Always": {"checkbox": True}})
+            notion.pages.create(parent={"database_id": NOTION_PACKING_ITEMS_DB}, properties={"Item": title_prop(text[:100]), "Always": {"checkbox": True}})
             await message.reply_text("✅ Added to packing items.")
         except Exception:
             await message.reply_text("⚠️ Couldn't save packing feedback.")

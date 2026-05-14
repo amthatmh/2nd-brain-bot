@@ -7,6 +7,7 @@ from datetime import date
 from typing import Any
 
 from second_brain.notes_flow import create_note_payload
+from second_brain.notion.properties import rich_text_prop, title_prop
 
 
 def fetch_note_topics_from_notion(notion, notion_notes_db: str) -> list[str]:
@@ -27,7 +28,7 @@ def save_note(notion, notion_notes_db: str, title: str, url: str | None, content
     """Write a note to the 📒 Notes Notion DB. Returns page_id."""
     today = date.today().isoformat()
     props: dict[str, Any] = {
-        "Title": {"title": [{"text": {"content": title or "Untitled"}}]},
+        "Title": title_prop(title or "Untitled"),
         "Type": {"select": {"name": note_type}},
         "Source": {"select": {"name": "📱 Telegram"}},
         "Date Created": {"date": {"start": today}},
@@ -36,7 +37,7 @@ def save_note(notion, notion_notes_db: str, title: str, url: str | None, content
     if url:
         props["Link"] = {"url": url}
     if content:
-        props["Content"] = {"rich_text": [{"text": {"content": content[:2000]}}]}
+        props["Content"] = rich_text_prop(content[:2000])
     if topics:
         props["Topic"] = {"multi_select": [{"name": t} for t in topics]}
     page = notion.pages.create(

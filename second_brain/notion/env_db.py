@@ -10,6 +10,7 @@ from typing import Any, Optional
 from notion_client import Client as NotionClient
 
 from second_brain.notion import notion_call
+from second_brain.notion.properties import rich_text_prop, title_prop
 
 log = logging.getLogger(__name__)
 
@@ -84,7 +85,7 @@ def set_env_value(key: str, value: str) -> bool:
 
     try:
         notion = _notion_client()
-        properties = {"Value": {"rich_text": [{"text": {"content": str(value)}}]}}
+        properties = {"Value": rich_text_prop(str(value))}
         page = _find_env_page(key)
         if page:
             notion_call(notion.pages.update, page_id=page["id"], properties=properties)
@@ -93,7 +94,7 @@ def set_env_value(key: str, value: str) -> bool:
                 notion.pages.create,
                 parent={"database_id": database_id},
                 properties={
-                    "Name": {"title": [{"text": {"content": key}}]},
+                    "Name": title_prop(key),
                     **properties,
                 },
             )

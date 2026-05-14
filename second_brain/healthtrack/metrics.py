@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Any
+from second_brain.notion.properties import title_prop
 
 log = logging.getLogger(__name__)
 
@@ -171,7 +172,7 @@ def parse_health_metrics_payload(body: dict, tz) -> tuple[str, dict[str, float],
 
 
 def _title_property(title: str) -> dict:
-    return {"title": [{"text": {"content": title}}]}
+    return title_prop(title)
 
 
 def _date_property(date_str: str) -> dict:

@@ -41,6 +41,7 @@ except ImportError:  # pragma: no cover - fallback for minimal test envs
             common = len(a_tokens & b_tokens)
             return (2 * common / (len(a_tokens) + len(b_tokens))) * 100
 
+from second_brain.ai.client import strip_json_fences
 from second_brain.notion import notion_call
 
 log = logging.getLogger(__name__)
@@ -59,13 +60,6 @@ async def _maybe_await(value):
         return await value
     return value
 
-
-def _strip_json_fence(text: str) -> str:
-    text = (text or "").strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else ""
-        text = text.rsplit("\n", 1)[0]
-    return text.strip()
 
 
 def _empty_workout_data(movements: Optional[List[str]] = None) -> Dict:
@@ -316,7 +310,7 @@ Output: {{"movements":["Wall Walks","Hang Power Clean","Burpee","V-Up"],"date":n
                 messages=[{"role": "user", "content": f"Extract workout data from: {log_message}"}],
             )
         )
-        workout_data_text = _strip_json_fence(response.content[0].text)
+        workout_data_text = strip_json_fences(response.content[0].text)
         parsed = json.loads(workout_data_text)
         workout_data = _normalise_workout_data(parsed, log_message)
         fallback_data = _fallback_extract_workout_data(log_message, current_date)

@@ -21,6 +21,8 @@ from second_brain.notion.properties import (
     extract_select,
     extract_title,
     query_all,
+    rich_text_prop,
+    title_prop,
 )
 from utils.date_parser import parse_date
 
@@ -169,17 +171,17 @@ async def execute_trip(
             fetch_trip_weather_range=fetch_trip_weather_range,
         )
     properties = {
-        "Trip": {"title": [{"text": {"content": title}}]},
+        "Trip": title_prop(title),
         "Departure Date": {"date": {"start": trip["departure_date"]}},
         "Return Date": {"date": {"start": trip["return_date"]}},
-        "Destination(s)": {"rich_text": [{"text": {"content": ", ".join(trip.get("destinations") or [])}}]},
+        "Destination(s)": rich_text_prop(", ".join(trip.get("destinations") or [])),
         "Duration": {"select": {"name": trip.get("duration_label") or ""}},
         "Purpose": {"multi_select": [{"name": purpose} for purpose in (trip.get("purpose_list") or ["Work"])]},
         "Field Work": {"multi_select": [{"name": item} for item in (trip.get("field_work_types") or []) if item and item != "None"]},
         "Multiple Sites": {"checkbox": bool(trip.get("multiple_sites"))},
         "Checked Luggage": {"checkbox": bool(trip.get("checked_luggage"))},
         "Weather Flags": {"multi_select": [{"name": item} for item in weather_flags]},
-        "Weather Summary": {"rich_text": [{"text": {"content": weather_summary}}]},
+        "Weather Summary": rich_text_prop(weather_summary),
         "Reminder Sent": {"checkbox": False},
         "Packing Done": {"checkbox": False},
     }
@@ -310,7 +312,7 @@ def _adapt_trip_properties_to_schema(notion, database_id: str, payload: dict) ->
             if ptype == "multi_select":
                 adapted[target_name] = {"multi_select": [{"name": item} for item in items]}
             elif ptype == "rich_text":
-                adapted[target_name] = {"rich_text": [{"text": {"content": ", ".join(items) if items else "None"}}]}
+                adapted[target_name] = rich_text_prop(", ".join(items) if items else "None")
             elif ptype == "select" and items:
                 adapted[target_name] = {"select": {"name": items[0]}}
             continue
@@ -319,7 +321,7 @@ def _adapt_trip_properties_to_schema(notion, database_id: str, payload: dict) ->
             if ptype == "multi_select":
                 adapted[target_name] = {"multi_select": [{"name": item} for item in items]}
             elif ptype == "rich_text":
-                adapted[target_name] = {"rich_text": [{"text": {"content": ", ".join(items)}}]}
+                adapted[target_name] = rich_text_prop(", ".join(items))
             elif ptype == "select" and items:
                 adapted[target_name] = {"select": {"name": "Both" if set(items) == {"Work", "Personal"} else items[0]}}
             continue
@@ -334,14 +336,14 @@ def _adapt_trip_properties_to_schema(notion, database_id: str, payload: dict) ->
             if ptype == "multi_select":
                 adapted[target_name] = {"multi_select": [{"name": item} for item in tokens]}
             elif ptype == "rich_text":
-                adapted[target_name] = {"rich_text": [{"text": {"content": ", ".join(tokens)}}]}
+                adapted[target_name] = rich_text_prop(", ".join(tokens))
             continue
         if name == "Weather Summary":
             raw_text = ""
             if value.get("rich_text"):
                 raw_text = value["rich_text"][0].get("text", {}).get("content", "")
             if ptype == "rich_text":
-                adapted[target_name] = {"rich_text": [{"text": {"content": raw_text}}]}
+                adapted[target_name] = rich_text_prop(raw_text)
             elif ptype == "select" and raw_text:
                 adapted[target_name] = {"select": {"name": raw_text[:100]}}
             continue
@@ -512,9 +514,9 @@ def refresh_upcoming_trip_weather(
             notion,
             database_id,
             {
-                "Trip": {"title": [{"text": {"content": "ignore"}}]},
+                "Trip": title_prop("ignore"),
                 "Weather Flags": {"multi_select": [{"name": item} for item in flags]},
-                "Weather Summary": {"rich_text": [{"text": {"content": summary}}]},
+                "Weather Summary": rich_text_prop(summary),
             },
         )
         payload.pop("Trip", None)
@@ -646,7 +648,7 @@ async def run_weather_refresh(page_id: str, city: str, departure_date: str) -> N
     _main.notion.pages.update(
         page_id=page_id,
         properties={
-            "Weather Summary": {"rich_text": [{"text": {"content": weather["summary"]}}]},
+            "Weather Summary": rich_text_prop(weather["summary"]),
             "Weather Flags": {"multi_select": [{"name": f} for f in weather["flags"]]},
         },
     )

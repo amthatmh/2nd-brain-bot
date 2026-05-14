@@ -39,7 +39,6 @@ from telegram.ext import (
 )
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-import anthropic
 from notion_client import Client as NotionClient
 
 from second_brain.asana.sync import (
@@ -64,6 +63,7 @@ from second_brain.notes.flow import (
     note_topics_keyboard,
 )
 from second_brain.ai import classify as ai_classify
+from second_brain.ai.client import get_claude_client
 from second_brain.healthtrack.routes import register_health_routes
 from second_brain.healthtrack import config as health_config
 from second_brain.healthtrack.steps import (
@@ -130,7 +130,11 @@ from second_brain.config import (
     ASANA_ARCHIVE_ORPHANS,
 )
 from second_brain.notion import notion_call
-from second_brain.notion.properties import query_all
+from second_brain.notion.properties import (
+    query_all,
+    rich_text_prop,
+    title_prop,
+)
 from second_brain.notion import habits as notion_habits
 from second_brain.notion.habits import (
     log_habit as _habit_log_habit,
@@ -307,16 +311,7 @@ def get_current_monday() -> date:
     return today - timedelta(days=today.weekday())
 
 def format_reminder_snapshot(mode: str = "priority", limit: int = 8) -> str:
-    return main_helpers.format_reminder_snapshot(
-        fmt,
-        local_today,
-        notion,
-        NOTION_DB_ID,
-        TZ,
-        notion_tasks,
-        mode=mode,
-        limit=limit,
-    )
+    return fmt.format_reminder_snapshot(notion, NOTION_DB_ID, TZ, mode=mode, limit=limit)
 
 
 def load_notion_env_config() -> dict[str, str]:
@@ -365,32 +360,20 @@ async def write_boot_log(
         return
     try:
         props = {
-            "Version": {
-                "title": [{"text": {"content": version}}]
-            },
+            "Version": title_prop(version),
             "Boot Time": {
                 "date": {"start": datetime.now(TZ).isoformat()}
             },
             "Status": {
                 "select": {"name": status}
             },
-            "SHA": {
-                "rich_text": [{"text": {"content": sha}}]
-            },
-            "Asana": {
-                "rich_text": [{"text": {"content": asana_status}}]
-            },
-            "Features": {
-                "rich_text": [{"text": {"content": features}}]
-            },
-            "Timezone": {
-                "rich_text": [{"text": {"content": str(TZ)}}]
-            },
+            "SHA": rich_text_prop(sha),
+            "Asana": rich_text_prop(asana_status),
+            "Features": rich_text_prop(features),
+            "Timezone": rich_text_prop(str(TZ)),
         }
         if notes:
-            props["Notes"] = {
-                "rich_text": [{"text": {"content": notes[:2000]}}]
-            }
+            props["Notes"] = rich_text_prop(notes[:2000])
         notion.pages.create(
             parent={"database_id": NOTION_BOOT_LOG_DB},
             properties=props,
@@ -402,7 +385,7 @@ async def write_boot_log(
 
 # ── Clients ──────────────────────────────────────────────────────────────────
 notion = NotionClient(auth=NOTION_TOKEN)
-claude = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+claude = get_claude_client()
 wx.notion = notion
 wx.NOTION_ENV_DB = NOTION_ENV_DB
 wx.current_location = WEATHER_LOCATION
@@ -428,8 +411,7 @@ _entertainment_counter = 0
 habit_cache: dict[str, dict] = STATE.habit_cache
 
 # ── HabitKit data cache ───────────────────────────────────────────────────
-_habits_data_cache: dict = {}
-_HABITS_CACHE_TTL_SECONDS = 3600  # 1 hour
+_habits_data_cache: dict = ExpiringDict(ttl_seconds=300)
 
 _habit_selections: dict[int, dict[str, object]] = {}
 
@@ -1035,7 +1017,7 @@ async def refresh_quick_actions_keyboard(message) -> None:
 
 async def send_quick_reminder(message, mode: str = "priority") -> None:
     await message.reply_text(
-        fmt.format_reminder_snapshot(mode=mode),
+        fmt.format_reminder_snapshot(notion, NOTION_DB_ID, TZ, mode=mode),
         parse_mode="Markdown",
         reply_markup=kb.quick_actions_keyboard(BTN_REFRESH, BTN_ALL_OPEN, BTN_HABITS, BTN_CROSSFIT, BTN_NOTES, BTN_WEATHER),
     )
@@ -1898,14 +1880,12 @@ async def habits_data_handler(request: web.Request) -> web.Response:
     global _habits_data_cache
     now = datetime.now(TZ)
 
-    if _habits_data_cache.get("payload") and _habits_data_cache.get("generated_at"):
-        age = (now - _habits_data_cache["generated_at"]).total_seconds()
-        if age < _HABITS_CACHE_TTL_SECONDS:
-            return web.Response(
-                text=json.dumps(_habits_data_cache["payload"]),
-                content_type="application/json",
-                headers=cors_headers(),
-            )
+    if _habits_data_cache.get("payload"):
+        return web.Response(
+            text=json.dumps(_habits_data_cache["payload"]),
+            content_type="application/json",
+            headers=cors_headers(),
+        )
 
     try:
         habits_sorted = sorted(habit_cache.values(), key=lambda h: h["sort"])
@@ -2028,7 +2008,7 @@ async def habits_data_handler(request: web.Request) -> web.Response:
             "todayDate":    today.isoformat(),
             "weeksHistory": WEEKS_HISTORY,
         }
-        _habits_data_cache = {"payload": payload, "generated_at": now}
+        _habits_data_cache["payload"] = payload
         return web.Response(
             text=json.dumps(payload),
             content_type="application/json",
@@ -2074,7 +2054,7 @@ async def log_habit_http_handler(request: web.Request) -> web.Response:
             )
 
         log_habit(matched["page_id"], matched["name"], source="🌐 HabitKit")
-        _habits_data_cache = {}
+        _habits_data_cache.clear()
         log.info("habits_data_cache: invalidated after HabitKit log")
         return web.Response(
             text=json.dumps({"ok": True, "alreadyLogged": False, "habitName": matched["name"]}),
@@ -2291,9 +2271,9 @@ async def process_pending_programmes(bot) -> None:
         return
 
     try:
-        results = notion_call(
-            notion.databases.query,
-            database_id=NOTION_WORKOUT_PROGRAM_DB,
+        rows = query_all(
+            notion,
+            NOTION_WORKOUT_PROGRAM_DB,
             filter={
                 "and": [
                     {"property": "Processed", "checkbox": {"equals": False}},
@@ -2301,7 +2281,6 @@ async def process_pending_programmes(bot) -> None:
                 ]
             },
         )
-        rows = results.get("results", [])
     except Exception as e:
         log.error("process_pending_programmes: query failed: %s", e)
         return
@@ -2384,15 +2363,14 @@ async def process_pending_programmes(bot) -> None:
                          if r.get("properties", {}).get("Cycle", {}).get("number")),
                         1,
                     )
-                    cycle_rows = notion_call(
-                        notion.databases.query,
-                        database_id=NOTION_WORKOUT_PROGRAM_DB,
+                    cycle_rows = query_all(
+                        notion,
+                        NOTION_WORKOUT_PROGRAM_DB,
                         filter={"and": [
                             {"property": "Processed", "checkbox": {"equals": True}},
                             {"property": "Cycle", "number": {"equals": cycle_num}},
                         ]},
-                        page_size=100,
-                    ).get("results", [])
+                    )
                     week_num = len(cycle_rows) + 1
 
                 notion_call(
@@ -2443,7 +2421,7 @@ async def process_pending_programmes(bot) -> None:
                 notion_call(
                     notion.pages.update,
                     page_id=page_id,
-                    properties={"Parse Error": {"rich_text": [{"text": {"content": str(e)[:1900]}}]}},
+                    properties={"Parse Error": rich_text_prop(str(e)[:1900])},
                 )
             except Exception as inner:
                 log.error("process_pending_programmes: could not write error to Notion: %s", inner)
