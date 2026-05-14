@@ -128,6 +128,7 @@ from second_brain.config import (
     ASANA_WORKSPACE_GID,
     ASANA_SYNC_SOURCE,
     ASANA_ARCHIVE_ORPHANS,
+    parse_hhmm_env,
 )
 from second_brain.notion import notion_call
 from second_brain.notion.properties import (
@@ -149,8 +150,9 @@ from second_brain.notion.habits import (
 from second_brain.notion import tasks as notion_tasks
 from second_brain import keyboards as kb
 from second_brain import formatters as fmt
-from second_brain import main_helpers as main_helpers
 from second_brain import digest as digest_helpers
+from second_brain.mute import load_mute_state, save_mute_state, is_muted as mute_is_muted
+from second_brain.utils import parse_time_to_minutes
 from second_brain.digest import (
     get_digest_config,
     _filter_digest_tasks,
@@ -234,8 +236,6 @@ from second_brain.routers import (
     route_classified_message_v10,
 )
 
-
-
 def _apply_shared_date_parse(payload: dict) -> object:
     raw_date = payload.get("date")
     if isinstance(raw_date, str) and "T" in raw_date:
@@ -248,27 +248,17 @@ def _apply_shared_date_parse(payload: dict) -> object:
         payload["date"] = result.resolved
     return result
 
-
-def _date_pick_keyboard(scope: str, key: str, result) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton(result.label_a or result.option_a or "Option A", callback_data=f"date_pick:{scope}:a:{key}"),
-        InlineKeyboardButton(result.label_b or result.option_b or "Option B", callback_data=f"date_pick:{scope}:b:{key}"),
-    ]])
-
 async def _execute_entertainment_rules(payload: dict) -> bool:
     return await _ent_execute_rules(notion, rule_engine, payload)
 
-
 async def handle_entertainment_log(notion_arg, message, payload: dict) -> None:
     return await _ent_handle_log(notion_arg, message, payload)
-
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
 log = logging.getLogger(__name__)
 logger = log
-
 
 def _resolve_state_dir() -> Path:
     """
@@ -300,8 +290,7 @@ def _resolve_state_dir() -> Path:
         return fallback
 
 # ── Config ───────────────────────────────────────────────────────────────────
-_rc_h, _rc_m = main_helpers.parse_hhmm_env("RECURRING_CHECK_TIME", "7:00", log)
-
+_rc_h, _rc_m = parse_hhmm_env("RECURRING_CHECK_TIME", "7:00", log)
 
 def get_current_monday() -> date:
     """Return Monday date for the current week in local time."""
@@ -312,7 +301,6 @@ def get_current_monday() -> date:
 
 def format_reminder_snapshot(mode: str = "priority", limit: int = 8) -> str:
     return fmt.format_reminder_snapshot(notion, NOTION_DB_ID, TZ, mode=mode, limit=limit)
-
 
 def load_notion_env_config() -> dict[str, str]:
     """
@@ -339,7 +327,6 @@ def load_notion_env_config() -> dict[str, str]:
     except Exception as e:
         log.warning("load_notion_env_config failed: %s", e)
         return {}
-
 
 async def write_boot_log(
     bot,
@@ -382,7 +369,6 @@ async def write_boot_log(
     except Exception as e:
         log.error("write_boot_log: failed to write to Notion: %s", e)
 
-
 # ── Clients ──────────────────────────────────────────────────────────────────
 notion = NotionClient(auth=NOTION_TOKEN)
 claude = get_claude_client()
@@ -404,14 +390,16 @@ pending_note_map: dict[str, dict] = {}
 cf_pending: dict[str, dict] = ExpiringDict(ttl_seconds=3600)
 topic_recency_map: dict[str, datetime] = {}
 _cf_counter = 0
-_done_picker_counter = 0
-_todo_picker_counter = 0
-_v10_counter = 0
 _entertainment_counter = 0
 habit_cache: dict[str, dict] = STATE.habit_cache
-
-# ── HabitKit data cache ───────────────────────────────────────────────────
-_habits_data_cache: dict = ExpiringDict(ttl_seconds=300)
+# Preserve prior module-level semantics when this entrypoint is reloaded in tests or workers.
+STATE.counter_done_picker = 0
+STATE.counter_todo_picker = 0
+STATE.counter_v10 = 0
+STATE.habits_data_cache = ExpiringDict(ttl_seconds=300)
+STATE.mute_until = None
+STATE.signoff_notes = {"second_brain": "", "brian_ii": ""}
+STATE.claude_activity = []
 
 _habit_selections: dict[int, dict[str, object]] = {}
 
@@ -470,12 +458,6 @@ _digest_slots_last_load_succeeded = False
 _digest_catchup_sent: set[str] = set()
 _digest_slot_sent_today: set[str] = set()
 notified_goals_this_week: set[str] = set()
-mute_until: datetime | None = None
-_signoff_notes_today: dict[str, str] = {
-    "second_brain": "",
-    "brian_ii": "",
-}
-_claude_activity_today: list[str] = []
 _last_daily_log_url: str = ""
 _app_bot = None  # set during post_init for health route bot access
 rule_engine: RuleEngine | None = None
@@ -518,12 +500,9 @@ TOPIC_OPTIONS = [
 ]
 _URL_RE = re.compile(r"https?://[^\s\)\]>\"']+", re.IGNORECASE)
 
-
-
 def _has_explicit_personal_or_work_context(text: str) -> bool:
     lower = (text or "").lower()
     return bool(re.search(r"\b(personal|work)\b|🏠|💼", lower))
-
 
 def next_repeat_day_date(
     recurring: str,
@@ -589,30 +568,20 @@ def next_repeat_day_date(
 
     return None
 
-
-_parse_time_to_minutes = main_helpers.parse_time_to_minutes
-
-
 def _load_mute_state() -> None:
-    global mute_until
-    mute_until = main_helpers.load_mute_state(mute_state_file, TZ, log)
-
+    STATE.mute_until = load_mute_state(mute_state_file, TZ, log)
 
 def _save_mute_state() -> None:
-    main_helpers.save_mute_state(mute_until, mute_state_file, log)
-
+    save_mute_state(STATE.mute_until, mute_state_file, log)
 
 def _is_muted() -> bool:
-    global mute_until
-    if not main_helpers.is_muted(mute_until, TZ):
-        if mute_until is None:
+    if not mute_is_muted(STATE.mute_until, TZ):
+        if STATE.mute_until is None:
             return False
-        mute_until = None
+        STATE.mute_until = None
         _save_mute_state()
         return False
     return True
-
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HABIT CACHE
@@ -628,17 +597,14 @@ def notion_query_all(database_id: str, **kwargs) -> list[dict]:
         page_size=kwargs.pop("page_size", None),
     )
 
-
 def load_digest_slots() -> list[dict]:
     """Queries Notion Digest Selector DB and returns normalized slot dicts."""
     rows = notion_query_all(NOTION_DIGEST_SELECTOR_DB)
     return digest_helpers.load_digest_slots(rows=rows, logger=log)
 
-
 def extract_date_only(date_str: str | None) -> str | None:
     """Normalize Notion date strings to YYYY-MM-DD for calendar matching."""
     return note_utils_service.extract_date_only(date_str)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MULTI-TASK PARSING
@@ -647,22 +613,17 @@ def extract_date_only(date_str: str | None) -> str | None:
 def split_tasks(text: str) -> list[str]:
     return task_parsing_service.split_tasks(text, _BULLET_RE)
 
-
 def looks_like_crossfit_programme(text: str) -> bool:
     return task_parsing_service.looks_like_crossfit_programme(text)
-
 
 def looks_like_task_batch(text: str) -> bool:
     return task_parsing_service.looks_like_task_batch(text, _BULLET_RE)
 
-
 def infer_batch_overrides(text: str) -> dict:
     return task_parsing_service.infer_batch_overrides(text)
 
-
 def infer_deadline_override(text: str) -> int | None:
     return task_parsing_service.infer_deadline_override(text)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CLAUDE CLASSIFICATION
@@ -673,9 +634,8 @@ async def start_note_capture_flow(message, text: str) -> None:
         await create_or_prompt_task(message, text)
         return
 
-    global _v10_counter
-    note_key = str(_v10_counter)
-    _v10_counter += 1
+    note_key = str(STATE.counter_v10)
+    STATE.counter_v10 += 1
     try:
         topics = notion_notes.fetch_note_topics_from_notion(notion, NOTION_NOTES_DB)
     except Exception as e:
@@ -699,11 +659,9 @@ async def start_note_capture_flow(message, text: str) -> None:
         log.error(f"Notion note error: {e}")
         await message.reply_text("⚠️ Couldn't save note to Notion.")
 
-
 def extract_url(text: str) -> str | None:
     """Return first URL found in text, or None."""
     return note_utils_service.extract_url(text, _URL_RE)
-
 
 def fetch_url_metadata(url: str) -> dict:
     """Fetch page title and meta description. Returns {title, description}."""
@@ -732,7 +690,6 @@ def fetch_url_metadata(url: str) -> dict:
     except Exception as e:
         log.warning(f"fetch_url_metadata failed for {url}: {e}")
     return {"title": title, "description": description}
-
 
 async def handle_note_input(message, text: str) -> None:
     """Called when user sends content in note-capture mode."""
@@ -773,10 +730,8 @@ async def handle_note_input(message, text: str) -> None:
         log.error(f"save_note error: {e}")
         await thinking.edit_text(f"⚠️ Couldn't save note to Notion.\n_{e}_", parse_mode="Markdown")
 
-
 def deadline_days_to_label(days: int | None) -> str:
     return note_utils_service.deadline_days_to_label(days)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # V10 REFERENCE DATABASE FLOWS
@@ -789,58 +744,44 @@ def deadline_days_to_label(days: int | None) -> str:
 def log_habit(habit_page_id: str, habit_name: str, source: str = "📱 Telegram") -> None:
     return _habit_log_habit(notion, NOTION_LOG_DB, habit_page_id, habit_name, source)
 
-
 def already_logged_today(habit_page_id: str) -> bool:
     return _habit_already_logged(notion, NOTION_LOG_DB, habit_page_id, TZ)
-
 
 def get_week_completion_count(habit_page_id: str) -> int:
     return _habit_week_count(notion, NOTION_LOG_DB, habit_page_id, TZ)
 
-
 def get_habit_frequency(habit_page_id: str) -> int:
     return _habit_frequency(notion, habit_page_id)
-
 
 def habit_capped_this_week(habit_page_id: str) -> bool:
     return _habit_capped(notion, NOTION_LOG_DB, habit_page_id, TZ)
 
-
 def _count_habit_completions_this_week(habit_page_id: str) -> int:
     return _habit_count_this_week(notion, NOTION_LOG_DB, habit_page_id, TZ)
-
 
 def logs_this_week(habit_page_id: str) -> int:
     return _habit_logs_this_week(notion, NOTION_LOG_DB, habit_page_id, TZ)
 
-
 def is_on_pace(habit: dict) -> bool:
     return _habit_is_on_pace(notion, NOTION_LOG_DB, habit, TZ)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # NOTION — TO-DO
 # ══════════════════════════════════════════════════════════════════════════════
 
-
-
 def store_signoff_note(project: str, text: str) -> None:
-    global _signoff_notes_today
-    if project not in _signoff_notes_today:
+    if project not in STATE.signoff_notes:
         log.warning("Unknown signoff project: %s", project)
         return
-    _signoff_notes_today[project] = text.strip()
+    STATE.signoff_notes[project] = text.strip()
     log.info("Signoff note stored for %s: %s", project, text[:80])
-
-
 
 def is_muted() -> bool:
     return _is_muted()
 
 def get_and_clear_project_signoff_notes() -> dict[str, str]:
-    global _signoff_notes_today
-    notes = _signoff_notes_today.copy()
-    _signoff_notes_today = {"second_brain": "", "brian_ii": ""}
+    notes = STATE.signoff_notes.copy()
+    STATE.signoff_notes = {"second_brain": "", "brian_ii": ""}
     return notes
 
 async def trigger_signoff_now(message, note: str | None = None, project: str = "second_brain") -> None:
@@ -853,80 +794,24 @@ async def trigger_signoff_now(message, note: str | None = None, project: str = "
         parse_mode="MarkdownV2" if note else None,
     )
 
-
-
-
-
-
-
-
-
-
-
-
 def _get_today_tasks_for_palette() -> list[dict]:
     return palette_helpers.get_today_tasks_for_palette(
         notion_tasks=notion_tasks, notion=notion, notion_db_id=NOTION_DB_ID, local_today_fn=local_today
     )
 
-
-
-
 def track_claude_activity(text: str) -> None:
-    global _claude_activity_today
     cleaned = re.sub(r"\s+", " ", (text or "").strip())
     if not cleaned:
         return
     timestamp = datetime.now(TZ).strftime("%H:%M")
-    _claude_activity_today.append(f"{timestamp} — {cleaned[:200]}")
-    if len(_claude_activity_today) > 60:
-        _claude_activity_today = _claude_activity_today[-60:]
-
+    STATE.claude_activity.append(f"{timestamp} — {cleaned[:200]}")
+    if len(STATE.claude_activity) > 60:
+        STATE.claude_activity = STATE.claude_activity[-60:]
 
 def get_and_clear_claude_activity() -> list[str]:
-    global _claude_activity_today
-    items = _claude_activity_today
-    _claude_activity_today = []
+    items = STATE.claude_activity
+    STATE.claude_activity = []
     return items
-
-def format_digest_view() -> tuple[str, InlineKeyboardMarkup]:
-    return palette_helpers.format_digest_view(
-        notion_tasks=notion_tasks,
-        notion=notion,
-        notion_db_id=NOTION_DB_ID,
-        local_today_fn=local_today,
-        back_to_palette_keyboard=kb.back_to_palette_keyboard,
-        weather_card=fmt.format_digest_weather_card(),
-    )
-
-
-def format_todo_view(marked_done_indices: set | None = None) -> tuple[str, InlineKeyboardMarkup]:
-    return palette_helpers.format_todo_view(
-        notion_tasks=notion_tasks,
-        notion=notion,
-        notion_db_id=NOTION_DB_ID,
-        local_today_fn=local_today,
-        num_emoji=fmt.num_emoji,
-        marked_done_indices=marked_done_indices,
-    )
-
-
-def quick_access_keyboard() -> InlineKeyboardMarkup:
-    return palette_helpers.quick_access_keyboard(notion_tasks=notion_tasks, notion=notion, notion_db_id=NOTION_DB_ID)
-
-
-
-
-
-def parse_done_numbers_command(text: str) -> list[int] | None:
-    from second_brain import palette as _palette_helpers
-    return _palette_helpers.parse_done_numbers_command(text)
-
-
-def parse_review_numbers_command(text: str) -> list[int] | None:
-    from second_brain import palette as _palette_helpers
-    return _palette_helpers.parse_review_numbers_command(text)
-
 
 def _resolve_monthly_target_day(repeat_day: str, today: date) -> int | None:
     if repeat_day not in REPEAT_DAY_TO_MONTHDAY:
@@ -983,9 +868,6 @@ def _run_capture(raw_text: str, force_create: bool = False,
         log.error(f"Notion error for '{task_name}': {e}")
         return {"status": "error", "name": task_name, "error": str(e)}
 
-
-
-
 def pending_habits_for_digest(time_str: str | None = None) -> list[dict]:
     return digest_helpers.pending_habits_for_digest(
         habit_cache=habit_cache,
@@ -993,12 +875,6 @@ def pending_habits_for_digest(time_str: str | None = None) -> list[dict]:
         already_logged_today=already_logged_today,
         is_on_pace=is_on_pace,
     )
-
-
-
-
-
-
 
 async def refresh_quick_actions_keyboard(message) -> None:
     """Force-refresh the reply keyboard to replace legacy layouts (e.g. old Mute button)."""
@@ -1008,20 +884,12 @@ async def refresh_quick_actions_keyboard(message) -> None:
         reply_markup=kb.quick_actions_keyboard(BTN_REFRESH, BTN_ALL_OPEN, BTN_HABITS, BTN_CROSSFIT, BTN_NOTES, BTN_WEATHER),
     )
 
-
-
-
-
-
-
-
 async def send_quick_reminder(message, mode: str = "priority") -> None:
     await message.reply_text(
         fmt.format_reminder_snapshot(notion, NOTION_DB_ID, TZ, mode=mode),
         parse_mode="Markdown",
         reply_markup=kb.quick_actions_keyboard(BTN_REFRESH, BTN_ALL_OPEN, BTN_HABITS, BTN_CROSSFIT, BTN_NOTES, BTN_WEATHER),
     )
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # INLINE KEYBOARDS
@@ -1080,18 +948,6 @@ def _restore_pid(pid: str) -> str:
 #
 # ══════════════════════════════════════════════════════════════════════════════
 
-
-
-
-
-
-
-
-
-
-
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # CAPTURE ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1100,7 +956,6 @@ async def complete_task_by_page_id(message, page_id: str, name: str) -> None:
     notion_tasks.mark_done(notion, page_id)
     suffix = "\n↻ Next instance created" if notion_tasks.handle_done_recurring(page_id) else ""
     await message.reply_text(f"✅ Done: {name}{suffix}")
-
 
 async def _classify_task_texts(task_texts: list[str]) -> list[dict]:
     """Classify multiple task texts concurrently."""
@@ -1121,7 +976,6 @@ async def _classify_task_texts(task_texts: list[str]) -> list[dict]:
         )
         for task_text in task_texts
     ])
-
 
 async def _create_task_from_classification(
     raw_text: str,
@@ -1176,7 +1030,6 @@ async def _create_task_from_classification(
         log.error("Task creation error for '%s': %s", raw_text, e)
         return {"status": "error", "name": raw_text, "error": str(e)}
 
-
 async def _confirm_multi_task_batch(
     message,
     thinking_msg,
@@ -1216,7 +1069,6 @@ async def _confirm_multi_task_batch(
         ]]),
     )
 
-
 async def create_task_batch(message, raw_text: str, task_texts: list[str], force_create: bool = False) -> None:
     """Classify and create a task batch without a separate confirmation prompt."""
     thinking = await message.reply_text(f"🧠 Classifying {len(task_texts)} tasks...")
@@ -1238,7 +1090,6 @@ async def create_task_batch(message, raw_text: str, task_texts: list[str], force
         await thinking.edit_text("⚠️ Couldn't classify. Try rephrasing?")
         return
     await thinking.edit_text(fmt.format_batch_summary(list(results)), parse_mode="Markdown")
-
 
 async def create_or_prompt_task(message, raw_text: str, force_create: bool = False) -> None:
     """
@@ -1364,17 +1215,14 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
         log.error(f"Notion error: {e}")
         await thinking.edit_text("⚠️ Classified but couldn't write to Notion.")
 
-
 async def open_done_picker(message) -> None:
-    global _done_picker_counter
     tasks = notion_tasks.get_today_and_overdue_tasks(notion, NOTION_DB_ID)
     if not tasks:
         await message.reply_text("✅ Nothing open in Today or overdue right now.")
         return
-    key = str(_done_picker_counter); _done_picker_counter += 1
+    key = str(STATE.counter_done_picker); STATE.counter_done_picker += 1
     done_picker_map[key] = tasks
     await message.reply_text("Which task should be marked done?", reply_markup=kb.done_picker_keyboard(key, done_picker_map, page=0))
-
 
 async def open_habit_picker(message) -> None:
     pending_habits = [
@@ -1391,7 +1239,6 @@ async def open_habit_picker(message) -> None:
     )
     _store_habit_selection_session(sent.message_id, pending_habits)
 
-
 async def cmd_refresh(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
     del context
     if message.chat_id != MY_CHAT_ID:
@@ -1407,28 +1254,20 @@ async def cmd_refresh(message, context: ContextTypes.DEFAULT_TYPE | None = None)
     include_habits = True if config is None else bool(config.get("include_habits", True))
     await send_daily_digest(message.get_bot(), include_habits=include_habits, config=config)
 
-
-
-
-
-
-
-
 def _manual_digest_config_now(slots: list[dict], now_dt: datetime | None = None) -> dict | None:
     now_dt = now_dt or datetime.now(TZ)
     return digests_mod.manual_digest_config_now(slots, now_dt=now_dt, is_weekday=now_dt.weekday() < 5)
 
 async def cmd_todo(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
     del context
-    global _todo_picker_counter
     if message.chat_id != MY_CHAT_ID:
         return
     tasks = notion_tasks.get_today_and_overdue_tasks(notion, NOTION_DB_ID)
     if not tasks:
         await message.reply_text("✅ Nothing open in Today or overdue right now.")
         return
-    key = str(_todo_picker_counter)
-    _todo_picker_counter += 1
+    key = str(STATE.counter_todo_picker)
+    STATE.counter_todo_picker += 1
     todo_picker_map[key] = tasks
     await message.reply_text(
         "✅ *What did you get done?*",
@@ -1436,13 +1275,11 @@ async def cmd_todo(message, context: ContextTypes.DEFAULT_TYPE | None = None) ->
         reply_markup=kb.todo_picker_keyboard(key, todo_picker_map, fmt.context_emoji),
     )
 
-
 async def cmd_done_bare(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
     del context
     if message.chat_id != MY_CHAT_ID:
         return
     await open_done_picker(message)
-
 
 async def cmd_habits_text(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
     del context
@@ -1450,13 +1287,11 @@ async def cmd_habits_text(message, context: ContextTypes.DEFAULT_TYPE | None = N
         return
     await send_daily_habits_list(message.get_bot())
 
-
 async def cmd_habits_picker(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
     del context
     if message.chat_id != MY_CHAT_ID:
         return
     await open_habit_picker(message)
-
 
 async def cmd_crossfit(message, context=None) -> None:
     del context
@@ -1472,7 +1307,6 @@ async def cmd_crossfit(message, context=None) -> None:
         reply_markup=crossfit_submenu_keyboard(readiness_logged),
     )
 
-
 async def cmd_notes_text(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
     del context
     if message.chat_id != MY_CHAT_ID:
@@ -1481,7 +1315,6 @@ async def cmd_notes_text(message, context: ContextTypes.DEFAULT_TYPE | None = No
         "📝 Notes options:",
         reply_markup=kb.notes_options_keyboard(),
     )
-
 
 async def cmd_weather_text(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
     del context
@@ -1496,13 +1329,11 @@ async def cmd_weather_text(message, context: ContextTypes.DEFAULT_TYPE | None = 
         log.error("Weather quick-action failed: %s", e)
         await message.reply_text("⚠️ Weather is temporarily unavailable. Try /weather again in a moment or /location to reset.")
 
-
 async def handle_weather(location: str) -> str:
     """Return weather output for a confirmed location."""
     if not location:
         return "📍 I need a location first. Send `weather: <city>` or `/location`."
     return fmt.format_weather_snapshot()
-
 
 async def cmd_mute_text(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
     if message.chat_id != MY_CHAT_ID:
@@ -1513,7 +1344,6 @@ async def cmd_mute_text(message, context: ContextTypes.DEFAULT_TYPE | None = Non
         "🔕 Mute options for scheduled digests:",
         reply_markup=kb.mute_options_keyboard(),
     )
-
 
 async def handle_v10_callback(q, parts: list[str]) -> bool:
     if parts[0] == "wl_save" and len(parts) == 2:
@@ -1582,8 +1412,6 @@ async def handle_v10_callback(q, parts: list[str]) -> bool:
 
     return False
 
-
-
 def _crossfit_config(**extra) -> dict:
     cfg = {
         "NOTION_WORKOUT_LOG_DB": NOTION_WORKOUT_LOG_DB,
@@ -1599,7 +1427,6 @@ def _crossfit_config(**extra) -> dict:
     cfg.update(extra)
     return cfg
 
-
 async def cmd_cf_reload_movements(update: Update, context: ContextTypes.DEFAULT_TYPE):
     del context
     if not NOTION_MOVEMENTS_DB:
@@ -1609,12 +1436,6 @@ async def cmd_cf_reload_movements(update: Update, context: ContextTypes.DEFAULT_
         None, lambda: reload_movement_library(notion, NOTION_MOVEMENTS_DB)
     )
     await update.effective_message.reply_text(f"✅ Movement library reloaded ({len(MOVEMENTS_CACHE)} entries)")
-
-
-
-
-
-
 
 COMMAND_DISPATCH: dict[str, Callable] = {
     "digest": cmd_refresh,
@@ -1642,32 +1463,9 @@ COMMAND_DISPATCH: dict[str, Callable] = {
     "🔕 mute": cmd_mute_text,
 }
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # TELEGRAM HANDLERS
 # ══════════════════════════════════════════════════════════════════════════════
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SCHEDULED JOBS
@@ -1699,33 +1497,6 @@ async def run_recurring_check(bot) -> dict:
     log.info(f"Recurring check: {spawned} task(s) spawned")
     return {"action": "spawned", "tasks_spawned": spawned}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 async def send_evening_checkin(bot) -> None:
     """Evening habit check-in with time display and frequency status."""
     now_str = datetime.now(TZ).strftime("%H:%M")
@@ -1752,8 +1523,6 @@ async def send_evening_checkin(bot) -> None:
     _store_habit_selection_session(sent.message_id, evening_habits)
     log.info("Evening check-in sent — %d habits", len(evening_habits))
 
-
-
 async def send_daily_habits_list(bot) -> None:
     """Fetch all active habits for today and send as clickable buttons."""
     habits = pending_habits_for_digest()
@@ -1769,8 +1538,6 @@ async def send_daily_habits_list(bot) -> None:
     )
     _store_habit_selection_session(sent.message_id, habits)
     log.info("Habits list sent — %s available habits", len(habits))
-
-
 
 async def run_asana_sync(bot) -> dict:
     """
@@ -1810,7 +1577,6 @@ async def run_asana_sync(bot) -> dict:
         sync_status["asana"]["ok"] = False
         sync_status["asana"]["error"] = str(e)
         return {"ok": False, "action": "error", "reason": str(e)}
-
 
 async def run_cinema_sync(bot, *, force: bool = False) -> dict[str, int | str]:
     """Background sync for Cinema Log → Favourite Shows."""
@@ -1870,19 +1636,16 @@ async def run_cinema_sync(bot, *, force: bool = False) -> dict[str, int | str]:
             "reason": str(e),
         }
 
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # /habits-data JSON ENDPOINT
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def habits_data_handler(request: web.Request) -> web.Response:
-    global _habits_data_cache
     now = datetime.now(TZ)
 
-    if _habits_data_cache.get("payload"):
+    if STATE.habits_data_cache.get("payload"):
         return web.Response(
-            text=json.dumps(_habits_data_cache["payload"]),
+            text=json.dumps(STATE.habits_data_cache["payload"]),
             content_type="application/json",
             headers=cors_headers(),
         )
@@ -2008,7 +1771,7 @@ async def habits_data_handler(request: web.Request) -> web.Response:
             "todayDate":    today.isoformat(),
             "weeksHistory": WEEKS_HISTORY,
         }
-        _habits_data_cache["payload"] = payload
+        STATE.habits_data_cache["payload"] = payload
         return web.Response(
             text=json.dumps(payload),
             content_type="application/json",
@@ -2018,11 +1781,7 @@ async def habits_data_handler(request: web.Request) -> web.Response:
         log.error(f"/habits-data error: {e}")
         return web.Response(status=500, text=str(e), headers=cors_headers())
 
-
-
 async def log_habit_http_handler(request: web.Request) -> web.Response:
-    global _habits_data_cache
-
     if request.method == "OPTIONS":
         return web.Response(status=204, headers=cors_headers())
 
@@ -2054,7 +1813,7 @@ async def log_habit_http_handler(request: web.Request) -> web.Response:
             )
 
         log_habit(matched["page_id"], matched["name"], source="🌐 HabitKit")
-        _habits_data_cache.clear()
+        STATE.habits_data_cache.clear()
         log.info("habits_data_cache: invalidated after HabitKit log")
         return web.Response(
             text=json.dumps({"ok": True, "alreadyLogged": False, "habitName": matched["name"]}),
@@ -2069,7 +1828,6 @@ async def log_habit_http_handler(request: web.Request) -> web.Response:
             content_type="application/json",
             headers=cors_headers(),
         )
-
 
 async def _persist_steps_sync_to_env_db(notion_client, env_db_id: str) -> None:
     """Update HEALTH_STEPS_THRESHOLD row in Notion ENV DB with current sync date."""
@@ -2115,7 +1873,6 @@ async def _persist_steps_sync_to_env_db(notion_client, env_db_id: str) -> None:
     except Exception as e:
         log.error("steps: error updating ENV DB sync timestamp: %s", e)
 
-
 async def _record_steps_sync_result(result: dict) -> None:
     """Handle steps sync completion: update in-memory status and ENV DB."""
     if not result:
@@ -2132,7 +1889,6 @@ async def _record_steps_sync_result(result: dict) -> None:
 
     if result.get("action") != "error":
         asyncio.create_task(_persist_steps_sync_to_env_db(notion, NOTION_ENV_DB))
-
 
 async def start_http_server() -> None:
     app    = web.Application()
@@ -2167,11 +1923,9 @@ async def start_http_server() -> None:
     await site.start()
     log.info(f"HTTP server started on port {HTTP_PORT}")
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # STARTUP HELPERS — schema validation + alert
 # ══════════════════════════════════════════════════════════════════════════════
-
 
 async def _try_send_telegram(bot, text: str) -> None:
     """Best-effort Telegram alert. Never raises."""
@@ -2189,7 +1943,6 @@ async def _try_send_telegram(bot, text: str) -> None:
         await bot.send_message(**kwargs)
     except Exception as e:
         log.error(f"Could not send operational alert via Telegram: {e}")
-
 
 def _git_sha() -> str:
     """Best-effort short commit SHA for deploy receipts."""
@@ -2214,8 +1967,6 @@ def _git_sha() -> str:
     except Exception:
         return "unknown"
 
-
-
 def v10_feature_flags() -> str:
     flags = [
         f"watchlist={'ON' if NOTION_WATCHLIST_DB else 'OFF'}",
@@ -2227,7 +1978,6 @@ def v10_feature_flags() -> str:
         f"mute={'ON' if _is_muted() else 'OFF'}",
     ]
     return "  ".join(flags)
-
 
 def startup_notion_health_check() -> None:
     """Fail fast for core Notion DBs, but don't block startup for optional features."""
@@ -2262,8 +2012,6 @@ def startup_notion_health_check() -> None:
                 label,
                 exc,
             )
-
-
 
 async def process_pending_programmes(bot) -> None:
     """Poll Weekly Programs DB for unprocessed rows and parse/save asynchronously."""
@@ -2434,15 +2182,6 @@ async def process_pending_programmes(bot) -> None:
             except Exception:
                 pass
 
-
-
-
-
-
-
-
-
-
 async def _run_steps_sync_check_dispatch(bot) -> dict:
     result = await check_and_create_steps_entry(
         notion=notion,
@@ -2458,7 +2197,6 @@ async def _run_steps_sync_check_dispatch(bot) -> dict:
     sync_status["steps"]["error"] = None if result.get("ok") else result.get("reason")
     sync_status["steps"]["stats"] = result
     return result
-
 
 async def _run_steps_final_stamp_dispatch(bot) -> dict:
     result = await handle_steps_final_stamp(
@@ -2479,9 +2217,7 @@ async def _run_steps_final_stamp_dispatch(bot) -> dict:
     sync_status["steps"]["stats"] = result
     return result
 
-
 UTILITY_JOB_DISPATCH: dict[str, Callable] = {}
-
 
 def _utility_async_handler(job_key: str, coro_factory: Callable):
     @track_job_execution(job_key)
@@ -2490,14 +2226,12 @@ def _utility_async_handler(job_key: str, coro_factory: Callable):
 
     return _utility_dispatch_handler
 
-
 def _tracked_utility_manager_handler(job_key: str, coro_factory: Callable):
     @track_job_execution(job_key)
     async def _utility_manager_dispatch_handler(bot) -> object:
         return await coro_factory(bot)
 
     return _utility_manager_dispatch_handler
-
 
 def _build_utility_job_dispatch(bot) -> dict[str, Callable]:
     """
@@ -2522,7 +2256,6 @@ def _build_utility_job_dispatch(bot) -> dict[str, Callable]:
     UTILITY_JOB_DISPATCH.clear()
     UTILITY_JOB_DISPATCH.update(dispatch)
     return dispatch
-
 
 def load_and_register_utility_jobs(scheduler, bot) -> int:
     """
@@ -2611,7 +2344,6 @@ def load_and_register_utility_jobs(scheduler, bot) -> int:
     log.info("Utility Scheduler: %d jobs registered", registered)
     return registered
 
-
 def _update_utility_job_status(notion, page_id: str, status: str, loaded_at: str | None) -> None:
     try:
         props = {"Last Status": {"select": {"name": status}}}
@@ -2621,12 +2353,9 @@ def _update_utility_job_status(notion, page_id: str, status: str, loaded_at: str
     except Exception as e:
         log.warning("Could not update utility job status for %s: %s", page_id, e)
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # STARTUP
 # ══════════════════════════════════════════════════════════════════════════════
-
-
 
 def _scheduler_event_listener(event) -> None:
     if getattr(event, "exception", None):
@@ -2896,15 +2625,10 @@ async def post_init(app: Application) -> None:
     await app.bot.set_my_commands(commands, scope=BotCommandScopeDefault())
     await app.bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=MY_CHAT_ID))
 
-
-
-
 def _next_done_picker_key() -> int:
-    global _done_picker_counter
-    key = _done_picker_counter
-    _done_picker_counter += 1
+    key = STATE.counter_done_picker
+    STATE.counter_done_picker += 1
     return key
-
 
 def _command_handlers() -> CommandHandlers:
     return CommandHandlers({
@@ -2921,14 +2645,12 @@ def _command_handlers() -> CommandHandlers:
         "send_quick_reminder": send_quick_reminder,
     })
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # COMMAND HANDLERS — defined before main() so Python can resolve names
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def handle_done_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _command_handlers().handle_done_command(update, context)
-
 
 async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/start log_<habit> — optional Telegram deep-link fallback."""
@@ -2959,10 +2681,8 @@ async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYP
     )
     await refresh_quick_actions_keyboard(update.message)
 
-
 async def handle_remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _command_handlers().handle_remind_command(update, context)
-
 
 async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/sync — manual catch-up trigger for core sync pipelines."""
@@ -2980,13 +2700,11 @@ async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         log.exception("Manual /sync failed: %s", e)
         await status.edit_text(f"⚠️ /sync failed: {e}")
 
-
 async def handle_sync_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/syncstatus — show latest sync telemetry for Cinema + Steps."""
     if update.effective_chat.id != MY_CHAT_ID:
         return
     await update.message.reply_text(format_sync_status_message(sync_status), parse_mode="Markdown")
-
 
 async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Prompt for mute duration in days."""
@@ -2995,17 +2713,14 @@ async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["awaiting_mute_days"] = True
     await update.message.reply_text("🔕 How many days should I pause scheduled digests?")
 
-
 async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Clear mute state immediately."""
     if update.effective_chat.id != MY_CHAT_ID:
         return
-    global mute_until
-    mute_until = None
+    STATE.mute_until = None
     _save_mute_state()
     context.user_data["awaiting_mute_days"] = False
     await update.message.reply_text("🔔 Digests resumed.")
-
 
 async def cmd_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Prompt for a new weather location or parse inline /location arguments."""
@@ -3026,7 +2741,6 @@ async def cmd_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     context.user_data["awaiting_location"] = True
     await update.message.reply_text("📍 What location should I use for weather? (city/state/country or ZIP)")
 
-
 async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/weather — show current + upcoming forecast snapshot."""
     if update.effective_chat.id != MY_CHAT_ID:
@@ -3038,7 +2752,6 @@ async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         log.error("/weather failed: %s", e)
         await update.message.reply_text("⚠️ Weather is temporarily unavailable. Try again in a moment or send /location.")
 
-
 async def cmd_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/notes — open note capture shortcuts and show connection status."""
     if update.effective_chat.id != MY_CHAT_ID:
@@ -3048,15 +2761,11 @@ async def cmd_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         await update.message.reply_text("📝 Notes DB isn't configured yet — add NOTION_NOTES_DB first.")
 
-
 async def cmd_habits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/habits — show incomplete habits as one-tap check-ins."""
     if update.effective_chat.id != MY_CHAT_ID:
         return
     await send_daily_habits_list(context.bot)
-
-
-
 
 async def cmd_signoff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat.id != MY_CHAT_ID:
@@ -3084,7 +2793,7 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         key = str(_entertainment_counter)
         _entertainment_counter += 1
         pending_map[key] = {"type": "entertainment_log", "payload": parsed, "raw_text": f"/log {raw}"}
-        await update.message.reply_text("📅 Which date did you mean?", reply_markup=_date_pick_keyboard("ent", key, date_result))
+        await update.message.reply_text("📅 Which date did you mean?", reply_markup=kb.date_pick_keyboard("ent", key, date_result))
         return
     try:
         prompted = await ent_log._maybe_prompt_explicit_venue(notion, update.message, parsed, f"/log {raw}")
@@ -3094,8 +2803,6 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         log.error("Explicit /log save error: %s", e)
         await update.message.reply_text(_entertainment_save_error_text(e, parsed))
-
-
 
 async def on_confirm_batch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Create a pending mixed-confidence task batch after user confirmation."""
@@ -3132,7 +2839,6 @@ async def on_confirm_batch(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     finally:
         pending_batches.pop(batch_id, None)
 
-
 async def on_cancel_batch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Cancel a pending mixed-confidence task batch."""
     del context
@@ -3144,7 +2850,6 @@ async def on_cancel_batch(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         pending_batches.pop(batch_id, None)
         log.info("Batch cancelled: %s", batch_id)
     await q.edit_message_text("❌ Cancelled. Resend your tasks if you'd like to try again.")
-
 
 async def cleanup_expired_batches() -> None:
     """Remove stale pending batch confirmations and notify Telegram when possible."""
@@ -3170,7 +2875,6 @@ async def cleanup_expired_batches() -> None:
             log.warning("Failed to notify timeout for batch %s: %s", batch_id, e)
         finally:
             pending_batches.pop(batch_id, None)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN — after all handlers are defined
@@ -3203,7 +2907,6 @@ def main() -> None:
     app.add_handler(CommandHandler("cf_reload_movements", cmd_cf_reload_movements))
     log.info(f"🤖 Second Brain bot starting ({APP_VERSION})...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
-
 
 if __name__ == "__main__":
     main()

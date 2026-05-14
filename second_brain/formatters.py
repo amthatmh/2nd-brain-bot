@@ -4,6 +4,7 @@ from second_brain.config import NUMBER_EMOJIS, HORIZON_LABELS, TZ
 from second_brain.notion import tasks as notion_tasks
 from second_brain import weather as wx
 from second_brain.utils import local_today
+from second_brain.state import STATE
 
 
 def num_emoji(n: int) -> str:
@@ -445,8 +446,8 @@ def digest_location_label() -> str:
 
 def mute_status_text() -> str:
     """Human-friendly mute status line."""
-    if is_muted() and mute_until:
-        return f"🔕 Digests paused until {mute_until.strftime('%Y-%m-%d %H:%M %Z')}."
+    if is_muted() and STATE.mute_until:
+        return f"🔕 Digests paused until {STATE.mute_until.strftime('%Y-%m-%d %H:%M %Z')}."
     return "🔔 Digests are active."
 
 def uvi_emoji(uvi: float) -> str:

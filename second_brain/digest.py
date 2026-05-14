@@ -162,6 +162,7 @@ from second_brain.config import (
 )
 from second_brain.notion.properties import query_all
 from second_brain import formatters as fmt
+from second_brain import keyboards as kb
 from second_brain import weather as wx  # noqa: F401 - retained for transition parity
 
 
@@ -487,7 +488,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     if habits:
         digest_keyboard_rows.extend([list(row) for row in _main.kb.habit_buttons(habits, "morning", selected=set()).inline_keyboard])
     if include_feel:
-        digest_keyboard_rows.append([InlineKeyboardButton("💬 How are you feeling?", callback_data="cf:A")])
+        digest_keyboard_rows.extend([list(row) for row in kb.feel_prompt_keyboard().inline_keyboard])
     reply_markup = InlineKeyboardMarkup(digest_keyboard_rows) if digest_keyboard_rows else None
 
     sent_digest = await bot.send_message(

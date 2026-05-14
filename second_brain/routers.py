@@ -4,6 +4,15 @@ from __future__ import annotations
 
 import logging
 from second_brain.notion.properties import title_prop
+from second_brain.state import STATE
+from second_brain.palette import (
+    format_digest_view,
+    format_todo_view,
+    quick_access_keyboard,
+    parse_done_numbers_command,
+    parse_review_numbers_command,
+)
+
 
 log = logging.getLogger(__name__)
 
@@ -133,7 +142,7 @@ async def route_classified_message_v10(message, text: str) -> None:
             key = str(_entertainment_counter)
             _set_main_global("_entertainment_counter", _entertainment_counter + 1)
             pending_map[key] = {"type": "entertainment_log", "payload": result, "raw_text": text}
-            await thinking.edit_text("📅 Which date did you mean?", reply_markup=_date_pick_keyboard("ent", key, date_result))
+            await thinking.edit_text("📅 Which date did you mean?", reply_markup=kb.date_pick_keyboard("ent", key, date_result))
             return
         if confidence == "high" and title:
             try:
@@ -251,12 +260,11 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             days = int(text)
             if days <= 0:
                 raise ValueError("days must be positive")
-            global mute_until
-            _set_main_global("mute_until", datetime.now(TZ) + timedelta(days=days))
+            STATE.mute_until = datetime.now(TZ) + timedelta(days=days)
             _save_mute_state()
             context.user_data["awaiting_mute_days"] = False
             await message.reply_text(
-                f"🔕 Digests paused for {days} day(s), until {mute_until.strftime('%Y-%m-%d %H:%M %Z')}."
+                f"🔕 Digests paused for {days} day(s), until {STATE.mute_until.strftime('%Y-%m-%d %H:%M %Z')}."
             )
         except Exception:
             await message.reply_text("Please send a valid positive number of days (example: 3).")
@@ -456,7 +464,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             key = str(_entertainment_counter)
             _set_main_global("_entertainment_counter", _entertainment_counter + 1)
             pending_map[key] = {"type": "entertainment_log", "payload": explicit_entertainment, "raw_text": text}
-            await message.reply_text("📅 Which date did you mean?", reply_markup=_date_pick_keyboard("ent", key, date_result))
+            await message.reply_text("📅 Which date did you mean?", reply_markup=kb.date_pick_keyboard("ent", key, date_result))
             return
         try:
             prompted = await ent_log._maybe_prompt_explicit_venue(notion, message, explicit_entertainment, text)
@@ -860,19 +868,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await q.edit_message_text(fmt.mute_status_text())
             return
         if action == "unmute":
-            global mute_until
-            _set_main_global("mute_until", None)
+            STATE.mute_until = None
             _save_mute_state()
             context.user_data["awaiting_mute_days"] = False
             await q.edit_message_text("🔔 Digests resumed.")
             return
         if action in {"1", "3", "7"}:
             days = int(action)
-            _set_main_global("mute_until", datetime.now(TZ) + timedelta(days=days))
+            STATE.mute_until = datetime.now(TZ) + timedelta(days=days)
             _save_mute_state()
             context.user_data["awaiting_mute_days"] = False
             await q.edit_message_text(
-                f"🔕 Digests paused for {days} day(s), until {mute_until.strftime('%Y-%m-%d %H:%M %Z')}."
+                f"🔕 Digests paused for {days} day(s), until {STATE.mute_until.strftime('%Y-%m-%d %H:%M %Z')}."
             )
             return
 
@@ -1319,7 +1326,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         if action == "digest":
             try:
-                message, keyboard = format_digest_view()
+                message, keyboard = format_digest_view(
+                    notion_tasks=notion_tasks,
+                    notion=notion,
+                    notion_db_id=NOTION_DB_ID,
+                    local_today_fn=local_today,
+                    back_to_palette_keyboard=kb.back_to_palette_keyboard,
+                    weather_card=fmt.format_digest_weather_card(),
+                )
                 await q.edit_message_text(message, reply_markup=keyboard)
             except Exception as e:
                 log.error("Palette digest callback error: %s", e)
@@ -1328,7 +1342,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         if action == "todo":
             context.user_data["palette_done_indices"] = set()
-            message, keyboard = format_todo_view()
+            message, keyboard = format_todo_view(
+                notion_tasks=notion_tasks,
+                notion=notion,
+                notion_db_id=NOTION_DB_ID,
+                local_today_fn=local_today,
+                num_emoji=fmt.num_emoji,
+            )
             await q.edit_message_text(message, reply_markup=keyboard)
             return
 
@@ -1342,7 +1362,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             tasks = _get_today_tasks_for_palette()
             if idx < 0 or idx >= len(tasks):
                 await q.answer("That task is no longer available.", show_alert=False)
-                message, keyboard = format_todo_view(context.user_data.get("palette_done_indices", set()))
+                message, keyboard = format_todo_view(
+                    notion_tasks=notion_tasks,
+                    notion=notion,
+                    notion_db_id=NOTION_DB_ID,
+                    local_today_fn=local_today,
+                    num_emoji=fmt.num_emoji,
+                    marked_done_indices=context.user_data.get("palette_done_indices", set()),
+                )
                 await q.edit_message_text(message, reply_markup=keyboard)
                 return
 
@@ -1361,7 +1388,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     await q.edit_message_text("⚠️ Couldn't mark that task done.")
                     return
 
-            message, keyboard = format_todo_view(done_indices)
+            message, keyboard = format_todo_view(
+                notion_tasks=notion_tasks,
+                notion=notion,
+                notion_db_id=NOTION_DB_ID,
+                local_today_fn=local_today,
+                num_emoji=fmt.num_emoji,
+                marked_done_indices=done_indices,
+            )
             await q.edit_message_text(message, reply_markup=keyboard)
             return
 
