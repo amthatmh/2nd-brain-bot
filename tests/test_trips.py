@@ -13,6 +13,7 @@ os.environ.setdefault("NOTION_HABIT_DB", "test-db")
 os.environ.setdefault("NOTION_LOG_DB", "test-db")
 os.environ.setdefault("NOTION_NOTES_DB", "test-db")
 os.environ.setdefault("NOTION_DIGEST_SELECTOR_DB", "test-db")
+os.environ.setdefault("NOTION_STREAK_DB", "test-db")
 
 from second_brain import trips
 

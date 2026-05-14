@@ -3,10 +3,16 @@ from __future__ import annotations
 import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from second_brain.config import NUMBER_EMOJIS
+from second_brain.config import NUMBER_EMOJIS, TZ as _DEFAULT_TZ
+
+
+def local_today(tz: ZoneInfo | None = None) -> date:
+    """Return today's date in the app timezone (or tz if provided)."""
+    return datetime.now(tz or _DEFAULT_TZ).date()
 
 
 _BULLET_RE = re.compile(r"^[\s]*(?:[-•*]|\d+[.):])\s+", re.MULTILINE)

@@ -5,6 +5,7 @@ import asyncio
 import os
 import json
 import re
+import importlib
 import logging
 import calendar
 import subprocess
@@ -72,7 +73,55 @@ from second_brain.healthtrack.steps import (
     migrate_steps_entry_titles,
 )
 from second_brain.healthtrack.scheduler import check_and_create_steps_entry
+import second_brain.config as _config_module
+_config_module = importlib.reload(_config_module)
 from second_brain.config import (
+    TELEGRAM_TOKEN,
+    MY_CHAT_ID,
+    ALERT_CHAT_ID,
+    ALERT_THREAD_ID,
+    ANTHROPIC_KEY,
+    NOTION_TOKEN,
+    NOTION_DB_ID,
+    NOTION_HABIT_DB,
+    NOTION_LOG_DB,
+    NOTION_HEALTH_METRICS_DB,
+    NOTION_STREAK_DB,
+    NOTION_CINEMA_LOG_DB,
+    NOTION_PERFORMANCE_LOG_DB,
+    NOTION_SPORTS_LOG_DB,
+    NOTION_FAVE_DB,
+    NOTION_NOTES_DB,
+    NOTION_DIGEST_SELECTOR_DB,
+    NOTION_UTILITY_SCHEDULER_DB,
+    NOTION_DAILY_LOG_DB,
+    NOTION_PACKING_ITEMS_DB,
+    NOTION_TRIPS_DB,
+    OPENWEATHER_KEY,
+    WEATHER_LOCATION,
+    TZ,
+    CLAUDE_MODEL,
+    CLAUDE_MAX_TOK,
+    CLAUDE_PARSE_MAX_TOKENS,
+    NOTION_MOVEMENTS_DB,
+    NOTION_CYCLES_DB,
+    NOTION_WORKOUT_PROGRAM_DB,
+    NOTION_WORKOUT_DAYS_DB,
+    NOTION_WORKOUT_LOG_DB,
+    NOTION_WOD_LOG_DB,
+    NOTION_PROGRESSIONS_DB,
+    NOTION_DAILY_READINESS_DB,
+    NOTION_WATCHLIST_DB,
+    NOTION_WANTSLIST_V2_DB,
+    NOTION_PHOTO_DB,
+    NOTION_ENV_DB,
+    NOTION_BOOT_LOG_DB,
+    ASANA_SYNC_INTERVAL,
+    HTTP_PORT,
+    WEEKS_HISTORY,
+    APP_VERSION,
+    UV_THRESHOLD,
+    TMDB_BASE,
     FEATURES,
     UTILITY_SCHEDULER_RELOAD_MINUTES,
     ASANA_PAT,
@@ -96,7 +145,7 @@ from second_brain.handler_registry import register_core_handlers
 from second_brain.scheduler_manager import UtilitySchedulerManager
 from second_brain.rules.engine import RuleEngine
 from second_brain.state import STATE
-from second_brain.utils import ExpiringDict, reply_notion_error
+from second_brain.utils import ExpiringDict, local_today, reply_notion_error
 from second_brain.http_utils import cors_headers
 from second_brain.healthtrack.dashboard import create_health_dashboard_handler, load_steps_threshold_from_env_db as load_dashboard_steps_threshold
 from second_brain.services import task_parsing as task_parsing_service
@@ -311,64 +360,7 @@ def _resolve_state_dir() -> Path:
         return fallback
 
 # ── Config ───────────────────────────────────────────────────────────────────
-TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
-MY_CHAT_ID      = int(os.environ["TELEGRAM_CHAT_ID"])
-ALERT_CHAT_ID_RAW = os.getenv("ALERT_CHANNEL_ID", "").strip()
-ALERT_CHAT_ID   = int(ALERT_CHAT_ID_RAW) if ALERT_CHAT_ID_RAW else None
-ALERT_THREAD_ID = int(os.environ["TELEGRAM_ALERT_THREAD_ID"]) if os.environ.get("TELEGRAM_ALERT_THREAD_ID") else None
-ANTHROPIC_KEY   = os.environ["ANTHROPIC_API_KEY"]
-NOTION_TOKEN    = os.environ["NOTION_TOKEN"]
-NOTION_DB_ID    = os.environ["NOTION_DB_ID"]
-NOTION_HABIT_DB = os.environ["NOTION_HABIT_DB"]
-NOTION_LOG_DB   = os.environ["NOTION_LOG_DB"]
-# Required at startup so /api/v1/health-sync never discovers a missing DB at request time.
-NOTION_HEALTH_METRICS_DB = os.environ.get("NOTION_HEALTH_METRICS_DB", "").strip()
-NOTION_STREAK_DB = os.environ["NOTION_STREAK_DB"]
-NOTION_CINEMA_LOG_DB = os.environ.get("NOTION_CINEMA_LOG_DB", os.environ.get("NOTION_CINEMA_DB", "")).strip()
-NOTION_PERFORMANCE_LOG_DB = os.environ.get("NOTION_PERFORMANCE_LOG_DB", "").strip()
-NOTION_SPORTS_LOG_DB = os.environ.get("NOTION_SPORTS_LOG_DB", os.environ.get("NOTION_SPORTS_DB", "")).strip()
-NOTION_FAVE_DB = os.environ.get("NOTION_FAVE_DB", "").strip()
-NOTION_NOTES_DB = os.environ["NOTION_NOTES_DB"]    # 📒 Notes
-NOTION_DIGEST_SELECTOR_DB = os.environ["NOTION_DIGEST_SELECTOR_DB"]
-NOTION_UTILITY_SCHEDULER_DB = os.environ.get("NOTION_UTILITY_SCHEDULER_DB", "").strip()
-ASANA_SYNC_INTERVAL = int(os.environ.get("ASANA_SYNC_INTERVAL", "60"))
-NOTION_DAILY_LOG_DB = os.environ.get("NOTION_DAILY_LOG_DB", "")
-NOTION_PACKING_ITEMS_DB = os.environ.get("NOTION_PACKING_ITEMS_DB", "")
-NOTION_TRIPS_DB         = os.environ.get("NOTION_TRIPS_DB", "")
-OPENWEATHER_KEY     = os.environ.get("OPENWEATHER_KEY", "")
-
-TZ           = ZoneInfo(os.environ.get("TIMEZONE", "America/Chicago"))
 _rc_h, _rc_m = main_helpers.parse_hhmm_env("RECURRING_CHECK_TIME", "7:00", log)
-
-CLAUDE_MODEL   = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
-CLAUDE_MAX_TOK = int(os.environ.get("CLAUDE_MAX_TOKENS", "200"))
-CLAUDE_PARSE_MAX_TOKENS = int(os.environ.get("CLAUDE_PARSE_MAX_TOKENS", "4000"))
-NOTION_MOVEMENTS_DB = os.environ.get("NOTION_MOVEMENTS_DB", "ecf5ac8381ce41a98fa804a1694977bb").strip()
-NOTION_CYCLES_DB = os.environ.get("NOTION_CYCLES_DB", "")
-NOTION_WORKOUT_PROGRAM_DB = os.environ.get("NOTION_WEEKLY_PROGRAMS_DB") or os.environ.get("NOTION_WORKOUT_PROGRAM_DB", "")
-NOTION_WORKOUT_DAYS_DB = os.environ.get("NOTION_WORKOUT_DAYS_DB", "")
-NOTION_WORKOUT_LOG_DB = os.environ.get("NOTION_WORKOUT_LOG_DB", "")
-NOTION_WOD_LOG_DB = os.environ.get("NOTION_WOD_LOG_DB", "f94bd9bc79384b53b18bf3d2afaf9881").strip()
-NOTION_PROGRESSIONS_DB = os.environ.get("NOTION_PROGRESSIONS_DB", "")
-NOTION_DAILY_READINESS_DB = os.environ.get("NOTION_DAILY_READINESS_DB", "")
-HTTP_PORT      = int(os.environ.get("PORT", "8080"))
-WEEKS_HISTORY  = int(os.environ.get("WEEKS_HISTORY", "52"))
-APP_VERSION    = os.environ.get("APP_VERSION", "v13.3.0")
-OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "").strip()
-WEATHER_LOCATION = os.environ.get("WEATHER_LOCATION", "Chicago,IL").strip()
-NOTION_ENV_DB = os.environ.get("ENV_DB_ID", "").strip()
-NOTION_BOOT_LOG_DB = os.environ.get("NOTION_BOOT_LOG_DB", "").strip()
-UV_THRESHOLD = float(os.environ.get("UV_THRESHOLD", "3"))
-
-NOTION_WATCHLIST_DB    = os.environ.get("NOTION_WATCHLIST_DB", "")
-NOTION_WANTSLIST_V2_DB = os.environ.get("NOTION_WANTSLIST_V2_DB", "")
-NOTION_PHOTO_DB        = os.environ.get("NOTION_PHOTO_DB", "")
-TMDB_BASE              = "https://api.themoviedb.org/3"
-
-
-def local_today() -> date:
-    """Return today's date in the configured app timezone."""
-    return datetime.now(TZ).date()
 
 
 def get_current_monday() -> date:
@@ -2585,14 +2577,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # tmdb_pick/skip/cancel  — watchlist TMDB picker
     # confirm_batch/cancel_batch:{message_id} — explicit multi-task confirmation
     # save_task/cancel_task:{message_id} — low-confidence task preview
-    print(f"[DEBUG] Callback received: {q.data}")
+    log.debug("Callback received: %s", q.data)
     parts = q.data.split(":")
     if len(parts) == 1 and q.data.startswith("cf_"):
         parts = ["cf", q.data.removeprefix("cf_")]
-        print(f"[DEBUG] Normalized CrossFit callback to: {':'.join(parts)}")
+        log.debug("Normalized CrossFit callback to: %s", ":".join(parts))
     if parts[:2] == ["cf", "A"]:
         parts = ["cf", "log_readiness", *parts[2:]]
-        print(f"[DEBUG] Normalized CrossFit readiness callback to: {':'.join(parts)}")
+        log.debug("Normalized CrossFit readiness callback to: %s", ":".join(parts))
     if parts[0] == "hl":
         parts[0] = "hc"
     if parts[0] == "confirm_batch" and len(parts) == 2:

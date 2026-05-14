@@ -160,7 +160,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
 
 
     def test_parse_explicit_cinema_strips_temporal_tokens_and_prefers_explicit_spelled_date(self):
-        with patch("second_brain.entertainment.log._local_today", return_value=date(2026, 5, 9)):
+        with patch("second_brain.entertainment.log.local_today", return_value=date(2026, 5, 9)):
             parsed = self.main.parse_explicit_entertainment_log(
                 "/log cinema Devil Wears Prada 2 yesterday May 8th 4pm at AMC Newcity"
             )
@@ -171,7 +171,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["venue"], "AMC Newcity")
 
     def test_parse_explicit_performance_preserves_literal_venue_and_strips_datetime_tokens(self):
-        with patch("second_brain.entertainment.log._local_today", return_value=date(2026, 5, 9)):
+        with patch("second_brain.entertainment.log.local_today", return_value=date(2026, 5, 9)):
             parsed = self.main.parse_explicit_entertainment_log(
                 "/log performance Naomi Watanabe May 8th at The Vic Theatre at 7:30pm"
             )
@@ -182,7 +182,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["venue"], "The Vic Theatre")
 
     def test_parse_explicit_log_without_date_uses_same_day_local_default(self):
-        with patch("second_brain.entertainment.log._local_today", return_value=date(2026, 5, 9)):
+        with patch("second_brain.entertainment.log.local_today", return_value=date(2026, 5, 9)):
             parsed = self.main.parse_explicit_entertainment_log("/log cinema Sinners at AMC Newcity")
 
         self.assertIsNotNone(parsed)
@@ -192,7 +192,7 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
 
 
     def test_parse_explicit_log_keeps_year_like_title_numbers_without_time_marker(self):
-        with patch("second_brain.entertainment.log._local_today", return_value=date(2026, 5, 9)):
+        with patch("second_brain.entertainment.log.local_today", return_value=date(2026, 5, 9)):
             parsed = self.main.parse_explicit_entertainment_log("/log cinema 2001 at AMC Newcity")
 
         self.assertIsNotNone(parsed)
