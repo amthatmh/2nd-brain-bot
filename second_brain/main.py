@@ -10,6 +10,7 @@ import calendar
 import subprocess
 import time
 import urllib.parse
+import uuid
 from datetime import date, datetime, timedelta, timezone
 from collections import defaultdict
 from pathlib import Path
@@ -93,6 +94,7 @@ from second_brain import watchlist as wl
 from second_brain import trips as trips_mod
 from second_brain.handler_registry import register_core_handlers
 from second_brain.scheduler_manager import UtilitySchedulerManager
+from second_brain.rules.engine import RuleEngine
 from second_brain.state import STATE
 from second_brain.utils import ExpiringDict, reply_notion_error
 from second_brain.http_utils import cors_headers
@@ -177,9 +179,42 @@ def create_entertainment_log_entry(notion, payload: dict) -> tuple[str, bool]:
     return _ent_log_create_entertainment_log_entry(notion, payload)
 
 
+def _entertainment_rule_entry_data(payload: dict) -> dict:
+    """Build normalized rule-engine entry data from an entertainment payload."""
+    return {
+        "Title": payload.get("title"),
+        "DateWatched": payload.get("date") or local_today().isoformat(),
+        "Favourite": bool(payload.get("favourite")),
+    }
+
+
+async def _execute_entertainment_rules(payload: dict) -> bool:
+    """Run post-save entertainment rules and return whether a favourite action succeeded."""
+    if not rule_engine or payload.get("log_type") != "cinema":
+        return False
+    results = await rule_engine.execute_on_save(
+        source_db="cinema_log",
+        entry_data=_entertainment_rule_entry_data(payload),
+        db_ids={
+            "cinema_log": NOTION_CINEMA_LOG_DB,
+            "favourite_films": NOTION_FAVE_DB,
+        },
+    )
+    fav_rule_success = False
+    for result in results:
+        if result.get("success"):
+            log.info("✅ Rule %s: %s", result.get("rule_id"), result.get("message"))
+            if result.get("rule_id") == "cinema_to_favourite":
+                fav_rule_success = True
+        else:
+            log.warning("⚠️ Rule %s: %s", result.get("rule_id"), result.get("message"))
+    return fav_rule_success
+
+
 async def handle_entertainment_log(notion, message, payload: dict) -> None:
     _sync_ent_log_runtime()
     entry_id, fav_saved = create_entertainment_log_entry(notion, payload)
+    rule_fav_saved = await _execute_entertainment_rules(payload)
     title = payload.get("title", "Untitled")
     log_type = payload.get("log_type", "cinema")
     venue = payload.get("venue")
@@ -196,7 +231,7 @@ async def handle_entertainment_log(notion, message, payload: dict) -> None:
         summary_lines.append(f"📍 {venue}")
     if notes:
         summary_lines.append(f"📝 {notes}")
-    if fav_saved and log_type == "cinema":
+    if (fav_saved or rule_fav_saved) and log_type == "cinema":
         summary_lines.append("🎞️ Added to Favourite Films")
     summary_lines.append("")
     summary_lines.append("_Saved to Notion_")
@@ -462,7 +497,7 @@ digest_map: dict[int, list[dict]] = {}
 last_digest_msg_id: int | None = None
 pending_map: dict[str, dict] = ExpiringDict(ttl_seconds=3600)
 capture_map: dict[int, dict] = {}
-pending_batches: dict[int, dict] = ExpiringDict(ttl_seconds=300)
+pending_batches: dict[str, dict] = {}
 preview_map: dict[int, dict] = ExpiringDict(ttl_seconds=900)
 done_picker_map: dict[str, list[dict]] = ExpiringDict(ttl_seconds=3600)
 todo_picker_map: dict[str, list[dict]] = {}
@@ -517,8 +552,7 @@ def cleanup_old_habit_selections() -> None:
     _habit_selections.clear()
 
 def cleanup_pending_task_interactions() -> None:
-    """Trigger TTL purges for pending task batch and preview interactions."""
-    pending_batches.get("__ttl_purge__")
+    """Trigger TTL purges for preview interactions."""
     preview_map.get("__ttl_purge__")
 
 def _refresh_habit_cache_refs() -> None:
@@ -547,6 +581,7 @@ _signoff_notes_today: dict[str, str] = {
 _claude_activity_today: list[str] = []
 _last_daily_log_url: str = ""
 _app_bot = None  # set during post_init for health route bot access
+rule_engine: RuleEngine | None = None
 _steps_title_migration_ran = False
 STATE_DIR = _resolve_state_dir()
 mute_state_file = STATE_DIR / "mute_state.json"
@@ -1292,58 +1327,192 @@ async def complete_task_by_page_id(message, page_id: str, name: str) -> None:
     await message.reply_text(f"✅ Done: {name}{suffix}")
 
 
-async def detect_and_confirm_multi_tasks(message, raw_text: str) -> list[str] | None:
-    """Ask for confirmation before creating an explicit multi-task batch."""
-    task_texts = split_tasks(raw_text)
-    if len(task_texts) <= 1:
-        return None
+async def _classify_task_texts(task_texts: list[str]) -> list[dict]:
+    """Classify multiple task texts concurrently."""
+    loop = asyncio.get_running_loop()
+    return await asyncio.gather(*[
+        loop.run_in_executor(
+            None,
+            ai_classify.classify_message,
+            claude,
+            CLAUDE_MODEL,
+            task_text,
+            list(habit_cache.keys()),
+            bool(NOTION_WATCHLIST_DB),
+            bool(NOTION_WANTSLIST_V2_DB),
+            bool(NOTION_PHOTO_DB),
+            bool(NOTION_NOTES_DB),
+            local_today(),
+        )
+        for task_text in task_texts
+    ])
 
-    task_list = "\n".join(
-        f"{i + 1}. {t[:60]}{'...' if len(t) > 60 else ''}"
-        for i, t in enumerate(task_texts)
-    )
-    confirmation_msg = await message.reply_text(
-        f"🔍 I found {len(task_texts)} tasks. Confirm each?\n\n{task_list}",
+
+async def _create_task_from_classification(
+    raw_text: str,
+    classification: dict,
+    context_override: str | None,
+    deadline_override: int | None,
+    force_create: bool,
+) -> dict:
+    """Create one Notion task from a precomputed classification."""
+    try:
+        task_name = classification.get("task_name") or raw_text
+        deadline_days = classification.get("deadline_days")
+        ctx = context_override or classification.get("context", "🏠 Personal")
+        recurring = classification.get("recurring", "None") or "None"
+        repeat_day = classification.get("repeat_day")
+        target_date = next_repeat_day_date(recurring, repeat_day)
+        if target_date is not None:
+            computed_days = (target_date - local_today()).days
+            if deadline_days is None or (deadline_days <= 0 and computed_days > 0):
+                deadline_days = computed_days
+        if deadline_override is not None:
+            deadline_days = deadline_override
+        explicit_deadline = infer_deadline_override(raw_text)
+        if explicit_deadline is not None:
+            deadline_days = explicit_deadline
+        horizon_label = deadline_days_to_label(deadline_days)
+
+        if not force_create:
+            dup = notion_tasks.find_duplicate_active_task(notion, NOTION_DB_ID, task_name)
+            if dup:
+                return {"status": "duplicate", "name": task_name, "duplicate": dup}
+
+        page_id = notion_tasks.create_task(
+            notion,
+            NOTION_DB_ID,
+            task_name,
+            deadline_days,
+            ctx,
+            recurring=recurring,
+            repeat_day=repeat_day,
+        )
+        capture_map[page_id] = {"page_id": page_id, "name": task_name}
+        return {
+            "status": "captured",
+            "name": task_name,
+            "horizon_label": horizon_label,
+            "context": ctx,
+            "recurring": recurring,
+            "page_id": page_id,
+        }
+    except Exception as e:
+        log.error("Task creation error for '%s': %s", raw_text, e)
+        return {"status": "error", "name": raw_text, "error": str(e)}
+
+
+async def _confirm_multi_task_batch(
+    message,
+    thinking_msg,
+    task_texts: list[str],
+    classifications: list[dict],
+    context_override: str | None,
+    deadline_override: int | None,
+    force_create: bool,
+) -> None:
+    """Show a confirmation UI for a mixed-confidence task batch."""
+    confirmation_lines = []
+    for i, (text, classification) in enumerate(zip(task_texts, classifications), start=1):
+        confidence = classification.get("confidence", "low")
+        icon = "✅" if confidence == "high" else "⚠️"
+        task_name = classification.get("task_name") or text[:40]
+        confirmation_lines.append(f"{icon} {i}. {task_name}")
+
+    batch_id = str(uuid.uuid4())[:8]
+    pending_batches[batch_id] = {
+        "task_texts": task_texts,
+        "classifications": classifications,
+        "context_override": context_override,
+        "deadline_override": deadline_override,
+        "force_create": force_create,
+        "message_id": message.message_id,
+        "chat_id": message.chat_id,
+        "confirmation_msg_id": thinking_msg.message_id,
+        "timeout": asyncio.get_running_loop().time() + 300,
+        "created_at": time.time(),
+    }
+
+    await thinking_msg.edit_text(
+        "I found mixed-confidence tasks. Confirm?\n\n" + "\n".join(confirmation_lines),
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Confirm All", callback_data=f"confirm_batch:{message.message_id}"),
-            InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_batch:{message.message_id}"),
+            InlineKeyboardButton("✅ Confirm All", callback_data=f"confirm_batch:{batch_id}"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_batch:{batch_id}"),
         ]]),
     )
-    pending_batches[message.message_id] = {
-        "raw_text": raw_text,
-        "task_texts": task_texts,
-        "confirmation_msg_id": confirmation_msg.message_id,
-    }
-    return None
 
 
 async def create_task_batch(message, raw_text: str, task_texts: list[str], force_create: bool = False) -> None:
+    """Classify and create a task batch without a separate confirmation prompt."""
     thinking = await message.reply_text(f"🧠 Classifying {len(task_texts)} tasks...")
-    overrides = infer_batch_overrides(raw_text)
-    context_override = overrides.get("context")
-    deadline_override = overrides.get("deadline_days")
-    loop = asyncio.get_running_loop()
-    results = await asyncio.gather(*[
-        loop.run_in_executor(None, _run_capture, t, force_create, context_override, deadline_override)
-        for t in task_texts
-    ])
+    try:
+        overrides = infer_batch_overrides(raw_text)
+        classifications = await _classify_task_texts(task_texts)
+        results = await asyncio.gather(*[
+            _create_task_from_classification(
+                task_text,
+                classifications[i],
+                overrides.get("context"),
+                overrides.get("deadline_days"),
+                force_create,
+            )
+            for i, task_text in enumerate(task_texts)
+        ])
+    except Exception as e:
+        log.error("Batch task creation error: %s", e)
+        await thinking.edit_text("⚠️ Couldn't classify. Try rephrasing?")
+        return
     await thinking.edit_text(fmt.format_batch_summary(list(results)), parse_mode="Markdown")
 
 
 async def create_or_prompt_task(message, raw_text: str, force_create: bool = False) -> None:
-    if not force_create and looks_like_task_batch(raw_text):
-        await detect_and_confirm_multi_tasks(message, raw_text)
-        return
+    """
+    Handle task capture with smart confirmation.
 
+    Single tasks keep the existing preview behavior. Explicit multi-task batches
+    are classified up front: all high-confidence batches are created immediately,
+    while mixed-confidence batches ask for confirmation before writing.
+    """
     task_texts = split_tasks(raw_text)
-    is_multi   = len(task_texts) > 1
-    thinking   = await message.reply_text(
+    is_multi = len(task_texts) > 1
+    thinking = await message.reply_text(
         f"🧠 Classifying {len(task_texts)} tasks..." if is_multi else "🧠 Classifying..."
     )
 
     if is_multi:
-        await thinking.delete()
-        await create_task_batch(message, raw_text, task_texts, force_create=force_create)
+        try:
+            overrides = infer_batch_overrides(raw_text)
+            context_override = overrides.get("context")
+            deadline_override = overrides.get("deadline_days")
+            classifications = await _classify_task_texts(task_texts)
+        except Exception as e:
+            log.error("Claude classification error: %s", e)
+            await thinking.edit_text("⚠️ Couldn't classify. Try rephrasing?")
+            return
+
+        confidences = [classification.get("confidence", "low") for classification in classifications]
+        if all(confidence == "high" for confidence in confidences):
+            results = await asyncio.gather(*[
+                _create_task_from_classification(
+                    task_text,
+                    classifications[i],
+                    context_override,
+                    deadline_override,
+                    force_create,
+                )
+                for i, task_text in enumerate(task_texts)
+            ])
+            await thinking.edit_text(fmt.format_batch_summary(list(results)), parse_mode="Markdown")
+        else:
+            await _confirm_multi_task_batch(
+                message,
+                thinking,
+                task_texts,
+                classifications,
+                context_override,
+                deadline_override,
+                force_create,
+            )
         return
 
     try:
@@ -1778,7 +1947,7 @@ async def route_classified_message_v10(message, text: str) -> None:
         if confidence == "high" and title:
             try:
                 await thinking.delete()
-                await ent_log.handle_entertainment_log(notion, message, result)
+                await handle_entertainment_log(notion, message, result)
             except Exception as e:
                 log.error("Entertainment save error: %s", e)
                 await message.reply_text("⚠️ I understood that as entertainment, but couldn't save to Notion.")
@@ -2254,7 +2423,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             prompted = await ent_log._maybe_prompt_explicit_venue(notion, message, explicit_entertainment, text)
             if prompted:
                 return
-            await ent_log.handle_entertainment_log(notion, message, explicit_entertainment)
+            await handle_entertainment_log(notion, message, explicit_entertainment)
         except Exception as e:
             log.error("Explicit entertainment text save error: %s", e)
             await message.reply_text(_entertainment_save_error_text(e, explicit_entertainment))
@@ -2426,23 +2595,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         print(f"[DEBUG] Normalized CrossFit readiness callback to: {':'.join(parts)}")
     if parts[0] == "hl":
         parts[0] = "hc"
-    if parts[0] in {"confirm_batch", "cancel_batch"} and len(parts) == 2:
-        try:
-            original_message_id = int(parts[1])
-        except ValueError:
-            await q.edit_message_text("⚠️ This task batch prompt is invalid — please send it again.")
-            return
-        entry = pending_batches.pop(original_message_id, None)
-        if not entry:
-            await q.edit_message_text("⚠️ This task batch prompt expired — please send it again.")
-            return
-        if parts[0] == "cancel_batch":
-            await q.edit_message_text("❌ Task batch canceled.")
-            return
-        task_texts = entry.get("task_texts") or []
-        raw_text = entry.get("raw_text") or "\n".join(task_texts)
-        await q.edit_message_text(f"✅ Confirmed {len(task_texts)} tasks. Saving...")
-        await create_task_batch(q.message, raw_text, task_texts)
+    if parts[0] == "confirm_batch" and len(parts) == 2:
+        await on_confirm_batch(update, context)
+        return
+    if parts[0] == "cancel_batch" and len(parts) == 2:
+        await on_cancel_batch(update, context)
         return
     if parts[0] in {"save_task", "cancel_task"} and len(parts) == 2:
         try:
@@ -2500,7 +2657,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         payload.pop("raw_date_a", None)
         payload.pop("raw_date_b", None)
         try:
-            await ent_log.handle_entertainment_log(notion, q.message, payload)
+            await handle_entertainment_log(notion, q.message, payload)
             await q.edit_message_text(f"✅ Date: {payload.get('date')}")
         except Exception as e:
             log.error("Entertainment date-pick save error: %s", e)
@@ -2997,9 +3154,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             payload["title"] = raw_text
         payload.setdefault("date", local_today().isoformat())
         try:
-            entry_id, fav_saved = ent_log.create_entertainment_log_entry(notion, payload)
+            entry_id, fav_saved = create_entertainment_log_entry(notion, payload)
+            rule_fav_saved = await _execute_entertainment_rules(payload)
             label = ENTERTAINMENT_LOG_LABELS.get(payload.get("log_type"), "Entertainment")
-            suffix = "\n🎞️ Added to Favourite Films" if fav_saved and payload.get("log_type") == "cinema" else ""
+            suffix = "\n🎞️ Added to Favourite Films" if (fav_saved or rule_fav_saved) and payload.get("log_type") == "cinema" else ""
             await q.edit_message_text(
                 f"✅ Logged to {label}\n\n🎫 {payload.get('title','Untitled')}\n📅 {payload.get('date')}{suffix}\n\n_Saved to Notion_",
                 parse_mode="Markdown",
@@ -4732,7 +4890,7 @@ def _scheduler_event_listener(event) -> None:
         alert_scheduler_event(getattr(event, "job_id", "unknown"), "missed")
 
 async def post_init(app: Application) -> None:
-    global _scheduler, _steps_title_migration_ran, UV_THRESHOLD, WEEKS_HISTORY, TZ
+    global _scheduler, _steps_title_migration_ran, UV_THRESHOLD, WEEKS_HISTORY, TZ, rule_engine
     try:
         startup_notion_health_check()
     except RuntimeError as e:
@@ -4745,6 +4903,12 @@ async def post_init(app: Application) -> None:
         ent_log.load_entertainment_schemas(notion)
     except Exception as e:
         log.warning("Entertainment schema load failed at startup: %s", e)
+
+    rule_engine = RuleEngine(notion)
+    if not rule_engine.startup():
+        log.error("Rule engine startup failed. Bot may not execute cross-DB rules.")
+    else:
+        log.info("Rule engine initialized successfully")
 
     try:
         global MOVEMENT_CACHE
@@ -4808,6 +4972,15 @@ async def post_init(app: Application) -> None:
         id="cleanup_pending_task_interactions",
         replace_existing=True,
     )
+    scheduler.add_job(
+        cleanup_expired_batches,
+        "interval",
+        seconds=60,
+        id="cleanup_batch_confirmations",
+        replace_existing=True,
+        max_instances=1,
+    )
+    log.info("Batch cleanup scheduler started (every 60 seconds)")
     try:
         await backfill_steps_state_from_notion(
             notion=notion,
@@ -5171,11 +5344,86 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         prompted = await ent_log._maybe_prompt_explicit_venue(notion, update.message, parsed, f"/log {raw}")
         if prompted:
             return
-        await ent_log.handle_entertainment_log(notion, update.message, parsed)
+        await handle_entertainment_log(notion, update.message, parsed)
     except Exception as e:
         log.error("Explicit /log save error: %s", e)
         await update.message.reply_text(_entertainment_save_error_text(e, parsed))
 
+
+
+async def on_confirm_batch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Create a pending mixed-confidence task batch after user confirmation."""
+    del context
+    q = update.callback_query
+    if not q:
+        return
+    batch_id = (q.data or "").split(":", 1)[1] if ":" in (q.data or "") else None
+    if not batch_id or batch_id not in pending_batches:
+        await q.edit_message_text("❌ Confirmation expired. Resend your tasks.")
+        return
+
+    batch = pending_batches[batch_id]
+    task_texts = batch.get("task_texts", [])
+    classifications = batch.get("classifications", [])
+    await q.edit_message_text(f"⏳ Creating {len(task_texts)} tasks...")
+
+    try:
+        results = await asyncio.gather(*[
+            _create_task_from_classification(
+                task_texts[i],
+                classifications[i],
+                batch.get("context_override"),
+                batch.get("deadline_override"),
+                bool(batch.get("force_create")),
+            )
+            for i in range(len(task_texts))
+        ])
+        await q.edit_message_text(fmt.format_batch_summary(list(results)), parse_mode="Markdown")
+        log.info("Batch confirmed: %s, %d tasks processed", batch_id, len(task_texts))
+    except Exception as e:
+        log.error("Batch creation error: %s", e)
+        await q.edit_message_text(f"⚠️ Error creating tasks: {str(e)}")
+    finally:
+        pending_batches.pop(batch_id, None)
+
+
+async def on_cancel_batch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Cancel a pending mixed-confidence task batch."""
+    del context
+    q = update.callback_query
+    if not q:
+        return
+    batch_id = (q.data or "").split(":", 1)[1] if ":" in (q.data or "") else None
+    if batch_id:
+        pending_batches.pop(batch_id, None)
+        log.info("Batch cancelled: %s", batch_id)
+    await q.edit_message_text("❌ Cancelled. Resend your tasks if you'd like to try again.")
+
+
+async def cleanup_expired_batches() -> None:
+    """Remove stale pending batch confirmations and notify Telegram when possible."""
+    now = asyncio.get_running_loop().time()
+    expired_ids = [
+        batch_id
+        for batch_id, data in pending_batches.items()
+        if data.get("timeout", 0) < now
+    ]
+
+    for batch_id in expired_ids:
+        batch = pending_batches.get(batch_id, {})
+        try:
+            bot = _app_bot
+            if bot:
+                await bot.edit_message_text(
+                    chat_id=batch.get("chat_id"),
+                    message_id=batch.get("confirmation_msg_id"),
+                    text="⏰ Confirmation timeout (5 min). Resend your tasks.",
+                )
+            log.info("Batch timeout: %s", batch_id)
+        except Exception as e:
+            log.warning("Failed to notify timeout for batch %s: %s", batch_id, e)
+        finally:
+            pending_batches.pop(batch_id, None)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
