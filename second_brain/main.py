@@ -462,6 +462,8 @@ digest_map: dict[int, list[dict]] = {}
 last_digest_msg_id: int | None = None
 pending_map: dict[str, dict] = ExpiringDict(ttl_seconds=3600)
 capture_map: dict[int, dict] = {}
+pending_batches: dict[int, dict] = ExpiringDict(ttl_seconds=300)
+preview_map: dict[int, dict] = ExpiringDict(ttl_seconds=900)
 done_picker_map: dict[str, list[dict]] = ExpiringDict(ttl_seconds=3600)
 todo_picker_map: dict[str, list[dict]] = {}
 pending_message_map: dict[str, str] = {}
@@ -513,6 +515,11 @@ def _habit_selection_habits(message_id: int) -> list[dict]:
 def cleanup_old_habit_selections() -> None:
     """Clear in-memory habit button selections to prevent stale message state."""
     _habit_selections.clear()
+
+def cleanup_pending_task_interactions() -> None:
+    """Trigger TTL purges for pending task batch and preview interactions."""
+    pending_batches.get("__ttl_purge__")
+    preview_map.get("__ttl_purge__")
 
 def _refresh_habit_cache_refs() -> None:
     global habit_cache
@@ -1285,7 +1292,49 @@ async def complete_task_by_page_id(message, page_id: str, name: str) -> None:
     await message.reply_text(f"✅ Done: {name}{suffix}")
 
 
+async def detect_and_confirm_multi_tasks(message, raw_text: str) -> list[str] | None:
+    """Ask for confirmation before creating an explicit multi-task batch."""
+    task_texts = split_tasks(raw_text)
+    if len(task_texts) <= 1:
+        return None
+
+    task_list = "\n".join(
+        f"{i + 1}. {t[:60]}{'...' if len(t) > 60 else ''}"
+        for i, t in enumerate(task_texts)
+    )
+    confirmation_msg = await message.reply_text(
+        f"🔍 I found {len(task_texts)} tasks. Confirm each?\n\n{task_list}",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Confirm All", callback_data=f"confirm_batch:{message.message_id}"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_batch:{message.message_id}"),
+        ]]),
+    )
+    pending_batches[message.message_id] = {
+        "raw_text": raw_text,
+        "task_texts": task_texts,
+        "confirmation_msg_id": confirmation_msg.message_id,
+    }
+    return None
+
+
+async def create_task_batch(message, raw_text: str, task_texts: list[str], force_create: bool = False) -> None:
+    thinking = await message.reply_text(f"🧠 Classifying {len(task_texts)} tasks...")
+    overrides = infer_batch_overrides(raw_text)
+    context_override = overrides.get("context")
+    deadline_override = overrides.get("deadline_days")
+    loop = asyncio.get_running_loop()
+    results = await asyncio.gather(*[
+        loop.run_in_executor(None, _run_capture, t, force_create, context_override, deadline_override)
+        for t in task_texts
+    ])
+    await thinking.edit_text(fmt.format_batch_summary(list(results)), parse_mode="Markdown")
+
+
 async def create_or_prompt_task(message, raw_text: str, force_create: bool = False) -> None:
+    if not force_create and looks_like_task_batch(raw_text):
+        await detect_and_confirm_multi_tasks(message, raw_text)
+        return
+
     task_texts = split_tasks(raw_text)
     is_multi   = len(task_texts) > 1
     thinking   = await message.reply_text(
@@ -1293,15 +1342,8 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
     )
 
     if is_multi:
-        overrides = infer_batch_overrides(raw_text)
-        context_override = overrides.get("context")
-        deadline_override = overrides.get("deadline_days")
-        loop    = asyncio.get_running_loop()
-        results = await asyncio.gather(*[
-            loop.run_in_executor(None, _run_capture, t, force_create, context_override, deadline_override)
-            for t in task_texts
-        ])
-        await thinking.edit_text(fmt.format_batch_summary(list(results)), parse_mode="Markdown")
+        await thinking.delete()
+        await create_task_batch(message, raw_text, task_texts, force_create=force_create)
         return
 
     try:
@@ -1345,22 +1387,34 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
 
     recur_tag = f"\n🔁 {recurring}" if recurring != "None" else ""
 
+    if confidence != "high":
+        preview_map[thinking.message_id] = {
+            "task_name": task_name,
+            "deadline_days": deadline_days,
+            "context": ctx,
+            "recurring": recurring,
+            "repeat_day": repeat_day,
+        }
+        await thinking.edit_text(
+            "📋 *Preview* (confirm to save)\n\n"
+            f"*Task:* {task_name}\n"
+            f"*Deadline:* {horizon_label}\n"
+            f"*Context:* {ctx}\n"
+            f"*Recurring:* {recurring}",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("💾 Save", callback_data=f"save_task:{thinking.message_id}"),
+                InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_task:{thinking.message_id}"),
+            ]]),
+        )
+        return
+
     try:
         page_id = notion_tasks.create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
-        if confidence == "high":
-            await thinking.edit_text(
-                f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}{recur_tag}\n\n_Saved to Notion_",
-                parse_mode="Markdown",
-            )
-        else:
-            await thinking.edit_text(
-                "📝 Task captured with default deadline, but I'm not 100% sure.\n\n"
-                "You can:\n"
-                "• Adjust the deadline in Notion\n"
-                "• Rephrase and resend for better classification\n"
-                "• Use `force: task name` to override",
-                parse_mode="Markdown",
-            )
+        await thinking.edit_text(
+            f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}{recur_tag}\n\n_Saved to Notion_",
+            parse_mode="Markdown",
+        )
         capture_map[thinking.message_id] = {"page_id": page_id, "name": task_name}
     except Exception as e:
         log.error(f"Notion error: {e}")
@@ -2360,6 +2414,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # tcancel:{key}          — trip flow cancel
     # wl_save/wl_cancel      — wantslist confirm
     # tmdb_pick/skip/cancel  — watchlist TMDB picker
+    # confirm_batch/cancel_batch:{message_id} — explicit multi-task confirmation
+    # save_task/cancel_task:{message_id} — low-confidence task preview
     print(f"[DEBUG] Callback received: {q.data}")
     parts = q.data.split(":")
     if len(parts) == 1 and q.data.startswith("cf_"):
@@ -2370,6 +2426,64 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         print(f"[DEBUG] Normalized CrossFit readiness callback to: {':'.join(parts)}")
     if parts[0] == "hl":
         parts[0] = "hc"
+    if parts[0] in {"confirm_batch", "cancel_batch"} and len(parts) == 2:
+        try:
+            original_message_id = int(parts[1])
+        except ValueError:
+            await q.edit_message_text("⚠️ This task batch prompt is invalid — please send it again.")
+            return
+        entry = pending_batches.pop(original_message_id, None)
+        if not entry:
+            await q.edit_message_text("⚠️ This task batch prompt expired — please send it again.")
+            return
+        if parts[0] == "cancel_batch":
+            await q.edit_message_text("❌ Task batch canceled.")
+            return
+        task_texts = entry.get("task_texts") or []
+        raw_text = entry.get("raw_text") or "\n".join(task_texts)
+        await q.edit_message_text(f"✅ Confirmed {len(task_texts)} tasks. Saving...")
+        await create_task_batch(q.message, raw_text, task_texts)
+        return
+    if parts[0] in {"save_task", "cancel_task"} and len(parts) == 2:
+        try:
+            preview_message_id = int(parts[1])
+        except ValueError:
+            await q.edit_message_text("⚠️ This task preview is invalid — please send it again.")
+            return
+        entry = preview_map.pop(preview_message_id, None)
+        if not entry:
+            await q.edit_message_text("⚠️ This task preview expired — please send it again.")
+            return
+        if parts[0] == "cancel_task":
+            await q.edit_message_text("❌ Task canceled.")
+            return
+        task_name = entry.get("task_name") or "Untitled task"
+        deadline_days = entry.get("deadline_days")
+        ctx = entry.get("context", "🏠 Personal")
+        recurring = entry.get("recurring", "None") or "None"
+        repeat_day = entry.get("repeat_day")
+        try:
+            page_id = notion_tasks.create_task(
+                notion,
+                NOTION_DB_ID,
+                task_name,
+                deadline_days,
+                ctx,
+                recurring=recurring,
+                repeat_day=repeat_day,
+            )
+        except Exception as e:
+            log.error("Notion error for preview task '%s': %s", task_name, e)
+            await q.edit_message_text("⚠️ Preview confirmed but couldn't write to Notion.")
+            return
+        horizon_label = deadline_days_to_label(deadline_days)
+        recur_tag = f"\n🔁 {recurring}" if recurring != "None" else ""
+        await q.edit_message_text(
+            f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}{recur_tag}\n\n_Saved to Notion_",
+            parse_mode="Markdown",
+        )
+        capture_map[q.message.message_id] = {"page_id": page_id, "name": task_name}
+        return
     if await handle_v10_callback(q, parts):
         return
     if parts[0] == "date_pick" and len(parts) == 4:
@@ -4687,6 +4801,13 @@ async def post_init(app: Application) -> None:
     scheduler = AsyncIOScheduler(timezone=TZ)
     scheduler.add_listener(_scheduler_event_listener, EVENT_JOB_ERROR | EVENT_JOB_MISSED)
     _scheduler = scheduler
+    scheduler.add_job(
+        cleanup_pending_task_interactions,
+        "interval",
+        minutes=5,
+        id="cleanup_pending_task_interactions",
+        replace_existing=True,
+    )
     try:
         await backfill_steps_state_from_notion(
             notion=notion,
