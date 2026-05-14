@@ -191,6 +191,17 @@ def back_to_palette_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📖 Back to Palette", callback_data="qp:back")],
     ])
 
+
+def date_pick_keyboard(scope: str, key: str, result) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(result.label_a or result.option_a or "Option A", callback_data=f"date_pick:{scope}:a:{key}"),
+        InlineKeyboardButton(result.label_b or result.option_b or "Option B", callback_data=f"date_pick:{scope}:b:{key}"),
+    ]])
+
+
+def feel_prompt_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("💬 How are you feeling?", callback_data="cf:A")]])
+
 def quick_actions_keyboard(btn_refresh: str, btn_all_open: str, btn_habits: str, btn_crossfit: str, btn_notes: str, btn_weather: str) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [[btn_refresh, btn_all_open, btn_habits], [btn_crossfit, btn_notes, btn_weather]],

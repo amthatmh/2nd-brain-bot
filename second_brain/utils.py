@@ -53,6 +53,21 @@ class ExpiringDict(dict):
         return super().get(key, default)
 
 
+
+def parse_time_to_minutes(time_str: str | None) -> int:
+    """Parse HH:MM to minutes since midnight; return -1 on invalid."""
+    if not time_str:
+        return -1
+    try:
+        hour_str, minute_str = str(time_str).strip().split(":")
+        hour = int(hour_str)
+        minute = int(minute_str)
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            return -1
+        return hour * 60 + minute
+    except Exception:
+        return -1
+
 def num_emoji(n: int) -> str:
     return NUMBER_EMOJIS[n - 1] if 1 <= n <= 10 else f"{n}."
 
