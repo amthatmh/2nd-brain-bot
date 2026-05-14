@@ -40,5 +40,5 @@ def test_next_weekday_is_calculated_from_local_today():
     main = load_main_module()
 
     # Monday from a Sunday should be next day.
-    with patch.object(main, "local_today", return_value=date(2026, 4, 26)):
+    with patch("second_brain.utils.local_today", return_value=date(2026, 4, 26)):
         assert main.next_weekday(0) == date(2026, 4, 27)
