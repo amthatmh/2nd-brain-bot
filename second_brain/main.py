@@ -132,15 +132,53 @@ from second_brain.config import (
 from second_brain.notion import notion_call
 from second_brain.notion.properties import query_all
 from second_brain.notion import habits as notion_habits
+from second_brain.notion.habits import (
+    log_habit as _habit_log_habit,
+    already_logged_today as _habit_already_logged,
+    get_week_completion_count as _habit_week_count,
+    get_habit_frequency as _habit_frequency,
+    habit_capped_this_week as _habit_capped,
+    _count_habit_completions_this_week as _habit_count_this_week,
+    logs_this_week as _habit_logs_this_week,
+    is_on_pace as _habit_is_on_pace,
+)
 from second_brain.notion import tasks as notion_tasks
 from second_brain import keyboards as kb
 from second_brain import formatters as fmt
 from second_brain import main_helpers as main_helpers
 from second_brain import digest as digest_helpers
+from second_brain.digest import (
+    get_digest_config,
+    _filter_digest_tasks,
+    send_digest_for_slot,
+    _queue_missed_slots_for_today,
+    build_digest_schedule,
+    rebuild_digest_schedule_job,
+    refresh_digest_schedule_job,
+    generate_daily_log,
+    send_daily_digest,
+)
 from second_brain import palette as palette_helpers
 from second_brain import weather as wx
 from second_brain import watchlist as wl
 from second_brain import trips as trips_mod
+from second_brain.trips import (
+    handle_trip_command,
+    fetch_weather,
+    weather_triggered_items,
+    _scheduler_run_datetime,
+    schedule_weather_refresh,
+    run_weather_refresh,
+    cmd_refreshweather,
+    get_upcoming_trips_needing_reminder,
+    mark_trip_reminder_sent,
+    format_trip_reminder_block,
+    append_trip_reminders_to_text,
+    update_trip_weather_job,
+    refresh_trip_weather_job,
+    _run_trip_weather_refresh,
+    handle_trip_weather_refresh,
+)
 from second_brain.handler_registry import register_core_handlers
 from second_brain.scheduler_manager import UtilitySchedulerManager
 from second_brain.rules.engine import RuleEngine
@@ -176,6 +214,16 @@ from second_brain.crossfit.keyboards import crossfit_submenu_keyboard
 from second_brain.crossfit.readiness import check_readiness_logged_today
 from second_brain.crossfit.notion import parse_weekly_program_text, save_programme_from_notion_row, this_monday
 from second_brain.entertainment import log as ent_log
+from second_brain.entertainment.handlers import (
+    _entertainment_rule_entry_data,
+    _execute_entertainment_rules as _ent_execute_rules,
+    handle_entertainment_log as _ent_handle_log,
+    _maybe_prompt_explicit_venue,
+    load_entertainment_schemas,
+    _resolve_known_cinema_venue,
+    _find_existing_cinema_venue,
+    _suggest_known_venue,
+)
 
 
 
@@ -198,93 +246,27 @@ def _date_pick_keyboard(scope: str, key: str, result) -> InlineKeyboardMarkup:
         InlineKeyboardButton(result.label_b or result.option_b or "Option B", callback_data=f"date_pick:{scope}:b:{key}"),
     ]])
 
-def _entertainment_rule_entry_data(payload: dict) -> dict:
-    """Build normalized rule-engine entry data from an entertainment payload."""
-    return {
-        "Title": payload.get("title"),
-        "DateWatched": payload.get("date") or local_today().isoformat(),
-        "Favourite": bool(payload.get("favourite")),
-    }
-
-
 async def _execute_entertainment_rules(payload: dict) -> bool:
-    """Run post-save entertainment rules and return whether a favourite action succeeded."""
-    if not rule_engine or payload.get("log_type") != "cinema":
-        return False
-    results = await rule_engine.execute_on_save(
-        source_db="cinema_log",
-        entry_data=_entertainment_rule_entry_data(payload),
-        db_ids={
-            "cinema_log": NOTION_CINEMA_LOG_DB,
-            "favourite_films": NOTION_FAVE_DB,
-        },
-    )
-    fav_rule_success = False
-    for result in results:
-        if result.get("success"):
-            log.info("✅ Rule %s: %s", result.get("rule_id"), result.get("message"))
-            if result.get("rule_id") == "cinema_to_favourite":
-                fav_rule_success = True
-        else:
-            log.warning("⚠️ Rule %s: %s", result.get("rule_id"), result.get("message"))
-    return fav_rule_success
+    return await _ent_execute_rules(notion, rule_engine, payload)
 
 
-async def handle_entertainment_log(notion, message, payload: dict) -> None:
-    entry_id, fav_saved = ent_log.create_entertainment_log_entry(notion, payload)
-    rule_fav_saved = await _execute_entertainment_rules(payload)
-    title = payload.get("title", "Untitled")
-    log_type = payload.get("log_type", "cinema")
-    venue = payload.get("venue")
-    notes = payload.get("notes")
-    when_iso = payload.get("date") or local_today().isoformat()
-
-    summary_lines = [
-        f"✅ Logged to { {'cinema': 'Cinema', 'performance': 'Performance', 'sport': 'Sports'}.get(log_type, 'Entertainment') }",
-        "",
-        f"🎫 {title}",
-        f"📅 {when_iso}",
-    ]
-    if venue:
-        summary_lines.append(f"📍 {venue}")
-    if notes:
-        summary_lines.append(f"📝 {notes}")
-    if (fav_saved or rule_fav_saved) and log_type == "cinema":
-        summary_lines.append("🎞️ Added to Favourite Films")
-    summary_lines.append("")
-    summary_lines.append("_Saved to Notion_")
-    await message.reply_text("\n".join(summary_lines), parse_mode="Markdown")
-    if log_type == "sport":
-        ent_log._remember_pending_sport_competition(message, entry_id)
-        await message.reply_text("🏆 Logged to Sports Log. Which competition should I set for this one?")
-    log.info("Entertainment logged type=%s title=%s page_id=%s", log_type, title, entry_id)
-
-
-async def _maybe_prompt_explicit_venue(notion, message, payload: dict, raw_text: str) -> bool:
-    return await ent_log._maybe_prompt_explicit_venue(notion, message, payload, raw_text)
-
-
-def load_entertainment_schemas(notion) -> None:
-    ent_log.load_entertainment_schemas(notion)
+async def handle_entertainment_log(notion_arg, message, payload: dict) -> None:
+    return await _ent_handle_log(notion_arg, message, payload)
 
 
 
-def _resolve_known_cinema_venue(venue: str | None, schema: dict) -> str | None:
-    resolver = ent_log._resolve_known_cinema_venue
-    resolved = resolver(notion, venue, schema)
-    return resolved
 
 
-def _find_existing_cinema_venue(title: str, schema: dict) -> str | None:
-    finder = ent_log._find_existing_cinema_venue
-    match = finder(notion, title, schema)
-    return match
 
 
-def _suggest_known_venue(payload: dict) -> tuple[str | None, str | None]:
-    suggester = ent_log._suggest_known_venue
-    suggestion = suggester(notion, payload)
-    return suggestion
+
+
+
+
+
+
+
+
 
 
 load_dotenv()
@@ -833,142 +815,35 @@ def deadline_days_to_label(days: int | None) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def log_habit(habit_page_id: str, habit_name: str, source: str = "📱 Telegram") -> None:
-    today = datetime.now(TZ).date().isoformat()
-    props = {
-        "Entry":     {"title":    [{"text": {"content": habit_name}}]},
-        "Habit":     {"relation": [{"id": habit_page_id}]},
-        "Completed": {"checkbox": True},
-        "Date":      {"date":     {"start": today}},
-        "Source":    {"select":   {"name": source}},
-    }
-    try:
-        notion.pages.create(
-            parent={"database_id": NOTION_LOG_DB},
-            properties=props,
-        )
-    except Exception as e:
-        # Some log DBs do not expose/allow Source; retry with core fields only.
-        log.warning("Habit log create retrying without Source: %s", e)
-        minimal = {k: v for k, v in props.items() if k != "Source"}
-        notion.pages.create(
-            parent={"database_id": NOTION_LOG_DB},
-            properties=minimal,
-        )
-    log.info(f"Habit logged: {habit_name} on {today} via {source}")
+    return _habit_log_habit(notion, NOTION_LOG_DB, habit_page_id, habit_name, source)
 
 
 def already_logged_today(habit_page_id: str) -> bool:
-    today = datetime.now(TZ).date().isoformat()
-    try:
-        results = notion.databases.query(
-            database_id=NOTION_LOG_DB,
-            filter={
-                "and": [
-                    {"property": "Habit",     "relation":  {"contains": habit_page_id}},
-                    {"property": "Completed", "checkbox":  {"equals": True}},
-                    {"property": "Date",      "date":      {"equals": today}},
-                ]
-            },
-        )
-        return len(results.get("results", [])) > 0
-    except Exception as e:
-        # Avoid blocking one-tap habit logs when the dedupe query schema drifts.
-        log.warning("already_logged_today query failed for %s: %s", habit_page_id, e)
-        return False
+    return _habit_already_logged(notion, NOTION_LOG_DB, habit_page_id, TZ)
 
 
 def get_week_completion_count(habit_page_id: str) -> int:
-    try:
-        results = notion.databases.query(
-            database_id=NOTION_LOG_DB,
-            filter={
-                "and": [
-                    {"property": "Habit", "relation": {"contains": habit_page_id}},
-                    {"property": "Completed", "checkbox": {"equals": True}},
-                    {"property": "Date", "date": {"on_or_after": get_current_monday().isoformat()}},
-                ]
-            },
-        )
-        return len(results.get("results", []))
-    except Exception as e:
-        log.error("Error counting weekly completions for habit %s: %s", habit_page_id, e)
-        return 0
+    return _habit_week_count(notion, NOTION_LOG_DB, habit_page_id, TZ)
 
 
 def get_habit_frequency(habit_page_id: str) -> int:
-    try:
-        page = notion.pages.retrieve(page_id=habit_page_id)
-        properties = page.get("properties", {})
-        frequency = notion_habits.extract_habit_frequency(properties)
-        if frequency and frequency > 0:
-            return frequency
-        return 7
-    except Exception as e:
-        log.error("Error reading habit frequency for %s: %s", habit_page_id, e)
-        return 7
+    return _habit_frequency(notion, habit_page_id)
 
 
 def habit_capped_this_week(habit_page_id: str) -> bool:
-    return get_week_completion_count(habit_page_id) >= get_habit_frequency(habit_page_id)
+    return _habit_capped(notion, NOTION_LOG_DB, habit_page_id, TZ)
 
 
 def _count_habit_completions_this_week(habit_page_id: str) -> int:
-    """
-    Count completed logs for a habit from Monday through today (inclusive).
-    """
-    try:
-        today = datetime.now(TZ).date()
-        monday = today - timedelta(days=today.weekday())
-        results = notion.databases.query(
-            database_id=NOTION_LOG_DB,
-            filter={
-                "and": [
-                    {"property": "Habit", "relation": {"contains": habit_page_id}},
-                    {"property": "Completed", "checkbox": {"equals": True}},
-                    {"property": "Date", "date": {"on_or_after": monday.isoformat()}},
-                ]
-            },
-        )
-        count = 0
-        for row in results.get("results", []):
-            date_prop = row.get("properties", {}).get("Date", {}).get("date", {})
-            start = date_prop.get("start")
-            if not start:
-                continue
-            try:
-                row_day = date.fromisoformat(start[:10])
-            except Exception:
-                continue
-            if monday <= row_day <= today:
-                count += 1
-        return count
-    except Exception as e:
-        log.error("Habit weekly completion count error for %s: %s", habit_page_id, e)
-        return 0
+    return _habit_count_this_week(notion, NOTION_LOG_DB, habit_page_id, TZ)
 
 
 def logs_this_week(habit_page_id: str) -> int:
-    today  = datetime.now(TZ).date()
-    monday = today - timedelta(days=today.weekday())
-    results = notion.databases.query(
-        database_id=NOTION_LOG_DB,
-        filter={
-            "and": [
-                {"property": "Habit",     "relation": {"contains": habit_page_id}},
-                {"property": "Completed", "checkbox": {"equals": True}},
-                {"property": "Date",      "date":     {"on_or_after":  monday.isoformat()}},
-                {"property": "Date",      "date":     {"on_or_before": today.isoformat()}},
-            ]
-        },
-    )
-    return len(results.get("results", []))
+    return _habit_logs_this_week(notion, NOTION_LOG_DB, habit_page_id, TZ)
 
 
 def is_on_pace(habit: dict) -> bool:
-    target = habit.get("freq_per_week")
-    if not target:
-        return False
-    return logs_this_week(habit["page_id"]) >= target
+    return _habit_is_on_pace(notion, NOTION_LOG_DB, habit, TZ)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1930,122 +1805,19 @@ COMMAND_DISPATCH: dict[str, Callable] = {
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def handle_trip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    global _trip_counter
-    message = update.message
-    text = " ".join(context.args).strip()
-    if not text:
-        await message.reply_text('Send your trip details after the command, e.g.:\n/trip work trip to Austin, site testing, Jun 14-17')
-        return
-    parsed = trips_mod.parse_trip_message(text, claude)
-    destinations = parsed.get("destinations") or []
-    destination = destinations[0] if destinations else "Trip"
-    dep = parsed.get("departure_date")
-    ret = parsed.get("return_date")
-    key = str(_trip_counter); _trip_counter += 1
-    purpose_list = parsed.get("purpose_list") or ["Work"]
-    trip_map[key] = {"destination": destination, "destinations": destinations or [destination], "departure_date": dep, "return_date": ret, "duration_label": "", "nights": 0, "purpose_list": purpose_list, "multiple_cities": bool(parsed.get("multiple_cities")), "field_work_types": [], "multiple_sites": None, "checked_luggage": None}
-    if not dep or not ret:
-        prompt = await message.reply_text("📅 What dates is the trip? (e.g. Jun 14-17)")
-        trip_awaiting_date_map[prompt.message_id] = key
-        return
-    nights = (date.fromisoformat(ret) - date.fromisoformat(dep)).days
-    trip_map[key]["nights"] = nights
-    trip_days = nights + 1
-    trip_map[key]["duration_label"] = "Overnight" if trip_days <= 1 else ("2-3 Days" if trip_days <= 3 else "4-5 Days")
-    purpose_str = " + ".join(trip_map[key]["purpose_list"])
-    await message.reply_text(f"✈️ {destination} — {trips_mod.format_trip_dates(dep, ret)} ({nights} night(s), {purpose_str})\n\nWhat field work are you doing?\n(Tap all that apply, then tap ✅ Done)", reply_markup=kb.field_work_keyboard(key, trip_map))
 
 
 
-async def fetch_weather(city: str, departure_date: str) -> dict:
-    summary, flags = trips_mod._build_trip_weather_summary(
-        departure_date,
-        departure_date,
-        city,
-        fetch_weather=None,
-        fetch_trip_weather_range=wx.fetch_trip_weather_range,
-    )
-    return {"summary": summary or "Weather unavailable", "flags": flags}
 
 
-def weather_triggered_items(flags: list[str]) -> list[str]:
-    additions_by_flag = {
-        "Rain": "Umbrella / rain jacket",
-        "Cold": "Warm layer",
-        "Hot": "Sunscreen",
-        "Snow": "Winter boots",
-    }
-    return [additions_by_flag[flag] for flag in flags if flag in additions_by_flag]
 
 
-def _scheduler_run_datetime(refresh_date: date) -> datetime:
-    refresh_time = datetime.strptime("08:00", "%H:%M").time()
-    refresh_dt = datetime.combine(refresh_date, refresh_time)
-    if hasattr(TZ, "localize"):
-        return TZ.localize(refresh_dt)
-    return refresh_dt.replace(tzinfo=TZ)
 
 
-def schedule_weather_refresh(key: str, trip: dict) -> None:
-    if _scheduler is None:
-        logger.warning("Weather refresh not scheduled because scheduler is unavailable — %s", trip.get("destination"))
-        return
-    page_id = trip.get("notion_page_id")
-    if not page_id:
-        logger.warning("Weather refresh not scheduled because trip page ID is unavailable — %s", trip.get("destination"))
-        return
-    refresh_date = date.fromisoformat(trip["departure_date"]) - timedelta(days=3)
-    refresh_dt = _scheduler_run_datetime(refresh_date)
-    _scheduler.add_job(
-        run_weather_refresh,
-        "date",
-        run_date=refresh_dt,
-        args=[page_id, trip["destination"], trip["departure_date"]],
-        id=f"weather_{key}",
-        replace_existing=True,
-    )
-    logger.info(f"Weather refresh scheduled for {refresh_dt} — {trip['destination']}")
 
 
-async def run_weather_refresh(page_id: str, city: str, departure_date: str) -> None:
-    weather = await fetch_weather(city, departure_date)
-    notion.pages.update(
-        page_id=page_id,
-        properties={
-            "Weather Summary": {"rich_text": [{"text": {"content": weather["summary"]}}]},
-            "Weather Flags": {"multi_select": [{"name": f} for f in weather["flags"]]},
-        },
-    )
-    additions = weather_triggered_items(weather["flags"])
-    additions_line = f"\n➕ Weather additions: {', '.join(additions)}" if additions else ""
-    bot = _app_bot
-    if bot is None:
-        logger.warning("Weather refresh completed but Telegram bot is unavailable for notification")
-        return
-    await bot.send_message(
-        chat_id=MY_CHAT_ID,
-        text=f"🌦️ 3-day weather update for {city}:\n{weather['summary']}{additions_line}\n\nNotion trip updated.",
-        parse_mode="Markdown",
-    )
 
 
-async def cmd_refreshweather(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_chat.id != MY_CHAT_ID:
-        return
-    args = context.args or []
-    if len(args) < 3:
-        await update.message.reply_text("Usage: /refreshweather {page_id} {city} {departure_date}")
-        return
-    page_id = args[0]
-    departure_date = args[-1]
-    city = " ".join(args[1:-1]).strip()
-    try:
-        await run_weather_refresh(page_id, city, departure_date)
-        await update.message.reply_text(f"✅ Weather refreshed for {city} ({departure_date}).")
-    except Exception as exc:
-        logger.error("Manual weather refresh failed: %s", exc)
-        await update.message.reply_text(f"⚠️ Weather refresh failed: {exc}")
 
 async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global _entertainment_counter
@@ -3335,473 +3107,30 @@ async def run_recurring_check(bot) -> dict:
     return {"action": "spawned", "tasks_spawned": spawned}
 
 
-async def get_digest_config(slot_time: str, weekday: bool) -> dict:
-    try:
-        slots = load_digest_slots()
-    except Exception as e:
-        log.error("Failed to read digest config for %s (%s): %s", slot_time, "weekday" if weekday else "weekend", e)
-        return {"contexts": None, "max_items": None, "include_habits": False, "include_weather": False, "include_uvi": False, "include_feel": False}
-    for slot in slots:
-        if slot.get("time") == slot_time and bool(slot.get("is_weekday")) == bool(weekday):
-            return {
-                "contexts": slot.get("contexts"),
-                "max_items": slot.get("max_items"),
-                "include_habits": bool(slot.get("include_habits")),
-                "include_weather": bool(slot.get("include_weather")),
-                "include_uvi": bool(slot.get("include_uvi")),
-                "include_feel": bool(slot.get("include_feel")),
-            }
-    return {"contexts": None, "max_items": None, "include_habits": False, "include_weather": False, "include_uvi": False, "include_feel": False}
-
-
-def _filter_digest_tasks(tasks: list[dict], config: dict | None = None) -> list[dict]:
-    if not config:
-        return tasks
-    filtered = tasks
-    contexts = config.get("contexts")
-
-    def normalize_context_label(value: str | None) -> str:
-        v = (value or "").strip().lower()
-        if "personal" in v or "🏠" in v:
-            return "personal"
-        if "work" in v or "💼" in v:
-            return "work"
-        if "health" in v or "🏃" in v:
-            return "health"
-        if "hk" in v or "collab" in v or "🤝" in v:
-            return "hk"
-        return v
-
-    if contexts is not None and isinstance(contexts, list):
-        allowed = {normalize_context_label(c) for c in contexts}
-        filtered = [t for t in filtered if normalize_context_label(t.get("context")) in allowed]
-    return filtered
-
-
-async def send_digest_for_slot(bot, slot: dict) -> None:
-    now = datetime.now(TZ)
-    day_key = now.date().isoformat()
-    for key in list(_digest_slot_sent_today):
-        if not key.startswith(day_key):
-            _digest_slot_sent_today.discard(key)
-    weekday = now.weekday() < 5
-    slot_key = f"{day_key}|{'wd' if weekday else 'we'}|{slot.get('time')}"
-    if slot_key in _digest_slot_sent_today:
-        log.info("Skipping duplicate digest send for slot %s (%s)", slot.get("time"), "weekday" if weekday else "weekend")
-        return
-    config = await get_digest_config(slot["time"], slot["is_weekday"])
-    log.info(
-        "Digest slot trigger fired at %s (%s) — include_habits=%s include_feel=%s contexts=%s max_items=%s",
-        slot.get("time"),
-        "weekday" if slot.get("is_weekday") else "weekend",
-        bool(slot.get("include_habits")),
-        bool(config.get("include_feel")),
-        config.get("contexts"),
-        config.get("max_items"),
-    )
-    if not config.get("contexts") and not config.get("include_habits") and not config.get("include_weather") and not config.get("include_feel"):
-        log.info(
-            "Skipping slot %s — nothing selected (no contexts, habits, weather, or feel)",
-            slot.get("time"),
-        )
-        return
-    await send_daily_digest(
-        bot,
-        include_habits=bool(config.get("include_habits")),
-        config={**config, "slot_name": f"{slot.get('time')} ({'weekday' if slot.get('is_weekday') else 'weekend'})"},
-    )
-    alert_digest_sent(f"{slot.get('time')} ({'weekday' if slot.get('is_weekday') else 'weekend'})")
-    _digest_slot_sent_today.add(slot_key)
-
-
-def _queue_missed_slots_for_today(scheduler, bot, slots: list[dict]) -> None:
-    """
-    Queue immediate one-off sends for slots that were added/updated shortly after
-    their scheduled minute on the current day.
-    """
-    now = datetime.now(TZ)
-    weekday = now.weekday() < 5
-    grace_minutes = 20
-
-    # Keep memory bounded; keys include yyyy-mm-dd and expire naturally.
-    today_prefix = now.date().isoformat()
-    for key in list(_digest_catchup_sent):
-        if not key.startswith(today_prefix):
-            _digest_catchup_sent.discard(key)
-
-    for slot in slots:
-        if bool(slot.get("is_weekday")) != weekday:
-            continue
-        try:
-            slot_hour, slot_minute = map(int, str(slot["time"]).split(":"))
-        except Exception:
-            continue
-
-        slot_dt = now.replace(hour=slot_hour, minute=slot_minute, second=0, microsecond=0)
-        age_minutes = (now - slot_dt).total_seconds() / 60.0
-        if age_minutes < 0 or age_minutes > grace_minutes:
-            continue
-
-        catchup_key = f"{today_prefix}|{'wd' if weekday else 'we'}|{slot['time']}"
-        if catchup_key in _digest_catchup_sent:
-            continue
-
-        try:
-            job = scheduler.add_job(
-                send_digest_for_slot,
-                "date",
-                run_date=now + timedelta(seconds=2),
-                args=[bot, slot],
-                id=f"digest_catchup_{today_prefix}_{'wd' if weekday else 'we'}_{slot_hour:02d}{slot_minute:02d}",
-                replace_existing=True,
-            )
-            _digest_jobs.append(job)
-            _digest_catchup_sent.add(catchup_key)
-            log.info("Queued digest catch-up for slot %s (%s)", slot["time"], "weekday" if weekday else "weekend")
-        except Exception as e:
-            log.warning("Failed to queue digest catch-up for slot %s: %s", slot.get("time"), e)
-
-
-def build_digest_schedule(scheduler, bot, queue_catchup: bool = False) -> int:
-    global _digest_slots_last_load_succeeded
-    cleanup_old_habit_selections()
-    for job in _digest_jobs:
-        try:
-            job.remove()
-        except Exception:
-            pass
-    _digest_jobs.clear()
-
-    try:
-        slots = load_digest_slots()
-    except Exception as e:
-        _digest_slots_last_load_succeeded = False
-        log.error("Failed to load digest slots: %s", e)
-        return 0
-
-    dedupe_keys: set[tuple[str, bool]] = set()
-    for slot in slots:
-        slot_key = (slot.get("time", ""), bool(slot.get("is_weekday")))
-        if slot_key in dedupe_keys:
-            log.warning("Skipping duplicate digest slot %s (%s)", slot.get("time"), "weekday" if slot.get("is_weekday") else "weekend")
-            continue
-        dedupe_keys.add(slot_key)
-        try:
-            hour_str, minute_str = slot["time"].split(":")
-            hour, minute = int(hour_str), int(minute_str)
-        except Exception:
-            log.warning("Skipping invalid digest slot time: %r", slot.get("time"))
-            continue
-        day_of_week = "mon-fri" if slot.get("is_weekday") else "sat,sun"
-        job = scheduler.add_job(
-            send_digest_for_slot,
-            "cron",
-            day_of_week=day_of_week,
-            hour=hour,
-            minute=minute,
-            args=[bot, slot],
-        )
-        _digest_jobs.append(job)
-
-    if queue_catchup:
-        _queue_missed_slots_for_today(scheduler, bot, slots)
-    _digest_slots_last_load_succeeded = True
-    log.info("Digest schedule built: %d slots registered", len(_digest_jobs))
-    return len(_digest_jobs)
-
-
-async def rebuild_digest_schedule_job(bot, scheduler) -> dict:
-    was_last_success = _digest_slots_last_load_succeeded
-    result = build_digest_schedule(scheduler, bot)
-    if result == 0 and was_last_success:
-        await bot.send_message(
-            chat_id=MY_CHAT_ID,
-            text="⚠️ Digest schedule rebuild returned 0 slots. Check Digest Selector.",
-        )
-    return {"action": "rebuilt", "slots_registered": result}
-
-
-async def refresh_digest_schedule_job(bot, scheduler) -> dict:
-    """
-    Periodic silent refresh — two responsibilities:
-    1. Rebuild digest schedule so new/edited Digest Selector rows take effect
-    2. Refresh habit cache so in-memory state stays current with Notion edits
-    """
-    slots_registered = build_digest_schedule(scheduler, bot)
-    notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB)
-    _refresh_habit_cache_refs()
-    return {"action": "refreshed", "slots_registered": slots_registered}
-
-
-async def generate_daily_log(bot) -> dict:
-    """
-    Generates end-of-day narrative log and writes it to 📓 Daily Log Notion DB.
-    Triggered by the Utility Scheduler daily_log_generate job.
-    Runs silently — no Telegram message at generation time.
-    Link is sent next morning via send_daily_digest().
-    """
-    global _last_daily_log_url
-    _last_daily_log_url = await notion_daily_log.generate_daily_log(
-        notion=notion,
-        notion_daily_log_db=NOTION_DAILY_LOG_DB,
-        notion_db_id=NOTION_DB_ID,
-        notion_log_db=NOTION_LOG_DB,
-        notion_notes_db=NOTION_NOTES_DB,
-        claude=claude,
-        claude_model=CLAUDE_MODEL,
-        tz=TZ,
-        signoff_notes=get_and_clear_project_signoff_notes(),
-        claude_activity=get_and_clear_claude_activity(),
-    )
-    return {"action": "generated", "has_url": bool(_last_daily_log_url)}
-
-
-async def send_daily_digest(bot, include_habits: bool = True, config: dict | None = None) -> None:
-    global last_digest_msg_id
-    if _is_muted():
-        log.info("Daily digest skipped (muted)")
-        return
-    tasks = _filter_digest_tasks(notion_tasks.get_today_and_overdue_tasks(notion, NOTION_DB_ID, limit=None), config=config)
-    today = local_today()
-    overdue = [t for t in tasks if (d := notion_tasks._parse_deadline(t.get("deadline"))) is not None and d < today]
-    today_tasks = [t for t in tasks if (d := notion_tasks._parse_deadline(t.get("deadline"))) is not None and d == today and t not in overdue]
-    this_week_tasks = [t for t in tasks if t not in overdue and t not in today_tasks]
-    ordered = overdue + today_tasks + this_week_tasks
-    max_items = config.get("max_items") if config else None
-    if isinstance(max_items, int):
-        ordered = ordered[:max_items]
-        overdue = [t for t in ordered if (d := notion_tasks._parse_deadline(t.get("deadline"))) is not None and d < today]
-        today_tasks = [t for t in ordered if (d := notion_tasks._parse_deadline(t.get("deadline"))) is not None and d == today and t not in overdue]
-        this_week_tasks = [t for t in ordered if t not in overdue and t not in today_tasks]
-
-    date_str = datetime.now(TZ).strftime("%A, %B %-d")
-    lines = [f"☀️ *{date_str}*", ""]
-
-    global _last_daily_log_url
-    if _last_daily_log_url:
-        log_date_label = (today - timedelta(days=1)).isoformat()
-        lines.append(f"📓 [{log_date_label} Log]({_last_daily_log_url})")
-        lines.append("")
-    include_weather = True if config is None else bool(config.get("include_weather"))
-    if include_weather:
-        weather_block = fmt.format_digest_weather_card()
-        if weather_block:
-            lines.append(weather_block)
-        else:
-            lines.append(fmt.weather_unavailable_digest_line())
-        lines.append("")
-    n = 1
-
-    habits: list[dict] = []
-    habits_enabled = include_habits
-    if config and config.get("include_habits") is not None:
-        habits_enabled = bool(config.get("include_habits"))
-    log.info(
-        "Digest habits check: habits_enabled=%s include_habits_param=%s config_include_habits=%s",
-        habits_enabled, include_habits, config.get("include_habits") if config else None
-    )
-    if habits_enabled:
-        # Use current digest time for show_after filtering.
-        now_str = datetime.now(TZ).strftime("%H:%M")
-        habits = [
-            h
-            for h in pending_habits_for_digest(time_str=now_str)
-            if (h.get("name") or "").strip().lower()
-            != health_config.STEPS_HABIT_NAME.strip().lower()
-        ]
-        log.info("Digest habits final: count=%d habit_names=%s", len(habits), [h.get("name") for h in habits[:5]])
-
-    if overdue:
-        lines.append("🚨 *Overdue*")
-        for task in overdue:
-            lines.append(f"{fmt.num_emoji(n)}{fmt.context_emoji(task.get('context'))} {task['name']}")
-            n += 1
-        lines.append("")
-
-    if today_tasks:
-        lines.append("📌 *Today*")
-        for task in today_tasks:
-            lines.append(f"{fmt.num_emoji(n)}{fmt.context_emoji(task.get('context'))} {task['name']}")
-            n += 1
-        lines.append("")
-
-    if this_week_tasks:
-        lines.append("📅 *This Week*")
-        for task in this_week_tasks:
-            lines.append(f"{fmt.num_emoji(n)}{fmt.context_emoji(task.get('context'))} {task['name']}")
-            n += 1
-        lines.append("")
-
-    if habits:
-        lines.append("*Habits:* tap to log:")
-        lines.append("")
-
-    message = "\n".join(lines).strip()
-    message = append_trip_reminders_to_text(message, within_days=2)
-
-    include_feel = bool(config.get("include_feel", False)) if config else False
-    digest_keyboard_rows: list[list[InlineKeyboardButton]] = []
-    if habits:
-        digest_keyboard_rows.extend([list(row) for row in kb.habit_buttons(habits, "morning", selected=set()).inline_keyboard])
-    if include_feel:
-        digest_keyboard_rows.append([InlineKeyboardButton("💬 How are you feeling?", callback_data="cf:A")])
-    reply_markup = InlineKeyboardMarkup(digest_keyboard_rows) if digest_keyboard_rows else None
-
-    sent_digest = await bot.send_message(
-        chat_id=MY_CHAT_ID,
-        text=message,
-        parse_mode="Markdown",
-        reply_markup=reply_markup,
-    )
-
-    if habits:
-        _store_habit_selection_session(sent_digest.message_id, habits)
-    if ordered:
-        digest_map[sent_digest.message_id] = ordered
-    last_digest_msg_id = sent_digest.message_id
-    log.info("Consolidated daily digest sent — %d tasks, %d habits", len(ordered), len(habits))
-
-    if _last_daily_log_url:
-        _last_daily_log_url = ""
-
-
-def get_upcoming_trips_needing_reminder(within_days: int = 2) -> list[dict]:
-    """
-    Query NOTION_TRIPS_DB for trips departing within ``within_days`` days
-    that haven't had a trip reminder sent yet.
-    """
-    if not NOTION_TRIPS_DB:
-        return []
-
-    today = date.today()
-    cutoff_date = (today + timedelta(days=within_days)).isoformat()
-
-    try:
-        results = notion.databases.query(
-            database_id=NOTION_TRIPS_DB,
-            filter={
-                "and": [
-                    {"property": "Departure Date", "date": {"on_or_before": cutoff_date}},
-                    {"property": "Departure Date", "date": {"on_or_after": today.isoformat()}},
-                    {"property": "Reminder Sent", "checkbox": {"equals": False}},
-                ]
-            },
-        )
-
-        trips: list[dict] = []
-        for page in results.get("results", []):
-            page_id = page["id"]
-            props = page.get("properties", {})
-
-            title_prop = props.get("Trip", {}).get("title", [])
-            trip_title = "".join(t.get("plain_text", "") for t in title_prop).strip()
-
-            dep_date_prop = props.get("Departure Date", {}).get("date", {}) or {}
-            dep_start = dep_date_prop.get("start")
-            if not dep_start:
-                continue
-
-            ret_date_prop = props.get("Return Date", {}).get("date", {}) or {}
-            ret_start = ret_date_prop.get("start")
-
-            dep = date.fromisoformat(dep_start[:10])
-            ret = date.fromisoformat(ret_start[:10]) if ret_start else dep
-            days_until = (dep - today).days
-
-            purpose_prop = props.get("Purpose", {})
-            if purpose_prop.get("multi_select") is not None:
-                purpose_list = [p.get("name", "") for p in purpose_prop.get("multi_select", []) if p.get("name")]
-            else:
-                purpose_name = (purpose_prop.get("select") or {}).get("name", "Work")
-                purpose_list = ["Work", "Personal"] if purpose_name == "Both" else [purpose_name]
-            purpose_list = purpose_list or ["Work"]
-
-            field_work_prop = props.get("Field Work", {})
-            if field_work_prop.get("type") == "rich_text" or field_work_prop.get("rich_text") is not None:
-                field_work_text = "".join(r.get("plain_text", "") for r in field_work_prop.get("rich_text", [])).strip()
-                field_work = [item.strip() for item in field_work_text.split(",") if item.strip()]
-            else:
-                field_work = [fw.get("name", "") for fw in field_work_prop.get("multi_select", []) if fw.get("name")]
-
-            weather_summary_prop = props.get("Weather Summary", {}).get("rich_text", [])
-            weather_summary = "".join(r.get("plain_text", "") for r in weather_summary_prop).strip()
-
-            weather_flags_prop = props.get("Weather Flags", {})
-            if weather_flags_prop.get("type") == "rich_text" or weather_flags_prop.get("rich_text") is not None:
-                weather_flags_text = "".join(r.get("plain_text", "") for r in weather_flags_prop.get("rich_text", [])).strip()
-                weather_flags = [item.strip() for item in weather_flags_text.split(",") if item.strip()]
-            else:
-                weather_flags = [wf.get("name", "") for wf in weather_flags_prop.get("multi_select", []) if wf.get("name")]
-
-            trips.append(
-                {
-                    "page_id": page_id,
-                    "title": trip_title,
-                    "departure_date": dep,
-                    "return_date": ret,
-                    "days_until": days_until,
-                    "purpose_list": purpose_list,
-                    "field_work": field_work,
-                    "weather_summary": weather_summary,
-                    "weather_flags": weather_flags,
-                }
-            )
-
-        return trips
-
-    except Exception as e:
-        log.error("Failed to query upcoming trips: %s", e)
-        return []
-
-
-def mark_trip_reminder_sent(page_id: str) -> None:
-    """Mark a trip's reminder as sent to prevent duplicates."""
-    try:
-        notion.pages.update(page_id=page_id, properties={"Reminder Sent": {"checkbox": True}})
-    except Exception as e:
-        log.error("Failed to mark trip reminder sent for %s: %s", page_id[:8], e)
-
-
-def format_trip_reminder_block(trip: dict) -> str:
-    """Format a single trip reminder as a Markdown block."""
-    lines = [
-        f"🧳 *{trip['title']}*",
-        f"📅 Departing in {trip['days_until']} day{'s' if trip['days_until'] != 1 else ''} ({trip['departure_date'].strftime('%a, %b %d')})",
-    ]
-
-    field_work_display = trip["field_work"]
-    purpose_str = " + ".join(trip.get("purpose_list") or ["Work"])
-    if field_work_display and field_work_display != ["None"]:
-        lines.append(f"🎯 {purpose_str} trip · {', '.join(field_work_display)}")
-    else:
-        lines.append(f"🎯 {purpose_str} trip")
-
-    lines.append("")
-    lines.append("🌤️ *Forecast:*")
-
-    weather_summary = trip["weather_summary"]
-    if weather_summary and weather_summary not in {"⏳ Weather forecast available 5 days before departure", "Weather unavailable"}:
-        lines.append(f"```\n{weather_summary}\n```")
-    else:
-        lines.append("_Weather data unavailable_")
-
-    if trip["weather_flags"]:
-        lines.append(f"⚠️ {', '.join(trip['weather_flags'])}")
-
-    return "\n".join(lines)
-
-
-def append_trip_reminders_to_text(text: str, within_days: int = 2) -> str:
-    """Append pending trip reminder blocks and mark them sent if displayed."""
-    upcoming_trips = get_upcoming_trips_needing_reminder(within_days=within_days)
-    if not upcoming_trips:
-        return text
-
-    trip_blocks = [format_trip_reminder_block(trip) for trip in upcoming_trips]
-    text = f"{text}\n\n{'─' * 30}\n\n" + "\n\n".join(trip_blocks)
-    for trip in upcoming_trips:
-        mark_trip_reminder_sent(trip["page_id"])
-    return text
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 async def send_evening_checkin(bot) -> None:
@@ -4517,55 +3846,12 @@ async def process_pending_programmes(bot) -> None:
                 pass
 
 
-async def update_trip_weather_job(application) -> None:
-    _ = application
-    if not NOTION_TRIPS_DB:
-        return
-    try:
-        updated = trips_mod.refresh_upcoming_trip_weather(
-            notion,
-            NOTION_TRIPS_DB,
-            fetch_trip_weather_range=wx.fetch_trip_weather_range,
-            lookahead_days=5,
-        )
-        if updated:
-            log.info("Trip weather refresh updated %d trip(s)", updated)
-    except Exception as exc:
-        log.warning("Trip weather refresh failed: %s", exc)
 
 
-async def refresh_trip_weather_job(bot) -> None:
-    await update_trip_weather_job(bot)
 
 
-async def _run_trip_weather_refresh(bot) -> dict:
-    """Utility Scheduler job: refresh weather for upcoming trips."""
-    _ = bot
-    if not NOTION_TRIPS_DB:
-        log.info("trip_weather_refresh: NOTION_TRIPS_DB is not set")
-        return {"action": "error", "reason": "NOTION_TRIPS_DB is not set"}
-
-    try:
-        updated = trips_mod.refresh_upcoming_trip_weather(
-            notion,
-            NOTION_TRIPS_DB,
-            fetch_trip_weather_range=wx.fetch_trip_weather_range,
-            lookahead_days=7,
-        )
-    except Exception as exc:
-        log.error("trip_weather_refresh: unexpected error: %s", exc)
-        return {"action": "error", "reason": str(exc)}
-
-    if not updated:
-        log.info("trip_weather_refresh: no upcoming trips required weather updates")
-        return {"action": "no_trips", "updated": 0}
-
-    log.info("trip_weather_refresh: updated %d upcoming trip(s)", updated)
-    return {"action": "ok", "updated": updated}
 
 
-async def handle_trip_weather_refresh(bot) -> dict:
-    return await _run_trip_weather_refresh(bot)
 
 
 async def _run_steps_sync_check_dispatch(bot) -> dict:

@@ -548,3 +548,333 @@ def refresh_upcoming_trip_weather(
             logger.error("trip_weather_refresh: payload was: %s", payload)
             continue
     return updated
+
+# Telegram trip handlers and scheduling helpers migrated from main.py.
+
+from datetime import datetime
+
+from second_brain.config import MY_CHAT_ID, TZ
+from second_brain import weather as wx
+
+
+async def handle_trip_command(update, context) -> None:
+    import second_brain.main as _main  # transition import
+
+    message = update.message
+    text = " ".join(context.args).strip()
+    if not text:
+        await message.reply_text('Send your trip details after the command, e.g.:\n/trip work trip to Austin, site testing, Jun 14-17')
+        return
+    parsed = parse_trip_message(text, _main.claude)
+    destinations = parsed.get("destinations") or []
+    destination = destinations[0] if destinations else "Trip"
+    dep = parsed.get("departure_date")
+    ret = parsed.get("return_date")
+    key = str(_main._trip_counter)
+    _main._trip_counter += 1
+    purpose_list = parsed.get("purpose_list") or ["Work"]
+    _main.trip_map[key] = {"destination": destination, "destinations": destinations or [destination], "departure_date": dep, "return_date": ret, "duration_label": "", "nights": 0, "purpose_list": purpose_list, "multiple_cities": bool(parsed.get("multiple_cities")), "field_work_types": [], "multiple_sites": None, "checked_luggage": None}
+    if not dep or not ret:
+        prompt = await message.reply_text("📅 What dates is the trip? (e.g. Jun 14-17)")
+        _main.trip_awaiting_date_map[prompt.message_id] = key
+        return
+    nights = (date.fromisoformat(ret) - date.fromisoformat(dep)).days
+    _main.trip_map[key]["nights"] = nights
+    trip_days = nights + 1
+    _main.trip_map[key]["duration_label"] = "Overnight" if trip_days <= 1 else ("2-3 Days" if trip_days <= 3 else "4-5 Days")
+    purpose_str = " + ".join(_main.trip_map[key]["purpose_list"])
+    await message.reply_text(f"✈️ {destination} — {format_trip_dates(dep, ret)} ({nights} night(s), {purpose_str})\n\nWhat field work are you doing?\n(Tap all that apply, then tap ✅ Done)", reply_markup=_main.kb.field_work_keyboard(key, _main.trip_map))
+
+
+async def fetch_weather(city: str, departure_date: str) -> dict:
+    summary, flags = _build_trip_weather_summary(
+        departure_date,
+        departure_date,
+        city,
+        fetch_weather=None,
+        fetch_trip_weather_range=wx.fetch_trip_weather_range,
+    )
+    return {"summary": summary or "Weather unavailable", "flags": flags}
+
+
+def weather_triggered_items(flags: list[str]) -> list[str]:
+    additions_by_flag = {
+        "Rain": "Umbrella / rain jacket",
+        "Cold": "Warm layer",
+        "Hot": "Sunscreen",
+        "Snow": "Winter boots",
+    }
+    return [additions_by_flag[flag] for flag in flags if flag in additions_by_flag]
+
+
+def _scheduler_run_datetime(refresh_date: date) -> datetime:
+    refresh_time = datetime.strptime("08:00", "%H:%M").time()
+    refresh_dt = datetime.combine(refresh_date, refresh_time)
+    if hasattr(TZ, "localize"):
+        return TZ.localize(refresh_dt)
+    return refresh_dt.replace(tzinfo=TZ)
+
+
+def schedule_weather_refresh(key: str, trip: dict) -> None:
+    import second_brain.main as _main  # transition import
+
+    _scheduler = _main._scheduler
+    if _scheduler is None:
+        logger.warning("Weather refresh not scheduled because scheduler is unavailable — %s", trip.get("destination"))
+        return
+    page_id = trip.get("notion_page_id")
+    if not page_id:
+        logger.warning("Weather refresh not scheduled because trip page ID is unavailable — %s", trip.get("destination"))
+        return
+    refresh_date = date.fromisoformat(trip["departure_date"]) - timedelta(days=3)
+    refresh_dt = _scheduler_run_datetime(refresh_date)
+    _scheduler.add_job(
+        run_weather_refresh,
+        "date",
+        run_date=refresh_dt,
+        args=[page_id, trip["destination"], trip["departure_date"]],
+        id=f"weather_{key}",
+        replace_existing=True,
+    )
+    logger.info("Weather refresh scheduled for %s — %s", refresh_dt, trip["destination"])
+
+
+async def run_weather_refresh(page_id: str, city: str, departure_date: str) -> None:
+    import second_brain.main as _main  # transition import
+
+    weather = await fetch_weather(city, departure_date)
+    _main.notion.pages.update(
+        page_id=page_id,
+        properties={
+            "Weather Summary": {"rich_text": [{"text": {"content": weather["summary"]}}]},
+            "Weather Flags": {"multi_select": [{"name": f} for f in weather["flags"]]},
+        },
+    )
+    additions = weather_triggered_items(weather["flags"])
+    additions_line = f"\n➕ Weather additions: {', '.join(additions)}" if additions else ""
+    bot = _main._app_bot
+    if bot is None:
+        logger.warning("Weather refresh completed but Telegram bot is unavailable for notification")
+        return
+    await bot.send_message(
+        chat_id=MY_CHAT_ID,
+        text=f"🌦️ 3-day weather update for {city}:\n{weather['summary']}{additions_line}\n\nNotion trip updated.",
+        parse_mode="Markdown",
+    )
+
+
+async def cmd_refreshweather(update, context) -> None:
+    if update.effective_chat.id != MY_CHAT_ID:
+        return
+    args = context.args or []
+    if len(args) < 3:
+        await update.message.reply_text("Usage: /refreshweather {page_id} {city} {departure_date}")
+        return
+    page_id = args[0]
+    departure_date = args[-1]
+    city = " ".join(args[1:-1]).strip()
+    try:
+        await run_weather_refresh(page_id, city, departure_date)
+        await update.message.reply_text(f"✅ Weather refreshed for {city} ({departure_date}).")
+    except Exception as exc:
+        logger.error("Manual weather refresh failed: %s", exc)
+        await update.message.reply_text(f"⚠️ Weather refresh failed: {exc}")
+
+
+def get_upcoming_trips_needing_reminder(within_days: int = 2, *, notion=None, notion_trips_db: str | None = None) -> list[dict]:
+    if notion is None:
+        import second_brain.main as _main  # transition import
+
+        notion = _main.notion
+        notion_trips_db = _main.NOTION_TRIPS_DB
+    else:
+        notion_trips_db = notion_trips_db or NOTION_TRIPS_DB
+    if not notion_trips_db:
+        return []
+
+    today = date.today()
+    cutoff_date = (today + timedelta(days=within_days)).isoformat()
+
+    try:
+        results = notion.databases.query(
+            database_id=notion_trips_db,
+            filter={
+                "and": [
+                    {"property": "Departure Date", "date": {"on_or_before": cutoff_date}},
+                    {"property": "Departure Date", "date": {"on_or_after": today.isoformat()}},
+                    {"property": "Reminder Sent", "checkbox": {"equals": False}},
+                ]
+            },
+        )
+
+        trips: list[dict] = []
+        for page in results.get("results", []):
+            page_id = page["id"]
+            props = page.get("properties", {})
+
+            title_prop = props.get("Trip", {}).get("title", [])
+            trip_title = "".join(t.get("plain_text", "") for t in title_prop).strip()
+
+            dep_date_prop = props.get("Departure Date", {}).get("date", {}) or {}
+            dep_start = dep_date_prop.get("start")
+            if not dep_start:
+                continue
+
+            ret_date_prop = props.get("Return Date", {}).get("date", {}) or {}
+            ret_start = ret_date_prop.get("start")
+
+            dep = date.fromisoformat(dep_start[:10])
+            ret = date.fromisoformat(ret_start[:10]) if ret_start else dep
+            days_until = (dep - today).days
+
+            purpose_prop = props.get("Purpose", {})
+            if purpose_prop.get("multi_select") is not None:
+                purpose_list = [p.get("name", "") for p in purpose_prop.get("multi_select", []) if p.get("name")]
+            else:
+                purpose_name = (purpose_prop.get("select") or {}).get("name", "Work")
+                purpose_list = ["Work", "Personal"] if purpose_name == "Both" else [purpose_name]
+            purpose_list = purpose_list or ["Work"]
+
+            field_work_prop = props.get("Field Work", {})
+            if field_work_prop.get("type") == "rich_text" or field_work_prop.get("rich_text") is not None:
+                field_work_text = "".join(r.get("plain_text", "") for r in field_work_prop.get("rich_text", [])).strip()
+                field_work = [item.strip() for item in field_work_text.split(",") if item.strip()]
+            else:
+                field_work = [fw.get("name", "") for fw in field_work_prop.get("multi_select", []) if fw.get("name")]
+
+            weather_summary_prop = props.get("Weather Summary", {}).get("rich_text", [])
+            weather_summary = "".join(r.get("plain_text", "") for r in weather_summary_prop).strip()
+
+            weather_flags_prop = props.get("Weather Flags", {})
+            if weather_flags_prop.get("type") == "rich_text" or weather_flags_prop.get("rich_text") is not None:
+                weather_flags_text = "".join(r.get("plain_text", "") for r in weather_flags_prop.get("rich_text", [])).strip()
+                weather_flags = [item.strip() for item in weather_flags_text.split(",") if item.strip()]
+            else:
+                weather_flags = [wf.get("name", "") for wf in weather_flags_prop.get("multi_select", []) if wf.get("name")]
+
+            trips.append(
+                {
+                    "page_id": page_id,
+                    "title": trip_title,
+                    "departure_date": dep,
+                    "return_date": ret,
+                    "days_until": days_until,
+                    "purpose_list": purpose_list,
+                    "field_work": field_work,
+                    "weather_summary": weather_summary,
+                    "weather_flags": weather_flags,
+                }
+            )
+
+        return trips
+
+    except Exception as e:
+        logger.error("Failed to query upcoming trips: %s", e)
+        return []
+
+
+def mark_trip_reminder_sent(page_id: str, *, notion=None) -> None:
+    if notion is None:
+        import second_brain.main as _main  # transition import
+
+        notion = _main.notion
+    try:
+        notion.pages.update(page_id=page_id, properties={"Reminder Sent": {"checkbox": True}})
+    except Exception as e:
+        logger.error("Failed to mark trip reminder sent for %s: %s", page_id[:8], e)
+
+
+def format_trip_reminder_block(trip: dict) -> str:
+    lines = [
+        f"🧳 *{trip['title']}*",
+        f"📅 Departing in {trip['days_until']} day{'s' if trip['days_until'] != 1 else ''} ({trip['departure_date'].strftime('%a, %b %d')})",
+    ]
+
+    field_work_display = trip["field_work"]
+    purpose_str = " + ".join(trip.get("purpose_list") or ["Work"])
+    if field_work_display and field_work_display != ["None"]:
+        lines.append(f"🎯 {purpose_str} trip · {', '.join(field_work_display)}")
+    else:
+        lines.append(f"🎯 {purpose_str} trip")
+
+    lines.append("")
+    lines.append("🌤️ *Forecast:*")
+
+    weather_summary = trip["weather_summary"]
+    if weather_summary and weather_summary not in {"⏳ Weather forecast available 5 days before departure", "Weather unavailable"}:
+        lines.append(f"```\n{weather_summary}\n```")
+    else:
+        lines.append("_Weather data unavailable_")
+
+    if trip["weather_flags"]:
+        lines.append(f"⚠️ {', '.join(trip['weather_flags'])}")
+
+    return "\n".join(lines)
+
+
+def append_trip_reminders_to_text(text: str, within_days: int = 2) -> str:
+    import second_brain.main as _main  # transition import
+
+    upcoming_trips = _main.get_upcoming_trips_needing_reminder(within_days=within_days)
+    if not upcoming_trips:
+        return text
+
+    trip_blocks = [format_trip_reminder_block(trip) for trip in upcoming_trips]
+    text = f"{text}\n\n{'─' * 30}\n\n" + "\n\n".join(trip_blocks)
+    for trip in upcoming_trips:
+        _main.mark_trip_reminder_sent(trip["page_id"])
+    return text
+
+
+async def update_trip_weather_job(application) -> None:
+    _ = application
+    import second_brain.main as _main  # transition import
+
+    if not NOTION_TRIPS_DB:
+        return
+    try:
+        updated = refresh_upcoming_trip_weather(
+            _main.notion,
+            NOTION_TRIPS_DB,
+            fetch_trip_weather_range=wx.fetch_trip_weather_range,
+            lookahead_days=5,
+        )
+        if updated:
+            logger.info("Trip weather refresh updated %d trip(s)", updated)
+    except Exception as exc:
+        logger.warning("Trip weather refresh failed: %s", exc)
+
+
+async def refresh_trip_weather_job(bot) -> None:
+    await update_trip_weather_job(bot)
+
+
+async def _run_trip_weather_refresh(bot) -> dict:
+    _ = bot
+    import second_brain.main as _main  # transition import
+
+    if not NOTION_TRIPS_DB:
+        logger.info("trip_weather_refresh: NOTION_TRIPS_DB is not set")
+        return {"action": "error", "reason": "NOTION_TRIPS_DB is not set"}
+
+    try:
+        updated = refresh_upcoming_trip_weather(
+            _main.notion,
+            NOTION_TRIPS_DB,
+            fetch_trip_weather_range=wx.fetch_trip_weather_range,
+            lookahead_days=7,
+        )
+    except Exception as exc:
+        logger.error("trip_weather_refresh: unexpected error: %s", exc)
+        return {"action": "error", "reason": str(exc)}
+
+    if not updated:
+        logger.info("trip_weather_refresh: no upcoming trips required weather updates")
+        return {"action": "no_trips", "updated": 0}
+
+    logger.info("trip_weather_refresh: updated %d upcoming trip(s)", updated)
+    return {"action": "ok", "updated": updated}
+
+
+async def handle_trip_weather_refresh(bot) -> dict:
+    return await _run_trip_weather_refresh(bot)

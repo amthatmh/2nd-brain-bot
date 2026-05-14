@@ -16,6 +16,13 @@ def local_today(tz: ZoneInfo | None = None) -> date:
     return datetime.now(tz or _DEFAULT_TZ).date()
 
 
+def get_current_monday() -> date:
+    from second_brain.config import TZ
+
+    today = datetime.now(TZ).date()
+    return today - timedelta(days=today.weekday())
+
+
 
 class ExpiringDict(dict):
     """Simple in-memory dict with TTL-based expiry on read/write."""
