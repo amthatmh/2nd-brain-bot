@@ -254,21 +254,6 @@ async def handle_entertainment_log(notion_arg, message, payload: dict) -> None:
     return await _ent_handle_log(notion_arg, message, payload)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
