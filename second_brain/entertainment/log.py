@@ -18,6 +18,7 @@ from second_brain.config import (
 from second_brain.notion import notion_call, notion_call_async
 from second_brain.utils import local_today, reply_notion_error
 from utils.date_parser import parse_date
+from second_brain.notion.properties import rich_text_prop, title_prop
 
 
 log = logging.getLogger(__name__)
@@ -278,9 +279,9 @@ def _build_common_entertainment_props(
 ) -> dict:
     props: dict = {}
     notes_value = notes
-    title_prop = _title_prop_name(schema)
-    if title_prop:
-        props[title_prop] = {"title": [{"text": {"content": title}}]}
+    title_prop_name = _title_prop_name(schema)
+    if title_prop_name:
+        props[title_prop_name] = title_prop(title)
 
     date_prop = _pick_prop(schema, "date", ["Date", "When", "Datetime", "Watched At"])
     if date_prop and when_iso:
@@ -297,13 +298,13 @@ def _build_common_entertainment_props(
     elif venue and venue_status_prop:
         props[venue_status_prop] = {"status": {"name": venue}}
     elif venue and venue_rich_text_prop:
-        props[venue_rich_text_prop] = {"rich_text": [{"text": {"content": venue}}]}
+        props[venue_rich_text_prop] = rich_text_prop(venue)
     elif venue:
         notes_value = f"Venue: {venue}" if not notes_value else f"{notes_value}\nVenue: {venue}"
 
     notes_prop = _pick_prop(schema, "rich_text", ["Notes", "Comment", "Details"])
     if notes_prop and notes_value:
-        props[notes_prop] = {"rich_text": [{"text": {"content": notes_value}}]}
+        props[notes_prop] = rich_text_prop(notes_value)
 
     source_prop = _pick_exact_prop(schema, "select", ["Source"])
     if source_prop:
@@ -345,7 +346,7 @@ def _safe_create_entertainment_page(notion, schema: dict, db_id: str, props: dic
                 existing = "".join(c.get("text", {}).get("content", "") for c in chunks).strip()
             merged = "\n".join([part for part in [existing, "\n".join(fallback_notes)] if part]).strip()
             if merged:
-                fallback_props[notes_prop] = {"rich_text": [{"text": {"content": merged}}]}
+                fallback_props[notes_prop] = rich_text_prop(merged)
 
         try:
             return notion_call(notion.pages.create, parent={"database_id": db_id}, properties=fallback_props)
@@ -364,7 +365,7 @@ def _build_sport_competition_props(schema: dict, competition: str) -> dict:
     if competition_multi_select_prop:
         return {competition_multi_select_prop: {"multi_select": [{"name": competition}]}}
     if competition_rich_text_prop:
-        return {competition_rich_text_prop: {"rich_text": [{"text": {"content": competition}}]}}
+        return {competition_rich_text_prop: rich_text_prop(competition)}
     return {}
 
 def _remember_pending_sport_competition(message, page_id: str) -> None:
@@ -466,18 +467,18 @@ def _strip_seat_from_notes(notes: str | None) -> str | None:
     return cleaned or None
 
 def _find_existing_cinema_venue(notion, title: str, schema: dict) -> str | None:
-    title_prop = _title_prop_name(schema)
+    title_prop_name = _title_prop_name(schema)
     venue_prop = _pick_exact_prop(schema, "select", ["Venue", "Place", "Location"]) \
         or _pick_exact_prop(schema, "status", ["Venue", "Place", "Location"]) \
         or _pick_exact_prop(schema, "rich_text", ["Venue", "Place", "Location"])
-    if not title_prop or not venue_prop:
+    if not title_prop_name or not venue_prop:
         return None
 
     rows = notion_call(notion.databases.query, database_id=NOTION_CINEMA_LOG_DB).get("results", [])
     target = title.strip().lower()
     for row in rows:
         props = row.get("properties", {})
-        title_arr = props.get(title_prop, {}).get("title", [])
+        title_arr = props.get(title_prop_name, {}).get("title", [])
         row_title = "".join(chunk.get("plain_text", "") for chunk in title_arr).strip().lower()
         if row_title != target:
             continue
@@ -501,11 +502,11 @@ def _find_existing_cinema_venue(notion, title: str, schema: dict) -> str | None:
 def _resolve_known_cinema_venue(notion, venue: str | None, schema: dict) -> str | None:
     if not venue:
         return None
-    title_prop = _title_prop_name(schema)
+    title_prop_name = _title_prop_name(schema)
     venue_prop = _pick_exact_prop(schema, "select", ["Venue", "Place", "Location"]) \
         or _pick_exact_prop(schema, "status", ["Venue", "Place", "Location"]) \
         or _pick_exact_prop(schema, "rich_text", ["Venue", "Place", "Location"])
-    if not title_prop or not venue_prop:
+    if not title_prop_name or not venue_prop:
         return venue
 
     rows = notion_call(notion.databases.query, database_id=NOTION_CINEMA_LOG_DB).get("results", [])
@@ -588,7 +589,7 @@ def create_entertainment_log_entry(notion, payload: dict) -> tuple[str, bool]:
         if cleaned_notes:
             notes_prop = _pick_prop(schema, "rich_text", ["Notes", "Comment", "Details"])
             if notes_prop:
-                props[notes_prop] = {"rich_text": [{"text": {"content": cleaned_notes}}]}
+                props[notes_prop] = rich_text_prop(cleaned_notes)
         else:
             notes_prop = _pick_prop(schema, "rich_text", ["Notes", "Comment", "Details"])
             if notes_prop and notes_prop in props:
@@ -598,14 +599,14 @@ def create_entertainment_log_entry(notion, payload: dict) -> tuple[str, bool]:
         if seat and seat_select_prop:
             props[seat_select_prop] = {"select": {"name": seat}}
         elif seat and seat_rich_text_prop:
-            props[seat_rich_text_prop] = {"rich_text": [{"text": {"content": seat}}]}
+            props[seat_rich_text_prop] = rich_text_prop(seat)
 
         auditorium_number_prop = _pick_exact_prop(schema, "number", ["Auditorium"])
         auditorium_rich_text_prop = _pick_exact_prop(schema, "rich_text", ["Auditorium"])
         if auditorium is not None and auditorium_number_prop:
             props[auditorium_number_prop] = {"number": auditorium}
         elif auditorium is not None and auditorium_rich_text_prop:
-            props[auditorium_rich_text_prop] = {"rich_text": [{"text": {"content": str(auditorium)}}]}
+            props[auditorium_rich_text_prop] = rich_text_prop(str(auditorium))
 
         favourite_prop = _pick_exact_prop(schema, "checkbox", ["Favourite", "Favorite"])
         if favourite_prop:
@@ -656,7 +657,7 @@ def create_entertainment_log_entry(notion, payload: dict) -> tuple[str, bool]:
         if seat:
             notes_prop = _pick_prop(schema, "rich_text", ["Notes", "Comment", "Details"])
             if cleaned_notes and notes_prop:
-                props[notes_prop] = {"rich_text": [{"text": {"content": cleaned_notes}}]}
+                props[notes_prop] = rich_text_prop(cleaned_notes)
             elif notes_prop and notes_prop in props:
                 props.pop(notes_prop, None)
 
@@ -668,7 +669,7 @@ def create_entertainment_log_entry(notion, payload: dict) -> tuple[str, bool]:
             elif seat_status_prop:
                 props[seat_status_prop] = {"status": {"name": seat}}
             elif seat_rich_text_prop:
-                props[seat_rich_text_prop] = {"rich_text": [{"text": {"content": seat}}]}
+                props[seat_rich_text_prop] = rich_text_prop(seat)
         page = _safe_create_entertainment_page(notion, schema, NOTION_SPORTS_LOG_DB, props)
         return page["id"], False
 

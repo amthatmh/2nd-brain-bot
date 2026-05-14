@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
+from second_brain.notion.properties import rich_text_prop
 
 
 STATUS_NOT_LOADED = "not_loaded"
@@ -453,4 +454,4 @@ def _notion_date_now() -> dict[str, Any]:
 def _notion_text(value: str) -> dict[str, Any]:
     if not value:
         return {"rich_text": []}
-    return {"rich_text": [{"text": {"content": value[:1900]}}]}
+    return rich_text_prop(value[:1900])

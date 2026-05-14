@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from second_brain.rules import entertainment_rules
+from second_brain.notion.properties import rich_text_prop, title_prop
 
 log = logging.getLogger(__name__)
 
@@ -139,11 +140,11 @@ class RuleEngine:
         properties: dict[str, Any] = {}
         for field_name, field_value in mapped_entry.items():
             if field_name == "Title":
-                properties[field_name] = {"title": [{"text": {"content": str(field_value)}}]}
+                properties[field_name] = title_prop(str(field_value))
             elif field_name == "DateWatched":
                 properties[field_name] = {"date": {"start": str(field_value)}}
             else:
-                properties[field_name] = {"rich_text": [{"text": {"content": str(field_value)}}]}
+                properties[field_name] = rich_text_prop(str(field_value))
 
         page = await asyncio.to_thread(
             self.notion.pages.create,

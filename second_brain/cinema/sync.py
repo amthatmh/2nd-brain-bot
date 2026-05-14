@@ -8,7 +8,11 @@ from difflib import SequenceMatcher
 
 import httpx
 
-from second_brain.notion.properties import query_all
+from second_brain.notion.properties import (
+    query_all,
+    rich_text_prop,
+    title_prop,
+)
 
 TMDB_BASE = "https://api.themoviedb.org/3"
 TMDB_MOVIE_URL_BASE = "https://www.themoviedb.org/movie"
@@ -468,9 +472,7 @@ async def _sync_rows(
         normalized_title = _normalize_title(title)
         if fave_db_id and favourite and normalized_title and normalized_title not in existing_favourites:
             favourite_props = {
-                fave_fields["title_prop"] or "Title": {
-                    "title": [{"text": {"content": title}}],
-                }
+                fave_fields["title_prop"] or "Title": title_prop(title)
             }
             row_year = _parse_row_year(props)
             if row_year and fave_fields["year_prop"]:
@@ -479,9 +481,7 @@ async def _sync_rows(
                 elif fave_fields["year_type"] == "select":
                     favourite_props[fave_fields["year_prop"]] = {"select": {"name": str(row_year)}}
                 elif fave_fields["year_type"] == "rich_text":
-                    favourite_props[fave_fields["year_prop"]] = {
-                        "rich_text": [{"text": {"content": str(row_year)}}]
-                    }
+                    favourite_props[fave_fields["year_prop"]] = rich_text_prop(str(row_year))
                 elif fave_fields["year_type"] == "date":
                     favourite_props[fave_fields["year_prop"]] = {
                         "date": {"start": f"{row_year}-01-01"}

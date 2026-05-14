@@ -38,7 +38,15 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from second_brain.monitoring import track_job_execution
-from second_brain.notion.properties import query_all
+from second_brain.utils import local_today
+from second_brain.notion.properties import (
+    query_all,
+    rich_text_prop,
+    title_prop,
+)
+
+# Compatibility seam for tests that patch the old helper name; runtime call sites use local_today().
+_local_today = lambda tz: local_today(tz).isoformat()
 
 log = logging.getLogger(__name__)
 
@@ -59,10 +67,6 @@ def _date_state(date_str: str) -> dict:
         }
     return _steps_state[date_str]
 
-
-def _local_today(tz) -> str:
-    """Return today's date string in the app timezone."""
-    return datetime.now(tz).strftime("%Y-%m-%d")
 
 
 def _yesterday(tz) -> str:
@@ -131,9 +135,7 @@ def _create_log_entry(
             # Steps entries belong in NOTION_LOG_DB (Habits Log), not the Habits DB.
             parent={"database_id": log_db_id},
             properties={
-                "Entry": {
-                    "title": [{"text": {"content": "Steps"}}]
-                },
+                "Entry": title_prop("Steps"),
                 "Habit": {"relation": [{"id": habit_page_id}]},
                 "Completed": {"checkbox": completed},
                 "Date": {"date": {"start": date_str}},
@@ -223,9 +225,7 @@ def migrate_steps_entry_titles(
                 notion.pages.update(
                     page_id=page["id"],
                     properties={
-                        "Entry": {
-                            "title": [{"text": {"content": "Steps"}}],
-                        },
+                        "Entry": title_prop("Steps"),
                     },
                 )
                 renamed += 1
@@ -277,7 +277,7 @@ def _persist_threshold_state(
         row_name = f"steps_threshold_{date_str}"
         page = _query_threshold_state_row(notion, env_db_id, row_name)
         properties = {
-            "Value": {"rich_text": [{"text": {"content": str(message_id)}}]},
+            "Value": rich_text_prop(str(message_id)),
         }
 
         if page:
@@ -289,7 +289,7 @@ def _persist_threshold_state(
             notion.pages.create(
                 parent={"database_id": env_db_id},
                 properties={
-                    "Name": {"title": [{"text": {"content": row_name}}]},
+                    "Name": title_prop(row_name),
                     **properties,
                 },
             )

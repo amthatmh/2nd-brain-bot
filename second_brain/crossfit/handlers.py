@@ -18,6 +18,7 @@ from .readiness import check_readiness_logged_today, log_daily_readiness
 from second_brain.notion import notion_call
 from second_brain.utils import local_today
 from .weekly_program import get_current_week_program_url, get_todays_workout_day
+from second_brain.notion.properties import title_prop
 
 
 log = logging.getLogger(__name__)
@@ -162,7 +163,7 @@ async def upsert_training_log_field(notion, date_str: str, field_name: str, rati
                     notion.pages.create,
                     parent={"database_id": db_id},
                     properties={
-                        "Name": {"title": [{"text": {"content": f"{date_str} — Training"}}]},
+                        "Name": title_prop(f"{date_str} — Training"),
                         "Date": {"date": {"start": date_str}},
                         **props,
                     },
@@ -1705,7 +1706,7 @@ async def _prompt_readiness_field(message, key: str, field: str):
     await msg.edit_reply_markup(reply_markup=_readiness_keyboard(field, {}, msg.message_id))
 
 
-async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
+async def handle_cf_callback(q, parts, claude, notion, config, cf_pending, chain_after: bool = False):
     try:
         await q.edit_message_reply_markup(reply_markup=None)
     except Exception:
@@ -1854,7 +1855,7 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
             await q.edit_message_text("✅ Readiness is already logged for today.", reply_markup=None)
             return
         key = str(q.message.chat_id)
-        cf_pending[key] = {"mode": "readiness", "stage": "sleep_quality", "readiness": {}}
+        cf_pending[key] = {"mode": "readiness", "stage": "sleep_quality", "readiness": {}, "chain_after": chain_after}
         await _prompt_readiness_field(q.message, key, "sleep_quality")
     elif parts[1] in READINESS_FIELDS_BY_SLUG and len(parts) >= 4:
         field = READINESS_FIELDS_BY_SLUG[parts[1]]
@@ -1869,7 +1870,9 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         values = dict(zip(READINESS_ORDER[:field_index], previous_values))
         values[field] = value
         key = str(q.message.chat_id)
-        state = {"mode": "readiness", "readiness": values}
+        previous_state = cf_pending.get(key, {})
+        chain_after = previous_state.get("chain_after", False)
+        state = {"mode": "readiness", "readiness": values, "chain_after": chain_after}
 
         try:
             next_field = READINESS_ORDER[field_index + 1]
@@ -1892,9 +1895,12 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
                 await q.edit_message_text(f"❌ Error logging readiness: {e}", reply_markup=None)
                 return
             log.debug("Readiness logged successfully")
-            cf_pending[key] = {"session_chain": ["b", "c"], "session_origin": "a"}
             await q.edit_message_text(_readiness_final_text(values), parse_mode="Markdown", reply_markup=None)
-            await q.message.reply_text("💪 Did you do Section B (Strength) today?", reply_markup=_chain_keyboard("b"))
+            if chain_after:
+                cf_pending[key] = {"session_chain": ["b", "c"], "session_origin": "a"}
+                await q.message.reply_text("💪 Did you do Section B (Strength) today?", reply_markup=_chain_keyboard("b"))
+            else:
+                cf_pending.pop(key, None)
             return
 
         state["stage"] = next_field
@@ -1907,7 +1913,8 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
     elif parts[1] == "ready" and len(parts) >= 5:
         if len(parts) == 5 and parts[2] not in READINESS_ORDER:
             key, field, value = parts[2], parts[3], parts[4]
-            state = cf_pending.get(key, {"mode": "readiness", "readiness": {}})
+            state = cf_pending.get(key, {"mode": "readiness", "readiness": {}, "chain_after": False})
+            chain_after = state.get("chain_after", False)
             values = state.setdefault("readiness", {})
             values[field] = value
             try:
@@ -1931,9 +1938,12 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
                     await q.edit_message_text(f"❌ Error logging readiness: {e}", reply_markup=None)
                     return
                 log.debug("Readiness logged successfully")
-                cf_pending[key] = {"session_chain": ["b", "c"], "session_origin": "a"}
                 await q.edit_message_text(_readiness_final_text(values), parse_mode="Markdown", reply_markup=None)
-                await q.message.reply_text("💪 Did you do Section B (Strength) today?", reply_markup=_chain_keyboard("b"))
+                if chain_after:
+                    cf_pending[key] = {"session_chain": ["b", "c"], "session_origin": "a"}
+                    await q.message.reply_text("💪 Did you do Section B (Strength) today?", reply_markup=_chain_keyboard("b"))
+                else:
+                    cf_pending.pop(key, None)
                 return
             state["stage"] = next_field
             cf_pending[key] = state
@@ -1959,7 +1969,9 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
         values = dict(zip(READINESS_ORDER[:field_index], previous_values))
         values[field] = value
         key = str(q.message.chat_id)
-        state = {"mode": "readiness", "readiness": values}
+        previous_state = cf_pending.get(key, {})
+        chain_after = previous_state.get("chain_after", False)
+        state = {"mode": "readiness", "readiness": values, "chain_after": chain_after}
 
         try:
             next_field = READINESS_ORDER[field_index + 1]
@@ -1982,9 +1994,12 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending):
                 await q.edit_message_text(f"❌ Error logging readiness: {e}", reply_markup=None)
                 return
             log.debug("Readiness logged successfully")
-            cf_pending[key] = {"session_chain": ["b", "c"], "session_origin": "a"}
             await q.edit_message_text(_readiness_final_text(values), parse_mode="Markdown", reply_markup=None)
-            await q.message.reply_text("💪 Did you do Section B (Strength) today?", reply_markup=_chain_keyboard("b"))
+            if chain_after:
+                cf_pending[key] = {"session_chain": ["b", "c"], "session_origin": "a"}
+                await q.message.reply_text("💪 Did you do Section B (Strength) today?", reply_markup=_chain_keyboard("b"))
+            else:
+                cf_pending.pop(key, None)
             return
 
         state["stage"] = next_field

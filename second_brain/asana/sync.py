@@ -32,7 +32,11 @@ from typing import Any
 from urllib import parse, request
 from urllib.error import HTTPError, URLError
 
-from second_brain.notion.properties import query_all
+from second_brain.notion.properties import (
+    query_all,
+    rich_text_prop,
+    title_prop,
+)
 
 log = logging.getLogger(__name__)
 
@@ -423,13 +427,13 @@ def _asana_update_task(gid: str, token: str, fields: dict[str, Any]) -> dict[str
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _notion_title(value: str) -> dict[str, Any]:
-    return {"title": [{"text": {"content": value or ""}}]}
+    return title_prop(value or "")
 
 
 def _notion_rich_text(value: str | None) -> dict[str, Any]:
     if not value:
         return {"rich_text": []}
-    return {"rich_text": [{"text": {"content": value}}]}
+    return rich_text_prop(value)
 
 
 def _notion_date(value: str | None) -> dict[str, Any]:

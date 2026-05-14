@@ -7,8 +7,6 @@ from datetime import date
 import httpx
 
 from second_brain import keyboards as kb
-
-log = logging.getLogger(__name__)
 from second_brain.config import (
     NOTION_PHOTO_DB,
     NOTION_WANTSLIST_V2_DB,
@@ -16,6 +14,9 @@ from second_brain.config import (
     TMDB_API_KEY,
     TMDB_BASE,
 )
+from second_brain.notion.properties import rich_text_prop, title_prop
+
+log = logging.getLogger(__name__)
 
 pending_wantslist_map: dict[str, dict] = {}
 pending_photo_map: dict[str, dict] = {}
@@ -107,14 +108,14 @@ def create_watchlist_entry(
         if media_slug:
             tmdb_url = f"https://www.themoviedb.org/{media_slug}/{tmdb_id_str}"
     props: dict = {
-        "Title": {"title": [{"text": {"content": title}}]},
+        "Title": title_prop(title),
         "Type": {"select": {"name": media_type}},
         "Status": {"select": {"name": "Queued"}},
         "Source": {"select": {"name": "📱 Telegram"}},
         "Added": {"date": {"start": date.today().isoformat()}},
     }
     if tmdb_id_str:
-        props["TMDB ID"] = {"rich_text": [{"text": {"content": tmdb_id_str}}]}
+        props["TMDB ID"] = rich_text_prop(tmdb_id_str)
     if tmdb_url:
         props["TMDB URL"] = {"url": tmdb_url}
     if seasons is not None:
@@ -146,7 +147,7 @@ def create_wantslist_entry(
     notes: str | None = None,
 ) -> str:
     props: dict = {
-        "Item": {"title": [{"text": {"content": item}}]},
+        "Item": title_prop(item),
         "Category": {"select": {"name": category}},
         "Priority": {"select": {"name": priority}},
         "Status": {"select": {"name": "Wanted"}},
@@ -157,7 +158,7 @@ def create_wantslist_entry(
     if url:
         props["userDefined:URL"] = {"url": url}
     if notes:
-        props["Notes"] = {"rich_text": [{"text": {"content": notes}}]}
+        props["Notes"] = rich_text_prop(notes)
 
     page = notion.pages.create(parent={"database_id": NOTION_WANTSLIST_V2_DB}, properties=props)
     return page["id"]
@@ -172,18 +173,18 @@ def create_photo_entry(
     notes: str | None = None,
 ) -> str:
     props: dict = {
-        "Subject": {"title": [{"text": {"content": subject}}]},
+        "Subject": title_prop(subject),
         "Status": {"select": {"name": "Wishlist"}},
         "Source": {"select": {"name": "📱 Telegram"}},
     }
     if location:
-        props["Location"] = {"rich_text": [{"text": {"content": location}}]}
+        props["Location"] = rich_text_prop(location)
     if season:
         props["Season"] = {"select": {"name": season}}
     if time_of_day:
         props["Time of Day"] = {"select": {"name": time_of_day}}
     if notes:
-        props["Notes"] = {"rich_text": [{"text": {"content": notes}}]}
+        props["Notes"] = rich_text_prop(notes)
 
     page = notion.pages.create(parent={"database_id": NOTION_PHOTO_DB}, properties=props)
     return page["id"]
@@ -322,7 +323,7 @@ async def handle_photo_followup(notion, message, text: str) -> bool:
         location, season, time_of_day = _parse_photo_followup(text)
         props: dict = {}
         if location:
-            props["Location"] = {"rich_text": [{"text": {"content": location}}]}
+            props["Location"] = rich_text_prop(location)
         if season:
             props["Season"] = {"select": {"name": season}}
         if time_of_day:

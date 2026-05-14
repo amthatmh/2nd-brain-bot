@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 import logging
+from datetime import date, datetime, timedelta
 from typing import Any
 
-from second_brain.utils import ExpiringDict
+from second_brain.utils import ExpiringDict, get_current_monday
 from second_brain.notion.properties import (
     extract_checkbox,
     extract_date,
@@ -17,6 +18,7 @@ from second_brain.notion.properties import (
     extract_select,
     extract_title,
     get_property_by_name,
+    title_prop,
 )
 
 
@@ -234,3 +236,143 @@ def query_tasks_by_auto_horizon(*, notion: Any, notion_db_id: str, horizons: lis
             }
         )
     return tasks
+
+
+def log_habit(
+    notion, log_db_id: str, habit_page_id: str,
+    habit_name: str, source: str = "📱 Telegram"
+) -> None:
+    today = datetime.now().astimezone().date().isoformat()
+    props = {
+        "Entry": title_prop(habit_name),
+        "Habit": {"relation": [{"id": habit_page_id}]},
+        "Completed": {"checkbox": True},
+        "Date": {"date": {"start": today}},
+        "Source": {"select": {"name": source}},
+    }
+    try:
+        notion.pages.create(
+            parent={"database_id": log_db_id},
+            properties=props,
+        )
+    except Exception as e:
+        # Some log DBs do not expose/allow Source; retry with core fields only.
+        log.warning("Habit log create retrying without Source: %s", e)
+        minimal = {k: v for k, v in props.items() if k != "Source"}
+        notion.pages.create(
+            parent={"database_id": log_db_id},
+            properties=minimal,
+        )
+    log.info("Habit logged: %s on %s via %s", habit_name, today, source)
+
+
+def already_logged_today(notion, log_db_id: str, habit_page_id: str, tz) -> bool:
+    today = datetime.now(tz).date().isoformat()
+    try:
+        results = notion.databases.query(
+            database_id=log_db_id,
+            filter={
+                "and": [
+                    {"property": "Habit", "relation": {"contains": habit_page_id}},
+                    {"property": "Completed", "checkbox": {"equals": True}},
+                    {"property": "Date", "date": {"equals": today}},
+                ]
+            },
+        )
+        return len(results.get("results", [])) > 0
+    except Exception as e:
+        # Avoid blocking one-tap habit logs when the dedupe query schema drifts.
+        log.warning("already_logged_today query failed for %s: %s", habit_page_id, e)
+        return False
+
+
+def get_week_completion_count(notion, log_db_id: str, habit_page_id: str, tz) -> int:
+    try:
+        results = notion.databases.query(
+            database_id=log_db_id,
+            filter={
+                "and": [
+                    {"property": "Habit", "relation": {"contains": habit_page_id}},
+                    {"property": "Completed", "checkbox": {"equals": True}},
+                    {"property": "Date", "date": {"on_or_after": get_current_monday().isoformat()}},
+                ]
+            },
+        )
+        return len(results.get("results", []))
+    except Exception as e:
+        log.error("Error counting weekly completions for habit %s: %s", habit_page_id, e)
+        return 0
+
+
+def get_habit_frequency(notion, habit_page_id: str) -> int:
+    try:
+        page = notion.pages.retrieve(page_id=habit_page_id)
+        properties = page.get("properties", {})
+        frequency = extract_habit_frequency(properties)
+        if frequency and frequency > 0:
+            return frequency
+        return 7
+    except Exception as e:
+        log.error("Error reading habit frequency for %s: %s", habit_page_id, e)
+        return 7
+
+
+def habit_capped_this_week(notion, log_db_id: str, habit_page_id: str, tz) -> bool:
+    return get_week_completion_count(notion, log_db_id, habit_page_id, tz) >= get_habit_frequency(notion, habit_page_id)
+
+
+def _count_habit_completions_this_week(notion, log_db_id: str, habit_page_id: str, tz) -> int:
+    """Count completed logs for a habit from Monday through today (inclusive)."""
+    try:
+        today = datetime.now(tz).date()
+        monday = today - timedelta(days=today.weekday())
+        results = notion.databases.query(
+            database_id=log_db_id,
+            filter={
+                "and": [
+                    {"property": "Habit", "relation": {"contains": habit_page_id}},
+                    {"property": "Completed", "checkbox": {"equals": True}},
+                    {"property": "Date", "date": {"on_or_after": monday.isoformat()}},
+                ]
+            },
+        )
+        count = 0
+        for row in results.get("results", []):
+            date_prop = row.get("properties", {}).get("Date", {}).get("date", {})
+            start = date_prop.get("start")
+            if not start:
+                continue
+            try:
+                row_day = date.fromisoformat(start[:10])
+            except Exception:
+                continue
+            if monday <= row_day <= today:
+                count += 1
+        return count
+    except Exception as e:
+        log.error("Habit weekly completion count error for %s: %s", habit_page_id, e)
+        return 0
+
+
+def logs_this_week(notion, log_db_id: str, habit_page_id: str, tz) -> int:
+    today = datetime.now(tz).date()
+    monday = today - timedelta(days=today.weekday())
+    results = notion.databases.query(
+        database_id=log_db_id,
+        filter={
+            "and": [
+                {"property": "Habit", "relation": {"contains": habit_page_id}},
+                {"property": "Completed", "checkbox": {"equals": True}},
+                {"property": "Date", "date": {"on_or_after": monday.isoformat()}},
+                {"property": "Date", "date": {"on_or_before": today.isoformat()}},
+            ]
+        },
+    )
+    return len(results.get("results", []))
+
+
+def is_on_pace(notion, log_db_id: str, habit: dict, tz) -> bool:
+    target = habit.get("freq_per_week")
+    if not target:
+        return False
+    return logs_this_week(notion, log_db_id, habit["page_id"], tz) >= target
