@@ -7,13 +7,17 @@ from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from second_brain.config import NUMBER_EMOJIS, TZ as _DEFAULT_TZ
+NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 from second_brain.services.task_parsing import split_tasks  # noqa: F401
 
 
 def local_today(tz: ZoneInfo | None = None) -> date:
     """Return today's date in the app timezone (or tz if provided)."""
-    return datetime.now(tz or _DEFAULT_TZ).date()
+    if tz is None:
+        from second_brain.config import TZ
+
+        tz = TZ
+    return datetime.now(tz).date()
 
 
 def get_current_monday() -> date:

@@ -5,13 +5,10 @@ from __future__ import annotations
 import logging
 from second_brain.notion.properties import title_prop
 from second_brain.state import STATE
-from second_brain.palette import (
-    format_digest_view,
-    format_todo_view,
-    quick_access_keyboard,
-    parse_done_numbers_command,
-    parse_review_numbers_command,
-)
+import second_brain.palette as _palette
+import second_brain.keyboards as _kb_direct
+import second_brain.formatters as _fmt_direct
+from second_brain.utils import local_today
 
 
 log = logging.getLogger(__name__)
@@ -476,7 +473,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             await message.reply_text(_entertainment_save_error_text(e, explicit_entertainment))
         return
 
-    numbers = parse_done_numbers_command(text)
+    numbers = _palette.parse_done_numbers_command(text)
     if numbers:
         source_id = message.reply_to_message.message_id if message.reply_to_message else last_digest_msg_id
         done_names: list[str] = []
@@ -509,7 +506,7 @@ async def handle_message_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             await message.reply_text("No recent digest found. Try replying directly to a digest message.")
         return
 
-    review_numbers = parse_review_numbers_command(text)
+    review_numbers = _palette.parse_review_numbers_command(text)
     if review_numbers:
         source_id = message.reply_to_message.message_id if message.reply_to_message else last_digest_msg_id
         queued = 0
@@ -1326,13 +1323,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         if action == "digest":
             try:
-                message, keyboard = format_digest_view(
+                message, keyboard = _palette.format_digest_view(
                     notion_tasks=notion_tasks,
                     notion=notion,
                     notion_db_id=NOTION_DB_ID,
                     local_today_fn=local_today,
-                    back_to_palette_keyboard=kb.back_to_palette_keyboard,
-                    weather_card=fmt.format_digest_weather_card(),
+                    back_to_palette_keyboard=_kb_direct.back_to_palette_keyboard,
+                    weather_card=_fmt_direct.format_digest_weather_card(),
                 )
                 await q.edit_message_text(message, reply_markup=keyboard)
             except Exception as e:
@@ -1342,12 +1339,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         if action == "todo":
             context.user_data["palette_done_indices"] = set()
-            message, keyboard = format_todo_view(
+            message, keyboard = _palette.format_todo_view(
                 notion_tasks=notion_tasks,
                 notion=notion,
                 notion_db_id=NOTION_DB_ID,
                 local_today_fn=local_today,
-                num_emoji=fmt.num_emoji,
+                num_emoji=_fmt_direct.num_emoji,
             )
             await q.edit_message_text(message, reply_markup=keyboard)
             return
@@ -1362,12 +1359,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             tasks = _get_today_tasks_for_palette()
             if idx < 0 or idx >= len(tasks):
                 await q.answer("That task is no longer available.", show_alert=False)
-                message, keyboard = format_todo_view(
+                message, keyboard = _palette.format_todo_view(
                     notion_tasks=notion_tasks,
                     notion=notion,
                     notion_db_id=NOTION_DB_ID,
                     local_today_fn=local_today,
-                    num_emoji=fmt.num_emoji,
+                    num_emoji=_fmt_direct.num_emoji,
                     marked_done_indices=context.user_data.get("palette_done_indices", set()),
                 )
                 await q.edit_message_text(message, reply_markup=keyboard)
@@ -1388,12 +1385,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     await q.edit_message_text("⚠️ Couldn't mark that task done.")
                     return
 
-            message, keyboard = format_todo_view(
+            message, keyboard = _palette.format_todo_view(
                 notion_tasks=notion_tasks,
                 notion=notion,
                 notion_db_id=NOTION_DB_ID,
                 local_today_fn=local_today,
-                num_emoji=fmt.num_emoji,
+                num_emoji=_fmt_direct.num_emoji,
                 marked_done_indices=done_indices,
             )
             await q.edit_message_text(message, reply_markup=keyboard)
