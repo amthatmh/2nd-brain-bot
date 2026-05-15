@@ -5,16 +5,8 @@ from __future__ import annotations
 import logging
 
 from second_brain.entertainment import log as ent_log
-from second_brain import keyboards as kb  # noqa: F401 - imported for transition parity
-from second_brain.utils import ExpiringDict, local_today, reply_notion_error  # noqa: F401
-from second_brain.config import (  # noqa: F401
-    NOTION_CINEMA_LOG_DB,
-    NOTION_PERFORMANCE_LOG_DB,
-    NOTION_SPORTS_LOG_DB,
-    NOTION_FAVE_DB,
-)
-from second_brain.state import STATE  # noqa: F401
-
+from second_brain.utils import local_today
+from second_brain.config import NOTION_CINEMA_LOG_DB, NOTION_FAVE_DB
 
 log = logging.getLogger(__name__)
 
@@ -57,11 +49,9 @@ async def _execute_entertainment_rules(notion, rule_engine, payload: dict) -> bo
     return fav_rule_success
 
 
-async def handle_entertainment_log(notion, message, payload: dict) -> None:
+async def handle_entertainment_log(notion, message, payload: dict, *, rule_engine=None) -> None:
     entry_id, fav_saved = ent_log.create_entertainment_log_entry(notion, payload)
-    import second_brain.main as _main  # transition import
-
-    rule_fav_saved = await _execute_entertainment_rules(notion, _main.rule_engine, payload)
+    rule_fav_saved = await _execute_entertainment_rules(notion, rule_engine, payload)
     title = payload.get("title", "Untitled")
     log_type = payload.get("log_type", "cinema")
     venue = payload.get("venue")
@@ -97,19 +87,4 @@ def load_entertainment_schemas(notion) -> None:
     ent_log.load_entertainment_schemas(notion)
 
 
-def _resolve_known_cinema_venue(venue: str | None, schema: dict) -> str | None:
-    import second_brain.main as _main  # transition import
 
-    return ent_log._resolve_known_cinema_venue(_main.notion, venue, schema)
-
-
-def _find_existing_cinema_venue(title: str, schema: dict) -> str | None:
-    import second_brain.main as _main  # transition import
-
-    return ent_log._find_existing_cinema_venue(_main.notion, title, schema)
-
-
-def _suggest_known_venue(payload: dict) -> tuple[str | None, str | None]:
-    import second_brain.main as _main  # transition import
-
-    return ent_log._suggest_known_venue(_main.notion, payload)
