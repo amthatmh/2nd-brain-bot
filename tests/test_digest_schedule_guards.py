@@ -221,7 +221,7 @@ class TestDailyDigestHabits(unittest.IsolatedAsyncioTestCase):
         with patch.object(main.notion_tasks, "get_today_and_overdue_tasks", return_value=[]), \
             patch.object(main, "already_logged_today", return_value=False), \
             patch.object(main, "is_on_pace", return_value=False), \
-            patch("second_brain.main.datetime") as mock_dt:
+            patch("second_brain.digest.datetime") as mock_dt:
             mock_dt.now.return_value = real_datetime(2026, 5, 7, 8, 0, tzinfo=main.TZ)
             await main.send_daily_digest(
                 bot,
@@ -294,7 +294,7 @@ class TestDailyDigestHabits(unittest.IsolatedAsyncioTestCase):
         with patch.object(main.notion_tasks, "get_today_and_overdue_tasks", return_value=[]), \
             patch.object(main, "already_logged_today", return_value=False), \
             patch.object(main, "is_on_pace", return_value=False), \
-            patch("second_brain.main.datetime") as mock_dt:
+            patch("second_brain.digest.datetime") as mock_dt:
             mock_dt.now.return_value = real_datetime(2026, 5, 7, 8, 0, tzinfo=main.TZ)
             await main.send_daily_digest(
                 bot,
