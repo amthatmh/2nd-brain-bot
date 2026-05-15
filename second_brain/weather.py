@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -48,9 +49,14 @@ location_state_fallback_file = Path(__file__).resolve().parents[1] / ".second_br
 location_history_file = STATE_DIR / "location_history.json"
 location_history_fallback_file = Path(__file__).resolve().parents[1] / ".second_brain_location_history.json"
 
-current_location: str = ""
-current_lat: float | None = None
-current_lon: float | None = None
+@dataclass
+class _LocationState:
+    location: str = ""
+    lat: float | None = None
+    lon: float | None = None
+
+
+_loc = _LocationState()
 weather_cache: ExpiringDict = ExpiringDict(ttl_seconds=3600)
 
 
@@ -105,7 +111,7 @@ def recover_location_from_history(claude) -> bool:
             log.warning("Failed loading location history from %s: %s", file_path, e)
     for candidate in reversed(history):
         if set_location_smart(candidate, claude):
-            log.info("Recovered weather location from history: %s", current_location)
+            log.info("Recovered weather location from history: %s", _loc.location)
             return True
     return False
 
@@ -126,25 +132,23 @@ def save_location_state(location: str) -> None:
 
 
 def load_location_state() -> None:
-    global current_location, current_lat, current_lon
-    current_location = ""
-    current_lat = None
-    current_lon = None
+    _loc.location = ""
+    _loc.lat = None
+    _loc.lon = None
     for file_path in _location_state_files():
         try:
             if not file_path.exists():
                 continue
             payload = json.loads(file_path.read_text() or "{}")
-            current_location = (payload.get("last_weather_location") or "").strip()
+            _loc.location = (payload.get("last_weather_location") or "").strip()
             if file_path != location_state_file:
-                save_location_state(current_location)
+                save_location_state(_loc.location)
             return
         except Exception as e:
             log.warning("Failed loading location state from %s: %s", file_path, e)
 
 
 def load_notion_env_location() -> bool:
-    global current_location, current_lat, current_lon
     if not NOTION_ENV_DB or notion is None:
         return False
     try:
@@ -158,9 +162,9 @@ def load_notion_env_location() -> bool:
         lat = props.get("Lat", {}).get("number")
         lon = props.get("Lon", {}).get("number")
         if value and lat is not None and lon is not None:
-            current_location = value
-            current_lat = float(lat)
-            current_lon = float(lon)
+            _loc.location = value
+            _loc.lat = float(lat)
+            _loc.lon = float(lon)
             log.info("Location loaded from Notion ENV: %s (%.4f, %.4f)", value, lat, lon)
             return True
         return False
@@ -187,7 +191,6 @@ def save_notion_env_location(location: str, lat: float, lon: float) -> None:
 
 
 def set_location(location: str) -> bool:
-    global current_location, current_lat, current_lon
     openweather_key = _openweather_key()
     if not openweather_key:
         return False
@@ -206,12 +209,12 @@ def set_location(location: str) -> bool:
         state = row.get("state")
         country = row.get("country")
         pretty = ", ".join([p for p in [display_name, state, country] if p])
-        current_location = pretty
-        current_lat = float(lat)
-        current_lon = float(lon)
+        _loc.location = pretty
+        _loc.lat = float(lat)
+        _loc.lon = float(lon)
         clear_weather_cache()
-        save_location_state(current_location)
-        save_notion_env_location(current_location, float(lat), float(lon))
+        save_location_state(_loc.location)
+        save_notion_env_location(_loc.location, float(lat), float(lon))
         return True
     except Exception as e:
         log.error("Location geocode failed for %s: %s", location, e)
@@ -347,11 +350,11 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
     if not force_refresh and cached_result is not None:
         return cached_result
     try:
-        if current_lat is None or current_lon is None:
+        if _loc.lat is None or _loc.lon is None:
             if not set_location(WEATHER_LOCATION):
                 return None
         if forecast_type == "current":
-            resp = httpx.get("https://api.openweathermap.org/data/2.5/weather", params={"lat": current_lat, "lon": current_lon, "appid": openweather_key, "units": "metric"}, timeout=10)
+            resp = httpx.get("https://api.openweathermap.org/data/2.5/weather", params={"lat": _loc.lat, "lon": _loc.lon, "appid": openweather_key, "units": "metric"}, timeout=10)
             resp.raise_for_status()
             data = resp.json()
             sunrise_ts = data.get("sys", {}).get("sunrise")
@@ -365,7 +368,7 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
                 "sunset": datetime.fromtimestamp(sunset_ts, timezone.utc).astimezone(TZ).isoformat() if sunset_ts else None,
             }
         else:
-            resp = httpx.get("https://api.openweathermap.org/data/2.5/forecast", params={"lat": current_lat, "lon": current_lon, "appid": openweather_key, "units": "metric"}, timeout=10)
+            resp = httpx.get("https://api.openweathermap.org/data/2.5/forecast", params={"lat": _loc.lat, "lon": _loc.lon, "appid": openweather_key, "units": "metric"}, timeout=10)
             resp.raise_for_status()
             rows = resp.json().get("list", [])
             target = datetime.now(TZ).date() + timedelta(days=1 if forecast_type == "tomorrow" else 0)
@@ -471,13 +474,13 @@ def fetch_multi_day_forecast(num_days: int) -> list[dict] | None:
     openweather_key = _openweather_key()
     if not openweather_key or num_days <= 0:
         return None
-    if current_lat is None or current_lon is None:
+    if _loc.lat is None or _loc.lon is None:
         if not set_location(WEATHER_LOCATION):
             return None
     try:
-        return _forecast_rows_for_coordinates(float(current_lat), float(current_lon), num_days=num_days)
+        return _forecast_rows_for_coordinates(float(_loc.lat), float(_loc.lon), num_days=num_days)
     except Exception as e:
-        log.warning("Multi-day forecast fetch failed for %s: %s", current_location or WEATHER_LOCATION, e)
+        log.warning("Multi-day forecast fetch failed for %s: %s", _loc.location or WEATHER_LOCATION, e)
         return None
 
 
@@ -545,10 +548,10 @@ def fetch_trip_weather_range(departure_date: str, return_date: str, destination:
 
 def fetch_uvi_data() -> dict | None:
     openweather_key = _openweather_key()
-    if not openweather_key or current_lat is None or current_lon is None:
+    if not openweather_key or _loc.lat is None or _loc.lon is None:
         return None
     try:
-        resp = httpx.get("https://api.openweathermap.org/data/3.0/onecall", params={"lat": current_lat, "lon": current_lon, "exclude": "minutely,hourly,alerts", "appid": openweather_key}, timeout=5)
+        resp = httpx.get("https://api.openweathermap.org/data/3.0/onecall", params={"lat": _loc.lat, "lon": _loc.lon, "exclude": "minutely,hourly,alerts", "appid": openweather_key}, timeout=5)
         resp.raise_for_status()
         data = resp.json()
         current_uvi = float(data.get("current", {}).get("uvi", 0))
@@ -566,7 +569,7 @@ def fetch_daily_weather(days: int = 5, force_refresh: bool = False) -> list[dict
     openweather_key = _openweather_key()
     if not openweather_key or days <= 0:
         return []
-    if current_lat is None or current_lon is None:
+    if _loc.lat is None or _loc.lon is None:
         if not set_location(WEATHER_LOCATION):
             return []
 
@@ -578,8 +581,8 @@ def fetch_daily_weather(days: int = 5, force_refresh: bool = False) -> list[dict
         resp = httpx.get(
             "https://api.openweathermap.org/data/3.0/onecall",
             params={
-                "lat": current_lat,
-                "lon": current_lon,
+                "lat": _loc.lat,
+                "lon": _loc.lon,
                 "exclude": "minutely,hourly,alerts",
                 "appid": openweather_key,
                 "units": "metric",

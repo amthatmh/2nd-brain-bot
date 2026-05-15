@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import logging
 import re
 from datetime import date
@@ -21,7 +22,7 @@ log = logging.getLogger(__name__)
 pending_wantslist_map: dict[str, dict] = {}
 pending_photo_map: dict[str, dict] = {}
 pending_tmdb_map: dict[str, list[dict]] = {}
-_v10_counter = 0
+_v10_counter = itertools.count()
 _tmdb_http_client: httpx.AsyncClient | None = None
 
 
@@ -203,7 +204,6 @@ def _save_watchlist_from_candidate(notion, c: dict, fallback_title: str) -> str:
 
 
 async def handle_watchlist_intent(notion, message, title: str, media_type: str) -> None:
-    global _v10_counter
     if not NOTION_WATCHLIST_DB:
         await message.reply_text("📺 Watchlist isn't configured yet — NOTION_WATCHLIST_DB missing.")
         return
@@ -238,8 +238,7 @@ async def handle_watchlist_intent(notion, message, title: str, media_type: str) 
         )
         return
 
-    key = str(_v10_counter)
-    _v10_counter += 1
+    key = str(next(_v10_counter))
     pending_tmdb_map[key] = candidates
     await thinking.edit_text(
         f"📺 Found a few matches for *{title}* — which one?",
@@ -249,12 +248,10 @@ async def handle_watchlist_intent(notion, message, title: str, media_type: str) 
 
 
 async def handle_wantslist_intent(message, item: str, category: str) -> None:
-    global _v10_counter
     if not NOTION_WANTSLIST_V2_DB:
         await message.reply_text("🎁 Wantslist isn't configured yet — NOTION_WANTSLIST_V2_DB missing.")
         return
-    key = str(_v10_counter)
-    _v10_counter += 1
+    key = str(next(_v10_counter))
     pending_wantslist_map[key] = {"item": item, "category": category}
     await message.reply_text(
         f"🎁 Save *{item}* to your Wantslist?\n_Category: {category}_",
@@ -264,13 +261,11 @@ async def handle_wantslist_intent(message, item: str, category: str) -> None:
 
 
 async def handle_photo_intent(notion, message, subject: str) -> None:
-    global _v10_counter
     if not NOTION_PHOTO_DB:
         await message.reply_text("📷 Photo Bucketlist isn't configured yet — NOTION_PHOTO_DB missing.")
         return
 
-    key = str(_v10_counter)
-    _v10_counter += 1
+    key = str(next(_v10_counter))
     pending_photo_map[key] = {"subject": subject}
     await message.reply_text(
         f"📷 *{subject}* added to your photo bucketlist!\n\n"
