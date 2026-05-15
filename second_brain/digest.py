@@ -420,7 +420,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         today_tasks = [t for t in ordered if (d := _main.notion_tasks._parse_deadline(t.get("deadline"))) is not None and d == today and t not in overdue]
         this_week_tasks = [t for t in ordered if t not in overdue and t not in today_tasks]
 
-    date_str = datetime.now(TZ).strftime("%A, %B %-d")
+    date_str = _main.datetime.now(TZ).strftime("%A, %B %-d")
     lines = [f"☀️ *{date_str}*", ""]
 
     if _main._last_daily_log_url:
@@ -446,7 +446,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         habits_enabled, include_habits, config.get("include_habits") if config else None
     )
     if habits_enabled:
-        now_str = datetime.now(TZ).strftime("%H:%M")
+        now_str = _main.datetime.now(TZ).strftime("%H:%M")
         habits = [
             h
             for h in _main.pending_habits_for_digest(time_str=now_str)

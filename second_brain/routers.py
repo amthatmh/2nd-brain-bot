@@ -20,6 +20,8 @@ load_dotenv()
 import second_brain.config as config
 import second_brain.formatters as fmt
 import second_brain.keyboards as kb
+import second_brain.keyboards as _kb_direct
+import second_brain.formatters as _fmt_direct
 import second_brain.notion.tasks as notion_tasks
 import second_brain.palette as _palette
 import second_brain.watchlist as wl
@@ -1626,8 +1628,8 @@ async def _cb_qp(q, parts, context) -> None:
                 notion=_notion(),
                 notion_db_id=NOTION_DB_ID,
                 local_today_fn=local_today,
-                back_to_palette_keyboard=kb.back_to_palette_keyboard,
-                weather_card=fmt.format_digest_weather_card(),
+                back_to_palette_keyboard=_kb_direct.back_to_palette_keyboard,
+                weather_card=_fmt_direct.format_digest_weather_card(),
             )
             await q.edit_message_text(message, reply_markup=keyboard)
         except Exception as e:
@@ -1642,7 +1644,7 @@ async def _cb_qp(q, parts, context) -> None:
             notion=_notion(),
             notion_db_id=NOTION_DB_ID,
             local_today_fn=local_today,
-            num_emoji=fmt.num_emoji,
+            num_emoji=_fmt_direct.num_emoji,
         )
         await q.edit_message_text(message, reply_markup=keyboard)
         return
@@ -1662,7 +1664,7 @@ async def _cb_qp(q, parts, context) -> None:
                 notion=_notion(),
                 notion_db_id=NOTION_DB_ID,
                 local_today_fn=local_today,
-                num_emoji=fmt.num_emoji,
+                num_emoji=_fmt_direct.num_emoji,
                 marked_done_indices=context.user_data.get(
                     "palette_done_indices", set()
                 ),
@@ -1690,7 +1692,7 @@ async def _cb_qp(q, parts, context) -> None:
             notion=_notion(),
             notion_db_id=NOTION_DB_ID,
             local_today_fn=local_today,
-            num_emoji=fmt.num_emoji,
+            num_emoji=_fmt_direct.num_emoji,
             marked_done_indices=done_indices,
         )
         await q.edit_message_text(message, reply_markup=keyboard)
@@ -1766,7 +1768,7 @@ async def _cb_digest_today(q, parts, context) -> None:
     return
 
 
-_CALLBACK_PREFIX_HANDLERS: dict[str, CallbackHandler] = {
+_CB_PREFIX: dict[str, CallbackHandler] = {
     "confirm_batch": _cb_confirm_batch,
     "cancel_batch": _cb_cancel_batch,
     "save_task": _cb_task_preview,
@@ -1799,7 +1801,7 @@ _CALLBACK_PREFIX_HANDLERS: dict[str, CallbackHandler] = {
     "qv": _cb_qv,
 }
 
-_CALLBACK_EXACT_HANDLERS: dict[str, CallbackHandler] = {
+_CB_EXACT: dict[str, CallbackHandler] = {
     "h:check:cancel": _cb_h_check_cancel,
     "h:done": _cb_h_done,
     "digest:today": _cb_digest_today,
@@ -1842,11 +1844,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if await _main().handle_v10_callback(q, parts):
         return
 
-    if data in _CALLBACK_EXACT_HANDLERS:
-        await _CALLBACK_EXACT_HANDLERS[data](q, parts, context)
+    if data in _CB_EXACT:
+        await _CB_EXACT[data](q, parts, context)
         return
 
-    handler = _CALLBACK_PREFIX_HANDLERS.get(parts[0])
+    handler = _CB_PREFIX.get(parts[0])
     if handler:
         await handler(q, parts, context)
         return
