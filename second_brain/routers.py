@@ -102,18 +102,67 @@ def _crossfit_config():
     return _main()._crossfit_config()
 
 
+async def _maybe_prompt_explicit_venue_in_executor(
+    notion, message, payload: dict, raw_text: str
+) -> bool:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: asyncio.run(
+            ent_log._maybe_prompt_explicit_venue(notion, message, payload, raw_text)
+        ),
+    )
+
+
 async def route_classified_message_v10(message, text: str) -> None:
     thinking = await message.reply_text("🧠 Got it...")
-    if NOTION_WORKOUT_LOG_DB or NOTION_WOD_LOG_DB or NOTION_WORKOUT_PROGRAM_DB:
-        try:
-            workout_result = await asyncio.get_running_loop().run_in_executor(
-                None,
-                lambda: _main().classify_workout_message(
-                    text, _claude(), CLAUDE_MODEL, CLAUDE_MAX_TOK
+    loop = asyncio.get_running_loop()
+
+    def classify_v10_message():
+        return ai_classify.classify_message(
+            _claude(),
+            CLAUDE_MODEL,
+            text,
+            list(_habit_cache().keys()),
+            bool(NOTION_WATCHLIST_DB),
+            bool(NOTION_WANTSLIST_V2_DB),
+            bool(NOTION_PHOTO_DB),
+            bool(NOTION_NOTES_DB),
+            local_today(),
+        )
+
+    result = None
+    workout_enabled = (
+        NOTION_WORKOUT_LOG_DB or NOTION_WOD_LOG_DB or NOTION_WORKOUT_PROGRAM_DB
+    )
+    v10_result_or_error = None
+
+    if workout_enabled:
+        workout_task = loop.run_in_executor(
+            None,
+            lambda: _main().classify_workout_message(
+                text, _claude(), CLAUDE_MODEL, CLAUDE_MAX_TOK
+            ),
+        )
+        v10_task = asyncio.wait_for(
+            loop.run_in_executor(None, classify_v10_message),
+            timeout=18,
+        )
+        workout_result_or_error, v10_result_or_error = await asyncio.gather(
+            workout_task, v10_task, return_exceptions=True
+        )
+        if isinstance(workout_result_or_error, Exception):
+            log.warning(
+                "Workout classify error; continuing with v10 classification",
+                exc_info=(
+                    type(workout_result_or_error),
+                    workout_result_or_error,
+                    workout_result_or_error.__traceback__,
                 ),
             )
-        except Exception:
             workout_result = {"type": "none"}
+        else:
+            workout_result = workout_result_or_error
         if workout_result.get("type") == "programme":
             await thinking.delete()
             await message.reply_text(
@@ -149,36 +198,39 @@ async def route_classified_message_v10(message, text: str) -> None:
     if await wl.handle_photo_followup(_notion(), message, text):
         await thinking.delete()
         return
-    try:
-        result = await asyncio.wait_for(
-            asyncio.get_running_loop().run_in_executor(
-                None,
-                lambda: ai_classify.classify_message(
-                    _claude(),
-                    CLAUDE_MODEL,
-                    text,
-                    list(_habit_cache().keys()),
-                    bool(NOTION_WATCHLIST_DB),
-                    bool(NOTION_WANTSLIST_V2_DB),
-                    bool(NOTION_PHOTO_DB),
-                    bool(NOTION_NOTES_DB),
-                    local_today(),
-                ),
-            ),
-            timeout=18,
-        )
-    except asyncio.TimeoutError:
-        log.warning(
-            "Claude v10 classify timeout after 18s; falling back to task capture"
-        )
-        await thinking.delete()
-        await _main().create_or_prompt_task(message, text)
-        return
-    except Exception as e:
-        log.error(f"Claude v10 classify error: {e }")
-        await thinking.delete()
-        await _main().create_or_prompt_task(message, text)
-        return
+
+    if workout_enabled:
+        if isinstance(v10_result_or_error, asyncio.TimeoutError):
+            log.warning(
+                "Claude v10 classify timeout after 18s; falling back to task capture"
+            )
+            await thinking.delete()
+            await _main().create_or_prompt_task(message, text)
+            return
+        if isinstance(v10_result_or_error, Exception):
+            log.error("Claude v10 classify error: %s", v10_result_or_error)
+            await thinking.delete()
+            await _main().create_or_prompt_task(message, text)
+            return
+        result = v10_result_or_error
+    else:
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, classify_v10_message),
+                timeout=18,
+            )
+        except asyncio.TimeoutError:
+            log.warning(
+                "Claude v10 classify timeout after 18s; falling back to task capture"
+            )
+            await thinking.delete()
+            await _main().create_or_prompt_task(message, text)
+            return
+        except Exception as e:
+            log.error(f"Claude v10 classify error: {e }")
+            await thinking.delete()
+            await _main().create_or_prompt_task(message, text)
+            return
 
     intent = result.get("type")
 
@@ -676,7 +728,24 @@ async def handle_message_text(
 
     explicit_entertainment = ent_log.parse_explicit_entertainment_log(text)
     if explicit_entertainment:
-        date_result = _main()._apply_shared_date_parse(explicit_entertainment)
+        loop = asyncio.get_running_loop()
+        date_task = loop.run_in_executor(
+            None, lambda: _main()._apply_shared_date_parse(explicit_entertainment)
+        )
+        venue_task = _maybe_prompt_explicit_venue_in_executor(
+            _notion(), message, explicit_entertainment, text
+        )
+        date_result, venue_result = await asyncio.gather(
+            date_task, venue_task, return_exceptions=True
+        )
+        if isinstance(date_result, Exception):
+            log.error("Explicit entertainment date parse error: %s", date_result)
+            await message.reply_text(
+                _main()._entertainment_save_error_text(
+                    date_result, explicit_entertainment
+                )
+            )
+            return
         if date_result and getattr(date_result, "ambiguous", False):
             key = str(_main()._entertainment_counter)
             _main()._entertainment_counter += 1
@@ -691,9 +760,18 @@ async def handle_message_text(
             )
             return
         try:
-            prompted = await ent_log._maybe_prompt_explicit_venue(
-                _notion(), message, explicit_entertainment, text
-            )
+            if isinstance(venue_result, Exception):
+                log.warning(
+                    "Explicit entertainment venue lookup failed; saving without venue suggestion",
+                    exc_info=(
+                        type(venue_result),
+                        venue_result,
+                        venue_result.__traceback__,
+                    ),
+                )
+                prompted = False
+            else:
+                prompted = venue_result
             if prompted:
                 return
             await _main().handle_entertainment_log(
