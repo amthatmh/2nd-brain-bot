@@ -2262,6 +2262,7 @@ async def post_init(app: Application) -> None:
         args=[app.bot, scheduler],
         id="digest_schedule_refresh",
         replace_existing=True,
+        max_instances=1,
     )
 
     log.info(
