@@ -192,17 +192,9 @@ _digest_slot_sent_today: set = set()
 _last_daily_log_url: str = ""
 
 
-async def get_digest_config(notion_or_slot_time, digest_selector_db_id=None, slot_time=None, weekday=None) -> dict:
-    if slot_time is None:
-        notion = None
-        slot_time = notion_or_slot_time
-        weekday = digest_selector_db_id
-        digest_selector_db_id = NOTION_DIGEST_SELECTOR_DB
-    else:
-        notion = notion_or_slot_time
-        digest_selector_db_id = digest_selector_db_id or NOTION_DIGEST_SELECTOR_DB
+async def get_digest_config(slot_time: str, weekday: bool, digest_selector_db_id: str = NOTION_DIGEST_SELECTOR_DB) -> dict:
     try:
-        rows = query_all(notion if notion is not None else _notion, digest_selector_db_id)
+        rows = query_all(_notion, digest_selector_db_id)
         slots = load_digest_slots(rows=rows, logger=log)
     except Exception as e:
         log.error("Failed to read digest config for %s (%s): %s", slot_time, "weekday" if weekday else "weekend", e)
@@ -244,7 +236,7 @@ def _filter_digest_tasks(tasks: list[dict], config: dict | None = None) -> list[
     return filtered
 
 
-async def send_digest_for_slot(bot, slot: dict, *, notion=None, digest_selector_db_id: str = NOTION_DIGEST_SELECTOR_DB) -> None:
+async def send_digest_for_slot(bot, slot: dict) -> None:
     global _digest_slot_sent_today
     now = datetime.now(TZ)
     day_key = now.date().isoformat()
@@ -256,10 +248,7 @@ async def send_digest_for_slot(bot, slot: dict, *, notion=None, digest_selector_
     if slot_key in _digest_slot_sent_today:
         log.info("Skipping duplicate digest send for slot %s (%s)", slot.get("time"), "weekday" if weekday else "weekend")
         return
-    if notion is None:
-        config = await get_digest_config(slot["time"], slot["is_weekday"])
-    else:
-        config = await get_digest_config(notion, digest_selector_db_id, slot["time"], slot["is_weekday"])
+    config = await get_digest_config(slot["time"], slot["is_weekday"])
     log.info(
         "Digest slot trigger fired at %s (%s) — include_habits=%s include_feel=%s contexts=%s max_items=%s",
         slot.get("time"),
