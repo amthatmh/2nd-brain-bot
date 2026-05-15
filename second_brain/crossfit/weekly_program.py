@@ -70,7 +70,7 @@ async def get_current_week_program_url(notion_client) -> Optional[str]:
             return results["results"][0].get("id")
         return None
     except Exception as e:
-        print(f"Error fetching current week program: {e}")
+        log.error("Error fetching current week program: %s", e)
         return None
 
 
@@ -136,7 +136,7 @@ async def get_todays_workout_day(notion_client) -> Optional[Dict]:
             "Section C": rich_text("Section C"),
         }
     except Exception as e:
-        print(f"Error fetching today's workout: {e}")
+        log.error("Error fetching today's workout: %s", e)
         return None
 
 
