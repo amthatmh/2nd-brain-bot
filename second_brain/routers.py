@@ -243,7 +243,7 @@ async def route_classified_message_v10(message, text: str) -> None:
             await _main().create_or_prompt_task(message, text)
             return
         except Exception as e:
-            log.error(f"Claude v10 classify error: {e }")
+            log.error("Claude v10 classify error: %s", e)
             await _safe_delete_message(thinking)
             await _main().create_or_prompt_task(message, text)
             return
@@ -376,8 +376,13 @@ async def handle_message_text(
 ) -> None:
     user_id = update.effective_chat.id
     if str(user_id) in _cf_pending():
+        cf_pending = _cf_pending()
+        cf_pending_state = cf_pending.get(str(user_id), {})
+        cf_stage = cf_pending_state.get("stage")
         logger.info(
-            f"[CF_ENTRY] function=handle_message_text user={user_id } stage={_cf_pending() .get (str (user_id ),{}).get ('stage')}"
+            "[CF_ENTRY] function=handle_message_text user=%s stage=%s",
+            user_id,
+            cf_stage,
         )
     if user_id != MY_CHAT_ID:
         return
@@ -667,7 +672,7 @@ async def handle_message_text(
                 parse_mode="Markdown",
             )
         except Exception as e:
-            log.error(f"Notion note custom-topic error: {e }")
+            log.error("Notion note custom-topic error: %s", e)
             await message.reply_text("⚠️ Couldn't save note to Notion.")
         return
 
@@ -1338,7 +1343,7 @@ async def _cb_note_topic(q, parts, context) -> None:
             parse_mode="Markdown",
         )
     except Exception as e:
-        log.error(f"Notion note error: {e }")
+        log.error("Notion note error: %s", e)
         await q.edit_message_text("⚠️ Couldn't save note to Notion.")
     return
 
@@ -1548,7 +1553,7 @@ async def _cb_hpag(q, parts, context) -> None:
             )
         )
     except Exception as e:
-        log.error(f"Habit pagination error: {e }")
+        log.error("Habit pagination error: %s", e)
         await q.edit_message_text("⚠️ Couldn't update habits view.")
     return
 
@@ -1614,7 +1619,7 @@ async def _cb_d(q, parts, context) -> None:
         )
         await q.edit_message_text(f"✅ Marked as done!{suffix }")
     except Exception as e:
-        log.error(f"Notion done error: {e }")
+        log.error("Notion done error: %s", e)
         await q.edit_message_text("⚠️ Couldn't update Notion.")
     return
 
@@ -1627,7 +1632,7 @@ async def _cb_h_horizon(q, parts, context) -> None:
         notion_tasks.set_deadline_from_horizon_code(_notion(), page_id, code)
         await q.edit_message_text(f"Updated → {horizon_label } ✓")
     except Exception as e:
-        log.error(f"Notion horizon error: {e }")
+        log.error("Notion horizon error: %s", e)
         await q.edit_message_text("⚠️ Couldn't update Notion.")
     return
 
@@ -1661,7 +1666,7 @@ async def _cb_td(q, parts, context) -> None:
         _main().notion_tasks.handle_done_recurring(_notion(), NOTION_DB_ID, task["page_id"])
         task["_done"] = True
     except Exception as e:
-        log.error(f"To do picker error: {e }")
+        log.error("To do picker error: %s", e)
         await q.edit_message_text("⚠️ Couldn't mark that task done.")
         return
 
@@ -1697,7 +1702,7 @@ async def _cb_dp(q, parts, context) -> None:
         )
         await q.edit_message_text(f"✅ Done: {task ['name']}{suffix }")
     except Exception as e:
-        log.error(f"Done picker error: {e }")
+        log.error("Done picker error: %s", e)
         await q.edit_message_text("⚠️ Couldn't mark that task done.")
     return
 
@@ -1980,7 +1985,7 @@ async def handle_v10_callback(q, parts: list[str]) -> bool:
                 parse_mode="Markdown",
             )
         except Exception as e:
-            log.error(f"Wantslist save error: {e}")
+            log.error("Wantslist save error: %s", e)
             await q.edit_message_text("⚠️ Couldn't save to Notion.")
         return True
 
@@ -2007,7 +2012,7 @@ async def handle_v10_callback(q, parts: list[str]) -> bool:
                 parse_mode="Markdown",
             )
         except Exception as e:
-            log.error(f"TMDB watchlist save error: {e}")
+            log.error("TMDB watchlist save error: %s", e)
             await q.edit_message_text("⚠️ Couldn't save to Notion.")
         return True
 
@@ -2022,7 +2027,7 @@ async def handle_v10_callback(q, parts: list[str]) -> bool:
                 parse_mode="Markdown",
             )
         except Exception as e:
-            log.error(f"Watchlist title-only save error: {e}")
+            log.error("Watchlist title-only save error: %s", e)
             await q.edit_message_text("⚠️ Couldn't save to Notion.")
         return True
 
