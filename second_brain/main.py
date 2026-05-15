@@ -605,7 +605,7 @@ async def start_note_capture_flow(message, text: str) -> None:
     try:
         topics = notion_notes.fetch_note_topics_from_notion(notion, NOTION_NOTES_DB)
     except Exception as e:
-        log.error(f"Failed to read note topics from Notion schema: {e}")
+        log.error("Failed to read note topics from Notion schema: %s", e)
         await message.reply_text("⚠️ Couldn't load note topics from Notion. Check the Topic property.")
         return
 
@@ -622,7 +622,7 @@ async def start_note_capture_flow(message, text: str) -> None:
         notion_notes.create_note_entry(notion, NOTION_NOTES_DB, text)
         await message.reply_text("✅ Note captured!\n_Saved to Notion_", parse_mode="Markdown")
     except Exception as e:
-        log.error(f"Notion note error: {e}")
+        log.error("Notion note error: %s", e)
         await message.reply_text("⚠️ Couldn't save note to Notion.")
 
 def extract_url(text: str) -> str | None:
@@ -654,7 +654,7 @@ def fetch_url_metadata(url: str) -> dict:
         if dm:
             description = html.unescape(dm.group(1)).strip()
     except Exception as e:
-        log.warning(f"fetch_url_metadata failed for {url}: {e}")
+        log.warning("fetch_url_metadata failed for %s: %s", url, e)
     return {"title": title, "description": description}
 
 async def handle_note_input(message, text: str) -> None:
@@ -693,8 +693,8 @@ async def handle_note_input(message, text: str) -> None:
             parse_mode="Markdown",
         )
     except Exception as e:
-        log.error(f"save_note error: {e}")
-        await thinking.edit_text(f"⚠️ Couldn't save note to Notion.\n_{e}_", parse_mode="Markdown")
+        log.error("save_note error: %s", e)
+        await thinking.edit_text("⚠️ Couldn't save note to Notion.", parse_mode="Markdown")
 
 def deadline_days_to_label(days: int | None) -> str:
     return note_utils_service.deadline_days_to_label(days)
@@ -817,7 +817,7 @@ def _run_capture(raw_text: str, force_create: bool = False,
             deadline_days = explicit_deadline
         horizon_label = deadline_days_to_label(deadline_days)
     except Exception as e:
-        log.error(f"Claude error for '{raw_text}': {e}")
+        log.error("Claude error for '%s': %s", raw_text, e)
         return {"status": "error", "name": raw_text, "error": str(e)}
 
     if not force_create:
@@ -833,7 +833,7 @@ def _run_capture(raw_text: str, force_create: bool = False,
             "recurring": recurring, "page_id": page_id,
         }
     except Exception as e:
-        log.error(f"Notion error for '{task_name}': {e}")
+        log.error("Notion error for '%s': %s", task_name, e)
         return {"status": "error", "name": task_name, "error": str(e)}
 
 def pending_habits_for_digest(time_str: str | None = None) -> list[dict]:
@@ -1131,7 +1131,7 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
             deadline_days = explicit_deadline
         horizon_label = deadline_days_to_label(deadline_days)
     except Exception as e:
-        log.error(f"Claude error: {e}")
+        log.error("Claude error: %s", e)
         await thinking.edit_text("⚠️ Couldn't classify that. Try rephrasing?")
         return
 
@@ -1184,7 +1184,7 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
         )
         capture_map[thinking.message_id] = {"page_id": page_id, "name": task_name}
     except Exception as e:
-        log.error(f"Notion error: {e}")
+        log.error("Notion error: %s", e)
         await thinking.edit_text("⚠️ Classified but couldn't write to Notion.")
 
 async def open_done_picker(message) -> None:
@@ -1403,7 +1403,7 @@ async def run_recurring_check(bot) -> dict:
         log.info("Recurring check skipped (muted)")
         return {"action": "skipped", "reason": "muted"}
     spawned = notion_tasks.process_recurring_tasks(notion, NOTION_DB_ID)
-    log.info(f"Recurring check: {spawned} task(s) spawned")
+    log.info("Recurring check: %d task(s) spawned", spawned)
     return {"action": "spawned", "tasks_spawned": spawned}
 
 async def send_evening_checkin(bot) -> None:
@@ -1471,18 +1471,18 @@ async def run_asana_sync(bot) -> dict:
             ),
         )
         if any(v for k, v in stats.items() if k != "skipped"):
-            log.info(f"Asana sync: {stats}")
+            log.info("Asana sync: %s", stats)
         sync_status["asana"]["ok"] = True
         sync_status["asana"]["error"] = None
         sync_status["asana"]["stats"] = stats
         return {**stats, "action": "synced"}
     except AsanaSyncError as e:
-        log.error(f"Asana sync config error: {e}")
+        log.error("Asana sync config error: %s", e)
         sync_status["asana"]["ok"] = False
         sync_status["asana"]["error"] = str(e)
         return {"ok": False, "action": "error", "reason": str(e)}
     except Exception as e:
-        log.exception(f"Asana sync failed: {e}")
+        log.exception("Asana sync failed: %s", e)
         sync_status["asana"]["ok"] = False
         sync_status["asana"]["error"] = str(e)
         return {"ok": False, "action": "error", "reason": str(e)}
@@ -1623,7 +1623,7 @@ async def start_http_server() -> None:
     await runner.setup()
     site   = web.TCPSite(runner, "0.0.0.0", HTTP_PORT)
     await site.start()
-    log.info(f"HTTP server started on port {HTTP_PORT}")
+    log.info("HTTP server started on port %s", HTTP_PORT)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STARTUP HELPERS — schema validation + alert
@@ -1644,7 +1644,7 @@ async def _try_send_telegram(bot, text: str) -> None:
             kwargs["message_thread_id"] = ALERT_THREAD_ID
         await bot.send_message(**kwargs)
     except Exception as e:
-        log.error(f"Could not send operational alert via Telegram: {e}")
+        log.error("Could not send operational alert via Telegram: %s", e)
 
 def _git_sha() -> str:
     """Best-effort short commit SHA for deploy receipts."""
@@ -1981,6 +1981,7 @@ async def post_init(app: Application) -> None:
         minutes=5,
         id="cleanup_pending_task_interactions",
         replace_existing=True,
+        max_instances=1,
     )
     scheduler.add_job(
         cleanup_expired_batches,
@@ -2014,7 +2015,7 @@ async def post_init(app: Application) -> None:
     if not cinema_ok:
         log.warning("Cinema sync disabled due to config issues:")
         for p in cinema_problems:
-            log.warning(f"  - {p}")
+            log.warning("  - %s", p)
     elif CINEMA_DB_ID:
         log.info("Cinema sync config validated ✓")
 
@@ -2096,9 +2097,6 @@ async def post_init(app: Application) -> None:
         except Exception as e:
             log.warning("steps: title migration error (non-blocking): %s", e)
 
-    # TEST: Set UTILITY_SCHEDULER_RELOAD_MINUTES=5 in Railway
-    # TEST: Verify scheduler log shows "digest_refresh=5min"
-    # TEST: Verify digest schedule refreshes every 5 minutes (check Railway logs)
     scheduler.add_job(
         track_job_execution("digest_schedule_refresh")(refresh_digest_schedule_job),
         "interval",
@@ -2106,6 +2104,7 @@ async def post_init(app: Application) -> None:
         args=[app.bot, scheduler],
         id="digest_schedule_refresh",
         replace_existing=True,
+        max_instances=1,
     )
 
     log.info(
@@ -2373,7 +2372,7 @@ async def on_confirm_batch(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         log.info("Batch confirmed: %s, %d tasks processed", batch_id, len(task_texts))
     except Exception as e:
         log.error("Batch creation error: %s", e)
-        await q.edit_message_text(f"⚠️ Error creating tasks: {str(e)}")
+        await q.edit_message_text("⚠️ Couldn't create tasks — please try again.")
     finally:
         pending_batches.pop(batch_id, None)
 
@@ -2418,8 +2417,25 @@ async def cleanup_expired_batches() -> None:
 # MAIN — after all handlers are defined
 # ══════════════════════════════════════════════════════════════════════════════
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    log.error("Unhandled Telegram exception", exc_info=context.error)
+    if not isinstance(update, Update):
+        return
+    chat = update.effective_chat
+    if not chat:
+        return
+    try:
+        await context.bot.send_message(
+            chat_id=chat.id,
+            text="❌ Something went wrong. I've logged it for review.",
+        )
+    except Exception:
+        pass
+
+
 def main() -> None:
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+    app.add_error_handler(error_handler)
     register_core_handlers(
         app,
         handle_start_command=handle_start_command,
@@ -2443,7 +2459,7 @@ def main() -> None:
     )
     app.add_handler(CommandHandler("refreshweather", cmd_refreshweather))
     app.add_handler(CommandHandler("cf_reload_movements", cmd_cf_reload_movements))
-    log.info(f"🤖 Second Brain bot starting ({APP_VERSION})...")
+    log.info("🤖 Second Brain bot starting (%s)...", APP_VERSION)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
