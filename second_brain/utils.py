@@ -6,12 +6,16 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from notion_client import APIResponseError
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 log = logging.getLogger(__name__)
 
 NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 from second_brain.services.task_parsing import split_tasks  # noqa: F401
+
+NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+log = logging.getLogger(__name__)
 
 
 def local_today(tz: ZoneInfo | None = None) -> date:
@@ -28,7 +32,6 @@ def get_current_monday() -> date:
 
     today = datetime.now(TZ).date()
     return today - timedelta(days=today.weekday())
-
 
 
 class ExpiringDict(dict):
@@ -59,6 +62,19 @@ class ExpiringDict(dict):
         self._purge()
         return super().get(key, default)
 
+
+def _safe_user_error(exc: Exception) -> str:
+    """Return a friendly user-facing error message while logging details."""
+    log.error("User-facing operation failed", exc_info=True)
+    if isinstance(exc, APIResponseError):
+        if exc.status == 404:
+            return "Couldn't find that entry."
+        if exc.status == 403:
+            return "Permission error — check Notion connection."
+    exc_text = str(exc)
+    if "timeout" in exc_text or "Timeout" in exc_text:
+        return "Request timed out — try again."
+    return "Something went wrong. I've logged it for review."
 
 
 def parse_time_to_minutes(time_str: str | None) -> int:

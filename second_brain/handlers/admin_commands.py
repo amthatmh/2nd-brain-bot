@@ -8,6 +8,8 @@ import os
 from telegram import Bot, Update
 from telegram.ext import ContextTypes
 
+from second_brain.utils import _safe_user_error
+
 from utils.alerts import send_alert
 
 log = logging.getLogger(__name__)
@@ -80,5 +82,5 @@ async def test_channel_send(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text(f"✅ Success! Message ID: {result.message_id}\n\nCheck System logs channel.")
         log.info("[TEST_CHANNEL] Success - message_id=%s", result.message_id)
     except Exception as e:  # noqa: BLE001 - diagnostic command should report Telegram failures
-        await update.message.reply_text(f"❌ Failed: {type(e).__name__}: {e}")
+        await update.message.reply_text(_safe_user_error(e))
         log.error("[TEST_CHANNEL] Failed: %s", e, exc_info=True)

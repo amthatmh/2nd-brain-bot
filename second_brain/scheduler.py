@@ -18,9 +18,32 @@ def register_core_jobs(
     we_h: int,
     we_m: int,
 ) -> None:
-    scheduler.add_job(run_recurring_check, "cron", hour=rc_h, minute=rc_m, args=[bot])
-    scheduler.add_job(send_daily_digest, "cron", day_of_week="mon-fri", hour=wk_h, minute=wk_m, args=[bot])
-    scheduler.add_job(send_daily_digest, "cron", day_of_week="sat", hour=we_h, minute=we_m, args=[bot])
+    scheduler.add_job(
+        run_recurring_check,
+        "cron",
+        hour=rc_h,
+        minute=rc_m,
+        args=[bot],
+        max_instances=1,
+    )
+    scheduler.add_job(
+        send_daily_digest,
+        "cron",
+        day_of_week="mon-fri",
+        hour=wk_h,
+        minute=wk_m,
+        args=[bot],
+        max_instances=1,
+    )
+    scheduler.add_job(
+        send_daily_digest,
+        "cron",
+        day_of_week="sat",
+        hour=we_h,
+        minute=we_m,
+        args=[bot],
+        max_instances=1,
+    )
 
 
 def register_cinema_jobs(

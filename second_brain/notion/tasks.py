@@ -2,6 +2,7 @@
 
 import re
 import calendar
+import json
 from datetime import date, datetime, timedelta
 
 from notion_client import Client as NotionClient
@@ -12,6 +13,7 @@ from second_brain.notion.properties import (
     checkbox_filter,
     extract_date,
     extract_formula,
+    extract_rich_text,
     extract_select,
     extract_title,
     query_all,
@@ -36,6 +38,28 @@ def _parse_deadline(raw_deadline: str | None) -> date | None:
             return date.fromisoformat(raw_deadline[:10])
         except Exception:
             return None
+
+
+def _get_prop(props: dict, key: str, kind: str):
+    prop = props.get(key, {})
+    if kind == "title":
+        parts = prop.get("title", [])
+        return parts[0]["text"]["content"] if parts else None
+    if kind == "select":
+        sel = prop.get("select")
+        return sel["name"] if sel else None
+    if kind == "formula":
+        f = prop.get("formula", {})
+        return f.get("string") or f.get("number") or None
+    if kind == "date":
+        d = prop.get("date")
+        return d["start"] if d else None
+    if kind == "checkbox":
+        return prop.get("checkbox", False)
+    if kind == "rich_text":
+        parts = prop.get("rich_text", [])
+        return parts[0]["text"]["content"] if parts else None
+    return None
 
 
 def _task_sort_key(task: dict) -> tuple[int, str, str]:
@@ -218,6 +242,7 @@ def get_recurring_templates(notion: NotionClient, notion_db_id: str) -> list[dic
             "repeat_day": extract_select(p.get("Repeat Day")),
             "last_generated": extract_date(p.get("Last Generated")),
             "deadline": extract_date(p.get("Deadline")),
+            "recurrence_pattern": extract_rich_text(p.get("Recurrence Pattern")),
         })
     return templates
 
@@ -330,18 +355,112 @@ def should_spawn_today(template: dict, today: date) -> bool:
     return False
 
 
-def spawn_recurring_instance(notion: NotionClient, notion_db_id: str, template: dict) -> None:
-    today = local_today()
-    notion.pages.create(
+def calculate_next_deadline(template: dict, from_date: date | None = None) -> date:
+    """
+    Calculate the next deadline for a recurring task based on its pattern.
+
+    Args:
+        template: Task template dict with 'recurring', 'repeat_day', 'recurrence_pattern'
+        from_date: Reference date (default: today). Next occurrence calculated from this.
+
+    Returns:
+        Next deadline as date object
+    """
+    # TEST CASES (run these manually after implementation):
+    # 1. Daily: local_today() → local_today() + 1 day
+    # 2. Weekly Mon: If today is Wed (weekday 2), next Mon is +5 days
+    # 3. Monthly 1st: May 15 → June 1
+    # 4. Monthly Last: May 15 → May 31 (last day of May)
+    # 5. Monthly 15th in Feb (only 28 days): Feb 20 → Mar 15
+    # 6. Weekly Sun from Sat: Sat → Sun (+1 day)
+    # 7. Weekly Sun from Sun: Sun → next Sun (+7 days, not +0)
+    if from_date is None:
+        from_date = local_today()
+
+    recurring = template.get("recurring", "None")
+    repeat_day = template.get("repeat_day")
+    pattern_json = template.get("recurrence_pattern")
+
+    if recurring == "🔁 Daily":
+        return from_date + timedelta(days=1)
+
+    if recurring == "📅 Weekly":
+        if not repeat_day or repeat_day not in REPEAT_DAY_TO_WEEKDAY:
+            return from_date + timedelta(days=7)
+
+        target_weekday = REPEAT_DAY_TO_WEEKDAY[repeat_day]
+        current_weekday = from_date.weekday()
+        days_ahead = (target_weekday - current_weekday) % 7
+        if days_ahead == 0:
+            days_ahead = 7
+        return from_date + timedelta(days=days_ahead)
+
+    if recurring == "🗓️ Monthly":
+        if not repeat_day:
+            next_month = from_date.replace(day=1) + timedelta(days=32)
+            return next_month.replace(day=1)
+
+        target_day = REPEAT_DAY_TO_MONTHDAY.get(repeat_day)
+        if target_day is None:
+            return from_date + timedelta(days=30)
+
+        if target_day == -1:
+            this_month_last_day = calendar.monthrange(from_date.year, from_date.month)[1]
+            if from_date.day < this_month_last_day:
+                return from_date.replace(day=this_month_last_day)
+            next_month = from_date.replace(day=1) + timedelta(days=32)
+            next_month_first = next_month.replace(day=1)
+            last_day = calendar.monthrange(next_month_first.year, next_month_first.month)[1]
+            return next_month_first.replace(day=last_day)
+
+        try:
+            this_month_last_day = calendar.monthrange(from_date.year, from_date.month)[1]
+            clamped_day = min(target_day, this_month_last_day)
+            if clamped_day > from_date.day:
+                return from_date.replace(day=clamped_day)
+
+            next_month = from_date.replace(day=1) + timedelta(days=32)
+            next_month_first = next_month.replace(day=1)
+            next_month_last_day = calendar.monthrange(next_month_first.year, next_month_first.month)[1]
+            clamped_next = min(target_day, next_month_last_day)
+            return next_month_first.replace(day=clamped_next)
+        except ValueError:
+            return from_date + timedelta(days=30)
+
+    if pattern_json:
+        try:
+            json.loads(pattern_json)
+            # TODO Phase 4: Implement complex pattern logic.
+            return from_date + timedelta(days=7)
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    return from_date + timedelta(days=7)
+
+
+def spawn_recurring_instance(
+    notion: NotionClient,
+    notion_db_id: str,
+    template: dict,
+    next_deadline: date | None = None,
+) -> str:
+    """Create a new recurring task instance from a template."""
+    if next_deadline is None:
+        ref_date = _parse_deadline(template.get("deadline")) or local_today()
+        next_deadline = calculate_next_deadline(template, from_date=ref_date)
+
+    page = notion.pages.create(
         parent={"database_id": notion_db_id},
         properties={
             "Name": title_prop(template["name"]),
-            "Deadline": {"date": {"start": today.isoformat()}},
+            "Deadline": {"date": {"start": next_deadline.isoformat()}},
             "Context": {"select": {"name": template["context"]}},
             "Source": {"select": {"name": "✏️ Manual"}},
+            "Recurring Parent ID": {"rich_text": [{"text": {"content": template["page_id"]}}]},
         },
     )
-    set_last_generated(notion, template["page_id"], today)
+    set_last_generated(notion, template["page_id"], local_today())
+    return page["id"]
 
 
 def process_recurring_tasks(notion: NotionClient, notion_db_id: str) -> int:
@@ -355,19 +474,13 @@ def process_recurring_tasks(notion: NotionClient, notion_db_id: str) -> int:
 
 
 def handle_done_recurring(notion: NotionClient, notion_db_id: str, page_id: str) -> bool:
+    """Return whether a completed page is part of recurring flow.
+
+    Next instances are generated by the scheduled batch job, not immediately at
+    completion time, so this deliberately does not spawn anything.
+    """
     result = notion.pages.retrieve(page_id=page_id)
     p = result["properties"]
     recurring = extract_select(p.get("Recurring")) or "None"
-    if recurring == "None":
-        return False
-    spawn_recurring_instance(notion, notion_db_id, {
-        "page_id": page_id,
-        "name": extract_title(p.get("Name")) or "Untitled",
-        "auto_horizon": extract_formula(p.get("Auto Horizon")) or "🔴 Today",
-        "context": extract_select(p.get("Context")) or "🏠 Personal",
-        "recurring": recurring,
-        "repeat_day": extract_select(p.get("Repeat Day")),
-        "last_generated": extract_date(p.get("Last Generated")),
-        "deadline": extract_date(p.get("Deadline")),
-    })
-    return True
+    parent_id = extract_rich_text(p.get("Recurring Parent ID"))
+    return recurring != "None" or bool(parent_id)

@@ -127,11 +127,18 @@ async def _maybe_await(value):
     return value
 
 
+async def _safe_delete_message(message_obj, *, label: str = "feedback") -> None:
+    try:
+        await message_obj.delete()
+    except Exception as exc:
+        log.debug("Could not delete %s message: %s", label, exc)
+
+
 async def upsert_training_log_field(notion, date_str: str, field_name: str, rating: str, daily_readiness_db_id: str | None = None):
     """Upsert a feel rating into the Training Log (Daily Readiness) database."""
     db_id = (daily_readiness_db_id or os.environ.get("NOTION_DAILY_READINESS_DB") or "").strip()
     date_str = date_str or local_today().isoformat()
-    logger.info(f"[FEEL_WRITE] db={db_id} date={date_str} field={field_name} rating={rating}")
+    logger.info("[FEEL_WRITE] db=%s date=%s field=%s rating=%s", db_id, date_str, field_name, rating)
     if not db_id:
         logger.error("[FEEL_WRITE_ERROR] NOTION_DAILY_READINESS_DB is not configured")
         return
@@ -156,7 +163,7 @@ async def upsert_training_log_field(notion, date_str: str, field_name: str, rati
                     properties=props,
                 )
             )
-            logger.info(f"[FEEL_WRITE] updated existing row {page_id}")
+            logger.info("[FEEL_WRITE] updated existing row %s", page_id)
         else:
             created = await _maybe_await(
                 notion_call(
@@ -169,9 +176,10 @@ async def upsert_training_log_field(notion, date_str: str, field_name: str, rati
                     },
                 )
             )
-            logger.info(f"[FEEL_WRITE] created new row {created['id']}")
+            created_id = created["id"]
+            logger.info("[FEEL_WRITE] created new row %s", created_id)
     except Exception as e:
-        logger.error(f"[FEEL_WRITE_ERROR] {e}", exc_info=True)
+        logger.error("[FEEL_WRITE_ERROR] %s", e, exc_info=True)
 
 
 # Global movement cache loaded lazily and refreshed at bot startup.
@@ -789,7 +797,17 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
         state["effort_scheme"] = extracted.get("scheme")
         cf_pending[str(user_id)] = state
         cf_pending[key] = state
-        logger.info(f"[CF_STATE_A] WROTE key={key!r} uid={user_id!r} sets={state.get('sets')} weight={state.get('weight_lbs')} date={state.get('workout_date')}")
+        state_sets = state.get("sets")
+        state_weight_lbs = state.get("weight_lbs")
+        state_workout_date = state.get("workout_date")
+        logger.info(
+            "[CF_STATE_A] WROTE key=%r uid=%r sets=%s weight=%s date=%s",
+            key,
+            user_id,
+            state_sets,
+            state_weight_lbs,
+            state_workout_date,
+        )
         log.debug("Extracted workout data: %r", workout_data)
         state = _store_extracted_strength_state(cf_pending, key, workout_data, raw_text)
     else:
@@ -843,7 +861,19 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
         "raw_log": workout_result.get("raw_text") or raw_text or "",
     })
     cf_pending[key] = state
-    logger.info(f"[CF_STATE_A] key={key!r} type={type(key)} sets={cf_pending[key].get('sets')} weight={cf_pending[key].get('weight_lbs')} date={cf_pending[key].get('workout_date')}")
+    key_type = type(key)
+    pending_state = cf_pending[key]
+    pending_sets = pending_state.get("sets")
+    pending_weight_lbs = pending_state.get("weight_lbs")
+    pending_workout_date = pending_state.get("workout_date")
+    logger.info(
+        "[CF_STATE_A] key=%r type=%s sets=%s weight=%s date=%s",
+        key,
+        key_type,
+        pending_sets,
+        pending_weight_lbs,
+        pending_workout_date,
+    )
     raw_date = state.get("workout_date")
     date_result = parse_date(raw_date, today=local_today())
 
@@ -1331,7 +1361,7 @@ async def handle_cf_prs_reply(message, movement_text: str, notion, config, cf_pe
 
 async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
     state = cf_pending.get(key) or {}
-    logger.info(f"[CF_STATE_C] finalize key={key!r} state={state}")
+    logger.info("[CF_STATE_C] finalize key=%r state=%s", key, state)
     if state.get("mode") == "strength":
         movements = state.get("movements") or [{
             "movement": state.get("movement_name") or state.get("movement") or "Unknown",
@@ -1574,7 +1604,11 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
             return
 
         key = cf_flow_key
-        extracted = await extract_workout_data(raw_input, claude)
+        thinking = await message.reply_text("⏳ Analyzing movements...")
+        try:
+            extracted = await extract_workout_data(raw_input, claude)
+        finally:
+            await _safe_delete_message(thinking)
         state = _store_extracted_strength_state(cf_pending, key, extracted, raw_input)
 
         extracted_movements = extracted.get("movements") or []
@@ -1614,7 +1648,16 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
             state["workout_date"] = local_today().isoformat()
             cf_pending[key] = state
 
-        logger.info(f"[CF_STATE_A] WROTE key={key!r} sets={state.get('sets')} weight={state.get('weight_lbs')} date={state.get('workout_date')}")
+        state_sets = state.get("sets")
+        state_weight_lbs = state.get("weight_lbs")
+        state_workout_date = state.get("workout_date")
+        logger.info(
+            "[CF_STATE_A] WROTE key=%r sets=%s weight=%s date=%s",
+            key,
+            state_sets,
+            state_weight_lbs,
+            state_workout_date,
+        )
         load_type = await asyncio.get_running_loop().run_in_executor(None, lambda: get_movement_load_type(notion, movement_id)) if movement_id else "External Load"
         if load_type == "Bodyweight":
             await _prompt_bodyweight_confirm(message, key, state, cf_pending)
@@ -1635,7 +1678,11 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
             return
         raw_structure = text.strip()
         state["raw_log"] = state.get("raw_log") or raw_structure
-        workout_data = await extract_workout_data(raw_structure, claude)
+        thinking = await message.reply_text("⏳ Analyzing movements...")
+        try:
+            workout_data = await extract_workout_data(raw_structure, claude)
+        finally:
+            await _safe_delete_message(thinking)
         extracted_movements = workout_data.get("movements") or []
         movement_text = ", ".join(extracted_movements) if extracted_movements else raw_structure
         movement_ids, names = await _resolve_movement_ids(movement_text, claude, notion, config, message)
@@ -2107,7 +2154,7 @@ async def _cf_feel(q, parts, claude, notion, config, cf_pending) -> None:
                         properties={"Strength Feel": {"select": {"name": rating}}},
                     )
                 )
-                logger.info(f"[FEEL_B] page_id={page_id} rating={rating}")
+                logger.info("[FEEL_B] page_id=%s rating=%s", page_id, rating)
             else:
                 logger.warning("[FEEL_B] missing last_workout_page_id key=%r state=%r", key, state)
             await upsert_training_log_field(notion, workout_date, "Strength Feel", rating, daily_readiness_db_id)
@@ -2121,7 +2168,7 @@ async def _cf_feel(q, parts, claude, notion, config, cf_pending) -> None:
                         properties={"WOD Feel": {"select": {"name": rating}}},
                     )
                 )
-                logger.info(f"[FEEL_C] page_id={page_id} rating={rating}")
+                logger.info("[FEEL_C] page_id=%s rating=%s", page_id, rating)
             else:
                 logger.warning("[FEEL_C] missing last_wod_page_id key=%r state=%r", key, state)
             await upsert_training_log_field(notion, workout_date, "WOD Feel", rating, daily_readiness_db_id)
@@ -2148,8 +2195,11 @@ async def _cf_skip(q, parts, claude, notion, config, cf_pending) -> None:
         await q.answer("Action unavailable.", show_alert=False)
         return
     key = parts[2]
-    logger.info(f"[CF_STATE_B] skip received key={key!r} type={type(key)} cf_pending_keys={list(cf_pending.keys())}")
-    logger.info(f"[CF_STATE_B] state at skip={cf_pending.get(key)}")
+    key_type = type(key)
+    pending_keys = list(cf_pending.keys())
+    logger.info("[CF_STATE_B] skip received key=%r type=%s cf_pending_keys=%s", key, key_type, pending_keys)
+    pending_state = cf_pending.get(key)
+    logger.info("[CF_STATE_B] state at skip=%s", pending_state)
     state = cf_pending.get(key, {})
     if state.get("mode") == "wod" and state.get("stage") == "time_cap":
         state["time_cap_mins"] = None

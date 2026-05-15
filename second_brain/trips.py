@@ -640,6 +640,7 @@ def schedule_weather_refresh(key: str, trip: dict) -> None:
         args=[page_id, trip["destination"], trip["departure_date"]],
         id=f"weather_{key}",
         replace_existing=True,
+        max_instances=1,
     )
     logger.info("Weather refresh scheduled for %s — %s", refresh_dt, trip["destination"])
 

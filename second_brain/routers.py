@@ -102,6 +102,31 @@ def _crossfit_config():
     return _main()._crossfit_config()
 
 
+async def _safe_delete_message(message_obj, *, label: str = "feedback") -> None:
+    try:
+        await message_obj.delete()
+    except Exception as exc:
+        log.debug("Could not delete %s message: %s", label, exc)
+
+
+def _is_photo_followup_message(message) -> bool:
+    replied = getattr(getattr(message, "reply_to_message", None), "text", None) or ""
+    match = re.search(r"photo_key:(\w+)", replied)
+    return bool(match and match.group(1) in wl.pending_photo_map)
+
+
+async def _maybe_prompt_explicit_venue_in_executor(
+    notion, message, payload: dict, raw_text: str
+) -> bool:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: asyncio.run(
+            ent_log._maybe_prompt_explicit_venue(notion, message, payload, raw_text)
+        ),
+    )
+
+
 async def route_classified_message_v10(message, text: str) -> None:
     thinking = await message.reply_text("🧠 Got it...")
     loop = asyncio.get_running_loop()
@@ -189,7 +214,7 @@ async def route_classified_message_v10(message, text: str) -> None:
     intent = result.get("type")
 
     if intent == "watchlist":
-        await thinking.delete()
+        await _safe_delete_message(thinking)
         await wl.handle_watchlist_intent(
             _notion(),
             message,
@@ -199,7 +224,7 @@ async def route_classified_message_v10(message, text: str) -> None:
         return
 
     if intent == "wantslist":
-        await thinking.delete()
+        await _safe_delete_message(thinking)
         await wl.handle_wantslist_intent(
             message,
             item=result.get("item", text),
@@ -208,14 +233,17 @@ async def route_classified_message_v10(message, text: str) -> None:
         return
 
     if intent == "photo":
-        await thinking.delete()
-        await wl.handle_photo_intent(
-            _notion(), message, subject=result.get("subject", text)
-        )
+        await thinking.edit_text("📸 Processing image...")
+        try:
+            await wl.handle_photo_intent(
+                _notion(), message, subject=result.get("subject", text)
+            )
+        finally:
+            await _safe_delete_message(thinking)
         return
 
     if intent == "note":
-        await thinking.delete()
+        await _safe_delete_message(thinking)
         await _main().start_note_capture_flow(message, result.get("content", text))
         return
 
@@ -278,7 +306,7 @@ async def route_classified_message_v10(message, text: str) -> None:
             return
         if confidence == "high" and title:
             try:
-                await thinking.delete()
+                await _safe_delete_message(thinking)
                 await _main().handle_entertainment_log(_notion(), message, result)
             except Exception as e:
                 log.error("Entertainment save error: %s", e)
@@ -302,7 +330,7 @@ async def route_classified_message_v10(message, text: str) -> None:
         )
         return
 
-    await thinking.delete()
+    await _safe_delete_message(thinking)
     await _main().create_or_prompt_task(message, text)
 
 
@@ -311,6 +339,9 @@ async def handle_message_text(
 ) -> None:
     user_id = update.effective_chat.id
     if str(user_id) in _cf_pending():
+        cf_pending = _cf_pending()
+        cf_pending_state = cf_pending.get(str(user_id), {})
+        cf_stage = cf_pending_state.get("stage")
         logger.info(
             "[CF_ENTRY] function=handle_message_text user=%s stage=%s",
             user_id,
@@ -684,7 +715,24 @@ async def handle_message_text(
 
     explicit_entertainment = ent_log.parse_explicit_entertainment_log(text)
     if explicit_entertainment:
-        date_result = _main()._apply_shared_date_parse(explicit_entertainment)
+        loop = asyncio.get_running_loop()
+        date_task = loop.run_in_executor(
+            None, lambda: _main()._apply_shared_date_parse(explicit_entertainment)
+        )
+        venue_task = _maybe_prompt_explicit_venue_in_executor(
+            _notion(), message, explicit_entertainment, text
+        )
+        date_result, venue_result = await asyncio.gather(
+            date_task, venue_task, return_exceptions=True
+        )
+        if isinstance(date_result, Exception):
+            log.error("Explicit entertainment date parse error: %s", date_result)
+            await message.reply_text(
+                _main()._entertainment_save_error_text(
+                    date_result, explicit_entertainment
+                )
+            )
+            return
         if date_result and getattr(date_result, "ambiguous", False):
             key = str(_main()._entertainment_counter)
             _main()._entertainment_counter += 1
@@ -699,9 +747,18 @@ async def handle_message_text(
             )
             return
         try:
-            prompted = await ent_log._maybe_prompt_explicit_venue(
-                _notion(), message, explicit_entertainment, text
-            )
+            if isinstance(venue_result, Exception):
+                log.warning(
+                    "Explicit entertainment venue lookup failed; saving without venue suggestion",
+                    exc_info=(
+                        type(venue_result),
+                        venue_result,
+                        venue_result.__traceback__,
+                    ),
+                )
+                prompted = False
+            else:
+                prompted = venue_result
             if prompted:
                 return
             await _main().handle_entertainment_log(
@@ -732,7 +789,7 @@ async def handle_message_text(
                     _main().notion_tasks.mark_done(_notion(), pid)
                     suffix = (
                         " ↻ next queued"
-                        if _main().notion_tasks.handle_done_recurring(pid)
+                        if _main().notion_tasks.handle_done_recurring(_notion(), NOTION_DB_ID, pid)
                         else ""
                     )
                     done_names.append(f"{name}{suffix}")
@@ -751,7 +808,7 @@ async def handle_message_text(
                     _main().notion_tasks.mark_done(_notion(), pid)
                     suffix = (
                         " ↻ next queued"
-                        if _main().notion_tasks.handle_done_recurring(pid)
+                        if _main().notion_tasks.handle_done_recurring(_notion(), NOTION_DB_ID, pid)
                         else ""
                     )
                     done_names.append(f"{name}{suffix}")
@@ -929,15 +986,34 @@ async def _cb_task_preview(q, parts, context) -> None:
     recurring = entry.get("recurring", "None") or "None"
     repeat_day = entry.get("repeat_day")
     try:
-        page_id = notion_tasks.create_task(
-            _notion(),
-            NOTION_DB_ID,
-            task_name,
-            deadline_days,
-            ctx,
-            recurring=recurring,
-            repeat_day=repeat_day,
-        )
+        if recurring != "None":
+            page_id, first_deadline = _main()._create_recurring_task_template_and_first_instance(
+                task_name,
+                ctx,
+                recurring,
+                repeat_day,
+            )
+            await q.edit_message_text(
+                f"✅ Recurring task created: {task_name}\n"
+                f"📅 Pattern: {recurring}\n"
+                f"🗓️ First due: {first_deadline.strftime('%b %d')}",
+                parse_mode="Markdown",
+            )
+        else:
+            page_id = notion_tasks.create_task(
+                _notion(),
+                NOTION_DB_ID,
+                task_name,
+                deadline_days,
+                ctx,
+                recurring=recurring,
+                repeat_day=repeat_day,
+            )
+            horizon_label = _main().deadline_days_to_label(deadline_days)
+            await q.edit_message_text(
+                f"✅ Captured!\n\n📝 {task_name }\n🕐 {horizon_label }  {ctx }\n\n_Saved to Notion_",
+                parse_mode="Markdown",
+            )
     except Exception as e:
         log.error("Notion error for preview task '%s': %s", task_name, e)
         await q.edit_message_text("⚠️ Preview confirmed but couldn't write to Notion.")
@@ -1506,8 +1582,8 @@ async def _cb_d(q, parts, context) -> None:
     try:
         _main().notion_tasks.mark_done(_notion(), page_id)
         suffix = (
-            "\n↻ Next instance created"
-            if _main().notion_tasks.handle_done_recurring(page_id)
+            "\n↻ Next instance will be generated by the recurring batch job"
+            if _main().notion_tasks.handle_done_recurring(_notion(), NOTION_DB_ID, page_id)
             else ""
         )
         await q.edit_message_text(f"✅ Marked as done!{suffix}")
@@ -1556,7 +1632,7 @@ async def _cb_td(q, parts, context) -> None:
         return
     try:
         _main().notion_tasks.mark_done(_notion(), task["page_id"])
-        _main().notion_tasks.handle_done_recurring(task["page_id"])
+        _main().notion_tasks.handle_done_recurring(_notion(), NOTION_DB_ID, task["page_id"])
         task["_done"] = True
     except Exception as e:
         log.error("To do picker error: %s", e)
@@ -1589,8 +1665,8 @@ async def _cb_dp(q, parts, context) -> None:
         task = STATE.done_picker_map[key][int(idx_str)]
         _main().notion_tasks.mark_done(_notion(), task["page_id"])
         suffix = (
-            "\n↻ Next instance created"
-            if _main().notion_tasks.handle_done_recurring(task["page_id"])
+            "\n↻ Next instance will be generated by the recurring batch job"
+            if _main().notion_tasks.handle_done_recurring(_notion(), NOTION_DB_ID, task["page_id"])
             else ""
         )
         await q.edit_message_text(f"✅ Done: {task['name']}{suffix}")
@@ -1687,7 +1763,7 @@ async def _cb_qp(q, parts, context) -> None:
             task = tasks[idx]
             try:
                 _main().notion_tasks.mark_done(_notion(), task["page_id"])
-                _main().notion_tasks.handle_done_recurring(task["page_id"])
+                _main().notion_tasks.handle_done_recurring(_notion(), NOTION_DB_ID, task["page_id"])
                 done_indices.add(idx)
                 context.user_data["palette_done_indices"] = done_indices
             except Exception as e:
