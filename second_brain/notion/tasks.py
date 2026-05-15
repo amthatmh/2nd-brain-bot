@@ -443,8 +443,22 @@ def spawn_recurring_instance(
     notion_db_id: str,
     template: dict,
     next_deadline: date | None = None,
+    source: str = "✏️ Manual",
 ) -> str:
-    """Create a new recurring task instance from a template."""
+    """
+    Create a new recurring task instance from a template.
+
+    Args:
+        notion: Notion client.
+        notion_db_id: To-Do database ID.
+        template: Template dict with task metadata.
+        next_deadline: Pre-calculated deadline; when omitted, calculate from template.
+        source: Source select value for the new instance. Defaults to manual; pass
+            "📱 Telegram" for bot-captured tasks.
+
+    Returns:
+        Page ID of the created instance.
+    """
     if next_deadline is None:
         ref_date = _parse_deadline(template.get("deadline")) or local_today()
         next_deadline = calculate_next_deadline(template, from_date=ref_date)
@@ -455,7 +469,7 @@ def spawn_recurring_instance(
             "Name": title_prop(template["name"]),
             "Deadline": {"date": {"start": next_deadline.isoformat()}},
             "Context": {"select": {"name": template["context"]}},
-            "Source": {"select": {"name": "✏️ Manual"}},
+            "Source": {"select": {"name": source}},
             "Recurring Parent ID": rich_text_prop(template["page_id"]),
         },
     )

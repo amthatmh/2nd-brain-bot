@@ -977,6 +977,7 @@ def _create_recurring_task_template_and_first_instance(
         NOTION_DB_ID,
         template_dict,
         next_deadline=first_deadline,
+        source="📱 Telegram",
     )
     return template_id, first_deadline
 
@@ -1504,11 +1505,18 @@ async def generate_next_recurring_instances(bot) -> None:
                     "recurrence_pattern": notion_tasks._get_prop(p, "Recurrence Pattern", "rich_text"),
                 }
 
+                template_source = notion_tasks._get_prop(p, "Source", "select") or "✏️ Manual"
                 completed_deadline = notion_tasks._get_prop(page["properties"], "Deadline", "date")
                 ref_date = notion_tasks._parse_deadline(completed_deadline) or notion_tasks.local_today()
                 next_deadline = notion_tasks.calculate_next_deadline(template, from_date=ref_date)
 
-                notion_tasks.spawn_recurring_instance(notion, NOTION_DB_ID, template, next_deadline=next_deadline)
+                notion_tasks.spawn_recurring_instance(
+                    notion,
+                    NOTION_DB_ID,
+                    template,
+                    next_deadline=next_deadline,
+                    source=template_source,
+                )
                 notion_tasks.set_last_generated(notion, page["id"], notion_tasks.local_today())
 
                 spawned += 1
