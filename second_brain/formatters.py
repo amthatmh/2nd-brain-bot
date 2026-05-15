@@ -259,7 +259,7 @@ def format_weather_block(weather: dict | None, label: str = "🌤️") -> str:
 
 def format_weather_snapshot() -> str:
     """Compose a richer weather snapshot for quick access."""
-    lines = [f"📍 Weather · {wx.current_location}"]
+    lines = [f"📍 Weather · {wx._loc.location}"]
     current = wx.fetch_weather("current")
     if current:
         temp_c = int(round(float(current.get("temp", 0))))
@@ -347,10 +347,10 @@ def append_location_to_weather_block(weather_block: str, location_label: str) ->
 
 def weather_unavailable_digest_line() -> str:
     """Digest fallback text when weather cannot be rendered."""
-    if wx.current_lat is not None and wx.current_lon is not None and wx.current_location:
-        return f"🌤️ Weather unavailable for {wx.current_location} — send /weather to retry or /location to update"
-    if wx.current_location:
-        return f"🌤️ Weather unavailable. Last location: {wx.current_location} — send /location (city/state/country or ZIP)"
+    if wx._loc.lat is not None and wx._loc.lon is not None and wx._loc.location:
+        return f"🌤️ Weather unavailable for {wx._loc.location} — send /weather to retry or /location to update"
+    if wx._loc.location:
+        return f"🌤️ Weather unavailable. Last location: {wx._loc.location} — send /location (city/state/country or ZIP)"
     return "🌤️ Weather unavailable — set with /location (city/state/country or ZIP)"
 
 def format_digest_weather_card() -> str:
@@ -372,7 +372,7 @@ def format_digest_weather_card() -> str:
     if not today:
         return weather_unavailable_digest_line()
     current = wx.fetch_weather("current")
-    location = digest_location_label() or (wx.current_location or "Unknown location")
+    location = digest_location_label() or (wx._loc.location or "Unknown location")
     condition = today.get("description", today.get("condition", "Unknown"))
     high_c = int(today.get("temp_high", 0))
     low_c = int(today.get("temp_low", 0))
@@ -417,7 +417,7 @@ def _should_show_uv_guidance(
 
 def digest_location_label() -> str:
     """Compact location label for digest weather line (City, ST or country)."""
-    parts = [p.strip() for p in (wx.current_location or "").split(",") if p.strip()]
+    parts = [p.strip() for p in (wx._loc.location or "").split(",") if p.strip()]
     if not parts:
         return ""
     if len(parts) >= 3:

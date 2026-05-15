@@ -41,7 +41,7 @@ def test_digest_weather_card_uses_shared_five_day_daily_pull(monkeypatch):
         calls.append((days, force_refresh))
         return _daily_rows()[:days]
 
-    monkeypatch.setattr(wx, "current_location", "Chicago, Illinois, US")
+    monkeypatch.setattr(wx._loc, "location", "Chicago, Illinois, US")
     monkeypatch.setattr(fmt, "digest_location_label", lambda: "Chicago")
     monkeypatch.setattr(wx, "fetch_daily_weather", fake_daily)
     monkeypatch.setattr(wx, "fetch_weather", lambda forecast_type="current": {"condition": "Clouds", "temp": 14})
@@ -55,7 +55,7 @@ def test_digest_weather_card_uses_shared_five_day_daily_pull(monkeypatch):
 
 
 def test_weather_snapshot_next_five_days_are_celsius(monkeypatch):
-    monkeypatch.setattr(wx, "current_location", "Chicago, Illinois, US")
+    monkeypatch.setattr(wx._loc, "location", "Chicago, Illinois, US")
     monkeypatch.setattr(wx, "fetch_weather", lambda forecast_type="current": {"condition": "Clouds", "temp": 14})
     monkeypatch.setattr(wx, "fetch_daily_weather", lambda days=5, force_refresh=False: _daily_rows()[:days])
     monkeypatch.setattr(fmt, "_should_show_uv_guidance", lambda *args, **kwargs: False)
@@ -69,8 +69,8 @@ def test_weather_snapshot_next_five_days_are_celsius(monkeypatch):
 
 def test_fetch_daily_weather_reuses_cached_one_call_data(monkeypatch):
     monkeypatch.setattr(wx, "OPENWEATHER_KEY", "test-openweather-key")
-    wx.current_lat = 41.88
-    wx.current_lon = -87.63
+    wx._loc.lat = 41.88
+    wx._loc.lon = -87.63
     wx.clear_weather_cache()
     calls = []
     base_dt = int(datetime(2026, 5, 5, tzinfo=timezone.utc).timestamp())
@@ -110,8 +110,8 @@ def test_fetch_daily_weather_reuses_cached_one_call_data(monkeypatch):
 
 def test_fetch_multi_day_forecast_buckets_three_hour_rows(monkeypatch):
     monkeypatch.setattr(wx, "OPENWEATHER_KEY", "test-openweather-key")
-    wx.current_lat = 41.88
-    wx.current_lon = -87.63
+    wx._loc.lat = 41.88
+    wx._loc.lon = -87.63
     base_day = datetime.now(wx.TZ).date()
     calls = []
 

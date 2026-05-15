@@ -340,7 +340,7 @@ notion = NotionClient(auth=NOTION_TOKEN)
 claude = get_claude_client()
 wx.notion = notion
 wx.NOTION_ENV_DB = NOTION_ENV_DB
-wx.current_location = WEATHER_LOCATION
+wx._loc.location = WEATHER_LOCATION
 
 # ── In-memory state ──────────────────────────────────────────────────────────
 digest_map: dict[int, list[dict]] = STATE.digest_map
@@ -1292,11 +1292,11 @@ async def cmd_weather_text(message, context: ContextTypes.DEFAULT_TYPE | None = 
     del context
     if message.chat_id != MY_CHAT_ID:
         return
-    if not wx.current_location:
+    if not wx._loc.location:
         await message.reply_text("📍 What location should I use for weather? (city/state/country or ZIP)")
         return
     try:
-        await message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
+        await message.reply_text(await handle_weather(wx._loc.location), parse_mode="Markdown")
     except Exception as e:
         log.error("Weather quick-action failed: %s", e)
         await message.reply_text("⚠️ Weather is temporarily unavailable. Try /weather again in a moment or /location to reset.")
@@ -1957,12 +1957,12 @@ async def post_init(app: Application) -> None:
     wx.load_location_state()  # load from local JSON cache first (fast)
     if not wx.load_notion_env_location():  # try Notion (authoritative)
         # Notion had no location — geocode from env var or history
-        if OPENWEATHER_KEY and (wx.current_lat is None or wx.current_lon is None):
-            if not wx.set_location_smart(wx.current_location, claude):
+        if OPENWEATHER_KEY and (wx._loc.lat is None or wx._loc.lon is None):
+            if not wx.set_location_smart(wx._loc.location, claude):
                 wx.recover_location_from_history(claude)
     else:
         # Notion loaded successfully — sync back to local JSON cache
-        wx.save_location_state(wx.current_location)
+        wx.save_location_state(wx._loc.location)
     cleanup_old_habit_selections()
     notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB); _refresh_habit_cache_refs()
     # Load steps config from Notion ENV DB
@@ -2268,9 +2268,9 @@ async def cmd_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if location_text:
         if wx.set_location_smart(location_text, claude):
             context.user_data["awaiting_location"] = False
-            await update.message.reply_text(f"📍 Location updated to {wx.current_location}.")
-            wx.save_location_state(wx.current_location)
-            await update.message.reply_text(await handle_weather(wx.current_location), parse_mode="Markdown")
+            await update.message.reply_text(f"📍 Location updated to {wx._loc.location}.")
+            wx.save_location_state(wx._loc.location)
+            await update.message.reply_text(await handle_weather(wx._loc.location), parse_mode="Markdown")
             return
         await update.message.reply_text(
             "Couldn't find that location. Try city/state/country or ZIP (example: Chicago IL 60605)."

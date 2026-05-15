@@ -434,12 +434,12 @@ async def handle_message_text(
         if _main().wx.set_location_smart(text, _claude()):
             context.user_data["awaiting_location"] = False
             await message.reply_text(
-                f"📍 Location updated to {_main().wx .current_location }."
+                f"📍 Location updated to {_main().wx._loc.location}."
             )
-            _main().wx.save_location_state(_main().wx.current_location)
+            _main().wx.save_location_state(_main().wx._loc.location)
             try:
                 await message.reply_text(
-                    await _main().handle_weather(_main().wx.current_location),
+                    await _main().handle_weather(_main().wx._loc.location),
                     parse_mode="Markdown",
                 )
             except Exception as e:
@@ -459,12 +459,12 @@ async def handle_message_text(
             if _main().wx.set_location_smart(requested_location, _claude()):
                 context.user_data["awaiting_location"] = False
                 await message.reply_text(
-                    f"📍 Location updated to {_main().wx .current_location }."
+                    f"📍 Location updated to {_main().wx._loc.location}."
                 )
-                _main().wx.save_location_state(_main().wx.current_location)
+                _main().wx.save_location_state(_main().wx._loc.location)
                 try:
                     await message.reply_text(
-                        await _main().handle_weather(_main().wx.current_location),
+                        await _main().handle_weather(_main().wx._loc.location),
                         parse_mode="Markdown",
                     )
                 except Exception as e:
@@ -493,8 +493,8 @@ async def handle_message_text(
                         "Couldn't find that location. Try city/state/country or ZIP (example: Chicago IL 60605)."
                     )
                     return
-                _main().wx.save_location_state(_main().wx.current_location)
-        if not _main().wx.current_location:
+                _main().wx.save_location_state(_main().wx._loc.location)
+        if not _main().wx._loc.location:
             context.user_data["awaiting_location"] = True
             await message.reply_text(
                 "📍 What location should I use for weather? (city/state/country or ZIP)"
@@ -502,7 +502,7 @@ async def handle_message_text(
             return
         try:
             await message.reply_text(
-                await _main().handle_weather(_main().wx.current_location),
+                await _main().handle_weather(_main().wx._loc.location),
                 parse_mode="Markdown",
             )
         except Exception as e:
