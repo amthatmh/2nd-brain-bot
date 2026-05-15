@@ -269,7 +269,7 @@ def build_packing_blocks(trip: dict, notion_client=None) -> list[dict]:
                 "object": "block",
                 "type": "heading_2",
                 "heading_2": {
-                    "rich_text": [{"type": "text", "text": {"content": category}}],
+                    "rich_text": [{"text": {"content": category}}],
                 },
             }
         )
@@ -279,7 +279,7 @@ def build_packing_blocks(trip: dict, notion_client=None) -> list[dict]:
                     "object": "block",
                     "type": "to_do",
                     "to_do": {
-                        "rich_text": [{"type": "text", "text": {"content": item}}],
+                        "rich_text": [{"text": {"content": item}}],
                         "checked": False,
                     },
                 }
@@ -702,19 +702,16 @@ def get_upcoming_trips_needing_reminder(within_days: int = 2, *, notion=None, no
     cutoff_date = (today + timedelta(days=within_days)).isoformat()
 
     try:
-        results = notion.databases.query(
-            database_id=notion_trips_db,
-            filter={
-                "and": [
-                    {"property": "Departure Date", "date": {"on_or_before": cutoff_date}},
-                    {"property": "Departure Date", "date": {"on_or_after": today.isoformat()}},
-                    {"property": "Reminder Sent", "checkbox": {"equals": False}},
-                ]
-            },
-        )
+        pages = query_all(notion, notion_trips_db, filter={
+            "and": [
+                {"property": "Departure Date", "date": {"on_or_before": cutoff_date}},
+                {"property": "Departure Date", "date": {"on_or_after": today.isoformat()}},
+                {"property": "Reminder Sent", "checkbox": {"equals": False}},
+            ]
+        })
 
         trips: list[dict] = []
-        for page in results.get("results", []):
+        for page in pages:
             page_id = page["id"]
             props = page.get("properties", {})
 

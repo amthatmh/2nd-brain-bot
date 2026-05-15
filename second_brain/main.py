@@ -949,7 +949,7 @@ def _create_recurring_task_template_and_first_instance(
     repeat_day: str | None,
 ) -> tuple[str, date]:
     props = {
-        "Name": {"title": [{"text": {"content": task_name}}]},
+        "Name": title_prop(task_name),
         "Context": {"select": {"name": ctx}},
         "Recurring": {"select": {"name": recurring}},
         "Is Template": {"checkbox": True},

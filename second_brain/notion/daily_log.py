@@ -173,7 +173,7 @@ def _notion_markdown_to_blocks(text: str) -> list[dict]:
                 "object": "block",
                 "type": "heading_3",
                 "heading_3": {
-                    "rich_text": [{"type": "text", "text": {"content": line[4:]}}]
+                    "rich_text": [{"text": {"content": line[4:]}}]
                 },
             })
         elif line.startswith("## "):
@@ -181,7 +181,7 @@ def _notion_markdown_to_blocks(text: str) -> list[dict]:
                 "object": "block",
                 "type": "heading_2",
                 "heading_2": {
-                    "rich_text": [{"type": "text", "text": {"content": line[3:]}}]
+                    "rich_text": [{"text": {"content": line[3:]}}]
                 },
             })
         elif line.startswith("• ") or line.startswith("- "):
@@ -189,7 +189,7 @@ def _notion_markdown_to_blocks(text: str) -> list[dict]:
                 "object": "block",
                 "type": "bulleted_list_item",
                 "bulleted_list_item": {
-                    "rich_text": [{"type": "text", "text": {"content": line[2:]}}]
+                    "rich_text": [{"text": {"content": line[2:]}}]
                 },
             })
         else:
@@ -198,7 +198,7 @@ def _notion_markdown_to_blocks(text: str) -> list[dict]:
                 "object": "block",
                 "type": "paragraph",
                 "paragraph": {
-                    "rich_text": [{"type": "text", "text": {"content": content}}]
+                    "rich_text": [{"text": {"content": content}}]
                 },
             })
     return blocks

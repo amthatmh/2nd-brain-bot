@@ -17,6 +17,7 @@ from second_brain.notion.properties import (
     extract_select,
     extract_title,
     query_all,
+    rich_text_prop,
     select_prop,
     title_prop,
 )
@@ -455,7 +456,7 @@ def spawn_recurring_instance(
             "Deadline": {"date": {"start": next_deadline.isoformat()}},
             "Context": {"select": {"name": template["context"]}},
             "Source": {"select": {"name": "✏️ Manual"}},
-            "Recurring Parent ID": {"rich_text": [{"text": {"content": template["page_id"]}}]},
+            "Recurring Parent ID": rich_text_prop(template["page_id"]),
         },
     )
     set_last_generated(notion, template["page_id"], local_today())
