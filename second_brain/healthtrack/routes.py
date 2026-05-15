@@ -64,7 +64,8 @@ import asyncio
 import inspect
 import json
 import logging
-from datetime import datetime, timezone
+import re
+from datetime import date, datetime, timedelta, timezone
 
 from aiohttp import web
 
@@ -88,6 +89,10 @@ from second_brain.healthtrack.steps import (
     _update_log_entry_steps,
 )
 from second_brain.http_utils import cors_headers
+from second_brain.notion.properties import query_all
+from second_brain.notion.habits import already_logged_today, log_habit as create_habit_log
+from second_brain.services.note_utils import extract_date_only
+from second_brain.state import STATE
 
 log = logging.getLogger(__name__)
 
@@ -279,6 +284,222 @@ def _parse_all_dates_from_payload(body: dict) -> list[tuple[int, str]]:
     return []
 
 
+
+async def habits_data_handler(
+    request: web.Request,
+    *,
+    notion,
+    habit_cache: dict[str, dict],
+    log_db: str,
+    habit_db: str,
+    streak_db: str,
+    tz,
+    weeks_history: int,
+    query_all_fn=None,
+    extract_date_fn=extract_date_only,
+    datetime_cls=datetime,
+) -> web.Response:
+    query_all_fn = query_all_fn or (lambda database_id, **kwargs: query_all(notion, database_id, **kwargs))
+    now = datetime_cls.now(tz)
+
+    if STATE.habits_data_cache.get("payload"):
+        return web.Response(
+            text=json.dumps(STATE.habits_data_cache["payload"]),
+            content_type="application/json",
+            headers=cors_headers(),
+        )
+
+    try:
+        habits_sorted = sorted(habit_cache.values(), key=lambda h: h["sort"])
+        today    = now.date()
+        num_days = weeks_history * 7
+        start_dt = today - timedelta(days=num_days - 1)
+
+        results = query_all_fn(
+            log_db,
+            filter={
+                "and": [
+                    {"property": "Completed", "checkbox": {"equals": True}},
+                    {"property": "Date", "date": {"on_or_after":  start_dt.isoformat()}},
+                    {"property": "Date", "date": {"on_or_before": today.isoformat()}},
+                ]
+            },
+        )
+
+        # Build lookup set — strip dashes from relation IDs (Notion returns them without)
+        logged: set[tuple] = set()
+        for page in results:
+            p        = page["properties"]
+            d        = p.get("Date", {}).get("date", {})
+            date_str = extract_date_fn(d.get("start") if d else None)
+            rels     = p.get("Habit", {}).get("relation", [])
+            for rel in rels:
+                if date_str:
+                    logged.add((rel["id"].replace("-", ""), date_str))
+
+        all_dates  = [(start_dt + timedelta(days=i)).isoformat() for i in range(num_days)]
+        habits_out = []
+        for habit in habits_sorted:
+            pid  = habit["page_id"].replace("-", "")
+            days = [1 if (pid, d) in logged else 0 for d in all_dates]
+            day_streak = 0
+            for done in reversed(days):
+                if done != 1:
+                    break
+                day_streak += 1
+            streak_results = query_all_fn(
+                streak_db,
+                filter={"property": "Habit", "relation": {"contains": habit["page_id"]}},
+            )
+            streak_weeks_by_date: dict[date, bool] = {}
+            for streak_row in streak_results:
+                props = streak_row.get("properties", {})
+                week_date_raw = extract_date_fn(
+                    props.get("Week Of", {}).get("date", {}).get("start"),
+                )
+                if not week_date_raw:
+                    continue
+                try:
+                    week_date = datetime_cls.fromisoformat(week_date_raw).date()
+                except ValueError:
+                    continue
+                goal_met = bool(props.get("Goal Met", {}).get("checkbox"))
+                # Keep one status per week, favoring goal_met=True if duplicates exist.
+                streak_weeks_by_date[week_date] = streak_weeks_by_date.get(week_date, False) or goal_met
+
+            target = habit.get("freq_per_week")
+            if not isinstance(target, int) or target <= 0:
+                label = habit.get("frequency_label") or ""
+                match = re.search(r"\d+", label)
+                target = int(match.group(0)) if match else None
+
+            weekly_counts: dict[date, int] = {}
+            for date_str, done in zip(all_dates, days):
+                if done != 1:
+                    continue
+                try:
+                    day_date = datetime_cls.fromisoformat(date_str).date()
+                except ValueError:
+                    continue
+                week_of = day_date - timedelta(days=day_date.weekday())
+                weekly_counts[week_of] = weekly_counts.get(week_of, 0) + 1
+
+            current_monday = today - timedelta(days=today.weekday())
+            if target and target > 0:
+                # For UI display, compute weekly goal attainment directly from logs
+                # using the current target. This keeps streaks correct even when
+                # streak rows are stale/missing or created before target changes.
+                week_cursor = start_dt - timedelta(days=start_dt.weekday())
+                while week_cursor < current_monday:
+                    completed = weekly_counts.get(week_cursor, 0)
+                    streak_weeks_by_date[week_cursor] = completed >= target
+                    week_cursor += timedelta(days=7)
+
+            streak_weeks = sorted(
+                ((week_date, goal_met) for week_date, goal_met in streak_weeks_by_date.items() if week_date < current_monday),
+                key=lambda item: item[0],
+                reverse=True,
+            )
+            week_streak = 0
+            expected_week: date = current_monday - timedelta(days=7)
+            for week_date, goal_met in streak_weeks:
+                if week_date != expected_week:
+                    break
+                if not goal_met:
+                    break
+                week_streak += 1
+                expected_week = week_date - timedelta(days=7)
+            habits_out.append({
+                "id":          habit["page_id"],
+                "name":        habit["name"],
+                "icon":        habit.get("icon"),
+                "color":       habit.get("color") or "pink",
+                "description": habit.get("description") or "",
+                "frequency":   habit.get("frequency_label") or "",
+                "sort":        habit.get("sort"),
+                "days":        days,
+                "todayDone":   days[-1] == 1,
+                "dayStreak":   day_streak,
+                "weekStreak":  week_streak,
+            })
+
+        payload = {
+            "generated":    now.isoformat(),
+            "habits":       habits_out,
+            "dates":        all_dates,
+            "todayDate":    today.isoformat(),
+            "weeksHistory": weeks_history,
+        }
+        STATE.habits_data_cache["payload"] = payload
+        return web.Response(
+            text=json.dumps(payload),
+            content_type="application/json",
+            headers=cors_headers(),
+        )
+    except Exception as e:
+        log.error(f"/habits-data error: {e}")
+        return web.Response(status=500, text=str(e), headers=cors_headers())
+
+
+async def log_habit_http_handler(
+    request: web.Request,
+    *,
+    notion,
+    habit_cache: dict[str, dict],
+    log_db: str,
+    habit_db: str,
+    streak_db: str,
+    tz,
+    weeks_history: int,
+) -> web.Response:
+    if request.method == "OPTIONS":
+        return web.Response(status=204, headers=cors_headers())
+
+    try:
+        body = await request.json()
+        habit_id = (body.get("habitId") or "").strip()
+        if not habit_id:
+            return web.Response(
+                status=400,
+                text=json.dumps({"ok": False, "error": "habitId is required"}),
+                content_type="application/json",
+                headers=cors_headers(),
+            )
+
+        matched = next((h for h in habit_cache.values() if h["page_id"] == habit_id), None)
+        if not matched:
+            return web.Response(
+                status=404,
+                text=json.dumps({"ok": False, "error": "Habit not found"}),
+                content_type="application/json",
+                headers=cors_headers(),
+            )
+
+        if already_logged_today(notion, log_db, matched["page_id"], tz):
+            return web.Response(
+                text=json.dumps({"ok": True, "alreadyLogged": True, "habitName": matched["name"]}),
+                content_type="application/json",
+                headers=cors_headers(),
+            )
+
+        create_habit_log(notion, log_db, matched["page_id"], matched["name"], source="🌐 HabitKit")
+        STATE.habits_data_cache.clear()
+        log.info("habits_data_cache: invalidated after HabitKit log")
+        return web.Response(
+            text=json.dumps({"ok": True, "alreadyLogged": False, "habitName": matched["name"]}),
+            content_type="application/json",
+            headers=cors_headers(),
+        )
+    except Exception as e:
+        log.error(f"/log-habit error: {e}")
+        return web.Response(
+            status=500,
+            text=json.dumps({"ok": False, "error": str(e)}),
+            content_type="application/json",
+            headers=cors_headers(),
+        )
+
+
 def register_health_routes(
     app: web.Application,
     notion,
@@ -290,6 +511,9 @@ def register_health_routes(
     chat_id: int,
     on_sync_result=None,  # optional callback(result: dict) for telemetry
     health_metrics_db_id: str = "",
+    habit_cache: dict[str, dict] | None = None,
+    streak_db_id: str = "",
+    weeks_history: int = 52,
 ) -> None:
     """
     Register health tracking routes on the aiohttp app.
@@ -307,6 +531,31 @@ def register_health_routes(
         chat_id     — MY_CHAT_ID to send threshold notifications
         health_metrics_db_id — NOTION_HEALTH_METRICS_DB env value for /api/v1/health-sync
     """
+
+
+    async def _habits_data(request: web.Request) -> web.Response:
+        return await habits_data_handler(
+            request,
+            notion=notion,
+            habit_cache=habit_cache or {},
+            log_db=log_db_id,
+            habit_db=habit_db_id,
+            streak_db=streak_db_id,
+            tz=tz,
+            weeks_history=weeks_history,
+        )
+
+    async def _log_habit(request: web.Request) -> web.Response:
+        return await log_habit_http_handler(
+            request,
+            notion=notion,
+            habit_cache=habit_cache or {},
+            log_db=log_db_id,
+            habit_db=habit_db_id,
+            streak_db=streak_db_id,
+            tz=tz,
+            weeks_history=weeks_history,
+        )
 
     async def steps_sync_handler(request: web.Request) -> web.Response:
         # Handle CORS preflight
@@ -673,6 +922,9 @@ def register_health_routes(
         # TEST: Completed flag: 9999 steps → False, 10000 steps → True
         # TEST: No Telegram notification sent for any historical date regardless of step count
 
+    app.router.add_get("/habits-data", _habits_data)
+    app.router.add_post("/log-habit", _log_habit)
+    app.router.add_options("/log-habit", _log_habit)
     app.router.add_post("/api/v1/steps-sync", steps_sync_handler)
     app.router.add_options("/api/v1/steps-sync", steps_sync_handler)
     app.router.add_get("/api/v1/steps-status", steps_status_handler)

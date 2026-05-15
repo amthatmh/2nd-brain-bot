@@ -328,46 +328,12 @@ def load_notion_env_config() -> dict[str, str]:
         log.warning("load_notion_env_config failed: %s", e)
         return {}
 
-async def write_boot_log(
-    bot,
-    version: str,
-    sha: str,
-    asana_status: str,
-    features: str,
-    status: str = "ok",
-    notes: str = "",
-) -> None:
-    """
-    Write a boot record to the 🖥️ Boot Log Notion DB.
-    Silent — never raises, never sends Telegram.
-    Falls back gracefully if NOTION_BOOT_LOG_DB is not configured.
-    """
-    if not NOTION_BOOT_LOG_DB:
-        log.warning("write_boot_log: NOTION_BOOT_LOG_DB not configured, skipping")
-        return
-    try:
-        props = {
-            "Version": title_prop(version),
-            "Boot Time": {
-                "date": {"start": datetime.now(TZ).isoformat()}
-            },
-            "Status": {
-                "select": {"name": status}
-            },
-            "SHA": rich_text_prop(sha),
-            "Asana": rich_text_prop(asana_status),
-            "Features": rich_text_prop(features),
-            "Timezone": rich_text_prop(str(TZ)),
-        }
-        if notes:
-            props["Notes"] = rich_text_prop(notes[:2000])
-        notion.pages.create(
-            parent={"database_id": NOTION_BOOT_LOG_DB},
-            properties=props,
-        )
-        log.info("Boot log written to Notion: %s %s", version, sha)
-    except Exception as e:
-        log.error("write_boot_log: failed to write to Notion: %s", e)
+async def write_boot_log(*args, **kwargs):
+    from second_brain.boot import write_boot_log as _impl
+    kwargs.setdefault("notion", notion)
+    kwargs.setdefault("boot_log_db", NOTION_BOOT_LOG_DB)
+    kwargs.setdefault("tz", TZ)
+    return await _impl(*args, **kwargs)
 
 # ── Clients ──────────────────────────────────────────────────────────────────
 notion = NotionClient(auth=NOTION_TOKEN)
@@ -1351,72 +1317,9 @@ async def cmd_mute_text(message, context: ContextTypes.DEFAULT_TYPE | None = Non
         reply_markup=kb.mute_options_keyboard(),
     )
 
-async def handle_v10_callback(q, parts: list[str]) -> bool:
-    if parts[0] == "wl_save" and len(parts) == 2:
-        key = parts[1]
-        if key not in wl.pending_wantslist_map:
-            await q.edit_message_text("⚠️ This confirmation expired — please re-send.")
-            return True
-        item_data = wl.pending_wantslist_map.pop(key)
-        try:
-            wl.create_wantslist_entry(notion, item_data["item"], category=item_data["category"])
-            await q.edit_message_text(
-                f"🎁 Saved!\n\n*{item_data['item']}*\n_{item_data['category']} · Wantslist_\n\n_Saved to Notion_",
-                parse_mode="Markdown",
-            )
-        except Exception as e:
-            log.error(f"Wantslist save error: {e}")
-            await q.edit_message_text("⚠️ Couldn't save to Notion.")
-        return True
-
-    if parts[0] == "wl_cancel" and len(parts) == 2:
-        wl.pending_wantslist_map.pop(parts[1], None)
-        await q.edit_message_text("🎁 Cancelled — not saved.")
-        return True
-
-    if parts[0] == "tmdb_pick" and len(parts) == 3:
-        _, key, idx_str = parts
-        if key not in wl.pending_tmdb_map:
-            await q.edit_message_text("⚠️ This picker expired — please re-send.")
-            return True
-        candidates = wl.pending_tmdb_map.pop(key)
-        try:
-            c = candidates[int(idx_str)]
-            wl._save_watchlist_from_candidate(notion, c, c["title"])
-            seasons_str = f" · {c['seasons']} seasons" if c.get("seasons") else ""
-            episodes_str = f" · {c['episodes']} eps" if c.get("episodes") else ""
-            runtime_str = f" · {c['runtime']} min/ep" if c.get("runtime") else ""
-            await q.edit_message_text(
-                f"📺 Added!\n\n*{c['title']}* ({c['year']}) · {_notion_type_from_tmdb(c['media_type'])}"
-                f"{seasons_str}{episodes_str}{runtime_str}\n_Saved to Notion_",
-                parse_mode="Markdown",
-            )
-        except Exception as e:
-            log.error(f"TMDB watchlist save error: {e}")
-            await q.edit_message_text("⚠️ Couldn't save to Notion.")
-        return True
-
-    if parts[0] == "tmdb_skip" and len(parts) == 2:
-        key = parts[1]
-        candidates = wl.pending_tmdb_map.pop(key, [])
-        title = candidates[0]["title"] if candidates else "Unknown"
-        try:
-            wl.create_watchlist_entry(notion, title)
-            await q.edit_message_text(
-                f"📺 Added!\n\n*{title}*\n_Title only — no TMDB metadata_\n\n_Saved to Notion_",
-                parse_mode="Markdown",
-            )
-        except Exception as e:
-            log.error(f"Watchlist title-only save error: {e}")
-            await q.edit_message_text("⚠️ Couldn't save to Notion.")
-        return True
-
-    if parts[0] == "tmdb_cancel" and len(parts) == 2:
-        wl.pending_tmdb_map.pop(parts[1], None)
-        await q.edit_message_text("📺 Cancelled — not saved.")
-        return True
-
-    return False
+async def handle_v10_callback(q, parts):
+    from second_brain.routers import handle_v10_callback as _impl
+    return await _impl(q, parts)
 
 def _crossfit_config(**extra) -> dict:
     cfg = {
@@ -1585,255 +1488,48 @@ async def run_asana_sync(bot) -> dict:
         return {"ok": False, "action": "error", "reason": str(e)}
 
 async def run_cinema_sync(bot, *, force: bool = False) -> dict[str, int | str]:
-    """Background sync for Cinema Log → Favourite Shows."""
-    if not CINEMA_DB_ID:
-        return {
-            "scanned": 0,
-            "updated": 0,
-            "skipped": 0,
-            "failed": 0,
-            "tmdb_found": 0,
-            "tmdb_missing": 0,
-            "added_to_fave": 0,
-            "action": "disabled",
-        }
-
+    from second_brain.cinema.sync import run_cinema_sync as _impl
+    result = await _impl(notion, bot, cinema_log_db=NOTION_CINEMA_LOG_DB, chat_id=MY_CHAT_ID, force=force)
+    if result.get("action") == "disabled":
+        return result
     sync_status["cinema"]["last_run"] = utc_now_iso()
-    try:
-        stats = await sync_cinema_log_to_notion(
-            notion=notion,
-            cinema_db_id=CINEMA_DB_ID,
-            fave_db_id=FAVE_DB_ID,
-            tmdb_api_key=TMDB_API_KEY,
-            force=force,
-        )
-        log.info(
-            "Cinema sync: scanned=%s, updated=%s, skipped=%s, failed=%s, tmdb_found=%s, tmdb_missing=%s, added_to_fave=%s",
-            stats["scanned"],
-            stats["updated"],
-            stats["skipped"],
-            stats["failed"],
-            stats["tmdb_found"],
-            stats["tmdb_missing"],
-            stats["added_to_fave"],
-        )
-        sync_status["cinema"]["ok"] = True
-        sync_status["cinema"]["error"] = None
-        sync_status["cinema"]["stats"] = stats
-        return {**stats, "action": "synced"}
-    except Exception as e:
-        log.exception("Cinema sync failed: %s", e)
-        await _try_send_telegram(
-            bot,
-            "🚨 Cinema sync crashed.\n"
-            f"Error: {e}",
-        )
-        sync_status["cinema"]["ok"] = False
-        sync_status["cinema"]["error"] = str(e)
-        return {
-            "scanned": 0,
-            "updated": 0,
-            "skipped": 0,
-            "failed": 1,
-            "tmdb_found": 0,
-            "tmdb_missing": 0,
-            "added_to_fave": 0,
-            "action": "error",
-            "reason": str(e),
-        }
+    sync_status["cinema"]["ok"] = result.get("action") != "error"
+    sync_status["cinema"]["error"] = result.get("reason") if result.get("action") == "error" else None
+    sync_status["cinema"]["stats"] = result
+    return result
 
 # ══════════════════════════════════════════════════════════════════════════════
 # /habits-data JSON ENDPOINT
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def habits_data_handler(request: web.Request) -> web.Response:
-    now = datetime.now(TZ)
-
-    if STATE.habits_data_cache.get("payload"):
-        return web.Response(
-            text=json.dumps(STATE.habits_data_cache["payload"]),
-            content_type="application/json",
-            headers=cors_headers(),
-        )
-
-    try:
-        habits_sorted = sorted(habit_cache.values(), key=lambda h: h["sort"])
-        today    = now.date()
-        num_days = WEEKS_HISTORY * 7
-        start_dt = today - timedelta(days=num_days - 1)
-
-        results = notion_query_all(
-            database_id=NOTION_LOG_DB,
-            filter={
-                "and": [
-                    {"property": "Completed", "checkbox": {"equals": True}},
-                    {"property": "Date", "date": {"on_or_after":  start_dt.isoformat()}},
-                    {"property": "Date", "date": {"on_or_before": today.isoformat()}},
-                ]
-            },
-        )
-
-        # Build lookup set — strip dashes from relation IDs (Notion returns them without)
-        logged: set[tuple] = set()
-        for page in results:
-            p        = page["properties"]
-            d        = p.get("Date", {}).get("date", {})
-            date_str = extract_date_only(d.get("start") if d else None)
-            rels     = p.get("Habit", {}).get("relation", [])
-            for rel in rels:
-                if date_str:
-                    logged.add((rel["id"].replace("-", ""), date_str))
-
-        all_dates  = [(start_dt + timedelta(days=i)).isoformat() for i in range(num_days)]
-        habits_out = []
-        for habit in habits_sorted:
-            pid  = habit["page_id"].replace("-", "")
-            days = [1 if (pid, d) in logged else 0 for d in all_dates]
-            day_streak = 0
-            for done in reversed(days):
-                if done != 1:
-                    break
-                day_streak += 1
-            streak_results = notion_query_all(
-                NOTION_STREAK_DB,
-                filter={"property": "Habit", "relation": {"contains": habit["page_id"]}},
-            )
-            streak_weeks_by_date: dict[date, bool] = {}
-            for streak_row in streak_results:
-                props = streak_row.get("properties", {})
-                week_date_raw = extract_date_only(
-                    props.get("Week Of", {}).get("date", {}).get("start"),
-                )
-                if not week_date_raw:
-                    continue
-                try:
-                    week_date = datetime.fromisoformat(week_date_raw).date()
-                except ValueError:
-                    continue
-                goal_met = bool(props.get("Goal Met", {}).get("checkbox"))
-                # Keep one status per week, favoring goal_met=True if duplicates exist.
-                streak_weeks_by_date[week_date] = streak_weeks_by_date.get(week_date, False) or goal_met
-
-            target = habit.get("freq_per_week")
-            if not isinstance(target, int) or target <= 0:
-                label = habit.get("frequency_label") or ""
-                match = re.search(r"\d+", label)
-                target = int(match.group(0)) if match else None
-
-            weekly_counts: dict[date, int] = {}
-            for date_str, done in zip(all_dates, days):
-                if done != 1:
-                    continue
-                try:
-                    day_date = datetime.fromisoformat(date_str).date()
-                except ValueError:
-                    continue
-                week_of = day_date - timedelta(days=day_date.weekday())
-                weekly_counts[week_of] = weekly_counts.get(week_of, 0) + 1
-
-            current_monday = today - timedelta(days=today.weekday())
-            if target and target > 0:
-                # For UI display, compute weekly goal attainment directly from logs
-                # using the current target. This keeps streaks correct even when
-                # streak rows are stale/missing or created before target changes.
-                week_cursor = start_dt - timedelta(days=start_dt.weekday())
-                while week_cursor < current_monday:
-                    completed = weekly_counts.get(week_cursor, 0)
-                    streak_weeks_by_date[week_cursor] = completed >= target
-                    week_cursor += timedelta(days=7)
-
-            streak_weeks = sorted(
-                ((week_date, goal_met) for week_date, goal_met in streak_weeks_by_date.items() if week_date < current_monday),
-                key=lambda item: item[0],
-                reverse=True,
-            )
-            week_streak = 0
-            expected_week: date = current_monday - timedelta(days=7)
-            for week_date, goal_met in streak_weeks:
-                if week_date != expected_week:
-                    break
-                if not goal_met:
-                    break
-                week_streak += 1
-                expected_week = week_date - timedelta(days=7)
-            habits_out.append({
-                "id":          habit["page_id"],
-                "name":        habit["name"],
-                "icon":        habit.get("icon"),
-                "color":       habit.get("color") or "pink",
-                "description": habit.get("description") or "",
-                "frequency":   habit.get("frequency_label") or "",
-                "sort":        habit.get("sort"),
-                "days":        days,
-                "todayDone":   days[-1] == 1,
-                "dayStreak":   day_streak,
-                "weekStreak":  week_streak,
-            })
-
-        payload = {
-            "generated":    now.isoformat(),
-            "habits":       habits_out,
-            "dates":        all_dates,
-            "todayDate":    today.isoformat(),
-            "weeksHistory": WEEKS_HISTORY,
-        }
-        STATE.habits_data_cache["payload"] = payload
-        return web.Response(
-            text=json.dumps(payload),
-            content_type="application/json",
-            headers=cors_headers(),
-        )
-    except Exception as e:
-        log.error(f"/habits-data error: {e}")
-        return web.Response(status=500, text=str(e), headers=cors_headers())
+    from second_brain.healthtrack.routes import habits_data_handler as _impl
+    return await _impl(
+        request,
+        notion=notion,
+        habit_cache=habit_cache,
+        log_db=NOTION_LOG_DB,
+        habit_db=NOTION_HABIT_DB,
+        streak_db=NOTION_STREAK_DB,
+        tz=TZ,
+        weeks_history=WEEKS_HISTORY,
+        query_all_fn=notion_query_all,
+        extract_date_fn=extract_date_only,
+        datetime_cls=datetime,
+    )
 
 async def log_habit_http_handler(request: web.Request) -> web.Response:
-    if request.method == "OPTIONS":
-        return web.Response(status=204, headers=cors_headers())
-
-    try:
-        body = await request.json()
-        habit_id = (body.get("habitId") or "").strip()
-        if not habit_id:
-            return web.Response(
-                status=400,
-                text=json.dumps({"ok": False, "error": "habitId is required"}),
-                content_type="application/json",
-                headers=cors_headers(),
-            )
-
-        matched = next((h for h in habit_cache.values() if h["page_id"] == habit_id), None)
-        if not matched:
-            return web.Response(
-                status=404,
-                text=json.dumps({"ok": False, "error": "Habit not found"}),
-                content_type="application/json",
-                headers=cors_headers(),
-            )
-
-        if already_logged_today(matched["page_id"]):
-            return web.Response(
-                text=json.dumps({"ok": True, "alreadyLogged": True, "habitName": matched["name"]}),
-                content_type="application/json",
-                headers=cors_headers(),
-            )
-
-        log_habit(matched["page_id"], matched["name"], source="🌐 HabitKit")
-        STATE.habits_data_cache.clear()
-        log.info("habits_data_cache: invalidated after HabitKit log")
-        return web.Response(
-            text=json.dumps({"ok": True, "alreadyLogged": False, "habitName": matched["name"]}),
-            content_type="application/json",
-            headers=cors_headers(),
-        )
-    except Exception as e:
-        log.error(f"/log-habit error: {e}")
-        return web.Response(
-            status=500,
-            text=json.dumps({"ok": False, "error": str(e)}),
-            content_type="application/json",
-            headers=cors_headers(),
-        )
+    from second_brain.healthtrack.routes import log_habit_http_handler as _impl
+    return await _impl(
+        request,
+        notion=notion,
+        habit_cache=habit_cache,
+        log_db=NOTION_LOG_DB,
+        habit_db=NOTION_HABIT_DB,
+        streak_db=NOTION_STREAK_DB,
+        tz=TZ,
+        weeks_history=WEEKS_HISTORY,
+    )
 
 async def _persist_steps_sync_to_env_db(notion_client, env_db_id: str) -> None:
     """Update HEALTH_STEPS_THRESHOLD row in Notion ENV DB with current sync date."""
@@ -1898,7 +1594,6 @@ async def _record_steps_sync_result(result: dict) -> None:
 
 async def start_http_server() -> None:
     app    = web.Application()
-    app.router.add_get("/habits-data", habits_data_handler)
     app.router.add_get(
         "/api/health-dashboard",
         create_health_dashboard_handler(
@@ -1908,8 +1603,6 @@ async def start_http_server() -> None:
             tz=TZ,
         ),
     )
-    app.router.add_post("/log-habit", log_habit_http_handler)
-    app.router.add_options("/log-habit", log_habit_http_handler)
     app.router.add_get("/health", lambda r: web.Response(text="ok"))
     register_health_routes(
         app,
@@ -1922,6 +1615,9 @@ async def start_http_server() -> None:
         chat_id=MY_CHAT_ID,
         on_sync_result=_record_steps_sync_result,
         health_metrics_db_id=NOTION_HEALTH_METRICS_DB,
+        habit_cache=habit_cache,
+        streak_db_id=NOTION_STREAK_DB,
+        weeks_history=WEEKS_HISTORY,
     )
     runner = web.AppRunner(app)
     await runner.setup()
@@ -2020,173 +1716,8 @@ def startup_notion_health_check() -> None:
             )
 
 async def process_pending_programmes(bot) -> None:
-    """Poll Weekly Programs DB for unprocessed rows and parse/save asynchronously."""
-    if not NOTION_WORKOUT_PROGRAM_DB:
-        return
-
-    try:
-        rows = query_all(
-            notion,
-            NOTION_WORKOUT_PROGRAM_DB,
-            filter={
-                "and": [
-                    {"property": "Processed", "checkbox": {"equals": False}},
-                    {"property": "Full Program", "rich_text": {"is_not_empty": True}},
-                ]
-            },
-        )
-    except Exception as e:
-        log.error("process_pending_programmes: query failed: %s", e)
-        return
-
-    if not rows:
-        return
-
-    log.info("process_pending_programmes: found %d unprocessed row(s)", len(rows))
-
-    for row in rows:
-        page_id = row["id"]
-        props = row.get("properties", {})
-        title_parts = props.get("Name", {}).get("title", [])
-        week_name = title_parts[0].get("plain_text", "") if title_parts else "Unknown week"
-
-        rt = props.get("Full Program", {}).get("rich_text", [])
-        full_text = "".join(chunk.get("plain_text", "") for chunk in rt).strip()
-        if not full_text:
-            continue
-
-        log.info("process_pending_programmes: processing '%s' (%d chars)", week_name, len(full_text))
-
-        try:
-            parsed = await asyncio.get_running_loop().run_in_executor(
-                None,
-                lambda: parse_weekly_program_text(full_text, week_name),
-            )
-
-            result = await asyncio.get_running_loop().run_in_executor(
-                None,
-                lambda: save_programme_from_notion_row(
-                    notion,
-                    page_id,
-                    NOTION_WORKOUT_DAYS_DB,
-                    NOTION_MOVEMENTS_DB,
-                    parsed,
-                    NOTION_WORKOUT_PROGRAM_DB,
-                    os.getenv("NOTION_CYCLES_DB", ""),
-                    MOVEMENTS_CACHE,
-                ),
-            )
-            days_created = result["days_created"]
-
-            try:
-                movement_ids = result.get("movement_ids", [])
-                if movement_ids:
-                    notion_call(
-                        notion.pages.update,
-                        page_id=page_id,
-                        properties={"Movements": {"relation": [{"id": mid} for mid in movement_ids]}},
-                    )
-                    log.info(
-                        "process_pending_programmes: wrote %d movements to Weekly Programs row",
-                        len(movement_ids),
-                    )
-            except Exception as e:
-                log.warning("process_pending_programmes: could not write movements rollup: %s", e)
-
-            cycle_line = None
-            try:
-                new_cycle = props.get("New Cycle", {}).get("checkbox", False)
-                if new_cycle:
-                    all_rows = query_all(notion, NOTION_WORKOUT_PROGRAM_DB, page_size=100)
-                    cycle_num = max(
-                        (r.get("properties", {}).get("Cycle", {}).get("number") or 0 for r in all_rows),
-                        default=0,
-                    ) + 1
-                    week_num = 1
-                else:
-                    recent_processed = notion_call(
-                        notion.databases.query,
-                        database_id=NOTION_WORKOUT_PROGRAM_DB,
-                        filter={"property": "Processed", "checkbox": {"equals": True}},
-                        sorts=[{"property": "Week", "direction": "descending"}],
-                        page_size=10,
-                    ).get("results", [])
-                    cycle_num = next(
-                        (r.get("properties", {}).get("Cycle", {}).get("number")
-                         for r in recent_processed
-                         if r.get("properties", {}).get("Cycle", {}).get("number")),
-                        1,
-                    )
-                    cycle_rows = query_all(
-                        notion,
-                        NOTION_WORKOUT_PROGRAM_DB,
-                        filter={"and": [
-                            {"property": "Processed", "checkbox": {"equals": True}},
-                            {"property": "Cycle", "number": {"equals": cycle_num}},
-                        ]},
-                    )
-                    week_num = len(cycle_rows) + 1
-
-                notion_call(
-                    notion.pages.update,
-                    page_id=page_id,
-                    properties={
-                        "Cycle": {"number": cycle_num},
-                        "Week": {"number": week_num},
-                    },
-                )
-                log.info("[CYCLE] Cycle %d, Week %d", cycle_num, week_num)
-                cycle_line = (
-                    f"🔁 Cycle {cycle_num} started — Week 1"
-                    if new_cycle
-                    else f"📅 Cycle {cycle_num} — Week {week_num}"
-                )
-            except Exception as e:
-                log.warning("[CYCLE] Non-fatal error in cycle logic: %s", e)
-
-            notion_call(
-                notion.pages.update,
-                page_id=page_id,
-                properties={"Processed": {"checkbox": True}, "Parse Error": {"rich_text": []}},
-            )
-
-            tracks = parsed.get("tracks", []) if isinstance(parsed, dict) else []
-            parsed_week_label = parsed.get("week_label") if isinstance(parsed, dict) else None
-            display_week_name = (parsed_week_label or week_name or "Week").strip()
-            track_names = ", ".join(t.get("track", "") for t in tracks if t.get("track"))
-            lines = [
-                f"📋 *{display_week_name}* parsed ✅",
-                "",
-                f"Tracks: {track_names or 'N/A'}",
-                f"Day rows created: {days_created}",
-                "_Saved to Workout Days_",
-            ]
-            if cycle_line:
-                lines.append(cycle_line)
-            await bot.send_message(
-                chat_id=MY_CHAT_ID,
-                text="\n".join(lines),
-                parse_mode="Markdown",
-            )
-            log.info("process_pending_programmes: completed '%s'", week_name)
-        except Exception as e:
-            log.error(f"[PARSER] Failed to parse week {week_name}: {e}")
-            try:
-                notion_call(
-                    notion.pages.update,
-                    page_id=page_id,
-                    properties={"Parse Error": rich_text_prop(str(e)[:1900])},
-                )
-            except Exception as inner:
-                log.error("process_pending_programmes: could not write error to Notion: %s", inner)
-            try:
-                await bot.send_message(
-                    chat_id=MY_CHAT_ID,
-                    text=f"⚠️ Couldn't parse *{week_name}*\n\n`{str(e)[:300]}`",
-                    parse_mode="Markdown",
-                )
-            except Exception:
-                pass
+    from second_brain.crossfit.weekly_program import process_pending_programmes as _impl
+    await _impl(notion, bot, workout_program_db=NOTION_WORKOUT_PROGRAM_DB, chat_id=MY_CHAT_ID)
 
 async def _run_steps_sync_check_dispatch(bot) -> dict:
     result = await check_and_create_steps_entry(

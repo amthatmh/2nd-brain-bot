@@ -7,6 +7,10 @@ import re
 from difflib import SequenceMatcher
 
 import httpx
+import logging
+
+from second_brain.cinema.config import FAVE_DB_ID, TMDB_API_KEY
+log = logging.getLogger(__name__)
 
 from second_brain.notion.properties import (
     query_all,
@@ -504,3 +508,55 @@ async def _sync_rows(
 
         if update_props:
             notion.pages.update(page_id=row["id"], properties=update_props)
+
+
+async def run_cinema_sync(notion, bot, *, cinema_log_db: str, chat_id: int, force: bool = False) -> dict[str, int | str]:
+    """Background sync for Cinema Log → Favourite Shows."""
+    if not cinema_log_db:
+        return {
+            "scanned": 0,
+            "updated": 0,
+            "skipped": 0,
+            "failed": 0,
+            "tmdb_found": 0,
+            "tmdb_missing": 0,
+            "added_to_fave": 0,
+            "action": "disabled",
+        }
+
+    try:
+        stats = await sync_cinema_log_to_notion(
+            notion=notion,
+            cinema_db_id=cinema_log_db,
+            fave_db_id=FAVE_DB_ID,
+            tmdb_api_key=TMDB_API_KEY,
+            force=force,
+        )
+        log.info(
+            "Cinema sync: scanned=%s, updated=%s, skipped=%s, failed=%s, tmdb_found=%s, tmdb_missing=%s, added_to_fave=%s",
+            stats["scanned"],
+            stats["updated"],
+            stats["skipped"],
+            stats["failed"],
+            stats["tmdb_found"],
+            stats["tmdb_missing"],
+            stats["added_to_fave"],
+        )
+        return {**stats, "action": "synced"}
+    except Exception as e:
+        log.exception("Cinema sync failed: %s", e)
+        try:
+            await bot.send_message(chat_id=chat_id, text="🚨 Cinema sync crashed.\n" f"Error: {e}")
+        except Exception:
+            pass
+        return {
+            "scanned": 0,
+            "updated": 0,
+            "skipped": 0,
+            "failed": 1,
+            "tmdb_found": 0,
+            "tmdb_missing": 0,
+            "added_to_fave": 0,
+            "action": "error",
+            "reason": str(e),
+        }
