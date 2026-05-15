@@ -548,7 +548,7 @@ async def run_cinema_sync(notion, bot, *, cinema_log_db: str, chat_id: int, forc
         try:
             await bot.send_message(chat_id=chat_id, text="🚨 Cinema sync crashed.\n" f"Error: {e}")
         except Exception:
-            pass
+            log.debug("Could not send cinema sync crash notification to user", exc_info=True)
         return {
             "scanned": 0,
             "updated": 0,
