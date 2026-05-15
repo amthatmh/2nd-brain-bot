@@ -20,6 +20,8 @@ load_dotenv()
 import second_brain.config as config
 import second_brain.formatters as fmt
 import second_brain.keyboards as kb
+import second_brain.keyboards as _kb_direct
+import second_brain.formatters as _fmt_direct
 import second_brain.notion.tasks as notion_tasks
 import second_brain.palette as _palette
 import second_brain.watchlist as wl
@@ -1626,8 +1628,8 @@ async def _cb_qp(q, parts, context) -> None:
                 notion=_notion(),
                 notion_db_id=NOTION_DB_ID,
                 local_today_fn=local_today,
-                back_to_palette_keyboard=kb.back_to_palette_keyboard,
-                weather_card=fmt.format_digest_weather_card(),
+                back_to_palette_keyboard=_kb_direct.back_to_palette_keyboard,
+                weather_card=_fmt_direct.format_digest_weather_card(),
             )
             await q.edit_message_text(message, reply_markup=keyboard)
         except Exception as e:
@@ -1642,7 +1644,7 @@ async def _cb_qp(q, parts, context) -> None:
             notion=_notion(),
             notion_db_id=NOTION_DB_ID,
             local_today_fn=local_today,
-            num_emoji=fmt.num_emoji,
+            num_emoji=_fmt_direct.num_emoji,
         )
         await q.edit_message_text(message, reply_markup=keyboard)
         return
@@ -1662,7 +1664,7 @@ async def _cb_qp(q, parts, context) -> None:
                 notion=_notion(),
                 notion_db_id=NOTION_DB_ID,
                 local_today_fn=local_today,
-                num_emoji=fmt.num_emoji,
+                num_emoji=_fmt_direct.num_emoji,
                 marked_done_indices=context.user_data.get(
                     "palette_done_indices", set()
                 ),
@@ -1690,7 +1692,7 @@ async def _cb_qp(q, parts, context) -> None:
             notion=_notion(),
             notion_db_id=NOTION_DB_ID,
             local_today_fn=local_today,
-            num_emoji=fmt.num_emoji,
+            num_emoji=_fmt_direct.num_emoji,
             marked_done_indices=done_indices,
         )
         await q.edit_message_text(message, reply_markup=keyboard)
@@ -1766,7 +1768,7 @@ async def _cb_digest_today(q, parts, context) -> None:
     return
 
 
-_CALLBACK_PREFIX_HANDLERS: dict[str, CallbackHandler] = {
+_CB_PREFIX: dict[str, CallbackHandler] = {
     "confirm_batch": _cb_confirm_batch,
     "cancel_batch": _cb_cancel_batch,
     "save_task": _cb_task_preview,
@@ -1799,7 +1801,7 @@ _CALLBACK_PREFIX_HANDLERS: dict[str, CallbackHandler] = {
     "qv": _cb_qv,
 }
 
-_CALLBACK_EXACT_HANDLERS: dict[str, CallbackHandler] = {
+_CB_EXACT: dict[str, CallbackHandler] = {
     "h:check:cancel": _cb_h_check_cancel,
     "h:done": _cb_h_done,
     "digest:today": _cb_digest_today,
@@ -1842,13 +1844,81 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if await _main().handle_v10_callback(q, parts):
         return
 
-    if data in _CALLBACK_EXACT_HANDLERS:
-        await _CALLBACK_EXACT_HANDLERS[data](q, parts, context)
+    if data in _CB_EXACT:
+        await _CB_EXACT[data](q, parts, context)
         return
 
-    handler = _CALLBACK_PREFIX_HANDLERS.get(parts[0])
+    handler = _CB_PREFIX.get(parts[0])
     if handler:
         await handler(q, parts, context)
         return
 
     log.warning("Unhandled callback: %s", data)
+
+
+async def handle_v10_callback(q, parts: list[str]) -> bool:
+    if parts[0] == "wl_save" and len(parts) == 2:
+        key = parts[1]
+        if key not in wl.pending_wantslist_map:
+            await q.edit_message_text("⚠️ This confirmation expired — please re-send.")
+            return True
+        item_data = wl.pending_wantslist_map.pop(key)
+        try:
+            wl.create_wantslist_entry(_notion(), item_data["item"], category=item_data["category"])
+            await q.edit_message_text(
+                f"🎁 Saved!\n\n*{item_data['item']}*\n_{item_data['category']} · Wantslist_\n\n_Saved to Notion_",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            log.error(f"Wantslist save error: {e}")
+            await q.edit_message_text("⚠️ Couldn't save to Notion.")
+        return True
+
+    if parts[0] == "wl_cancel" and len(parts) == 2:
+        wl.pending_wantslist_map.pop(parts[1], None)
+        await q.edit_message_text("🎁 Cancelled — not saved.")
+        return True
+
+    if parts[0] == "tmdb_pick" and len(parts) == 3:
+        _, key, idx_str = parts
+        if key not in wl.pending_tmdb_map:
+            await q.edit_message_text("⚠️ This picker expired — please re-send.")
+            return True
+        candidates = wl.pending_tmdb_map.pop(key)
+        try:
+            c = candidates[int(idx_str)]
+            wl._save_watchlist_from_candidate(_notion(), c, c["title"])
+            seasons_str = f" · {c['seasons']} seasons" if c.get("seasons") else ""
+            episodes_str = f" · {c['episodes']} eps" if c.get("episodes") else ""
+            runtime_str = f" · {c['runtime']} min/ep" if c.get("runtime") else ""
+            await q.edit_message_text(
+                f"📺 Added!\n\n*{c['title']}* ({c['year']}) · {wl._notion_type_from_tmdb(c['media_type'])}"
+                f"{seasons_str}{episodes_str}{runtime_str}\n_Saved to Notion_",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            log.error(f"TMDB watchlist save error: {e}")
+            await q.edit_message_text("⚠️ Couldn't save to Notion.")
+        return True
+
+    if parts[0] == "tmdb_skip" and len(parts) == 2:
+        key = parts[1]
+        candidates = wl.pending_tmdb_map.pop(key, [])
+        title = candidates[0]["title"] if candidates else "Unknown"
+        try:
+            wl.create_watchlist_entry(_notion(), title)
+            await q.edit_message_text(
+                f"📺 Added!\n\n*{title}*\n_Title only — no TMDB metadata_\n\n_Saved to Notion_",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            log.error(f"Watchlist title-only save error: {e}")
+            await q.edit_message_text("⚠️ Couldn't save to Notion.")
+        return True
+
+    if parts[0] == "tmdb_cancel" and len(parts) == 2:
+        wl.pending_tmdb_map.pop(parts[1], None)
+        await q.edit_message_text("📺 Cancelled — not saved.")
+        return True
+
+    return False
