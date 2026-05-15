@@ -304,6 +304,7 @@ def _queue_missed_slots_for_today(scheduler, bot, slots: list[dict]) -> None:
                 args=[bot, slot],
                 id=f"digest_catchup_{today_prefix}_{'wd' if weekday else 'we'}_{slot_hour:02d}{slot_minute:02d}",
                 replace_existing=True,
+                max_instances=1,
             )
             _main._digest_jobs.append(job)
             _main._digest_catchup_sent.add(catchup_key)
@@ -351,6 +352,7 @@ def build_digest_schedule(scheduler, bot, queue_catchup: bool = False) -> int:
             hour=hour,
             minute=minute,
             args=[bot, slot],
+            max_instances=1,
         )
         _main._digest_jobs.append(job)
 
