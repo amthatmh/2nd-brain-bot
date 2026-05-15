@@ -557,10 +557,10 @@ def fetch_uvi_data() -> dict | None:
         current_uvi = float(data.get("current", {}).get("uvi", 0))
         daily = data.get("daily", [])
         max_uvi = float(daily[0].get("uvi", 0)) if daily else current_uvi
-        log.info(f"UVI — current: {current_uvi}, max: {max_uvi}")
+        log.info("UVI — current: %s, max: %s", current_uvi, max_uvi)
         return {"current": current_uvi, "max": max_uvi}
     except Exception as e:
-        log.error(f"UVI fetch error: {e}")
+        log.error("UVI fetch error: %s", e)
         return None
 
 

@@ -605,7 +605,7 @@ async def start_note_capture_flow(message, text: str) -> None:
     try:
         topics = notion_notes.fetch_note_topics_from_notion(notion, NOTION_NOTES_DB)
     except Exception as e:
-        log.error(f"Failed to read note topics from Notion schema: {e}")
+        log.error("Failed to read note topics from Notion schema: %s", e)
         await message.reply_text("⚠️ Couldn't load note topics from Notion. Check the Topic property.")
         return
 
@@ -622,7 +622,7 @@ async def start_note_capture_flow(message, text: str) -> None:
         notion_notes.create_note_entry(notion, NOTION_NOTES_DB, text)
         await message.reply_text("✅ Note captured!\n_Saved to Notion_", parse_mode="Markdown")
     except Exception as e:
-        log.error(f"Notion note error: {e}")
+        log.error("Notion note error: %s", e)
         await message.reply_text("⚠️ Couldn't save note to Notion.")
 
 def extract_url(text: str) -> str | None:
@@ -654,7 +654,7 @@ def fetch_url_metadata(url: str) -> dict:
         if dm:
             description = html.unescape(dm.group(1)).strip()
     except Exception as e:
-        log.warning(f"fetch_url_metadata failed for {url}: {e}")
+        log.warning("fetch_url_metadata failed for %s: %s", url, e)
     return {"title": title, "description": description}
 
 async def handle_note_input(message, text: str) -> None:
@@ -693,7 +693,7 @@ async def handle_note_input(message, text: str) -> None:
             parse_mode="Markdown",
         )
     except Exception as e:
-        log.error(f"save_note error: {e}")
+        log.error("save_note error: %s", e)
         await thinking.edit_text(_safe_user_error(e))
 
 def deadline_days_to_label(days: int | None) -> str:
@@ -816,7 +816,7 @@ def _run_capture(raw_text: str, force_create: bool = False,
             deadline_days = explicit_deadline
         horizon_label = deadline_days_to_label(deadline_days)
     except Exception as e:
-        log.error(f"Claude error for '{raw_text}': {e}")
+        log.error("Claude error for %r: %s", raw_text, e)
         return {"status": "error", "name": raw_text, "error": str(e)}
 
     if not force_create:
@@ -842,7 +842,7 @@ def _run_capture(raw_text: str, force_create: bool = False,
             "recurring": recurring, "page_id": page_id,
         }
     except Exception as e:
-        log.error(f"Notion error for '{task_name}': {e}")
+        log.error("Notion error for %r: %s", task_name, e)
         return {"status": "error", "name": task_name, "error": str(e)}
 
 def pending_habits_for_digest(time_str: str | None = None) -> list[dict]:
@@ -1210,7 +1210,7 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
             deadline_days = explicit_deadline
         horizon_label = deadline_days_to_label(deadline_days)
     except Exception as e:
-        log.error(f"Claude error: {e}")
+        log.error("Claude error: %s", e)
         await thinking.edit_text("⚠️ Couldn't classify that. Try rephrasing?")
         return
 
@@ -1277,7 +1277,7 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
             )
         capture_map[thinking.message_id] = {"page_id": page_id, "name": task_name}
     except Exception as e:
-        log.error(f"Notion error: {e}")
+        log.error("Notion error: %s", e)
         await thinking.edit_text("⚠️ Classified but couldn't write to Notion.")
 
 async def open_done_picker(message) -> None:
@@ -1496,7 +1496,7 @@ async def run_recurring_check(bot) -> dict:
         log.info("Recurring check skipped (muted)")
         return {"action": "skipped", "reason": "muted"}
     spawned = notion_tasks.process_recurring_tasks(notion, NOTION_DB_ID)
-    log.info(f"Recurring check: {spawned} task(s) spawned")
+    log.info("Recurring check: %s task(s) spawned", spawned)
     return {"action": "spawned", "tasks_spawned": spawned}
 
 async def generate_next_recurring_instances(bot) -> None:
@@ -1542,15 +1542,16 @@ async def generate_next_recurring_instances(bot) -> None:
                 notion_tasks.set_last_generated(notion, page["id"], notion_tasks.local_today())
 
                 spawned += 1
-                log.info(f"Generated next recurring instance for parent {parent_id}, due {next_deadline}")
+                log.info("Generated next recurring instance for parent %s, due %s", parent_id, next_deadline)
             except Exception as e:
-                log.error(f"Failed to generate next instance for page {page.get('id')}: {e}")
+                page_id = page.get("id")
+                log.error("Failed to generate next instance for page %s: %s", page_id, e)
                 continue
 
         if spawned > 0:
-            log.info(f"Recurring batch generation: {spawned} instance(s) spawned")
+            log.info("Recurring batch generation: %s instance(s) spawned", spawned)
     except Exception as e:
-        log.error(f"Recurring batch generation job failed: {e}")
+        log.error("Recurring batch generation job failed: %s", e)
 
 
 async def send_evening_checkin(bot) -> None:
@@ -1618,18 +1619,18 @@ async def run_asana_sync(bot) -> dict:
             ),
         )
         if any(v for k, v in stats.items() if k != "skipped"):
-            log.info(f"Asana sync: {stats}")
+            log.info("Asana sync: %s", stats)
         sync_status["asana"]["ok"] = True
         sync_status["asana"]["error"] = None
         sync_status["asana"]["stats"] = stats
         return {**stats, "action": "synced"}
     except AsanaSyncError as e:
-        log.error(f"Asana sync config error: {e}")
+        log.error("Asana sync config error: %s", e)
         sync_status["asana"]["ok"] = False
         sync_status["asana"]["error"] = str(e)
         return {"ok": False, "action": "error", "reason": str(e)}
     except Exception as e:
-        log.exception(f"Asana sync failed: {e}")
+        log.error("Asana sync failed: %s", e, exc_info=True)
         sync_status["asana"]["ok"] = False
         sync_status["asana"]["error"] = str(e)
         return {"ok": False, "action": "error", "reason": str(e)}
@@ -1770,7 +1771,7 @@ async def start_http_server() -> None:
     await runner.setup()
     site   = web.TCPSite(runner, "0.0.0.0", HTTP_PORT)
     await site.start()
-    log.info(f"HTTP server started on port {HTTP_PORT}")
+    log.info("HTTP server started on port %s", HTTP_PORT)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STARTUP HELPERS — schema validation + alert
@@ -1791,7 +1792,7 @@ async def _try_send_telegram(bot, text: str) -> None:
             kwargs["message_thread_id"] = ALERT_THREAD_ID
         await bot.send_message(**kwargs)
     except Exception as e:
-        log.error(f"Could not send operational alert via Telegram: {e}")
+        log.error("Could not send operational alert via Telegram: %s", e)
 
 def _git_sha() -> str:
     """Best-effort short commit SHA for deploy receipts."""
@@ -2170,7 +2171,7 @@ async def post_init(app: Application) -> None:
     if not cinema_ok:
         log.warning("Cinema sync disabled due to config issues:")
         for p in cinema_problems:
-            log.warning(f"  - {p}")
+            log.warning("- %s", p)
     elif CINEMA_DB_ID:
         log.info("Cinema sync config validated ✓")
 
@@ -2265,12 +2266,17 @@ async def post_init(app: Application) -> None:
         max_instances=1,
     )
 
+    utility_scheduler_status = "enabled" if NOTION_UTILITY_SCHEDULER_DB else "disabled"
+    recurring_time = "%02d:%02d" % (_rc_h, _rc_m)
+    feature_flags = v10_feature_flags()
     log.info(
-        f"Scheduler started ✓  TZ={TZ}  "
-        f"utility_scheduler={'enabled' if NOTION_UTILITY_SCHEDULER_DB else 'disabled'}  "
-        f"recurring={_rc_h:02d}:{_rc_m:02d}  "
-        f"digest_refresh={UTILITY_SCHEDULER_RELOAD_MINUTES}min  "
-        f"v10_flags=[{v10_feature_flags()}]"
+        "Scheduler started ✓ TZ=%s utility_scheduler=%s recurring=%s "
+        "digest_refresh=%smin v10_flags=[%s]",
+        TZ,
+        utility_scheduler_status,
+        recurring_time,
+        UTILITY_SCHEDULER_RELOAD_MINUTES,
+        feature_flags,
     )
     asana_status = (
         f"ENABLED source={ASANA_SYNC_SOURCE} archive_orphans={ASANA_ARCHIVE_ORPHANS}"
@@ -2612,7 +2618,7 @@ def main() -> None:
     )
     app.add_handler(CommandHandler("refreshweather", cmd_refreshweather))
     app.add_handler(CommandHandler("cf_reload_movements", cmd_cf_reload_movements))
-    log.info(f"🤖 Second Brain bot starting ({APP_VERSION})...")
+    log.info("🤖 Second Brain bot starting (%s)...", APP_VERSION)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":

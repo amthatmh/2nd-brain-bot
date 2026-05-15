@@ -299,7 +299,7 @@ async def process_pending_programmes(notion, bot, *, workout_program_db: str, ch
             )
             log.info("process_pending_programmes: completed '%s'", week_name)
         except Exception as e:
-            log.error(f"[PARSER] Failed to parse week {week_name}: {e}")
+            log.error("[PARSER] Failed to parse week %s: %s", week_name, e)
             try:
                 notion_call(
                     notion.pages.update,
