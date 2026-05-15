@@ -18,6 +18,12 @@ from second_brain.state import STATE  # noqa: F401
 
 log = logging.getLogger(__name__)
 
+ENTERTAINMENT_LOG_LABELS = {
+    "cinema": "🍿 Cinema Log",
+    "performance": "🎟️ Performances Viewings",
+    "sport": "🏟️ Sports Log",
+}
+
 
 def _entertainment_rule_entry_data(payload: dict) -> dict:
     """Build normalized rule-engine entry data from an entertainment payload."""

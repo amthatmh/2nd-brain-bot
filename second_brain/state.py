@@ -23,6 +23,7 @@ class BotState:
     mute_until: Optional[datetime] = None
     signoff_notes_today: dict[str, str] = field(default_factory=lambda: {"second_brain": "", "brian_ii": ""})
     claude_activity_today: list[str] = field(default_factory=list)
+    entertainment_counter: int = 0
 
 
 STATE = BotState()
