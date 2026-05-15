@@ -8,28 +8,22 @@ from zoneinfo import ZoneInfo
 
 from notion_client import APIResponseError
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-log = logging.getLogger(__name__)
-
-NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 from second_brain.services.task_parsing import split_tasks  # noqa: F401
 
-NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 log = logging.getLogger(__name__)
+NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 
 
 def local_today(tz: ZoneInfo | None = None) -> date:
     """Return today's date in the app timezone (or tz if provided)."""
     if tz is None:
         from second_brain.config import TZ
-
         tz = TZ
     return datetime.now(tz).date()
 
 
 def get_current_monday() -> date:
     from second_brain.config import TZ
-
     today = datetime.now(TZ).date()
     return today - timedelta(days=today.weekday())
 
@@ -90,6 +84,7 @@ def parse_time_to_minutes(time_str: str | None) -> int:
         return hour * 60 + minute
     except Exception:
         return -1
+
 
 def num_emoji(n: int) -> str:
     return NUMBER_EMOJIS[n - 1] if 1 <= n <= 10 else f"{n}."

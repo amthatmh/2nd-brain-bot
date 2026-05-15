@@ -315,4 +315,4 @@ async def process_pending_programmes(notion, bot, *, workout_program_db: str, ch
                     parse_mode="Markdown",
                 )
             except Exception:
-                pass
+                log.debug("Could not send parse-error notification to user", exc_info=True)

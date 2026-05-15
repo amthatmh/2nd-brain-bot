@@ -2317,7 +2317,7 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending, chain
     try:
         await q.edit_message_reply_markup(reply_markup=None)
     except Exception:
-        pass
+        log.debug("Could not clear message markup in CF callback", exc_info=True)
     log.debug("CrossFit callback parts: %s", parts)
     if len(parts) < 2:
         await q.answer("Action unavailable.", show_alert=False)

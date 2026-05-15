@@ -50,7 +50,7 @@ def _parse_json_response(raw: str) -> dict:
             except json.JSONDecodeError:
                 pass
     except Exception:
-        pass
+        log.debug("_parse_json_response: all recovery attempts failed", exc_info=True)
 
     raise json.JSONDecodeError(
         f"Could not parse JSON response (length={len(text)}). This likely means max_tokens is too low — increase CLAUDE_PARSE_MAX_TOKENS.",

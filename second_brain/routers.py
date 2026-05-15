@@ -50,7 +50,7 @@ from second_brain.config import (
 )
 from second_brain.notion.properties import title_prop
 from second_brain.state import STATE
-from second_brain.utils import ExpiringDict, local_today
+from second_brain.utils import local_today
 from utils.date_parser import parse_date
 
 log = logging.getLogger(__name__)
@@ -662,7 +662,7 @@ async def handle_message_text(
             }
             kind_label = kind_label_map.get(awaiting_note_capture, "note")
             await message.reply_text(
-                f"✅ {kind_label .capitalize ()} saved to Notes.",
+                f"✅ {kind_label.capitalize()} saved to Notes.",
                 reply_markup=kb.quick_actions_keyboard(
                     _main().BTN_REFRESH,
                     _main().BTN_ALL_OPEN,
@@ -837,7 +837,7 @@ async def handle_message_text(
                 if 1 <= n <= len(items):
                     task = items[n - 1]
                     await message.reply_text(
-                        f"{fmt .num_emoji (n )} {task ['name']}\nChoose a new horizon:",
+                        f"{fmt.num_emoji(n)} {task['name']}\nChoose a new horizon:",
                         reply_markup=kb.review_keyboard(task["page_id"]),
                     )
                     queued += 1
@@ -852,7 +852,7 @@ async def handle_message_text(
                 task = recovered.get(n)
                 if task:
                     await message.reply_text(
-                        f"{fmt .num_emoji (n )} {task ['name']}\nChoose a new horizon:",
+                        f"{fmt.num_emoji(n)} {task['name']}\nChoose a new horizon:",
                         reply_markup=kb.review_keyboard(task["page_id"]),
                     )
                     queued += 1
@@ -875,7 +875,7 @@ async def handle_message_text(
             )
         else:
             await message.reply_text(
-                f'Couldn\'t find a task matching "{match_name .group (1 ).strip ()}".'
+                f'Couldn\'t find a task matching "{match_name.group(1).strip()}".'
             )
         return
 
@@ -904,11 +904,11 @@ async def handle_message_text(
         if matched:
             notion_tasks.set_focus(_notion(), matched["page_id"], True)
             await message.reply_text(
-                f"🎯 Focused: {matched ['name']} → *Doing*", parse_mode="Markdown"
+                f"🎯 Focused: {matched['name']} → *Doing*", parse_mode="Markdown"
             )
         else:
             await message.reply_text(
-                f'Couldn\'t find a task matching "{match_focus .group (1 ).strip ()}".'
+                f'Couldn\'t find a task matching "{match_focus.group(1).strip()}".'
             )
         return
 
@@ -921,11 +921,11 @@ async def handle_message_text(
         if matched:
             notion_tasks.set_focus(_notion(), matched["page_id"], False)
             await message.reply_text(
-                f"⬜ Unfocused: {matched ['name']} → *To Do*", parse_mode="Markdown"
+                f"⬜ Unfocused: {matched['name']} → *To Do*", parse_mode="Markdown"
             )
         else:
             await message.reply_text(
-                f'Couldn\'t find a task matching "{match_unfocus .group (1 ).strip ()}".'
+                f'Couldn\'t find a task matching "{match_unfocus.group(1).strip()}".'
             )
         return
 
@@ -1011,7 +1011,7 @@ async def _cb_task_preview(q, parts, context) -> None:
             )
             horizon_label = _main().deadline_days_to_label(deadline_days)
             await q.edit_message_text(
-                f"✅ Captured!\n\n📝 {task_name }\n🕐 {horizon_label }  {ctx }\n\n_Saved to Notion_",
+                f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}\n\n_Saved to Notion_",
                 parse_mode="Markdown",
             )
     except Exception as e:
@@ -1045,7 +1045,7 @@ async def _cb_date_pick(q, parts, context) -> None:
     payload.pop("raw_date_b", None)
     try:
         await _main().handle_entertainment_log(_notion(), q.message, payload)
-        await q.edit_message_text(f"✅ Date: {payload .get ('date')}")
+        await q.edit_message_text(f"✅ Date: {payload.get('date')}")
     except Exception as e:
         log.error("Entertainment date-pick save error: %s", e)
         await q.edit_message_text(_main()._entertainment_save_error_text(e, payload))
@@ -1428,7 +1428,7 @@ async def _cb_h_done(q, parts, context) -> None:
     _main()._habit_selections.pop(message_id, None)
     await q.edit_message_reply_markup(reply_markup=None)
     if logged_names:
-        await q.message.reply_text(f"✅ Logged: {', '.join (logged_names )}")
+        await q.message.reply_text(f"✅ Logged: {', '.join(logged_names)}")
         asyncio.create_task(
             _main().check_and_notify_weekly_goals(
                 q.bot,
@@ -1443,7 +1443,7 @@ async def _cb_h_done(q, parts, context) -> None:
             )
         )
     if failed_names:
-        await q.message.reply_text(f"⚠️ Couldn't log: {', '.join (failed_names )}")
+        await q.message.reply_text(f"⚠️ Couldn't log: {', '.join(failed_names)}")
     if not logged_names and not failed_names:
         await q.message.reply_text("✅ Selected habits were already logged today.")
     await q.answer()
