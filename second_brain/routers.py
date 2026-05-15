@@ -1829,7 +1829,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         try:
             await q.edit_message_reply_markup(reply_markup=None)
         except Exception:
-            pass
+            log.debug("Could not clear message markup after callback", exc_info=True)
         await q.answer()
 
     log.debug("Callback received: %s", data)

@@ -189,7 +189,7 @@ from second_brain.handler_registry import register_core_handlers
 from second_brain.scheduler_manager import UtilitySchedulerManager
 from second_brain.rules.engine import RuleEngine
 from second_brain.state import STATE
-from second_brain.utils import ExpiringDict, local_today, next_weekday, reply_notion_error
+from second_brain.utils import ExpiringDict, local_today
 from second_brain.http_utils import cors_headers
 from second_brain.healthtrack.dashboard import create_health_dashboard_handler, load_steps_threshold_from_env_db as load_dashboard_steps_threshold
 from second_brain.services import task_parsing as task_parsing_service
@@ -197,7 +197,7 @@ from second_brain.services import note_utils as note_utils_service
 from second_brain.handlers.commands import CommandHandlers
 from second_brain.handlers.admin_commands import test_alert_command, test_channel_send
 from second_brain.monitoring import track_job_execution
-from second_brain.monitoring.health_checks import check_scheduler_health
+
 from second_brain.monitoring.metrics import generate_weekly_summary
 from utils.date_parser import parse_date
 from utils.alert_handlers import (
@@ -342,18 +342,23 @@ wx.notion = notion
 wx.NOTION_ENV_DB = NOTION_ENV_DB
 wx._loc.location = WEATHER_LOCATION
 
+# ── Cache TTLs ───────────────────────────────────────────────────────────────
+_PREVIEW_CACHE_TTL = 900    # 15 min — task preview confirmations
+_CF_PENDING_TTL = 3600      # 1 hr  — crossfit in-progress flow state
+_HABITS_DATA_TTL = 300      # 5 min — HTTP /habits-data endpoint cache
+
 # ── In-memory state ──────────────────────────────────────────────────────────
 digest_map: dict[int, list[dict]] = STATE.digest_map
 last_digest_msg_id: int | None = None
 pending_map: dict[str, dict] = STATE.pending_map
 capture_map: dict[int, dict] = STATE.capture_map
 pending_batches: dict[str, dict] = {}
-preview_map: dict[int, dict] = ExpiringDict(ttl_seconds=900)
+preview_map: dict[int, dict] = ExpiringDict(ttl_seconds=_PREVIEW_CACHE_TTL)
 done_picker_map: dict[str, list[dict]] = STATE.done_picker_map
 todo_picker_map: dict[str, list[dict]] = {}
 pending_message_map: dict[str, str] = {}
 pending_note_map: dict[str, dict] = {}
-cf_pending: dict[str, dict] = ExpiringDict(ttl_seconds=3600)
+cf_pending: dict[str, dict] = ExpiringDict(ttl_seconds=_CF_PENDING_TTL)
 topic_recency_map: dict[str, datetime] = {}
 _cf_counter = 0
 _entertainment_counter = 0
@@ -362,7 +367,7 @@ habit_cache: dict[str, dict] = STATE.habit_cache
 STATE.done_picker_counter = 0
 STATE.todo_picker_counter = 0
 STATE.v10_counter = 0
-STATE.habits_data_cache = ExpiringDict(ttl_seconds=300)
+STATE.habits_data_cache = ExpiringDict(ttl_seconds=_HABITS_DATA_TTL)
 STATE.mute_until = None
 STATE.signoff_notes_today = {"second_brain": "", "brian_ii": ""}
 STATE.claude_activity_today = []
@@ -1547,6 +1552,7 @@ async def _persist_steps_sync_to_env_db(notion_client, env_db_id: str) -> None:
                 },
             )
         except Exception:
+            log.debug("steps: rich_text filter unsupported, retrying with title filter", exc_info=True)
             results = notion_client.databases.query(
                 database_id=env_db_id,
                 filter={
@@ -2430,7 +2436,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
             text="❌ Something went wrong. I've logged it for review.",
         )
     except Exception:
-        pass
+        log.debug("error_handler: could not send user-facing error message", exc_info=True)
 
 
 def main() -> None:

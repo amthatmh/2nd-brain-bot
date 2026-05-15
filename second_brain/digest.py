@@ -320,7 +320,7 @@ def build_digest_schedule(scheduler, bot, queue_catchup: bool = False) -> int:
         try:
             job.remove()
         except Exception:
-            pass
+            log.debug("Could not remove digest job during schedule rebuild", exc_info=True)
     _main._digest_jobs.clear()
 
     try:

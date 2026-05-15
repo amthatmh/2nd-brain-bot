@@ -110,24 +110,6 @@ def fuzzy_match(query: str, tasks: list[dict]) -> dict | None:
     return None
 
 
-def _safe_user_error(exc: Exception) -> str:
-    """Return a user-friendly error string; always logs the full exception."""
-    log.error("Unhandled error", exc_info=exc)
-    msg = str(exc)
-    if "timeout" in msg.lower():
-        return "⏱️ Request timed out — please try again."
-    try:
-        from notion_client import APIResponseError
-        if isinstance(exc, APIResponseError):
-            if exc.status == 404:
-                return "❌ Couldn't find that entry in Notion."
-            if exc.status == 403:
-                return "🔒 Permission error — check Notion connection."
-    except ImportError:
-        pass
-    return "⚠️ Something went wrong. I've logged it for review."
-
-
 async def reply_notion_error(message_or_query: Any, context: str) -> None:
     target = message_or_query.message if hasattr(message_or_query, "message") else message_or_query
     await target.reply_text(f"⚠️ Couldn't {context} in Notion right now. Please try again.")

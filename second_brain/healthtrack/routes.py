@@ -437,7 +437,7 @@ async def habits_data_handler(
             headers=cors_headers(),
         )
     except Exception as e:
-        log.error(f"/habits-data error: {e}")
+        log.error("/habits-data error: %s", e)
         return web.Response(status=500, text=str(e), headers=cors_headers())
 
 
@@ -491,7 +491,7 @@ async def log_habit_http_handler(
             headers=cors_headers(),
         )
     except Exception as e:
-        log.error(f"/log-habit error: {e}")
+        log.error("/log-habit error: %s", e)
         return web.Response(
             status=500,
             text=json.dumps({"ok": False, "error": str(e)}),
