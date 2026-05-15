@@ -152,7 +152,7 @@ from second_brain import keyboards as kb
 from second_brain import formatters as fmt
 from second_brain import digest as digest_helpers
 from second_brain import mute as mute_helpers
-from second_brain.utils import parse_time_to_minutes
+from second_brain.utils import _safe_user_error, parse_time_to_minutes
 from second_brain.digest import (
     get_digest_config,
     _filter_digest_tasks,
@@ -694,7 +694,7 @@ async def handle_note_input(message, text: str) -> None:
         )
     except Exception as e:
         log.error(f"save_note error: {e}")
-        await thinking.edit_text(f"⚠️ Couldn't save note to Notion.\n_{e}_", parse_mode="Markdown")
+        await thinking.edit_text(_safe_user_error(e))
 
 def deadline_days_to_label(days: int | None) -> str:
     return note_utils_service.deadline_days_to_label(days)
@@ -2393,7 +2393,7 @@ async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
     except Exception as e:
         log.exception("Manual /sync failed: %s", e)
-        await status.edit_text(f"⚠️ /sync failed: {e}")
+        await status.edit_text(_safe_user_error(e))
 
 async def handle_sync_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/syncstatus — show latest sync telemetry for Cinema + Steps."""
@@ -2530,7 +2530,7 @@ async def on_confirm_batch(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         log.info("Batch confirmed: %s, %d tasks processed", batch_id, len(task_texts))
     except Exception as e:
         log.error("Batch creation error: %s", e)
-        await q.edit_message_text(f"⚠️ Error creating tasks: {str(e)}")
+        await q.edit_message_text(_safe_user_error(e))
     finally:
         pending_batches.pop(batch_id, None)
 
