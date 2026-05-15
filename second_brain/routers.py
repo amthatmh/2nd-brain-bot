@@ -1854,3 +1854,71 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     log.warning("Unhandled callback: %s", data)
+
+
+async def handle_v10_callback(q, parts: list[str]) -> bool:
+    if parts[0] == "wl_save" and len(parts) == 2:
+        key = parts[1]
+        if key not in wl.pending_wantslist_map:
+            await q.edit_message_text("⚠️ This confirmation expired — please re-send.")
+            return True
+        item_data = wl.pending_wantslist_map.pop(key)
+        try:
+            wl.create_wantslist_entry(_notion(), item_data["item"], category=item_data["category"])
+            await q.edit_message_text(
+                f"🎁 Saved!\n\n*{item_data['item']}*\n_{item_data['category']} · Wantslist_\n\n_Saved to Notion_",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            log.error(f"Wantslist save error: {e}")
+            await q.edit_message_text("⚠️ Couldn't save to Notion.")
+        return True
+
+    if parts[0] == "wl_cancel" and len(parts) == 2:
+        wl.pending_wantslist_map.pop(parts[1], None)
+        await q.edit_message_text("🎁 Cancelled — not saved.")
+        return True
+
+    if parts[0] == "tmdb_pick" and len(parts) == 3:
+        _, key, idx_str = parts
+        if key not in wl.pending_tmdb_map:
+            await q.edit_message_text("⚠️ This picker expired — please re-send.")
+            return True
+        candidates = wl.pending_tmdb_map.pop(key)
+        try:
+            c = candidates[int(idx_str)]
+            wl._save_watchlist_from_candidate(_notion(), c, c["title"])
+            seasons_str = f" · {c['seasons']} seasons" if c.get("seasons") else ""
+            episodes_str = f" · {c['episodes']} eps" if c.get("episodes") else ""
+            runtime_str = f" · {c['runtime']} min/ep" if c.get("runtime") else ""
+            await q.edit_message_text(
+                f"📺 Added!\n\n*{c['title']}* ({c['year']}) · {wl._notion_type_from_tmdb(c['media_type'])}"
+                f"{seasons_str}{episodes_str}{runtime_str}\n_Saved to Notion_",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            log.error(f"TMDB watchlist save error: {e}")
+            await q.edit_message_text("⚠️ Couldn't save to Notion.")
+        return True
+
+    if parts[0] == "tmdb_skip" and len(parts) == 2:
+        key = parts[1]
+        candidates = wl.pending_tmdb_map.pop(key, [])
+        title = candidates[0]["title"] if candidates else "Unknown"
+        try:
+            wl.create_watchlist_entry(_notion(), title)
+            await q.edit_message_text(
+                f"📺 Added!\n\n*{title}*\n_Title only — no TMDB metadata_\n\n_Saved to Notion_",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            log.error(f"Watchlist title-only save error: {e}")
+            await q.edit_message_text("⚠️ Couldn't save to Notion.")
+        return True
+
+    if parts[0] == "tmdb_cancel" and len(parts) == 2:
+        wl.pending_tmdb_map.pop(parts[1], None)
+        await q.edit_message_text("📺 Cancelled — not saved.")
+        return True
+
+    return False
