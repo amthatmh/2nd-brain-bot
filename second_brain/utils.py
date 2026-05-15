@@ -9,6 +9,9 @@ from zoneinfo import ZoneInfo
 from notion_client import APIResponseError
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+log = logging.getLogger(__name__)
+
+NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 from second_brain.services.task_parsing import split_tasks  # noqa: F401
 
 NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]

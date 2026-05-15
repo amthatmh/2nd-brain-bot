@@ -158,6 +158,7 @@ async def execute_trip(
     try:
         days_until_departure = (date.fromisoformat(trip["departure_date"]) - date.today()).days
     except Exception:
+        logger.debug("Could not parse departure_date for trip; defaulting to 0 days", exc_info=True)
         days_until_departure = 0
     if days_until_departure > 5:
         weather_summary, weather_flags = WEATHER_PLACEHOLDER_SUMMARY, []
@@ -297,6 +298,7 @@ def _adapt_trip_properties_to_schema(notion, database_id: str, payload: dict) ->
     try:
         schema = notion.databases.retrieve(database_id=database_id).get("properties", {})
     except Exception:
+        logger.debug("Could not retrieve trip database schema; using raw payload", exc_info=True)
         return payload
 
     adapted: dict = {}
@@ -490,6 +492,7 @@ def refresh_upcoming_trip_weather(
             page_size=50,
         )
     except Exception:
+        logger.debug("Failed to query trips needing weather refresh; returning 0", exc_info=True)
         return 0
     updated = 0
     for row in rows:

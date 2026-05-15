@@ -130,16 +130,17 @@ async def _maybe_prompt_explicit_venue_in_executor(
 async def route_classified_message_v10(message, text: str) -> None:
     thinking = await message.reply_text("🧠 Got it...")
     loop = asyncio.get_running_loop()
+    cf_enabled = bool(NOTION_WORKOUT_LOG_DB or NOTION_WOD_LOG_DB or NOTION_WORKOUT_PROGRAM_DB)
 
-    if _is_photo_followup_message(message):
-        await thinking.edit_text("📸 Processing image...")
-        if await wl.handle_photo_followup(_notion(), message, text):
-            await _safe_delete_message(thinking)
-            return
-        await thinking.edit_text("🧠 Got it...")
-
-    def classify_v10_message():
-        return ai_classify.classify_message(
+    # Fire both classifiers in parallel so total latency = max(cf, v10) instead of cf + v10
+    if cf_enabled:
+        workout_fut = loop.run_in_executor(
+            None,
+            lambda: _main().classify_workout_message(text, _claude(), CLAUDE_MODEL, CLAUDE_MAX_TOK),
+        )
+    v10_fut = loop.run_in_executor(
+        None,
+        lambda: ai_classify.classify_message(
             _claude(),
             CLAUDE_MODEL,
             text,
@@ -149,104 +150,66 @@ async def route_classified_message_v10(message, text: str) -> None:
             bool(NOTION_PHOTO_DB),
             bool(NOTION_NOTES_DB),
             local_today(),
-        )
-
-    result = None
-    workout_enabled = (
-        NOTION_WORKOUT_LOG_DB or NOTION_WOD_LOG_DB or NOTION_WORKOUT_PROGRAM_DB
+        ),
     )
-    v10_result_or_error = None
 
-    if workout_enabled:
-        workout_task = loop.run_in_executor(
-            None,
-            lambda: _main().classify_workout_message(
-                text, _claude(), CLAUDE_MODEL, CLAUDE_MAX_TOK
-            ),
-        )
-        v10_task = asyncio.wait_for(
-            loop.run_in_executor(None, classify_v10_message),
-            timeout=18,
-        )
-        workout_result_or_error, v10_result_or_error = await asyncio.gather(
-            workout_task, v10_task, return_exceptions=True
-        )
-        if isinstance(workout_result_or_error, Exception):
-            log.warning(
-                "Workout classify error; continuing with v10 classification",
-                exc_info=(
-                    type(workout_result_or_error),
-                    workout_result_or_error,
-                    workout_result_or_error.__traceback__,
-                ),
-            )
-            workout_result = {"type": "none"}
-        else:
-            workout_result = workout_result_or_error
-        if workout_result.get("type") == "programme":
-            await _safe_delete_message(thinking)
-            await message.reply_text(
-                "📋 Weekly programmes are parsed from Notion only now.\n"
-                "Add a row in Weekly Programs, paste into *Full Program*, and leave *Processed* unchecked.",
-                parse_mode="Markdown",
-            )
-            return
-        if (
-            workout_result.get("type") in ("strength", "conditioning")
-            and workout_result.get("confidence") == "high"
-        ):
-            workout_result["raw_text"] = text
-            await _safe_delete_message(thinking)
-            if workout_result.get("type") == "strength":
-                await _main().handle_cf_strength_flow(
-                    message,
-                    workout_result,
-                    _claude(),
-                    _notion(),
-                    _crossfit_config(),
-                    _cf_pending(),
-                )
-            else:
-                await _main().handle_cf_wod_flow(
-                    message,
-                    workout_result,
-                    _notion(),
-                    _crossfit_config(),
-                    _cf_pending(),
-                )
-            return
-    if workout_enabled:
-        if isinstance(v10_result_or_error, asyncio.TimeoutError):
-            log.warning(
-                "Claude v10 classify timeout after 18s; falling back to task capture"
-            )
-            await _safe_delete_message(thinking)
-            await _main().create_or_prompt_task(message, text)
-            return
-        if isinstance(v10_result_or_error, Exception):
-            log.error("Claude v10 classify error: %s", v10_result_or_error)
-            await _safe_delete_message(thinking)
-            await _main().create_or_prompt_task(message, text)
-            return
-        result = v10_result_or_error
-    else:
+    workout_result = {"type": "none"}
+    if cf_enabled:
         try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(None, classify_v10_message),
-                timeout=18,
+            workout_result = await workout_fut
+        except Exception:
+            workout_result = {"type": "none"}
+
+    if workout_result.get("type") == "programme":
+        await thinking.delete()
+        await message.reply_text(
+            "📋 Weekly programmes are parsed from Notion only now.\n"
+            "Add a row in Weekly Programs, paste into *Full Program*, and leave *Processed* unchecked.",
+            parse_mode="Markdown",
+        )
+        return
+    if (
+        workout_result.get("type") in ("strength", "conditioning")
+        and workout_result.get("confidence") == "high"
+    ):
+        workout_result["raw_text"] = text
+        await thinking.delete()
+        if workout_result.get("type") == "strength":
+            await _main().handle_cf_strength_flow(
+                message,
+                workout_result,
+                _claude(),
+                _notion(),
+                _crossfit_config(),
+                _cf_pending(),
             )
-        except asyncio.TimeoutError:
-            log.warning(
-                "Claude v10 classify timeout after 18s; falling back to task capture"
+        else:
+            await _main().handle_cf_wod_flow(
+                message,
+                workout_result,
+                _notion(),
+                _crossfit_config(),
+                _cf_pending(),
             )
-            await _safe_delete_message(thinking)
-            await _main().create_or_prompt_task(message, text)
-            return
-        except Exception as e:
-            log.error("Claude v10 classify error: %s", e)
-            await _safe_delete_message(thinking)
-            await _main().create_or_prompt_task(message, text)
-            return
+        return
+
+    if await wl.handle_photo_followup(_notion(), message, text):
+        await thinking.delete()
+        return
+
+    # v10_fut was running in parallel — collect its result (likely already done)
+    try:
+        result = await asyncio.wait_for(v10_fut, timeout=18)
+    except asyncio.TimeoutError:
+        log.warning("Claude v10 classify timeout after 18s; falling back to task capture")
+        await thinking.delete()
+        await _main().create_or_prompt_task(message, text)
+        return
+    except Exception as e:
+        log.error("Claude v10 classify error: %s", e)
+        await thinking.delete()
+        await _main().create_or_prompt_task(message, text)
+        return
 
     intent = result.get("type")
 
@@ -291,11 +254,11 @@ async def route_classified_message_v10(message, text: str) -> None:
             habit = _habit_cache()[habit_name]
             habit_pid = habit["page_id"]
             if _main().already_logged_today(habit_pid):
-                await thinking.edit_text(f"Already logged {habit_name } today! ✅")
+                await thinking.edit_text(f"Already logged {habit_name} today! ✅")
             else:
                 _main().log_habit(habit_pid, habit_name)
                 await thinking.edit_text(
-                    f"✅ Logged!\n\n{habit_name }\n📅 {date .today ().strftime ('%B %-d')}"
+                    f"✅ Logged!\n\n{habit_name}\n📅 {date.today().strftime('%B %-d')}"
                 )
                 asyncio.create_task(
                     _main().check_and_notify_weekly_goals(
@@ -361,7 +324,7 @@ async def route_classified_message_v10(message, text: str) -> None:
         }
         preview = title or text
         await thinking.edit_text(
-            f"🎬 I think this is an entertainment log:\n\n*{preview }*\n\nSave it?",
+            f"🎬 I think this is an entertainment log:\n\n*{preview}*\n\nSave it?",
             parse_mode="Markdown",
             reply_markup=kb.entertainment_confirm_keyboard(key),
         )
@@ -382,7 +345,7 @@ async def handle_message_text(
         logger.info(
             "[CF_ENTRY] function=handle_message_text user=%s stage=%s",
             user_id,
-            cf_stage,
+            _cf_pending().get(str(user_id), {}).get("stage"),
         )
     if user_id != MY_CHAT_ID:
         return
@@ -405,7 +368,7 @@ async def handle_message_text(
         note = match_signoff_sb.group(1).strip()
         _main().store_signoff_note("second_brain", note)
         await message.reply_text(
-            f"📓 Second Brain signoff noted.\n\n_{note }_",
+            f"📓 Second Brain signoff noted.\n\n_{note}_",
             parse_mode="Markdown",
         )
         return
@@ -415,7 +378,7 @@ async def handle_message_text(
         note = match_signoff_b2.group(1).strip()
         _main().store_signoff_note("brian_ii", note)
         await message.reply_text(
-            f"📓 Brian II signoff noted.\n\n_{note }_",
+            f"📓 Brian II signoff noted.\n\n_{note}_",
             parse_mode="Markdown",
         )
         return
@@ -469,7 +432,7 @@ async def handle_message_text(
         )
         purpose_str = " + ".join(_trip_map()[key]["purpose_list"])
         await message.reply_text(
-            f"✈️ {_trip_map() [key ]['destination']} — {trips_mod .format_trip_dates (dep ,ret )} ({nights } night(s), {purpose_str })\n\nWhat field work are you doing?\n(Tap all that apply, then tap ✅ Done)",
+            f"✈️ {_trip_map()[key]['destination']} — {trips_mod.format_trip_dates(dep, ret)} ({nights} night(s), {purpose_str})\n\nWhat field work are you doing?\n(Tap all that apply, then tap ✅ Done)",
             reply_markup=kb.field_work_keyboard(key, _trip_map()),
         )
         return
@@ -498,7 +461,7 @@ async def handle_message_text(
             _main()._save_mute_state()
             context.user_data["awaiting_mute_days"] = False
             await message.reply_text(
-                f"🔕 Digests paused for {days } day(s), until {STATE .mute_until .strftime ('%Y-%m-%d %H:%M %Z')}."
+                f"🔕 Digests paused for {days} day(s), until {STATE.mute_until.strftime('%Y-%m-%d %H:%M %Z')}."
             )
         except Exception:
             await message.reply_text(
@@ -606,7 +569,7 @@ async def handle_message_text(
                         update.effective_chat.id, None
                     )
                     await message.reply_text(
-                        f"🏆 Competition set: *{competition }*\n_Saved to Notion_",
+                        f"🏆 Competition set: *{competition}*\n_Saved to Notion_",
                         parse_mode="Markdown",
                     )
                     return
@@ -668,7 +631,7 @@ async def handle_message_text(
             )
             _main().topic_recency_map[custom_topic] = datetime.now(timezone.utc)
             await message.reply_text(
-                f"✅ Note captured!\n🏷️ {custom_topic }\n_Saved to Notion_",
+                f"✅ Note captured!\n🏷️ {custom_topic}\n_Saved to Notion_",
                 parse_mode="Markdown",
             )
         except Exception as e:
@@ -829,7 +792,7 @@ async def handle_message_text(
                         if _main().notion_tasks.handle_done_recurring(_notion(), NOTION_DB_ID, pid)
                         else ""
                     )
-                    done_names.append(f"{name }{suffix }")
+                    done_names.append(f"{name}{suffix}")
         elif message.reply_to_message:
             replied_text = (
                 message.reply_to_message.text or message.reply_to_message.caption or ""
@@ -848,10 +811,10 @@ async def handle_message_text(
                         if _main().notion_tasks.handle_done_recurring(_notion(), NOTION_DB_ID, pid)
                         else ""
                     )
-                    done_names.append(f"{name }{suffix }")
+                    done_names.append(f"{name}{suffix}")
 
         if done_names:
-            msg = "Marked done:\n" + "\n".join(f"✅ {n }" for n in done_names)
+            msg = "Marked done:\n" + "\n".join(f"✅ {n}" for n in done_names)
             await message.reply_text(msg)
         else:
             await message.reply_text(
@@ -1055,6 +1018,12 @@ async def _cb_task_preview(q, parts, context) -> None:
         log.error("Notion error for preview task '%s': %s", task_name, e)
         await q.edit_message_text("⚠️ Preview confirmed but couldn't write to Notion.")
         return
+    horizon_label = _main().deadline_days_to_label(deadline_days)
+    recur_tag = f"\n🔁 {recurring}" if recurring != "None" else ""
+    await q.edit_message_text(
+        f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}{recur_tag}\n\n_Saved to Notion_",
+        parse_mode="Markdown",
+    )
     STATE.capture_map[q.message.message_id] = {"page_id": page_id, "name": task_name}
     return
 
@@ -1140,16 +1109,16 @@ async def _cb_twd(q, parts, context) -> None:
     if not _trip_map()[key].get("field_work_types"):
         _trip_map()[key]["field_work_types"] = ["None"]
     selected = ", ".join(_trip_map()[key].get("field_work_types") or []) or "None"
-    await q.edit_message_text(f"🔬 Field work: {selected }", reply_markup=None)
+    await q.edit_message_text(f"🔬 Field work: {selected}", reply_markup=None)
     await q.message.reply_text(
         "Multiple sites on this trip?",
         reply_markup=InlineKeyboardMarkup(
             [
                 [
-                    InlineKeyboardButton("Yes", callback_data=f"tms:{key }:y"),
-                    InlineKeyboardButton("No", callback_data=f"tms:{key }:n"),
+                    InlineKeyboardButton("Yes", callback_data=f"tms:{key}:y"),
+                    InlineKeyboardButton("No", callback_data=f"tms:{key}:n"),
                 ],
-                [InlineKeyboardButton("❌ Cancel", callback_data=f"tcancel:{key }")],
+                [InlineKeyboardButton("❌ Cancel", callback_data=f"tcancel:{key}")],
             ]
         ),
     )
@@ -1163,16 +1132,16 @@ async def _cb_tms(q, parts, context) -> None:
         return
     _trip_map()[key]["multiple_sites"] = ans == "y"
     summary = "Yes" if _trip_map()[key]["multiple_sites"] else "No"
-    await q.edit_message_text(f"🏗️ Multiple sites: {summary }", reply_markup=None)
+    await q.edit_message_text(f"🏗️ Multiple sites: {summary}", reply_markup=None)
     await q.message.reply_text(
         "Checking a bag?",
         reply_markup=InlineKeyboardMarkup(
             [
                 [
-                    InlineKeyboardButton("Yes", callback_data=f"tcl:{key }:y"),
-                    InlineKeyboardButton("No", callback_data=f"tcl:{key }:n"),
+                    InlineKeyboardButton("Yes", callback_data=f"tcl:{key}:y"),
+                    InlineKeyboardButton("No", callback_data=f"tcl:{key}:n"),
                 ],
-                [InlineKeyboardButton("❌ Cancel", callback_data=f"tcancel:{key }")],
+                [InlineKeyboardButton("❌ Cancel", callback_data=f"tcancel:{key}")],
             ]
         ),
     )
@@ -1186,7 +1155,7 @@ async def _cb_tcl(q, parts, context) -> None:
         return
     _trip_map()[key]["checked_luggage"] = ans == "y"
     summary = "Yes" if _trip_map()[key]["checked_luggage"] else "No"
-    await q.edit_message_text(f"🧳 Checked bag: {summary }", reply_markup=None)
+    await q.edit_message_text(f"🧳 Checked bag: {summary}", reply_markup=None)
     await q.message.reply_text("🧠 Building your packing list...")
     await trips_mod.execute_trip(
         key,
@@ -1271,7 +1240,7 @@ async def _cb_mq(q, parts, context) -> None:
         _main()._save_mute_state()
         context.user_data["awaiting_mute_days"] = False
         await q.edit_message_text(
-            f"🔕 Digests paused for {days } day(s), until {STATE .mute_until .strftime ('%Y-%m-%d %H:%M %Z')}."
+            f"🔕 Digests paused for {days} day(s), until {STATE.mute_until.strftime('%Y-%m-%d %H:%M %Z')}."
         )
         return
 
@@ -1337,9 +1306,9 @@ async def _cb_note_topic(q, parts, context) -> None:
         )
         if selected_topic:
             _main().topic_recency_map[selected_topic] = datetime.now(timezone.utc)
-        topic_line = f"\n🏷️ {selected_topic }" if selected_topic else ""
+        topic_line = f"\n🏷️ {selected_topic}" if selected_topic else ""
         await q.edit_message_text(
-            f"✅ Note captured!\n{topic_line }\n_Saved to Notion_",
+            f"✅ Note captured!\n{topic_line}\n_Saved to Notion_",
             parse_mode="Markdown",
         )
     except Exception as e:
@@ -1593,7 +1562,7 @@ async def _cb_el(q, parts, context) -> None:
             else ""
         )
         await q.edit_message_text(
-            f"✅ Logged to {label }\n\n🎫 {payload .get ('title','Untitled')}\n📅 {payload .get ('date')}{suffix }\n\n_Saved to Notion_",
+            f"✅ Logged to {label}\n\n🎫 {payload.get('title', 'Untitled')}\n📅 {payload.get('date')}{suffix}\n\n_Saved to Notion_",
             parse_mode="Markdown",
         )
         if payload.get("log_type") == "sport":
@@ -1617,7 +1586,7 @@ async def _cb_d(q, parts, context) -> None:
             if _main().notion_tasks.handle_done_recurring(_notion(), NOTION_DB_ID, page_id)
             else ""
         )
-        await q.edit_message_text(f"✅ Marked as done!{suffix }")
+        await q.edit_message_text(f"✅ Marked as done!{suffix}")
     except Exception as e:
         log.error("Notion done error: %s", e)
         await q.edit_message_text("⚠️ Couldn't update Notion.")
@@ -1630,7 +1599,7 @@ async def _cb_h_horizon(q, parts, context) -> None:
     horizon_label = _main().HORIZON_LABELS.get(code, "⚪ Backburner")
     try:
         notion_tasks.set_deadline_from_horizon_code(_notion(), page_id, code)
-        await q.edit_message_text(f"Updated → {horizon_label } ✓")
+        await q.edit_message_text(f"Updated → {horizon_label} ✓")
     except Exception as e:
         log.error("Notion horizon error: %s", e)
         await q.edit_message_text("⚠️ Couldn't update Notion.")
@@ -1677,7 +1646,7 @@ async def _cb_td(q, parts, context) -> None:
         await q.edit_message_text("🎉 All done!")
         return
     await q.edit_message_text(
-        f"✅ {done_count } done · {remaining } remaining",
+        f"✅ {done_count} done · {remaining} remaining",
         reply_markup=kb.todo_picker_keyboard(
             key, _main().todo_picker_map, fmt.context_emoji
         ),
@@ -1700,7 +1669,7 @@ async def _cb_dp(q, parts, context) -> None:
             if _main().notion_tasks.handle_done_recurring(_notion(), NOTION_DB_ID, task["page_id"])
             else ""
         )
-        await q.edit_message_text(f"✅ Done: {task ['name']}{suffix }")
+        await q.edit_message_text(f"✅ Done: {task['name']}{suffix}")
     except Exception as e:
         log.error("Done picker error: %s", e)
         await q.edit_message_text("⚠️ Couldn't mark that task done.")
@@ -1936,7 +1905,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         try:
             await q.edit_message_reply_markup(reply_markup=None)
         except Exception:
-            pass
+            log.debug("Could not clear message markup after callback", exc_info=True)
         await q.answer()
 
     log.debug("Callback received: %s", data)
