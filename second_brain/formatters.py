@@ -1,10 +1,13 @@
 from __future__ import annotations
+import logging
 from datetime import datetime, timedelta, date
 from second_brain.config import NUMBER_EMOJIS, HORIZON_LABELS, TZ
 from second_brain.notion import tasks as notion_tasks
 from second_brain import weather as wx
 from second_brain.utils import local_today
 from second_brain.state import STATE
+
+log = logging.getLogger(__name__)
 
 
 def num_emoji(n: int) -> str:
@@ -412,7 +415,7 @@ def _should_show_uv_guidance(
             sunset = datetime.fromisoformat(sunset_iso)
             return sunrise <= now <= sunset
         except Exception:
-            pass
+            log.debug("Could not parse sunrise/sunset times; using hour heuristic", exc_info=True)
     return 6 <= now.hour < 18
 
 def digest_location_label() -> str:

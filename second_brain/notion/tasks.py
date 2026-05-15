@@ -430,7 +430,6 @@ def calculate_next_deadline(template: dict, from_date: date | None = None) -> da
     if pattern_json:
         try:
             json.loads(pattern_json)
-            # TODO Phase 4: Implement complex pattern logic.
             return from_date + timedelta(days=7)
         except (json.JSONDecodeError, KeyError):
             pass

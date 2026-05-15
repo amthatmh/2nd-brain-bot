@@ -1011,7 +1011,7 @@ async def _cb_task_preview(q, parts, context) -> None:
             )
             horizon_label = _main().deadline_days_to_label(deadline_days)
             await q.edit_message_text(
-                f"✅ Captured!\n\n📝 {task_name }\n🕐 {horizon_label }  {ctx }\n\n_Saved to Notion_",
+                f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}\n\n_Saved to Notion_",
                 parse_mode="Markdown",
             )
     except Exception as e:
