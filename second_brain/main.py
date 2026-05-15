@@ -2418,8 +2418,20 @@ async def cleanup_expired_batches() -> None:
 # MAIN — after all handlers are defined
 # ══════════════════════════════════════════════════════════════════════════════
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log unhandled Telegram handler exceptions and notify the user."""
+    log.error("Unhandled exception in Telegram handler", exc_info=context.error)
+
+    effective_chat = getattr(update, "effective_chat", None) if update else None
+    if effective_chat:
+        await effective_chat.send_message(
+            "❌ Something went wrong. I've logged it for review."
+        )
+
+
 def main() -> None:
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+    app.add_error_handler(error_handler)
     register_core_handlers(
         app,
         handle_start_command=handle_start_command,
