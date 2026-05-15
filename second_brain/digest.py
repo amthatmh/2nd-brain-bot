@@ -168,6 +168,14 @@ from second_brain import weather as wx  # noqa: F401 - retained for transition p
 
 log = logging.getLogger(__name__)
 
+# Digest runtime state — owned here, set by main.py post_init where needed.
+_digest_jobs: list = []
+_scheduler = None
+_digest_slots_last_load_succeeded: bool = False
+_digest_catchup_sent: set = set()
+_digest_slot_sent_today: set = set()
+_last_daily_log_url: str = ""
+
 
 async def get_digest_config(notion_or_slot_time, digest_selector_db_id=None, slot_time=None, weekday=None) -> dict:
     if slot_time is None:
@@ -181,11 +189,10 @@ async def get_digest_config(notion_or_slot_time, digest_selector_db_id=None, slo
     try:
         if notion is None:
             import second_brain.main as _main  # transition import
-
-            slots = _main.load_digest_slots()
+            rows = query_all(_main.notion, digest_selector_db_id)
         else:
             rows = query_all(notion, digest_selector_db_id)
-            slots = load_digest_slots(rows=rows, logger=log)
+        slots = load_digest_slots(rows=rows, logger=log)
     except Exception as e:
         log.error("Failed to read digest config for %s (%s): %s", slot_time, "weekday" if weekday else "weekend", e)
         return {"contexts": None, "max_items": None, "include_habits": False, "include_weather": False, "include_uvi": False, "include_feel": False}
@@ -227,16 +234,17 @@ def _filter_digest_tasks(tasks: list[dict], config: dict | None = None) -> list[
 
 
 async def send_digest_for_slot(bot, slot: dict, *, notion=None, digest_selector_db_id: str = NOTION_DIGEST_SELECTOR_DB) -> None:
-    import second_brain.main as _main  # transition import
+    global _digest_slot_sent_today
+    import second_brain.main as _main  # transition import — for alert_digest_sent
 
     now = datetime.now(TZ)
     day_key = now.date().isoformat()
-    for key in list(_main._digest_slot_sent_today):
+    for key in list(_digest_slot_sent_today):
         if not key.startswith(day_key):
-            _main._digest_slot_sent_today.discard(key)
+            _digest_slot_sent_today.discard(key)
     weekday = now.weekday() < 5
     slot_key = f"{day_key}|{'wd' if weekday else 'we'}|{slot.get('time')}"
-    if slot_key in _main._digest_slot_sent_today:
+    if slot_key in _digest_slot_sent_today:
         log.info("Skipping duplicate digest send for slot %s (%s)", slot.get("time"), "weekday" if weekday else "weekend")
         return
     if notion is None:
@@ -264,20 +272,18 @@ async def send_digest_for_slot(bot, slot: dict, *, notion=None, digest_selector_
         config={**config, "slot_name": f"{slot.get('time')} ({'weekday' if slot.get('is_weekday') else 'weekend'})"},
     )
     _main.alert_digest_sent(f"{slot.get('time')} ({'weekday' if slot.get('is_weekday') else 'weekend'})")
-    _main._digest_slot_sent_today.add(slot_key)
+    _digest_slot_sent_today.add(slot_key)
 
 
 def _queue_missed_slots_for_today(scheduler, bot, slots: list[dict]) -> None:
-    import second_brain.main as _main  # transition import
-
     now = datetime.now(TZ)
     weekday = now.weekday() < 5
     grace_minutes = 20
 
     today_prefix = now.date().isoformat()
-    for key in list(_main._digest_catchup_sent):
+    for key in list(_digest_catchup_sent):
         if not key.startswith(today_prefix):
-            _main._digest_catchup_sent.discard(key)
+            _digest_catchup_sent.discard(key)
 
     for slot in slots:
         if bool(slot.get("is_weekday")) != weekday:
@@ -293,7 +299,7 @@ def _queue_missed_slots_for_today(scheduler, bot, slots: list[dict]) -> None:
             continue
 
         catchup_key = f"{today_prefix}|{'wd' if weekday else 'we'}|{slot['time']}"
-        if catchup_key in _main._digest_catchup_sent:
+        if catchup_key in _digest_catchup_sent:
             continue
 
         try:
@@ -306,28 +312,30 @@ def _queue_missed_slots_for_today(scheduler, bot, slots: list[dict]) -> None:
                 replace_existing=True,
                 max_instances=1,
             )
-            _main._digest_jobs.append(job)
-            _main._digest_catchup_sent.add(catchup_key)
+            _digest_jobs.append(job)
+            _digest_catchup_sent.add(catchup_key)
             log.info("Queued digest catch-up for slot %s (%s)", slot["time"], "weekday" if weekday else "weekend")
         except Exception as e:
             log.warning("Failed to queue digest catch-up for slot %s: %s", slot.get("time"), e)
 
 
 def build_digest_schedule(scheduler, bot, queue_catchup: bool = False) -> int:
-    import second_brain.main as _main  # transition import
+    global _digest_slots_last_load_succeeded
+    import second_brain.main as _main  # transition import — for cleanup_old_habit_selections and notion
 
     _main.cleanup_old_habit_selections()
-    for job in _main._digest_jobs:
+    for job in _digest_jobs:
         try:
             job.remove()
         except Exception:
             log.debug("Could not remove digest job during schedule rebuild", exc_info=True)
-    _main._digest_jobs.clear()
+    _digest_jobs.clear()
 
     try:
-        slots = _main.load_digest_slots()
+        rows = query_all(_main.notion, NOTION_DIGEST_SELECTOR_DB)
+        slots = load_digest_slots(rows=rows, logger=log)
     except Exception as e:
-        _main._digest_slots_last_load_succeeded = False
+        _digest_slots_last_load_succeeded = False
         log.error("Failed to load digest slots: %s", e)
         return 0
 
@@ -354,19 +362,17 @@ def build_digest_schedule(scheduler, bot, queue_catchup: bool = False) -> int:
             args=[bot, slot],
             max_instances=1,
         )
-        _main._digest_jobs.append(job)
+        _digest_jobs.append(job)
 
     if queue_catchup:
-        _main._queue_missed_slots_for_today(scheduler, bot, slots)
-    _main._digest_slots_last_load_succeeded = True
-    log.info("Digest schedule built: %d slots registered", len(_main._digest_jobs))
-    return len(_main._digest_jobs)
+        _queue_missed_slots_for_today(scheduler, bot, slots)
+    _digest_slots_last_load_succeeded = True
+    log.info("Digest schedule built: %d slots registered", len(_digest_jobs))
+    return len(_digest_jobs)
 
 
 async def rebuild_digest_schedule_job(bot, scheduler) -> dict:
-    import second_brain.main as _main  # transition import
-
-    was_last_success = _main._digest_slots_last_load_succeeded
+    was_last_success = _digest_slots_last_load_succeeded
     result = build_digest_schedule(scheduler, bot)
     if result == 0 and was_last_success:
         await bot.send_message(
@@ -386,9 +392,10 @@ async def refresh_digest_schedule_job(bot, scheduler) -> dict:
 
 
 async def generate_daily_log(bot) -> dict:
+    global _last_daily_log_url
     import second_brain.main as _main  # transition import
 
-    _main._last_daily_log_url = await _main.notion_daily_log.generate_daily_log(
+    _last_daily_log_url = await _main.notion_daily_log.generate_daily_log(
         notion=_main.notion,
         notion_daily_log_db=NOTION_DAILY_LOG_DB,
         notion_db_id=NOTION_DB_ID,
@@ -400,10 +407,11 @@ async def generate_daily_log(bot) -> dict:
         signoff_notes=_main.get_and_clear_project_signoff_notes(),
         claude_activity=_main.get_and_clear_claude_activity(),
     )
-    return {"action": "generated", "has_url": bool(_main._last_daily_log_url)}
+    return {"action": "generated", "has_url": bool(_last_daily_log_url)}
 
 
 async def send_daily_digest(bot, include_habits: bool = True, config: dict | None = None) -> None:
+    global _last_daily_log_url
     import second_brain.main as _main  # transition import
 
     if _main._is_muted():
@@ -425,9 +433,9 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     date_str = _main.datetime.now(TZ).strftime("%A, %B %-d")
     lines = [f"☀️ *{date_str}*", ""]
 
-    if _main._last_daily_log_url:
+    if _last_daily_log_url:
         log_date_label = (today - timedelta(days=1)).isoformat()
-        lines.append(f"📓 [{log_date_label} Log]({_main._last_daily_log_url})")
+        lines.append(f"📓 [{log_date_label} Log]({_last_daily_log_url})")
         lines.append("")
     include_weather = True if config is None else bool(config.get("include_weather"))
     if include_weather:
@@ -507,5 +515,5 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     _main.last_digest_msg_id = sent_digest.message_id
     log.info("Consolidated daily digest sent — %d tasks, %d habits", len(ordered), len(habits))
 
-    if _main._last_daily_log_url:
-        _main._last_daily_log_url = ""
+    if _last_daily_log_url:
+        _last_daily_log_url = ""

@@ -222,7 +222,6 @@ from second_brain.crossfit.notion import parse_weekly_program_text, save_program
 from second_brain.entertainment import log as ent_log
 from second_brain.entertainment.handlers import (
     _entertainment_rule_entry_data,
-    _execute_entertainment_rules as _ent_execute_rules,
     handle_entertainment_log as _ent_handle_log,
     _maybe_prompt_explicit_venue,
     load_entertainment_schemas,
@@ -247,12 +246,6 @@ def _apply_shared_date_parse(payload: dict) -> object:
     else:
         payload["date"] = result.resolved
     return result
-
-async def _execute_entertainment_rules(payload: dict) -> bool:
-    return await _ent_execute_rules(notion, rule_engine, payload)
-
-async def handle_entertainment_log(notion_arg, message, payload: dict) -> None:
-    return await _ent_handle_log(notion_arg, message, payload)
 
 load_dotenv()
 
@@ -361,7 +354,6 @@ pending_note_map: dict[str, dict] = {}
 cf_pending: dict[str, dict] = ExpiringDict(ttl_seconds=_CF_PENDING_TTL)
 topic_recency_map: dict[str, datetime] = {}
 _cf_counter = 0
-_entertainment_counter = 0
 habit_cache: dict[str, dict] = STATE.habit_cache
 # Preserve prior module-level semantics when this entrypoint is reloaded in tests or workers.
 STATE.done_picker_counter = 0
@@ -423,13 +415,8 @@ trip_awaiting_date_map: dict[int, str] = {}
 awaiting_packing_feedback = False
 _trip_counter = 0
 
-_digest_jobs: list = []
-_scheduler: AsyncIOScheduler | None = None
-_digest_slots_last_load_succeeded = False
-_digest_catchup_sent: set[str] = set()
-_digest_slot_sent_today: set[str] = set()
 notified_goals_this_week: set[str] = set()
-_last_daily_log_url: str = ""
+_scheduler: AsyncIOScheduler | None = None
 _app_bot = None  # set during post_init for health route bot access
 rule_engine: RuleEngine | None = None
 _steps_title_migration_ran = False
@@ -459,11 +446,6 @@ BTN_CROSSFIT = "💪 CrossFit"
 BTN_NOTES = "📝 Notes"
 BTN_WEATHER = "🌤️ Weather"
 BTN_MUTE = "🔕 Mute"
-ENTERTAINMENT_LOG_LABELS = {
-    "cinema": "🍿 Cinema Log",
-    "performance": "🎟️ Performances Viewings",
-    "sport": "🏟️ Sports Log",
-}
 LEGACY_BTN_ALL_OPEN = "📋 All Open"
 TOPIC_OPTIONS = [
     "🎵 Acoustics", "💼 Work", "🏠 Personal",
@@ -567,11 +549,6 @@ def notion_query_all(database_id: str, **kwargs) -> list[dict]:
         sorts=kwargs.pop("sorts", None),
         page_size=kwargs.pop("page_size", None),
     )
-
-def load_digest_slots() -> list[dict]:
-    """Queries Notion Digest Selector DB and returns normalized slot dicts."""
-    rows = notion_query_all(NOTION_DIGEST_SELECTOR_DB)
-    return digest_helpers.load_digest_slots(rows=rows, logger=log)
 
 def extract_date_only(date_str: str | None) -> str | None:
     """Normalize Notion date strings to YYYY-MM-DD for calendar matching."""
@@ -849,14 +826,6 @@ def _run_capture(raw_text: str, force_create: bool = False,
     except Exception as e:
         log.error("Notion error for '%s': %s", task_name, e)
         return {"status": "error", "name": task_name, "error": str(e)}
-
-def pending_habits_for_digest(time_str: str | None = None) -> list[dict]:
-    return digest_helpers.pending_habits_for_digest(
-        habit_cache=habit_cache,
-        time_str=time_str,
-        already_logged_today=already_logged_today,
-        is_on_pace=is_on_pace,
-    )
 
 async def refresh_quick_actions_keyboard(message) -> None:
     """Force-refresh the reply keyboard to replace legacy layouts (e.g. old Mute button)."""
@@ -1315,7 +1284,7 @@ async def cmd_refresh(message, context: ContextTypes.DEFAULT_TYPE | None = None)
         return
     config = None
     try:
-        slots = load_digest_slots()
+        slots = digest_helpers.load_digest_slots(rows=notion_query_all(NOTION_DIGEST_SELECTOR_DB), logger=log)
         now_dt = datetime.now(TZ)
         config = digests_mod.manual_digest_config_now(slots, now_dt=now_dt, is_weekday=now_dt.weekday() < 5)
     except Exception as e:
@@ -1562,7 +1531,7 @@ async def generate_next_recurring_instances(bot) -> None:
 async def send_evening_checkin(bot) -> None:
     """Evening habit check-in with time display and frequency status."""
     now_str = datetime.now(TZ).strftime("%H:%M")
-    evening_habits = pending_habits_for_digest(time_str=now_str)
+    evening_habits = digest_helpers.pending_habits_for_digest(habit_cache=habit_cache, time_str=now_str, already_logged_today=already_logged_today, is_on_pace=is_on_pace)
     if not evening_habits:
         return
 
@@ -1587,7 +1556,7 @@ async def send_evening_checkin(bot) -> None:
 
 async def send_daily_habits_list(bot) -> None:
     """Fetch all active habits for today and send as clickable buttons."""
-    habits = pending_habits_for_digest()
+    habits = digest_helpers.pending_habits_for_digest(habit_cache=habit_cache, time_str=None, already_logged_today=already_logged_today, is_on_pace=is_on_pace)
     if not habits:
         await bot.send_message(chat_id=MY_CHAT_ID, text="🎯 No habits for today.")
         return
@@ -1932,8 +1901,8 @@ def _build_utility_job_dispatch(bot) -> dict[str, Callable]:
     captured via closure).
     """
     dispatch = {
-        "digest_schedule_rebuild": _utility_async_handler("digest_schedule_rebuild", lambda: rebuild_digest_schedule_job(bot, _scheduler)),
-        "digest_schedule_refresh": _utility_async_handler("digest_schedule_refresh", lambda: refresh_digest_schedule_job(bot, _scheduler)),
+        "digest_schedule_rebuild": _utility_async_handler("digest_schedule_rebuild", lambda: rebuild_digest_schedule_job(bot, digest_helpers._scheduler)),
+        "digest_schedule_refresh": _utility_async_handler("digest_schedule_refresh", lambda: refresh_digest_schedule_job(bot, digest_helpers._scheduler)),
         "weather_cache_refresh": _utility_async_handler("weather_cache_refresh", lambda: wx.fetch_weather_cache(bot)),
         "trip_weather_refresh": _utility_async_handler("trip_weather_refresh", lambda: handle_trip_weather_refresh(bot)),
         "process_pending_programmes": _utility_async_handler("process_pending_programmes", lambda: process_pending_programmes(bot)),
@@ -2129,6 +2098,7 @@ async def post_init(app: Application) -> None:
     scheduler = AsyncIOScheduler(timezone=TZ)
     scheduler.add_listener(_scheduler_event_listener, EVENT_JOB_ERROR | EVENT_JOB_MISSED)
     _scheduler = scheduler
+    digest_helpers._scheduler = scheduler
     scheduler.add_job(
         cleanup_pending_task_interactions,
         "interval",
@@ -2495,8 +2465,8 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     date_result = _apply_shared_date_parse(parsed)
     if date_result and getattr(date_result, "ambiguous", False):
-        key = str(_entertainment_counter)
-        _entertainment_counter += 1
+        key = str(STATE.entertainment_counter)
+        STATE.entertainment_counter += 1
         pending_map[key] = {"type": "entertainment_log", "payload": parsed, "raw_text": f"/log {raw}"}
         await update.message.reply_text("📅 Which date did you mean?", reply_markup=kb.date_pick_keyboard("ent", key, date_result))
         return
@@ -2504,7 +2474,7 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         prompted = await ent_log._maybe_prompt_explicit_venue(notion, update.message, parsed, f"/log {raw}")
         if prompted:
             return
-        await handle_entertainment_log(notion, update.message, parsed)
+        await _ent_handle_log(notion, update.message, parsed)
     except Exception as e:
         log.error("Explicit /log save error: %s", e)
         await update.message.reply_text(_entertainment_save_error_text(e, parsed))

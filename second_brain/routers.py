@@ -26,6 +26,11 @@ import second_brain.notion.tasks as notion_tasks
 import second_brain.palette as _palette
 import second_brain.watchlist as wl
 import second_brain.entertainment.log as ent_log
+from second_brain.entertainment.handlers import (
+    ENTERTAINMENT_LOG_LABELS,
+    _execute_entertainment_rules as ent_execute_rules,
+    handle_entertainment_log as ent_handle_log,
+)
 import second_brain.trips as trips_mod
 from second_brain.ai import classify as ai_classify
 from second_brain.notion import notion_call
@@ -292,8 +297,8 @@ async def route_classified_message_v10(message, text: str) -> None:
         result.setdefault("date", local_today().isoformat())
         date_result = _main()._apply_shared_date_parse(result)
         if date_result and getattr(date_result, "ambiguous", False):
-            key = str(_main()._entertainment_counter)
-            _main()._entertainment_counter += 1
+            key = str(STATE.entertainment_counter)
+            STATE.entertainment_counter += 1
             STATE.pending_map[key] = {
                 "type": "entertainment_log",
                 "payload": result,
@@ -307,7 +312,7 @@ async def route_classified_message_v10(message, text: str) -> None:
         if confidence == "high" and title:
             try:
                 await _safe_delete_message(thinking)
-                await _main().handle_entertainment_log(_notion(), message, result)
+                await ent_handle_log(_notion(), message, result)
             except Exception as e:
                 log.error("Entertainment save error: %s", e)
                 await message.reply_text(
@@ -315,8 +320,8 @@ async def route_classified_message_v10(message, text: str) -> None:
                 )
             return
 
-        key = str(_main()._entertainment_counter)
-        _main()._entertainment_counter += 1
+        key = str(STATE.entertainment_counter)
+        STATE.entertainment_counter += 1
         STATE.pending_map[key] = {
             "type": "entertainment_log",
             "payload": result,
@@ -734,8 +739,8 @@ async def handle_message_text(
             )
             return
         if date_result and getattr(date_result, "ambiguous", False):
-            key = str(_main()._entertainment_counter)
-            _main()._entertainment_counter += 1
+            key = str(STATE.entertainment_counter)
+            STATE.entertainment_counter += 1
             STATE.pending_map[key] = {
                 "type": "entertainment_log",
                 "payload": explicit_entertainment,
@@ -761,9 +766,7 @@ async def handle_message_text(
                 prompted = venue_result
             if prompted:
                 return
-            await _main().handle_entertainment_log(
-                _notion(), message, explicit_entertainment
-            )
+            await ent_handle_log(_notion(), message, explicit_entertainment)
         except Exception as e:
             log.error("Explicit entertainment text save error: %s", e)
             await message.reply_text(
@@ -1044,7 +1047,7 @@ async def _cb_date_pick(q, parts, context) -> None:
     payload.pop("raw_date_a", None)
     payload.pop("raw_date_b", None)
     try:
-        await _main().handle_entertainment_log(_notion(), q.message, payload)
+        await ent_handle_log(_notion(), q.message, payload)
         await q.edit_message_text(f"✅ Date: {payload.get('date')}")
     except Exception as e:
         log.error("Entertainment date-pick save error: %s", e)
@@ -1552,10 +1555,8 @@ async def _cb_el(q, parts, context) -> None:
     payload.setdefault("date", local_today().isoformat())
     try:
         entry_id, fav_saved = ent_log.create_entertainment_log_entry(_notion(), payload)
-        rule_fav_saved = await _main()._execute_entertainment_rules(payload)
-        label = _main().ENTERTAINMENT_LOG_LABELS.get(
-            payload.get("log_type"), "Entertainment"
-        )
+        rule_fav_saved = await ent_execute_rules(_notion(), _rule_engine(), payload)
+        label = ENTERTAINMENT_LOG_LABELS.get(payload.get("log_type"), "Entertainment")
         suffix = (
             "\n🎞️ Added to Favourite Films"
             if (fav_saved or rule_fav_saved) and payload.get("log_type") == "cinema"
