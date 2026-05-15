@@ -7,13 +7,17 @@ from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from second_brain.config import NUMBER_EMOJIS, TZ as _DEFAULT_TZ
+NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 from second_brain.services.task_parsing import split_tasks  # noqa: F401
 
 
 def local_today(tz: ZoneInfo | None = None) -> date:
     """Return today's date in the app timezone (or tz if provided)."""
-    return datetime.now(tz or _DEFAULT_TZ).date()
+    if tz is None:
+        from second_brain.config import TZ
+
+        tz = TZ
+    return datetime.now(tz).date()
 
 
 def get_current_monday() -> date:
@@ -52,6 +56,21 @@ class ExpiringDict(dict):
         self._purge()
         return super().get(key, default)
 
+
+
+def parse_time_to_minutes(time_str: str | None) -> int:
+    """Parse HH:MM to minutes since midnight; return -1 on invalid."""
+    if not time_str:
+        return -1
+    try:
+        hour_str, minute_str = str(time_str).strip().split(":")
+        hour = int(hour_str)
+        minute = int(minute_str)
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            return -1
+        return hour * 60 + minute
+    except Exception:
+        return -1
 
 def num_emoji(n: int) -> str:
     return NUMBER_EMOJIS[n - 1] if 1 <= n <= 10 else f"{n}."

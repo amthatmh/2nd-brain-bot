@@ -12,7 +12,7 @@ def _flag(name: str, default: str = "1") -> bool:
     return os.environ.get(name, default).strip().lower() not in {"0", "false", "no", "off"}
 
 
-def parse_hhmm_env(var_name: str, default: str) -> tuple[int, int]:
+def parse_hhmm_env(var_name: str, default: str, logger=None) -> tuple[int, int]:
     raw = os.environ.get(var_name, default).strip()
     try:
         h_str, m_str = raw.split(":")
@@ -21,6 +21,13 @@ def parse_hhmm_env(var_name: str, default: str) -> tuple[int, int]:
             raise ValueError("out of range")
         return hour, minute
     except Exception:
+        if logger is not None:
+            logger.warning(
+                "Invalid %s=%r (expected HH:MM, 24h). Falling back to %s.",
+                var_name,
+                raw,
+                default,
+            )
         h_str, m_str = default.split(":")
         return int(h_str), int(m_str)
 
