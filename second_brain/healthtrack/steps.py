@@ -402,21 +402,21 @@ async def handle_steps_sync(
                 )
                 state["threshold_notified"] = True
                 state["threshold_message_id"] = sent.message_id
-                if env_db_id:
-                    asyncio.create_task(
-                        asyncio.to_thread(
-                            _persist_threshold_state,
-                            notion,
-                            env_db_id,
-                            date_str,
-                            sent.message_id,
-                        )
-                    )
                 log.info(
                     "steps: threshold notification sent (msg_id=%s, %d steps)",
                     sent.message_id,
                     steps,
                 )
+                if env_db_id:
+                    # Persist synchronously so a restart can recover msg_id and edit
+                    # rather than send a duplicate notification.
+                    await asyncio.to_thread(
+                        _persist_threshold_state,
+                        notion,
+                        env_db_id,
+                        date_str,
+                        sent.message_id,
+                    )
             except Exception as e:
                 log.error("steps: failed to send threshold notification: %s", e)
 
@@ -433,26 +433,27 @@ async def handle_steps_sync(
                     steps,
                 )
             except Exception as e:
-                log.warning("steps: edit failed (%s), sending new message", e)
-                try:
-                    sent = await bot.send_message(
-                        chat_id=chat_id,
-                        text=notification_text,
-                    )
-                    state["threshold_message_id"] = sent.message_id
-                    if env_db_id:
-                        asyncio.create_task(
-                            asyncio.to_thread(
+                err_str = str(e).lower()
+                if "message is not modified" in err_str:
+                    # Text unchanged — not an error, step count matches previous sync
+                    log.debug("steps: edit skipped, message already up to date")
+                elif "message to edit not found" in err_str or "message_id_invalid" in err_str:
+                    # Original message was deleted; send a fresh one and persist the new id
+                    log.warning("steps: original message gone (%s), sending replacement", e)
+                    try:
+                        sent = await bot.send_message(chat_id=chat_id, text=notification_text)
+                        state["threshold_message_id"] = sent.message_id
+                        if env_db_id:
+                            await asyncio.to_thread(
                                 _persist_threshold_state,
-                                notion,
-                                env_db_id,
-                                date_str,
-                                sent.message_id,
+                                notion, env_db_id, date_str, sent.message_id,
                             )
-                        )
-                    log.info("steps: fallback new message sent (msg_id=%s)", sent.message_id)
-                except Exception as e2:
-                    log.error("steps: fallback send also failed: %s", e2)
+                        log.info("steps: replacement message sent (msg_id=%s)", sent.message_id)
+                    except Exception as e2:
+                        log.error("steps: replacement send also failed: %s", e2)
+                else:
+                    # Transient Telegram error — log and retry on next sync, don't spam
+                    log.warning("steps: edit failed, will retry next sync: %s", e)
 
     # ── Intraday sub-threshold behavior (configurable) ──
     # Legacy mode only cached intraday counts until threshold/nightly stamp.
