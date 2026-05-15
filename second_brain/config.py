@@ -62,7 +62,7 @@ NOTION_BOOT_LOG_DB = os.environ.get("NOTION_BOOT_LOG_DB", "").strip()
 ASANA_SYNC_INTERVAL: int = int(os.environ.get("ASANA_SYNC_INTERVAL", "60"))
 HTTP_PORT: int = int(os.environ.get("PORT", "8080"))
 WEEKS_HISTORY: int = int(os.environ.get("WEEKS_HISTORY", "52"))
-APP_VERSION: str = os.environ.get("APP_VERSION", "v13.3.0")
+APP_VERSION: str = os.environ.get("APP_VERSION", "v14.0.0")
 UV_THRESHOLD: float = float(os.environ.get("UV_THRESHOLD", "3"))
 
 ASANA_PAT = os.environ.get("ASANA_PAT", "")

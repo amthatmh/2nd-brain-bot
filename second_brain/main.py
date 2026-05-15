@@ -225,9 +225,6 @@ from second_brain.entertainment.handlers import (
     handle_entertainment_log as _ent_handle_log,
     _maybe_prompt_explicit_venue,
     load_entertainment_schemas,
-    _resolve_known_cinema_venue,
-    _find_existing_cinema_venue,
-    _suggest_known_venue,
 )
 from second_brain.routers import (
     handle_message_text,
@@ -342,7 +339,6 @@ _HABITS_DATA_TTL = 300      # 5 min — HTTP /habits-data endpoint cache
 
 # ── In-memory state ──────────────────────────────────────────────────────────
 digest_map: dict[int, list[dict]] = STATE.digest_map
-last_digest_msg_id: int | None = None
 pending_map: dict[str, dict] = STATE.pending_map
 capture_map: dict[int, dict] = STATE.capture_map
 pending_batches: dict[str, dict] = {}
@@ -949,7 +945,7 @@ def _create_recurring_task_template_and_first_instance(
     repeat_day: str | None,
 ) -> tuple[str, date]:
     props = {
-        "Name": {"title": [{"text": {"content": task_name}}]},
+        "Name": title_prop(task_name),
         "Context": {"select": {"name": ctx}},
         "Recurring": {"select": {"name": recurring}},
         "Is Template": {"checkbox": True},
@@ -2099,6 +2095,12 @@ async def post_init(app: Application) -> None:
     scheduler.add_listener(_scheduler_event_listener, EVENT_JOB_ERROR | EVENT_JOB_MISSED)
     _scheduler = scheduler
     digest_helpers._scheduler = scheduler
+    digest_helpers._notion = notion
+    digest_helpers._on_rebuild_fn = cleanup_old_habit_selections
+    digest_helpers._store_habit_session_fn = _store_habit_selection_session
+    digest_helpers._refresh_cache_fn = _refresh_habit_cache_refs
+    digest_helpers._signoff_notes_fn = get_and_clear_project_signoff_notes
+    digest_helpers._claude_activity_fn = get_and_clear_claude_activity
     scheduler.add_job(
         cleanup_pending_task_interactions,
         "interval",
@@ -2474,7 +2476,7 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         prompted = await ent_log._maybe_prompt_explicit_venue(notion, update.message, parsed, f"/log {raw}")
         if prompted:
             return
-        await _ent_handle_log(notion, update.message, parsed)
+        await _ent_handle_log(notion, update.message, parsed, rule_engine=rule_engine)
     except Exception as e:
         log.error("Explicit /log save error: %s", e)
         await update.message.reply_text(_entertainment_save_error_text(e, parsed))

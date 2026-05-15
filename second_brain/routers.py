@@ -312,7 +312,7 @@ async def route_classified_message_v10(message, text: str) -> None:
         if confidence == "high" and title:
             try:
                 await _safe_delete_message(thinking)
-                await ent_handle_log(_notion(), message, result)
+                await ent_handle_log(_notion(), message, result, rule_engine=_rule_engine())
             except Exception as e:
                 log.error("Entertainment save error: %s", e)
                 await message.reply_text(
@@ -766,7 +766,7 @@ async def handle_message_text(
                 prompted = venue_result
             if prompted:
                 return
-            await ent_handle_log(_notion(), message, explicit_entertainment)
+            await ent_handle_log(_notion(), message, explicit_entertainment, rule_engine=_rule_engine())
         except Exception as e:
             log.error("Explicit entertainment text save error: %s", e)
             await message.reply_text(
@@ -779,7 +779,7 @@ async def handle_message_text(
         source_id = (
             message.reply_to_message.message_id
             if message.reply_to_message
-            else _main().last_digest_msg_id
+            else STATE.last_digest_msg_id
         )
         done_names: list[str] = []
 
@@ -830,7 +830,7 @@ async def handle_message_text(
         source_id = (
             message.reply_to_message.message_id
             if message.reply_to_message
-            else _main().last_digest_msg_id
+            else STATE.last_digest_msg_id
         )
         queued = 0
 
@@ -1047,7 +1047,7 @@ async def _cb_date_pick(q, parts, context) -> None:
     payload.pop("raw_date_a", None)
     payload.pop("raw_date_b", None)
     try:
-        await ent_handle_log(_notion(), q.message, payload)
+        await ent_handle_log(_notion(), q.message, payload, rule_engine=_rule_engine())
         await q.edit_message_text(f"✅ Date: {payload.get('date')}")
     except Exception as e:
         log.error("Entertainment date-pick save error: %s", e)

@@ -18,6 +18,7 @@ from second_brain.notion.properties import (
     extract_select,
     extract_title,
     get_property_by_name,
+    query_all,
     title_prop,
 )
 
@@ -86,12 +87,9 @@ def load_habit_cache(*, notion: Any, notion_habit_db: str) -> None:
     """Load active habits into module-level ``habit_cache``."""
     global habit_cache
     try:
-        results = notion.databases.query(
-            database_id=notion_habit_db,
-            filter={"property": "Active", "checkbox": {"equals": True}},
-        )
+        pages = query_all(notion, notion_habit_db, filter={"property": "Active", "checkbox": {"equals": True}})
         habit_cache.clear()
-        for page in results.get("results", []):
+        for page in pages:
             p = page["properties"]
             name = extract_title(p.get("Habit")) or None
             if not name:
@@ -211,17 +209,14 @@ def get_habits_by_time(
 
 
 def query_tasks_by_auto_horizon(*, notion: Any, notion_db_id: str, horizons: list[str]) -> list[dict]:
-    results = notion.databases.query(
-        database_id=notion_db_id,
-        filter={
-            "and": [
-                {"property": "Done", "checkbox": {"equals": False}},
-                {"or": [{"property": "Auto Horizon", "formula": {"string": {"equals": h}}} for h in horizons]},
-            ]
-        },
-    )
+    pages = query_all(notion, notion_db_id, filter={
+        "and": [
+            {"property": "Done", "checkbox": {"equals": False}},
+            {"or": [{"property": "Auto Horizon", "formula": {"string": {"equals": h}}} for h in horizons]},
+        ]
+    })
     tasks = []
-    for page in results.get("results", []):
+    for page in pages:
         p = page["properties"]
         tasks.append(
             {
@@ -266,17 +261,14 @@ def log_habit(
 def already_logged_today(notion, log_db_id: str, habit_page_id: str, tz) -> bool:
     today = datetime.now(tz).date().isoformat()
     try:
-        results = notion.databases.query(
-            database_id=log_db_id,
-            filter={
-                "and": [
-                    {"property": "Habit", "relation": {"contains": habit_page_id}},
-                    {"property": "Completed", "checkbox": {"equals": True}},
-                    {"property": "Date", "date": {"equals": today}},
-                ]
-            },
-        )
-        return len(results.get("results", [])) > 0
+        pages = query_all(notion, log_db_id, filter={
+            "and": [
+                {"property": "Habit", "relation": {"contains": habit_page_id}},
+                {"property": "Completed", "checkbox": {"equals": True}},
+                {"property": "Date", "date": {"equals": today}},
+            ]
+        })
+        return len(pages) > 0
     except Exception as e:
         # Avoid blocking one-tap habit logs when the dedupe query schema drifts.
         log.warning("already_logged_today query failed for %s: %s", habit_page_id, e)
@@ -285,17 +277,14 @@ def already_logged_today(notion, log_db_id: str, habit_page_id: str, tz) -> bool
 
 def get_week_completion_count(notion, log_db_id: str, habit_page_id: str, tz) -> int:
     try:
-        results = notion.databases.query(
-            database_id=log_db_id,
-            filter={
-                "and": [
-                    {"property": "Habit", "relation": {"contains": habit_page_id}},
-                    {"property": "Completed", "checkbox": {"equals": True}},
-                    {"property": "Date", "date": {"on_or_after": get_current_monday().isoformat()}},
-                ]
-            },
-        )
-        return len(results.get("results", []))
+        pages = query_all(notion, log_db_id, filter={
+            "and": [
+                {"property": "Habit", "relation": {"contains": habit_page_id}},
+                {"property": "Completed", "checkbox": {"equals": True}},
+                {"property": "Date", "date": {"on_or_after": get_current_monday().isoformat()}},
+            ]
+        })
+        return len(pages)
     except Exception as e:
         log.error("Error counting weekly completions for habit %s: %s", habit_page_id, e)
         return 0
@@ -323,18 +312,15 @@ def _count_habit_completions_this_week(notion, log_db_id: str, habit_page_id: st
     try:
         today = datetime.now(tz).date()
         monday = today - timedelta(days=today.weekday())
-        results = notion.databases.query(
-            database_id=log_db_id,
-            filter={
-                "and": [
-                    {"property": "Habit", "relation": {"contains": habit_page_id}},
-                    {"property": "Completed", "checkbox": {"equals": True}},
-                    {"property": "Date", "date": {"on_or_after": monday.isoformat()}},
-                ]
-            },
-        )
+        pages = query_all(notion, log_db_id, filter={
+            "and": [
+                {"property": "Habit", "relation": {"contains": habit_page_id}},
+                {"property": "Completed", "checkbox": {"equals": True}},
+                {"property": "Date", "date": {"on_or_after": monday.isoformat()}},
+            ]
+        })
         count = 0
-        for row in results.get("results", []):
+        for row in pages:
             date_prop = row.get("properties", {}).get("Date", {}).get("date", {})
             start = date_prop.get("start")
             if not start:
@@ -354,18 +340,15 @@ def _count_habit_completions_this_week(notion, log_db_id: str, habit_page_id: st
 def logs_this_week(notion, log_db_id: str, habit_page_id: str, tz) -> int:
     today = datetime.now(tz).date()
     monday = today - timedelta(days=today.weekday())
-    results = notion.databases.query(
-        database_id=log_db_id,
-        filter={
-            "and": [
-                {"property": "Habit", "relation": {"contains": habit_page_id}},
-                {"property": "Completed", "checkbox": {"equals": True}},
-                {"property": "Date", "date": {"on_or_after": monday.isoformat()}},
-                {"property": "Date", "date": {"on_or_before": today.isoformat()}},
-            ]
-        },
-    )
-    return len(results.get("results", []))
+    pages = query_all(notion, log_db_id, filter={
+        "and": [
+            {"property": "Habit", "relation": {"contains": habit_page_id}},
+            {"property": "Completed", "checkbox": {"equals": True}},
+            {"property": "Date", "date": {"on_or_after": monday.isoformat()}},
+            {"property": "Date", "date": {"on_or_before": today.isoformat()}},
+        ]
+    })
+    return len(pages)
 
 
 def is_on_pace(notion, log_db_id: str, habit: dict, tz) -> bool:

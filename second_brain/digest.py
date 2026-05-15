@@ -143,8 +143,7 @@ def pending_habits_for_digest(*, habit_cache: dict[str, dict], time_str: str | N
         pending.append(habit)
     return pending
 
-# Digest scheduling helpers migrated from main.py. A few functions use transition
-# imports to share runtime state until the entrypoint is further decomposed.
+# Digest scheduling helpers — runtime state is owned here, set by post_init in main.py.
 
 import logging
 from datetime import datetime, timedelta
@@ -158,19 +157,35 @@ from second_brain.config import (
     NOTION_HABIT_DB,
     NOTION_LOG_DB,
     NOTION_DAILY_LOG_DB,
+    NOTION_NOTES_DB,
+    CLAUDE_MODEL,
     TZ,
 )
 from second_brain.notion.properties import query_all
 from second_brain import formatters as fmt
 from second_brain import keyboards as kb
-from second_brain import weather as wx  # noqa: F401 - retained for transition parity
-
+from second_brain import mute as mute_helpers
+from second_brain import trips as trips_mod
+from second_brain.notion import habits as notion_habits
+from second_brain.notion import tasks as notion_tasks
+from second_brain.notion import daily_log as notion_daily_log
+from second_brain.state import STATE
+from second_brain.utils import local_today
+from second_brain.ai.client import get_claude_client
+from second_brain.healthtrack import config as health_config
+from utils.alert_handlers import alert_digest_sent
 
 log = logging.getLogger(__name__)
 
 # Digest runtime state — owned here, set by main.py post_init where needed.
 _digest_jobs: list = []
 _scheduler = None
+_notion = None
+_on_rebuild_fn = None          # cleanup_old_habit_selections from main.py
+_store_habit_session_fn = None  # _store_habit_selection_session from main.py
+_refresh_cache_fn = None        # _refresh_habit_cache_refs from main.py
+_signoff_notes_fn = None        # get_and_clear_project_signoff_notes from main.py
+_claude_activity_fn = None      # get_and_clear_claude_activity from main.py
 _digest_slots_last_load_succeeded: bool = False
 _digest_catchup_sent: set = set()
 _digest_slot_sent_today: set = set()
@@ -187,11 +202,7 @@ async def get_digest_config(notion_or_slot_time, digest_selector_db_id=None, slo
         notion = notion_or_slot_time
         digest_selector_db_id = digest_selector_db_id or NOTION_DIGEST_SELECTOR_DB
     try:
-        if notion is None:
-            import second_brain.main as _main  # transition import
-            rows = query_all(_main.notion, digest_selector_db_id)
-        else:
-            rows = query_all(notion, digest_selector_db_id)
+        rows = query_all(notion if notion is not None else _notion, digest_selector_db_id)
         slots = load_digest_slots(rows=rows, logger=log)
     except Exception as e:
         log.error("Failed to read digest config for %s (%s): %s", slot_time, "weekday" if weekday else "weekend", e)
@@ -235,8 +246,6 @@ def _filter_digest_tasks(tasks: list[dict], config: dict | None = None) -> list[
 
 async def send_digest_for_slot(bot, slot: dict, *, notion=None, digest_selector_db_id: str = NOTION_DIGEST_SELECTOR_DB) -> None:
     global _digest_slot_sent_today
-    import second_brain.main as _main  # transition import — for alert_digest_sent
-
     now = datetime.now(TZ)
     day_key = now.date().isoformat()
     for key in list(_digest_slot_sent_today):
@@ -271,7 +280,7 @@ async def send_digest_for_slot(bot, slot: dict, *, notion=None, digest_selector_
         include_habits=bool(config.get("include_habits")),
         config={**config, "slot_name": f"{slot.get('time')} ({'weekday' if slot.get('is_weekday') else 'weekend'})"},
     )
-    _main.alert_digest_sent(f"{slot.get('time')} ({'weekday' if slot.get('is_weekday') else 'weekend'})")
+    alert_digest_sent(f"{slot.get('time')} ({'weekday' if slot.get('is_weekday') else 'weekend'})")
     _digest_slot_sent_today.add(slot_key)
 
 
@@ -321,9 +330,8 @@ def _queue_missed_slots_for_today(scheduler, bot, slots: list[dict]) -> None:
 
 def build_digest_schedule(scheduler, bot, queue_catchup: bool = False) -> int:
     global _digest_slots_last_load_succeeded
-    import second_brain.main as _main  # transition import — for cleanup_old_habit_selections and notion
-
-    _main.cleanup_old_habit_selections()
+    if _on_rebuild_fn:
+        _on_rebuild_fn()
     for job in _digest_jobs:
         try:
             job.remove()
@@ -332,7 +340,7 @@ def build_digest_schedule(scheduler, bot, queue_catchup: bool = False) -> int:
     _digest_jobs.clear()
 
     try:
-        rows = query_all(_main.notion, NOTION_DIGEST_SELECTOR_DB)
+        rows = query_all(_notion, NOTION_DIGEST_SELECTOR_DB)
         slots = load_digest_slots(rows=rows, logger=log)
     except Exception as e:
         _digest_slots_last_load_succeeded = False
@@ -383,54 +391,49 @@ async def rebuild_digest_schedule_job(bot, scheduler) -> dict:
 
 
 async def refresh_digest_schedule_job(bot, scheduler) -> dict:
-    import second_brain.main as _main  # transition import
-
     slots_registered = build_digest_schedule(scheduler, bot)
-    _main.notion_habits.load_habit_cache(notion=_main.notion, notion_habit_db=NOTION_HABIT_DB)
-    _main._refresh_habit_cache_refs()
+    notion_habits.load_habit_cache(notion=_notion, notion_habit_db=NOTION_HABIT_DB)
+    if _refresh_cache_fn:
+        _refresh_cache_fn()
     return {"action": "refreshed", "slots_registered": slots_registered}
 
 
 async def generate_daily_log(bot) -> dict:
     global _last_daily_log_url
-    import second_brain.main as _main  # transition import
-
-    _last_daily_log_url = await _main.notion_daily_log.generate_daily_log(
-        notion=_main.notion,
+    _last_daily_log_url = await notion_daily_log.generate_daily_log(
+        notion=_notion,
         notion_daily_log_db=NOTION_DAILY_LOG_DB,
         notion_db_id=NOTION_DB_ID,
         notion_log_db=NOTION_LOG_DB,
-        notion_notes_db=_main.NOTION_NOTES_DB,
-        claude=_main.claude,
-        claude_model=_main.CLAUDE_MODEL,
+        notion_notes_db=NOTION_NOTES_DB,
+        claude=get_claude_client(),
+        claude_model=CLAUDE_MODEL,
         tz=TZ,
-        signoff_notes=_main.get_and_clear_project_signoff_notes(),
-        claude_activity=_main.get_and_clear_claude_activity(),
+        signoff_notes=_signoff_notes_fn() if _signoff_notes_fn else None,
+        claude_activity=_claude_activity_fn() if _claude_activity_fn else None,
     )
     return {"action": "generated", "has_url": bool(_last_daily_log_url)}
 
 
 async def send_daily_digest(bot, include_habits: bool = True, config: dict | None = None) -> None:
     global _last_daily_log_url
-    import second_brain.main as _main  # transition import
-
-    if _main._is_muted():
+    if mute_helpers.is_muted(STATE.mute_until, TZ):
         log.info("Daily digest skipped (muted)")
         return
-    tasks = _filter_digest_tasks(_main.notion_tasks.get_today_and_overdue_tasks(_main.notion, NOTION_DB_ID, limit=None), config=config)
-    today = _main.local_today()
-    overdue = [t for t in tasks if (d := _main.notion_tasks._parse_deadline(t.get("deadline"))) is not None and d < today]
-    today_tasks = [t for t in tasks if (d := _main.notion_tasks._parse_deadline(t.get("deadline"))) is not None and d == today and t not in overdue]
+    tasks = _filter_digest_tasks(notion_tasks.get_today_and_overdue_tasks(_notion, NOTION_DB_ID, limit=None), config=config)
+    today = local_today()
+    overdue = [t for t in tasks if (d := notion_tasks._parse_deadline(t.get("deadline"))) is not None and d < today]
+    today_tasks = [t for t in tasks if (d := notion_tasks._parse_deadline(t.get("deadline"))) is not None and d == today and t not in overdue]
     this_week_tasks = [t for t in tasks if t not in overdue and t not in today_tasks]
     ordered = overdue + today_tasks + this_week_tasks
     max_items = config.get("max_items") if config else None
     if isinstance(max_items, int):
         ordered = ordered[:max_items]
-        overdue = [t for t in ordered if (d := _main.notion_tasks._parse_deadline(t.get("deadline"))) is not None and d < today]
-        today_tasks = [t for t in ordered if (d := _main.notion_tasks._parse_deadline(t.get("deadline"))) is not None and d == today and t not in overdue]
+        overdue = [t for t in ordered if (d := notion_tasks._parse_deadline(t.get("deadline"))) is not None and d < today]
+        today_tasks = [t for t in ordered if (d := notion_tasks._parse_deadline(t.get("deadline"))) is not None and d == today and t not in overdue]
         this_week_tasks = [t for t in ordered if t not in overdue and t not in today_tasks]
 
-    date_str = _main.datetime.now(TZ).strftime("%A, %B %-d")
+    date_str = datetime.now(TZ).strftime("%A, %B %-d")
     lines = [f"☀️ *{date_str}*", ""]
 
     if _last_daily_log_url:
@@ -456,12 +459,17 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         habits_enabled, include_habits, config.get("include_habits") if config else None
     )
     if habits_enabled:
-        now_str = _main.datetime.now(TZ).strftime("%H:%M")
+        now_str = datetime.now(TZ).strftime("%H:%M")
         habits = [
             h
-            for h in _main.pending_habits_for_digest(time_str=now_str)
+            for h in pending_habits_for_digest(
+                habit_cache=notion_habits.habit_cache,
+                time_str=now_str,
+                already_logged_today=lambda pid: notion_habits.already_logged_today(_notion, NOTION_LOG_DB, pid, TZ),
+                is_on_pace=lambda habit: notion_habits.is_on_pace(_notion, NOTION_LOG_DB, habit, TZ),
+            )
             if (h.get("name") or "").strip().lower()
-            != _main.health_config.STEPS_HABIT_NAME.strip().lower()
+            != health_config.STEPS_HABIT_NAME.strip().lower()
         ]
         log.info("Digest habits final: count=%d habit_names=%s", len(habits), [h.get("name") for h in habits[:5]])
 
@@ -491,12 +499,12 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         lines.append("")
 
     message = "\n".join(lines).strip()
-    message = _main.append_trip_reminders_to_text(message, within_days=2)
+    message = trips_mod.append_trip_reminders_to_text(message, within_days=2)
 
     include_feel = bool(config.get("include_feel", False)) if config else False
     digest_keyboard_rows: list[list[InlineKeyboardButton]] = []
     if habits:
-        digest_keyboard_rows.extend([list(row) for row in _main.kb.habit_buttons(habits, "morning", selected=set()).inline_keyboard])
+        digest_keyboard_rows.extend([list(row) for row in kb.habit_buttons(habits, "morning", selected=set()).inline_keyboard])
     if include_feel:
         digest_keyboard_rows.extend([list(row) for row in kb.feel_prompt_keyboard().inline_keyboard])
     reply_markup = InlineKeyboardMarkup(digest_keyboard_rows) if digest_keyboard_rows else None
@@ -508,11 +516,11 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         reply_markup=reply_markup,
     )
 
-    if habits:
-        _main._store_habit_selection_session(sent_digest.message_id, habits)
+    if habits and _store_habit_session_fn:
+        _store_habit_session_fn(sent_digest.message_id, habits)
     if ordered:
-        _main.digest_map[sent_digest.message_id] = ordered
-    _main.last_digest_msg_id = sent_digest.message_id
+        STATE.digest_map[sent_digest.message_id] = ordered
+    STATE.last_digest_msg_id = sent_digest.message_id
     log.info("Consolidated daily digest sent — %d tasks, %d habits", len(ordered), len(habits))
 
     if _last_daily_log_url:
