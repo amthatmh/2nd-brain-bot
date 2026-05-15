@@ -127,6 +127,13 @@ async def _maybe_await(value):
     return value
 
 
+async def _safe_delete_message(message_obj, *, label: str = "feedback") -> None:
+    try:
+        await message_obj.delete()
+    except Exception as exc:
+        log.debug("Could not delete %s message: %s", label, exc)
+
+
 async def upsert_training_log_field(notion, date_str: str, field_name: str, rating: str, daily_readiness_db_id: str | None = None):
     """Upsert a feel rating into the Training Log (Daily Readiness) database."""
     db_id = (daily_readiness_db_id or os.environ.get("NOTION_DAILY_READINESS_DB") or "").strip()
@@ -1574,7 +1581,11 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
             return
 
         key = cf_flow_key
-        extracted = await extract_workout_data(raw_input, claude)
+        thinking = await message.reply_text("⏳ Analyzing movements...")
+        try:
+            extracted = await extract_workout_data(raw_input, claude)
+        finally:
+            await _safe_delete_message(thinking)
         state = _store_extracted_strength_state(cf_pending, key, extracted, raw_input)
 
         extracted_movements = extracted.get("movements") or []
@@ -1635,7 +1646,11 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
             return
         raw_structure = text.strip()
         state["raw_log"] = state.get("raw_log") or raw_structure
-        workout_data = await extract_workout_data(raw_structure, claude)
+        thinking = await message.reply_text("⏳ Analyzing movements...")
+        try:
+            workout_data = await extract_workout_data(raw_structure, claude)
+        finally:
+            await _safe_delete_message(thinking)
         extracted_movements = workout_data.get("movements") or []
         movement_text = ", ".join(extracted_movements) if extracted_movements else raw_structure
         movement_ids, names = await _resolve_movement_ids(movement_text, claude, notion, config, message)

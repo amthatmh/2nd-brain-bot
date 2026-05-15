@@ -102,6 +102,19 @@ def _crossfit_config():
     return _main()._crossfit_config()
 
 
+async def _safe_delete_message(message_obj, *, label: str = "feedback") -> None:
+    try:
+        await message_obj.delete()
+    except Exception as exc:
+        log.debug("Could not delete %s message: %s", label, exc)
+
+
+def _is_photo_followup_message(message) -> bool:
+    replied = getattr(getattr(message, "reply_to_message", None), "text", None) or ""
+    match = re.search(r"photo_key:(\w+)", replied)
+    return bool(match and match.group(1) in wl.pending_photo_map)
+
+
 async def _maybe_prompt_explicit_venue_in_executor(
     notion, message, payload: dict, raw_text: str
 ) -> bool:
@@ -117,6 +130,13 @@ async def _maybe_prompt_explicit_venue_in_executor(
 async def route_classified_message_v10(message, text: str) -> None:
     thinking = await message.reply_text("🧠 Got it...")
     loop = asyncio.get_running_loop()
+
+    if _is_photo_followup_message(message):
+        await thinking.edit_text("📸 Processing image...")
+        if await wl.handle_photo_followup(_notion(), message, text):
+            await _safe_delete_message(thinking)
+            return
+        await thinking.edit_text("🧠 Got it...")
 
     def classify_v10_message():
         return ai_classify.classify_message(
@@ -164,7 +184,7 @@ async def route_classified_message_v10(message, text: str) -> None:
         else:
             workout_result = workout_result_or_error
         if workout_result.get("type") == "programme":
-            await thinking.delete()
+            await _safe_delete_message(thinking)
             await message.reply_text(
                 "📋 Weekly programmes are parsed from Notion only now.\n"
                 "Add a row in Weekly Programs, paste into *Full Program*, and leave *Processed* unchecked.",
@@ -176,7 +196,7 @@ async def route_classified_message_v10(message, text: str) -> None:
             and workout_result.get("confidence") == "high"
         ):
             workout_result["raw_text"] = text
-            await thinking.delete()
+            await _safe_delete_message(thinking)
             if workout_result.get("type") == "strength":
                 await _main().handle_cf_strength_flow(
                     message,
@@ -195,21 +215,17 @@ async def route_classified_message_v10(message, text: str) -> None:
                     _cf_pending(),
                 )
             return
-    if await wl.handle_photo_followup(_notion(), message, text):
-        await thinking.delete()
-        return
-
     if workout_enabled:
         if isinstance(v10_result_or_error, asyncio.TimeoutError):
             log.warning(
                 "Claude v10 classify timeout after 18s; falling back to task capture"
             )
-            await thinking.delete()
+            await _safe_delete_message(thinking)
             await _main().create_or_prompt_task(message, text)
             return
         if isinstance(v10_result_or_error, Exception):
             log.error("Claude v10 classify error: %s", v10_result_or_error)
-            await thinking.delete()
+            await _safe_delete_message(thinking)
             await _main().create_or_prompt_task(message, text)
             return
         result = v10_result_or_error
@@ -223,19 +239,19 @@ async def route_classified_message_v10(message, text: str) -> None:
             log.warning(
                 "Claude v10 classify timeout after 18s; falling back to task capture"
             )
-            await thinking.delete()
+            await _safe_delete_message(thinking)
             await _main().create_or_prompt_task(message, text)
             return
         except Exception as e:
             log.error(f"Claude v10 classify error: {e }")
-            await thinking.delete()
+            await _safe_delete_message(thinking)
             await _main().create_or_prompt_task(message, text)
             return
 
     intent = result.get("type")
 
     if intent == "watchlist":
-        await thinking.delete()
+        await _safe_delete_message(thinking)
         await wl.handle_watchlist_intent(
             _notion(),
             message,
@@ -245,7 +261,7 @@ async def route_classified_message_v10(message, text: str) -> None:
         return
 
     if intent == "wantslist":
-        await thinking.delete()
+        await _safe_delete_message(thinking)
         await wl.handle_wantslist_intent(
             message,
             item=result.get("item", text),
@@ -254,14 +270,17 @@ async def route_classified_message_v10(message, text: str) -> None:
         return
 
     if intent == "photo":
-        await thinking.delete()
-        await wl.handle_photo_intent(
-            _notion(), message, subject=result.get("subject", text)
-        )
+        await thinking.edit_text("📸 Processing image...")
+        try:
+            await wl.handle_photo_intent(
+                _notion(), message, subject=result.get("subject", text)
+            )
+        finally:
+            await _safe_delete_message(thinking)
         return
 
     if intent == "note":
-        await thinking.delete()
+        await _safe_delete_message(thinking)
         await _main().start_note_capture_flow(message, result.get("content", text))
         return
 
@@ -324,7 +343,7 @@ async def route_classified_message_v10(message, text: str) -> None:
             return
         if confidence == "high" and title:
             try:
-                await thinking.delete()
+                await _safe_delete_message(thinking)
                 await _main().handle_entertainment_log(_notion(), message, result)
             except Exception as e:
                 log.error("Entertainment save error: %s", e)
@@ -348,7 +367,7 @@ async def route_classified_message_v10(message, text: str) -> None:
         )
         return
 
-    await thinking.delete()
+    await _safe_delete_message(thinking)
     await _main().create_or_prompt_task(message, text)
 
 
