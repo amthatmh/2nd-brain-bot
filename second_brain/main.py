@@ -377,13 +377,13 @@ wx.NOTION_ENV_DB = NOTION_ENV_DB
 wx.current_location = WEATHER_LOCATION
 
 # ── In-memory state ──────────────────────────────────────────────────────────
-digest_map: dict[int, list[dict]] = {}
+digest_map: dict[int, list[dict]] = STATE.digest_map
 last_digest_msg_id: int | None = None
-pending_map: dict[str, dict] = ExpiringDict(ttl_seconds=3600)
-capture_map: dict[int, dict] = {}
+pending_map: dict[str, dict] = STATE.pending_map
+capture_map: dict[int, dict] = STATE.capture_map
 pending_batches: dict[str, dict] = {}
 preview_map: dict[int, dict] = ExpiringDict(ttl_seconds=900)
-done_picker_map: dict[str, list[dict]] = ExpiringDict(ttl_seconds=3600)
+done_picker_map: dict[str, list[dict]] = STATE.done_picker_map
 todo_picker_map: dict[str, list[dict]] = {}
 pending_message_map: dict[str, str] = {}
 pending_note_map: dict[str, dict] = {}
