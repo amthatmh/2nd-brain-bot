@@ -571,6 +571,25 @@ def _stamp_notion_after_reverse_write(page_id: str, asana_modified_at: str | Non
 # RECONCILIATION DECISION
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _should_sync_to_asana(notion_page: dict) -> bool:
+    """Determine if a Notion task should sync to Asana."""
+    props = notion_page.get("properties", {})
+
+    is_template = props.get("Is Template", {}).get("checkbox", False)
+    if is_template:
+        return False
+
+    parent_id = props.get("Recurring Parent ID", {}).get("rich_text", [])
+    if parent_id:
+        return False
+
+    manual_source = props.get("Manual Source", {}).get("checkbox", False)
+    if manual_source:
+        return False
+
+    return True
+
+
 def _classify(asana_task: dict[str, Any], notion_page: dict[str, Any]) -> str:
     """Return 'skip', 'asana_to_notion', or 'notion_to_asana'."""
     last_synced = _parse_iso(_read_date(notion_page, "Last Synced At"))
@@ -685,6 +704,10 @@ def reconcile(
         if notion_page.get("archived"):
             # Notion row was archived out-of-band — drop from cache, skip.
             _cache.drop(gid)
+            continue
+
+        if not _should_sync_to_asana(notion_page):
+            stats["skipped"] += 1
             continue
 
         decision = _classify(task, notion_page)

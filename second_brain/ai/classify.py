@@ -112,7 +112,17 @@ If PHOTO: {{"type":"photo","subject":"clean scene/subject description","confiden
 If NOTE: {{"type":"note","content":"clean note content","confidence":"high|low"}}
 If HABIT: {{"type":"habit","habit_name":"exact name from {habit_names} or null","confidence":"high|low"}}
 If ENTERTAINMENT_LOG: {{"type":"entertainment_log","log_type":"cinema|performance|sport","title":"extracted name of film/show/event","venue":"venue if mentioned, else null","date":"{today_local.isoformat()}","notes":"extra detail if mentioned, else null","favourite":<true or false>,"confidence":"high|low"}}
-If TASK: {{"type":"task","task_name":"clean concise action","deadline_days":<integer or null>,"context":"one of: 💼 Work | 🏠 Personal | 🏃 Health | 🤝 Collab","confidence":"high|low","recurring":"None|🔁 Daily|📅 Weekly|🗓️ Monthly|📆 Quarterly","repeat_day":"Mon|Tue|Wed|Thu|Fri|Sat|Sun|1st..31st|Last or null"}}"""
+For TASK, also detect recurring task patterns and extract:
+- recurring_type: "daily", "weekly", "monthly", or null if not recurring
+- repeat_day: Specific day/date if mentioned (e.g., "Mon", "1st", "15th", "Last")
+
+Examples:
+- "Review LEED docs every Monday" → recurring_type="weekly", repeat_day="Mon"
+- "Pay rent on the 1st" → recurring_type="monthly", repeat_day="1st"
+- "Water plants daily" → recurring_type="daily", repeat_day=null
+- "Check email" → recurring_type=null, repeat_day=null
+
+If TASK: {{"type":"task","task_name":"clean concise action","deadline_days":<integer or null>,"context":"one of: 💼 Work | 🏠 Personal | 🏃 Health | 🤝 Collab","confidence":"high|low","recurring_type":"daily|weekly|monthly or null","repeat_day":"Mon|Tue|Wed|Thu|Fri|Sat|Sun|1st..31st|Last or null"}}"""
     try:
         resp = claude.messages.create(
             model=claude_model,
