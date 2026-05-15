@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import os
 from datetime import datetime
 from typing import Optional
 
 from second_brain.notion import notion_call
 from second_brain.notion.properties import rich_text_prop, title_prop
+
+log = logging.getLogger(__name__)
 
 
 async def _maybe_await(value):
@@ -34,7 +37,7 @@ async def check_readiness_logged_today(notion_client, daily_readiness_db_id: Opt
         )
         return len(results.get("results", [])) > 0
     except Exception as e:
-        print(f"Error checking readiness: {e}")
+        log.error("Error checking readiness: %s", e)
         return False
 
 

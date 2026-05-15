@@ -1706,6 +1706,563 @@ async def _prompt_readiness_field(message, key: str, field: str):
     await msg.edit_reply_markup(reply_markup=_readiness_keyboard(field, {}, msg.message_id))
 
 
+async def _cf_bw_no(q, parts, claude, notion, config, cf_pending) -> None:
+    key = str(q.message.chat_id)
+    state = cf_pending.get(key, {})
+    state["weight_lbs"] = None
+    state["load_lbs"] = None
+    cf_pending[key] = state
+    if await _prompt_track_or_notes(q.message, key, notion, config, cf_pending):
+        return
+    await _prompt_strength_notes_with_pr_context(q.message, key, notion, config, cf_pending)
+
+
+async def _cf_bw_yes(q, parts, claude, notion, config, cf_pending) -> None:
+    key = str(q.message.chat_id)
+    state = cf_pending.get(key, {})
+    state["stage"] = "weight"
+    cf_pending[key] = state
+    await q.message.reply_text("How much weight? (e.g. 20 lbs)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]]))
+
+
+async def _cf_track(q, parts, claude, notion, config, cf_pending) -> None:
+    if len(parts) != 4:
+        await q.answer("Action unavailable.", show_alert=False)
+        return
+    key = parts[2]
+    track_name = parts[3]
+    state = cf_pending.get(key, {})
+    tracks = state.get("available_tracks", [])
+    match = next((t for t in tracks if t["track"] == track_name), None)
+    state["workout_day_id"] = match["page_id"] if match else None
+    state["stage"] = "notes"
+    cf_pending[key] = state
+    movement_id = state.get("movement_page_id")
+    movement_name = state.get("movement", "")
+    if movement_id and state.get("mode") == "strength":
+        if await handle_gymnastics_level_check(q.message, movement_id, movement_name, notion, config, cf_pending, key):
+            return
+        await _prompt_strength_notes_with_pr_context(q.message, key, notion, config, cf_pending)
+        return
+    if state.get("mode") == "wod":
+        await q.message.reply_text("🏋️ What format was the WOD?", parse_mode="Markdown", reply_markup=wod_format_keyboard(key))
+        return
+    await _send_notes_prompt(q.message, key, cf_pending)
+
+
+async def _cf_log_strength(q, parts, claude, notion, config, cf_pending) -> None:
+    log.debug("Routing to handle_cf_strength_flow")
+    key = str(q.message.chat_id)
+    cf_pending[key] = {"session_chain": ["c"], "session_origin": "b"}
+    await handle_cf_strength_flow(q.message, {}, claude, notion, config, cf_pending)
+
+
+async def _cf_log_wod(q, parts, claude, notion, config, cf_pending) -> None:
+    log.debug("Routing to handle_cf_wod_flow")
+    key = str(q.message.chat_id)
+    cf_pending[key] = {"session_origin": "c"}
+    await handle_cf_wod_flow(q.message, {}, notion, config, cf_pending)
+
+
+async def _cf_chain_yes(q, parts, claude, notion, config, cf_pending) -> None:
+    if len(parts) != 3:
+        await q.answer("Action unavailable.", show_alert=False)
+        return
+    key = str(q.message.chat_id)
+    step = parts[2]
+    state = cf_pending.get(key, {})
+    chain = list(state.get("session_chain") or [])
+    if step in chain:
+        chain.remove(step)
+    cf_pending[key] = {"session_chain": chain, "session_origin": state.get("session_origin") or step}
+    if step == "b":
+        await handle_cf_strength_flow(q.message, {}, claude, notion, config, cf_pending)
+    elif step == "c":
+        await handle_cf_wod_flow(q.message, {}, notion, config, cf_pending)
+    else:
+        await q.answer("Action unavailable.", show_alert=False)
+
+
+async def _cf_chain_no(q, parts, claude, notion, config, cf_pending) -> None:
+    cf_pending.pop(str(q.message.chat_id), None)
+    await q.message.reply_text("✅ Session complete.")
+
+
+async def _cf_date_pick(q, parts, claude, notion, config, cf_pending) -> None:
+    if len(parts) < 4:
+        await q.answer("Action unavailable.", show_alert=False)
+        return
+    choice = parts[2]   # "a" or "b"
+    key = parts[3]
+    state = cf_pending.get(key, {})
+    if "_date_option_a" in state or "_date_option_b" in state:
+        if choice == "a":
+            state["workout_date"] = state.pop("_date_option_a", None)
+        else:
+            state["workout_date"] = state.pop("_date_option_b", None)
+        state.pop("_date_option_a", None)
+        state.pop("_date_option_b", None)
+        state.pop("raw_date_a", None)
+        state.pop("raw_date_b", None)
+        previous_stage = state.pop("stage_before_date_pick", None)
+        state["stage"] = previous_stage or state.get("stage") or "notes"
+        cf_pending[key] = state
+        await q.edit_message_text(f"✅ Date: {state.get('workout_date')}", parse_mode="Markdown")
+        if state.get("mode") == "wod":
+            if _needs_time_cap_before_result(state):
+                await _prompt_wod_time_cap(q.message, key, state)
+            else:
+                await _prompt_wod_result_before_rx(q.message, key, state)
+        elif state.get("mode") == "strength":
+            state["stage"] = "notes"
+            cf_pending[key] = state
+            await _send_notes_prompt(q.message, key, cf_pending)
+    else:
+        selected = state.pop("raw_date_a", None) if choice == "a" else state.pop("raw_date_b", None)
+        state.pop("raw_date_a", None)
+        state.pop("raw_date_b", None)
+        if selected:
+            state["workout_date"] = selected
+        previous_stage = state.pop("stage_before_date_pick", None)
+        state["stage"] = previous_stage or state.get("stage") or "notes"
+        cf_pending[key] = state
+        await q.edit_message_text(f"✅ Date: {state.get('workout_date')}", parse_mode="Markdown")
+        if state.get("mode") == "wod":
+            if _needs_time_cap_before_result(state):
+                await _prompt_wod_time_cap(q.message, key, state)
+            else:
+                await _prompt_wod_result_before_rx(q.message, key, state)
+        elif state.get("mode") == "strength":
+            if not state.get("movement"):
+                state["stage"] = "movement"
+                cf_pending[key] = state
+                await q.message.reply_text("🏋️ Which movement did you train?", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]]))
+            else:
+                state["stage"] = "notes"
+                cf_pending[key] = state
+                await _send_notes_prompt(q.message, key, cf_pending)
+
+
+async def _cf_upload_programme(q, parts, claude, notion, config, cf_pending) -> None:
+    prompt = (
+        "📋 *Upload Weekly Programme*\n\n"
+        "Paste your programme directly into Notion:\n"
+        "1. Open 📋 Weekly Programs\n"
+        "2. Create a new row\n"
+        "3. Paste the full programme text into *Full Program*\n"
+        "4. Leave Processed unchecked\n\n"
+        "_Brian II will parse it within 15 minutes and notify you here._"
+    )
+    try:
+        await q.edit_message_text(prompt, parse_mode="Markdown")
+    except Exception:
+        await q.message.reply_text(prompt, parse_mode="Markdown")
+
+
+async def _cf_subs(q, parts, claude, notion, config, cf_pending) -> None:
+    await handle_cf_subs_flow(q.message, notion, config, cf_pending)
+
+
+async def _cf_sub_search(q, parts, claude, notion, config, cf_pending) -> None:
+    await prompt_cf_sub_search(q.message, cf_pending)
+
+
+async def _cf_sub_today(q, parts, claude, notion, config, cf_pending) -> None:
+    await handle_todays_sub(q.message, notion, config)
+
+
+async def _cf_prs(q, parts, claude, notion, config, cf_pending) -> None:
+    await handle_cf_prs(q.message, notion, config, cf_pending)
+
+
+async def _cf_log_readiness(q, parts, claude, notion, config, cf_pending, *, chain_after: bool = False) -> None:
+    if await check_readiness_logged_today(notion, _cf_config(config, "NOTION_DAILY_READINESS_DB")):
+        await q.edit_message_text("✅ Readiness is already logged for today.", reply_markup=None)
+        return
+    key = str(q.message.chat_id)
+    cf_pending[key] = {"mode": "readiness", "stage": "sleep_quality", "readiness": {}, "chain_after": chain_after}
+    await _prompt_readiness_field(q.message, key, "sleep_quality")
+
+
+async def _cf_readiness_field(q, parts, claude, notion, config, cf_pending) -> None:
+    field = READINESS_FIELDS_BY_SLUG[parts[1]]
+    field_index = READINESS_ORDER.index(field)
+    expected_len = 4 + field_index
+    if len(parts) != expected_len:
+        await q.answer("This readiness prompt expired — please start again.", show_alert=False)
+        return
+    previous_values = parts[2:2 + field_index]
+    value = parts[2 + field_index]
+    message_id = int(parts[3 + field_index])
+    values = dict(zip(READINESS_ORDER[:field_index], previous_values))
+    values[field] = value
+    key = str(q.message.chat_id)
+    previous_state = cf_pending.get(key, {})
+    chain_after = previous_state.get("chain_after", False)
+    state = {"mode": "readiness", "readiness": values, "chain_after": chain_after}
+
+    try:
+        next_field = READINESS_ORDER[field_index + 1]
+    except IndexError:
+        log.debug("All readiness scores collected: %s", values)
+        log.debug("Calling log_daily_readiness...")
+        try:
+            await log_daily_readiness(
+                notion,
+                sleep_quality=values.get("sleep_quality", value),
+                energy=values.get("energy", value),
+                mood=values.get("mood", value),
+                stress=values.get("stress", value),
+                soreness=values.get("soreness", value),
+                daily_readiness_db_id=_cf_config(config, "NOTION_DAILY_READINESS_DB"),
+            )
+        except Exception as e:
+            log.error("Readiness logging failed: %s", e)
+            log.exception("Readiness logging failed")
+            await q.edit_message_text(f"❌ Error logging readiness: {e}", reply_markup=None)
+            return
+        log.debug("Readiness logged successfully")
+        await q.edit_message_text(_readiness_final_text(values), parse_mode="Markdown", reply_markup=None)
+        if chain_after:
+            cf_pending[key] = {"session_chain": ["b", "c"], "session_origin": "a"}
+            await q.message.reply_text("💪 Did you do Section B (Strength) today?", reply_markup=_chain_keyboard("b"))
+        else:
+            cf_pending.pop(key, None)
+        return
+
+    state["stage"] = next_field
+    cf_pending[key] = state
+    await q.edit_message_text(
+        _readiness_progress_text(values, next_field),
+        parse_mode="Markdown",
+        reply_markup=_readiness_keyboard(next_field, values, message_id),
+    )
+
+
+async def _cf_ready(q, parts, claude, notion, config, cf_pending) -> None:
+    if len(parts) < 5:
+        await q.answer("Action unavailable.", show_alert=False)
+        return
+    if len(parts) == 5 and parts[2] not in READINESS_ORDER:
+        key, field, value = parts[2], parts[3], parts[4]
+        state = cf_pending.get(key, {"mode": "readiness", "readiness": {}, "chain_after": False})
+        chain_after = state.get("chain_after", False)
+        values = state.setdefault("readiness", {})
+        values[field] = value
+        try:
+            next_field = READINESS_ORDER[READINESS_ORDER.index(field) + 1]
+        except (ValueError, IndexError):
+            log.debug("All readiness scores collected: %s", values)
+            log.debug("Calling log_daily_readiness...")
+            try:
+                await log_daily_readiness(
+                    notion,
+                    sleep_quality=values.get("sleep_quality", value),
+                    energy=values.get("energy", value),
+                    mood=values.get("mood", value),
+                    stress=values.get("stress", value),
+                    soreness=values.get("soreness", value),
+                    daily_readiness_db_id=_cf_config(config, "NOTION_DAILY_READINESS_DB"),
+                )
+            except Exception as e:
+                log.error("Readiness logging failed: %s", e)
+                log.exception("Readiness logging failed")
+                await q.edit_message_text(f"❌ Error logging readiness: {e}", reply_markup=None)
+                return
+            log.debug("Readiness logged successfully")
+            await q.edit_message_text(_readiness_final_text(values), parse_mode="Markdown", reply_markup=None)
+            if chain_after:
+                cf_pending[key] = {"session_chain": ["b", "c"], "session_origin": "a"}
+                await q.message.reply_text("💪 Did you do Section B (Strength) today?", reply_markup=_chain_keyboard("b"))
+            else:
+                cf_pending.pop(key, None)
+            return
+        state["stage"] = next_field
+        cf_pending[key] = state
+        await q.edit_message_text(
+            _readiness_progress_text(values, next_field),
+            parse_mode="Markdown",
+        )
+        await _prompt_readiness_field(q.message, key, next_field)
+        return
+
+    field = parts[2]
+    if field not in READINESS_ORDER:
+        await q.answer("Action unavailable.", show_alert=False)
+        return
+    field_index = READINESS_ORDER.index(field)
+    expected_len = 5 + field_index
+    if len(parts) != expected_len:
+        await q.answer("This readiness prompt expired — please start again.", show_alert=False)
+        return
+    previous_values = parts[3:3 + field_index]
+    value = parts[3 + field_index]
+    message_id = int(parts[4 + field_index])
+    values = dict(zip(READINESS_ORDER[:field_index], previous_values))
+    values[field] = value
+    key = str(q.message.chat_id)
+    previous_state = cf_pending.get(key, {})
+    chain_after = previous_state.get("chain_after", False)
+    state = {"mode": "readiness", "readiness": values, "chain_after": chain_after}
+
+    try:
+        next_field = READINESS_ORDER[field_index + 1]
+    except IndexError:
+        log.debug("All readiness scores collected: %s", values)
+        log.debug("Calling log_daily_readiness...")
+        try:
+            await log_daily_readiness(
+                notion,
+                sleep_quality=values.get("sleep_quality", value),
+                energy=values.get("energy", value),
+                mood=values.get("mood", value),
+                stress=values.get("stress", value),
+                soreness=values.get("soreness", value),
+                daily_readiness_db_id=_cf_config(config, "NOTION_DAILY_READINESS_DB"),
+            )
+        except Exception as e:
+            log.error("Readiness logging failed: %s", e)
+            log.exception("Readiness logging failed")
+            await q.edit_message_text(f"❌ Error logging readiness: {e}", reply_markup=None)
+            return
+        log.debug("Readiness logged successfully")
+        await q.edit_message_text(_readiness_final_text(values), parse_mode="Markdown", reply_markup=None)
+        if chain_after:
+            cf_pending[key] = {"session_chain": ["b", "c"], "session_origin": "a"}
+            await q.message.reply_text("💪 Did you do Section B (Strength) today?", reply_markup=_chain_keyboard("b"))
+        else:
+            cf_pending.pop(key, None)
+        return
+
+    state["stage"] = next_field
+    cf_pending[key] = state
+    await q.edit_message_text(
+        _readiness_progress_text(values, next_field),
+        parse_mode="Markdown",
+        reply_markup=_readiness_keyboard(next_field, values, message_id),
+    )
+
+
+async def _cf_fmt(q, parts, claude, notion, config, cf_pending) -> None:
+    if len(parts) < 4:
+        await q.answer("Action unavailable.", show_alert=False)
+        return
+    key = parts[2]
+    state = cf_pending.get(key, {"mode": "wod"})
+    state["format"] = parts[3]
+    cf_pending[key] = state
+    log.debug("WOD format selected: %s", _format_label(parts[3]))
+    await q.edit_message_text(f"✅ Format: {_format_label(parts[3])}", parse_mode="Markdown")
+    if state.get("movement_page_ids") or state.get("movements"):
+        if _needs_time_cap_before_result(state) and state.get("time_cap_mins") is None:
+            await _prompt_wod_time_cap(q.message, key, state)
+        else:
+            await _prompt_wod_result_before_rx(q.message, key, state)
+    else:
+        state["stage"] = "movement"
+        cf_pending[key] = state
+        await q.message.reply_text(
+            "🏋️ Which movement(s) were in the WOD?\n(Enter in natural language or comma-separated)",
+            parse_mode="Markdown",
+        )
+
+
+async def _cf_rx(q, parts, claude, notion, config, cf_pending) -> None:
+    if len(parts) < 4:
+        await q.answer("Action unavailable.", show_alert=False)
+        return
+    key = parts[2]
+    state = cf_pending.get(key, {"mode": "wod"})
+    state["rx_scaled"] = _rx_scaled_label(parts[3])
+    cf_pending[key] = state
+    await q.edit_message_text(f"✅ {_rx_scaled_label(parts[3])}", parse_mode="Markdown")
+    if state.get("result_notes") is not None:
+        await _finalize_flow(q.message, key, notion, config, cf_pending, state.get("result_notes"))
+    else:
+        state["stage"] = "result"
+        cf_pending[key] = state
+        await _prompt_wod_result_notes(q.message, key, state)
+
+
+async def _cf_feel(q, parts, claude, notion, config, cf_pending) -> None:
+    if len(parts) != 4:
+        await q.answer("Action unavailable.", show_alert=False)
+        return
+    rating = parts[2]
+    key = parts[3]
+    state = cf_pending.get(key, {})
+    state["session_feel"] = int(rating)
+    cf_pending[key] = state
+    mode = state.get("mode")
+    workout_date = state.get("workout_date") or local_today().isoformat()
+    daily_readiness_db_id = _cf_config(config, "NOTION_DAILY_READINESS_DB")
+    try:
+        if mode == "strength":
+            page_id = state.get("last_workout_page_id")
+            if page_id and hasattr(notion, "pages"):
+                await _maybe_await(
+                    notion_call(
+                        notion.pages.update,
+                        page_id=page_id,
+                        properties={"Strength Feel": {"select": {"name": rating}}},
+                    )
+                )
+                logger.info(f"[FEEL_B] page_id={page_id} rating={rating}")
+            else:
+                logger.warning("[FEEL_B] missing last_workout_page_id key=%r state=%r", key, state)
+            await upsert_training_log_field(notion, workout_date, "Strength Feel", rating, daily_readiness_db_id)
+        elif mode == "wod":
+            page_id = state.get("last_wod_page_id")
+            if page_id and hasattr(notion, "pages"):
+                await _maybe_await(
+                    notion_call(
+                        notion.pages.update,
+                        page_id=page_id,
+                        properties={"WOD Feel": {"select": {"name": rating}}},
+                    )
+                )
+                logger.info(f"[FEEL_C] page_id={page_id} rating={rating}")
+            else:
+                logger.warning("[FEEL_C] missing last_wod_page_id key=%r state=%r", key, state)
+            await upsert_training_log_field(notion, workout_date, "WOD Feel", rating, daily_readiness_db_id)
+        else:
+            logger.warning("[FEEL] Unknown feel mode=%r key=%r", mode, key)
+    except Exception as e:
+        logger.exception("Session feel logging failed")
+        cf_pending.pop(key, None)
+        await q.edit_message_text(f"❌ Error logging session feel: {e}", parse_mode="Markdown")
+        return
+    chain = list(state.get("session_chain") or [])
+    origin = state.get("session_origin")
+    cf_pending.pop(key, None)
+    await q.edit_message_text(f"✅ Session feel logged: {rating}/5", parse_mode="Markdown")
+    if mode == "strength" and "c" in chain:
+        cf_pending[key] = {"session_chain": chain, "session_origin": origin}
+        await q.message.reply_text("🏆 Did you do Section C (WOD) today?", reply_markup=_chain_keyboard("c"))
+    elif mode == "wod":
+        cf_pending.pop(key, None)
+
+
+async def _cf_skip(q, parts, claude, notion, config, cf_pending) -> None:
+    if len(parts) != 3:
+        await q.answer("Action unavailable.", show_alert=False)
+        return
+    key = parts[2]
+    logger.info(f"[CF_STATE_B] skip received key={key!r} type={type(key)} cf_pending_keys={list(cf_pending.keys())}")
+    logger.info(f"[CF_STATE_B] state at skip={cf_pending.get(key)}")
+    state = cf_pending.get(key, {})
+    if state.get("mode") == "wod" and state.get("stage") == "time_cap":
+        state["time_cap_mins"] = None
+        cf_pending[key] = state
+        await q.edit_message_text(
+            f"{_wod_time_cap_question_text(state)} {_markdown_bold_value('Skipped')}",
+            parse_mode="Markdown",
+            reply_markup=None,
+        )
+        await _prompt_wod_result_before_rx(q.message, key, state)
+    elif state.get("mode") == "wod" and state.get("stage") == "result":
+        await q.edit_message_text(
+            f"{_wod_result_question_text(state)} {_markdown_bold_value('Skipped')}",
+            parse_mode="Markdown",
+            reply_markup=None,
+        )
+        await _finalize_flow(q.message, key, notion, config, cf_pending, None)
+    else:
+        await _finalize_flow(q.message, key, notion, config, cf_pending, None)
+
+
+async def _cf_cancel(q, parts, claude, notion, config, cf_pending) -> None:
+    cf_pending.pop(str(q.message.chat_id), None)
+    await q.message.reply_text("❌ Session cancelled.")
+
+
+async def _cf_levelok(q, parts, claude, notion, config, cf_pending) -> None:
+    if len(parts) != 3:
+        await q.answer("Action unavailable.", show_alert=False)
+        return
+    key = parts[2]
+    state = cf_pending.get(key, {})
+    state["awaiting_level_confirm"] = False
+    cf_pending[key] = state
+    await q.edit_message_text(f"✅ Logging at {state.get('level_current_name', 'current level')}", parse_mode="Markdown")
+    await _finalize_flow(q.message, key, notion, config, cf_pending, None)
+
+
+async def _cf_changelevel(q, parts, claude, notion, config, cf_pending) -> None:
+    if len(parts) != 3:
+        await q.answer("Action unavailable.", show_alert=False)
+        return
+    key = parts[2]
+    state = cf_pending.get(key, {})
+    await q.edit_message_text("🪜 Choose your current level:", parse_mode="Markdown", reply_markup=my_level_keyboard(key, state.get("level_steps", [])))
+
+
+async def _cf_setlevel(q, parts, claude, notion, config, cf_pending) -> None:
+    if len(parts) != 4:
+        await q.answer("Action unavailable.", show_alert=False)
+        return
+    key = parts[2]
+    page_id = _restore_pid(parts[3])
+    state = cf_pending.get(key, {})
+    await asyncio.get_running_loop().run_in_executor(None, lambda: set_current_level(notion, config.get("NOTION_PROGRESSIONS_DB", ""), state.get("level_movement_page_id"), page_id))
+    chosen = next((s for s in state.get("level_steps", []) if s.get("page_id") == page_id), {})
+    state["level_current_name"] = chosen.get("name")
+    cf_pending[key] = state
+    await q.edit_message_text(f"✅ Level set to {chosen.get('name', 'selected level')}", parse_mode="Markdown")
+    await _finalize_flow(q.message, key, notion, config, cf_pending, None)
+
+
+async def _cf_levelup(q, parts, claude, notion, config, cf_pending) -> None:
+    if len(parts) != 3:
+        await q.answer("Action unavailable.", show_alert=False)
+        return
+    key = parts[2]
+    state = cf_pending.get(key, {})
+    steps = state.get("level_steps", [])
+    current_idx = next((i for i, s in enumerate(steps) if s.get("name") == state.get("level_current_name")), None)
+    if current_idx is None or current_idx + 1 >= len(steps):
+        await q.edit_message_text("🏆 Already at top of ladder!", parse_mode="Markdown")
+        return
+    goal = steps[current_idx + 1]
+    await asyncio.get_running_loop().run_in_executor(None, lambda: set_current_level(notion, config.get("NOTION_PROGRESSIONS_DB", ""), state.get("level_movement_page_id"), goal.get("page_id")))
+    state["level_current_name"] = goal.get("name")
+    cf_pending[key] = state
+    await q.edit_message_text(f"🎉 {goal.get('name')} unlocked!", parse_mode="Markdown")
+    await _finalize_flow(q.message, key, notion, config, cf_pending, None)
+
+
+_CF_CALLBACK_HANDLERS: dict[str, object] = {
+    "bw_no":            _cf_bw_no,
+    "bw_yes":           _cf_bw_yes,
+    "track":            _cf_track,
+    "log_strength":     _cf_log_strength,
+    "log_wod":          _cf_log_wod,
+    "chain_yes":        _cf_chain_yes,
+    "chain_no":         _cf_chain_no,
+    "date_pick":        _cf_date_pick,
+    "upload_programme": _cf_upload_programme,
+    "subs":             _cf_subs,
+    "sub_addon":        _cf_subs,
+    "sub_search":       _cf_sub_search,
+    "subs_search":      _cf_sub_search,
+    "sub_today":        _cf_sub_today,
+    "todays_sub":       _cf_sub_today,
+    "prs":              _cf_prs,
+    "my_prs":           _cf_prs,
+    "log_readiness":    _cf_log_readiness,
+    "ready":            _cf_ready,
+    "fmt":              _cf_fmt,
+    "rx":               _cf_rx,
+    "feel":             _cf_feel,
+    "skip":             _cf_skip,
+    "cancel":           _cf_cancel,
+    "levelok":          _cf_levelok,
+    "changelevel":      _cf_changelevel,
+    "setlevel":         _cf_setlevel,
+    "levelup":          _cf_levelup,
+}
+
+
 async def handle_cf_callback(q, parts, claude, notion, config, cf_pending, chain_after: bool = False):
     try:
         await q.edit_message_reply_markup(reply_markup=None)
@@ -1715,446 +2272,25 @@ async def handle_cf_callback(q, parts, claude, notion, config, cf_pending, chain
     if len(parts) < 2:
         await q.answer("Action unavailable.", show_alert=False)
         return
-    if parts[1] == "bw_no":
-        key = str(q.message.chat_id)
-        state = cf_pending.get(key, {})
-        state["weight_lbs"] = None
-        state["load_lbs"] = None
-        cf_pending[key] = state
-        if await _prompt_track_or_notes(q.message, key, notion, config, cf_pending):
-            return
-        await _prompt_strength_notes_with_pr_context(q.message, key, notion, config, cf_pending)
-    elif parts[1] == "bw_yes":
-        key = str(q.message.chat_id)
-        state = cf_pending.get(key, {})
-        state["stage"] = "weight"
-        cf_pending[key] = state
-        await q.message.reply_text("How much weight? (e.g. 20 lbs)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]]))
-    elif parts[1] == "track" and len(parts) == 4:
-        key = parts[2]
-        track_name = parts[3]
-        state = cf_pending.get(key, {})
-        tracks = state.get("available_tracks", [])
-        match = next((t for t in tracks if t["track"] == track_name), None)
-        state["workout_day_id"] = match["page_id"] if match else None
-        state["stage"] = "notes"
-        cf_pending[key] = state
-        movement_id = state.get("movement_page_id")
-        movement_name = state.get("movement", "")
-        if movement_id and state.get("mode") == "strength":
-            if await handle_gymnastics_level_check(q.message, movement_id, movement_name, notion, config, cf_pending, key):
-                return
-            await _prompt_strength_notes_with_pr_context(q.message, key, notion, config, cf_pending)
-            return
-        if state.get("mode") == "wod":
-            await q.message.reply_text("🏋️ What format was the WOD?", parse_mode="Markdown", reply_markup=wod_format_keyboard(key))
-            return
-        await _send_notes_prompt(q.message, key, cf_pending)
-    elif parts[1] == "log_strength":
-        log.debug("Routing to handle_cf_strength_flow")
-        key = str(q.message.chat_id)
-        cf_pending[key] = {"session_chain": ["c"], "session_origin": "b"}
-        await handle_cf_strength_flow(q.message, {}, claude, notion, config, cf_pending)
-    elif parts[1] == "log_wod":
-        log.debug("Routing to handle_cf_wod_flow")
-        key = str(q.message.chat_id)
-        cf_pending[key] = {"session_origin": "c"}
-        await handle_cf_wod_flow(q.message, {}, notion, config, cf_pending)
-    elif parts[1] == "chain_yes" and len(parts) == 3:
-        key = str(q.message.chat_id)
-        step = parts[2]
-        state = cf_pending.get(key, {})
-        chain = list(state.get("session_chain") or [])
-        if step in chain:
-            chain.remove(step)
-        cf_pending[key] = {"session_chain": chain, "session_origin": state.get("session_origin") or step}
-        if step == "b":
-            await handle_cf_strength_flow(q.message, {}, claude, notion, config, cf_pending)
-        elif step == "c":
-            await handle_cf_wod_flow(q.message, {}, notion, config, cf_pending)
-        else:
-            await q.answer("Action unavailable.", show_alert=False)
-    elif parts[1] == "chain_no":
-        cf_pending.pop(str(q.message.chat_id), None)
-        await q.message.reply_text("✅ Session complete.")
-    elif parts[1] == "date_pick" and len(parts) >= 4:
-        choice = parts[2]   # "a" or "b"
-        key = parts[3]
-        state = cf_pending.get(key, {})
-        if "_date_option_a" in state or "_date_option_b" in state:
-            if choice == "a":
-                state["workout_date"] = state.pop("_date_option_a", None)
-            else:
-                state["workout_date"] = state.pop("_date_option_b", None)
-            state.pop("_date_option_a", None)
-            state.pop("_date_option_b", None)
-            state.pop("raw_date_a", None)
-            state.pop("raw_date_b", None)
-            previous_stage = state.pop("stage_before_date_pick", None)
-            state["stage"] = previous_stage or state.get("stage") or "notes"
-            cf_pending[key] = state
-            await q.edit_message_text(f"✅ Date: {state.get('workout_date')}", parse_mode="Markdown")
-            if state.get("mode") == "wod":
-                if _needs_time_cap_before_result(state):
-                    await _prompt_wod_time_cap(q.message, key, state)
-                else:
-                    await _prompt_wod_result_before_rx(q.message, key, state)
-            elif state.get("mode") == "strength":
-                state["stage"] = "notes"
-                cf_pending[key] = state
-                await _send_notes_prompt(q.message, key, cf_pending)
-        else:
-            selected = state.pop("raw_date_a", None) if choice == "a" else state.pop("raw_date_b", None)
-            state.pop("raw_date_a", None)
-            state.pop("raw_date_b", None)
-            if selected:
-                state["workout_date"] = selected
-            previous_stage = state.pop("stage_before_date_pick", None)
-            state["stage"] = previous_stage or state.get("stage") or "notes"
-            cf_pending[key] = state
-            await q.edit_message_text(f"✅ Date: {state.get('workout_date')}", parse_mode="Markdown")
-            if state.get("mode") == "wod":
-                if _needs_time_cap_before_result(state):
-                    await _prompt_wod_time_cap(q.message, key, state)
-                else:
-                    await _prompt_wod_result_before_rx(q.message, key, state)
-            elif state.get("mode") == "strength":
-                if not state.get("movement"):
-                    state["stage"] = "movement"
-                    cf_pending[key] = state
-                    await q.message.reply_text("🏋️ Which movement did you train?", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]]))
-                else:
-                    state["stage"] = "notes"
-                    cf_pending[key] = state
-                    await _send_notes_prompt(q.message, key, cf_pending)
-    elif parts[1] == "upload_programme":
-        prompt = (
-            "📋 *Upload Weekly Programme*\n\n"
-            "Paste your programme directly into Notion:\n"
-            "1. Open 📋 Weekly Programs\n"
-            "2. Create a new row\n"
-            "3. Paste the full programme text into *Full Program*\n"
-            "4. Leave Processed unchecked\n\n"
-            "_Brian II will parse it within 15 minutes and notify you here._"
-        )
-        try:
-            await q.edit_message_text(prompt, parse_mode="Markdown")
-        except Exception:
-            await q.message.reply_text(prompt, parse_mode="Markdown")
+
+    action = parts[1]
+
+    # Readiness field slugs are dynamic — check before dict lookup
+    if action in READINESS_FIELDS_BY_SLUG and len(parts) >= 4:
+        await _cf_readiness_field(q, parts, claude, notion, config, cf_pending)
         return
-    elif parts[1] in {"subs", "sub_addon"}:
-        await handle_cf_subs_flow(q.message, notion, config, cf_pending)
-    elif parts[1] in {"sub_search", "subs_search"}:
-        await prompt_cf_sub_search(q.message, cf_pending)
-    elif parts[1] in {"sub_today", "todays_sub"}:
-        await handle_todays_sub(q.message, notion, config)
-    elif parts[1] in {"prs", "my_prs"}:
-        await handle_cf_prs(q.message, notion, config, cf_pending)
-    elif parts[1] == "log_readiness":
-        if await check_readiness_logged_today(notion, _cf_config(config, "NOTION_DAILY_READINESS_DB")):
-            await q.edit_message_text("✅ Readiness is already logged for today.", reply_markup=None)
-            return
-        key = str(q.message.chat_id)
-        cf_pending[key] = {"mode": "readiness", "stage": "sleep_quality", "readiness": {}, "chain_after": chain_after}
-        await _prompt_readiness_field(q.message, key, "sleep_quality")
-    elif parts[1] in READINESS_FIELDS_BY_SLUG and len(parts) >= 4:
-        field = READINESS_FIELDS_BY_SLUG[parts[1]]
-        field_index = READINESS_ORDER.index(field)
-        expected_len = 4 + field_index
-        if len(parts) != expected_len:
-            await q.answer("This readiness prompt expired — please start again.", show_alert=False)
-            return
-        previous_values = parts[2:2 + field_index]
-        value = parts[2 + field_index]
-        message_id = int(parts[3 + field_index])
-        values = dict(zip(READINESS_ORDER[:field_index], previous_values))
-        values[field] = value
-        key = str(q.message.chat_id)
-        previous_state = cf_pending.get(key, {})
-        chain_after = previous_state.get("chain_after", False)
-        state = {"mode": "readiness", "readiness": values, "chain_after": chain_after}
 
-        try:
-            next_field = READINESS_ORDER[field_index + 1]
-        except IndexError:
-            log.debug("All readiness scores collected: %s", values)
-            log.debug("Calling log_daily_readiness...")
-            try:
-                await log_daily_readiness(
-                    notion,
-                    sleep_quality=values.get("sleep_quality", value),
-                    energy=values.get("energy", value),
-                    mood=values.get("mood", value),
-                    stress=values.get("stress", value),
-                    soreness=values.get("soreness", value),
-                    daily_readiness_db_id=_cf_config(config, "NOTION_DAILY_READINESS_DB"),
-                )
-            except Exception as e:
-                log.error("Readiness logging failed: %s", e)
-                log.exception("Readiness logging failed")
-                await q.edit_message_text(f"❌ Error logging readiness: {e}", reply_markup=None)
-                return
-            log.debug("Readiness logged successfully")
-            await q.edit_message_text(_readiness_final_text(values), parse_mode="Markdown", reply_markup=None)
-            if chain_after:
-                cf_pending[key] = {"session_chain": ["b", "c"], "session_origin": "a"}
-                await q.message.reply_text("💪 Did you do Section B (Strength) today?", reply_markup=_chain_keyboard("b"))
-            else:
-                cf_pending.pop(key, None)
-            return
+    # log_readiness needs chain_after forwarded
+    if action == "log_readiness":
+        await _cf_log_readiness(q, parts, claude, notion, config, cf_pending, chain_after=chain_after)
+        return
 
-        state["stage"] = next_field
-        cf_pending[key] = state
-        await q.edit_message_text(
-            _readiness_progress_text(values, next_field),
-            parse_mode="Markdown",
-            reply_markup=_readiness_keyboard(next_field, values, message_id),
-        )
-    elif parts[1] == "ready" and len(parts) >= 5:
-        if len(parts) == 5 and parts[2] not in READINESS_ORDER:
-            key, field, value = parts[2], parts[3], parts[4]
-            state = cf_pending.get(key, {"mode": "readiness", "readiness": {}, "chain_after": False})
-            chain_after = state.get("chain_after", False)
-            values = state.setdefault("readiness", {})
-            values[field] = value
-            try:
-                next_field = READINESS_ORDER[READINESS_ORDER.index(field) + 1]
-            except (ValueError, IndexError):
-                log.debug("All readiness scores collected: %s", values)
-                log.debug("Calling log_daily_readiness...")
-                try:
-                    await log_daily_readiness(
-                        notion,
-                        sleep_quality=values.get("sleep_quality", value),
-                        energy=values.get("energy", value),
-                        mood=values.get("mood", value),
-                        stress=values.get("stress", value),
-                        soreness=values.get("soreness", value),
-                        daily_readiness_db_id=_cf_config(config, "NOTION_DAILY_READINESS_DB"),
-                    )
-                except Exception as e:
-                    log.error("Readiness logging failed: %s", e)
-                    log.exception("Readiness logging failed")
-                    await q.edit_message_text(f"❌ Error logging readiness: {e}", reply_markup=None)
-                    return
-                log.debug("Readiness logged successfully")
-                await q.edit_message_text(_readiness_final_text(values), parse_mode="Markdown", reply_markup=None)
-                if chain_after:
-                    cf_pending[key] = {"session_chain": ["b", "c"], "session_origin": "a"}
-                    await q.message.reply_text("💪 Did you do Section B (Strength) today?", reply_markup=_chain_keyboard("b"))
-                else:
-                    cf_pending.pop(key, None)
-                return
-            state["stage"] = next_field
-            cf_pending[key] = state
-            await q.edit_message_text(
-                _readiness_progress_text(values, next_field),
-                parse_mode="Markdown",
-            )
-            await _prompt_readiness_field(q.message, key, next_field)
-            return
-
-        field = parts[2]
-        if field not in READINESS_ORDER:
-            await q.answer("Action unavailable.", show_alert=False)
-            return
-        field_index = READINESS_ORDER.index(field)
-        expected_len = 5 + field_index
-        if len(parts) != expected_len:
-            await q.answer("This readiness prompt expired — please start again.", show_alert=False)
-            return
-        previous_values = parts[3:3 + field_index]
-        value = parts[3 + field_index]
-        message_id = int(parts[4 + field_index])
-        values = dict(zip(READINESS_ORDER[:field_index], previous_values))
-        values[field] = value
-        key = str(q.message.chat_id)
-        previous_state = cf_pending.get(key, {})
-        chain_after = previous_state.get("chain_after", False)
-        state = {"mode": "readiness", "readiness": values, "chain_after": chain_after}
-
-        try:
-            next_field = READINESS_ORDER[field_index + 1]
-        except IndexError:
-            log.debug("All readiness scores collected: %s", values)
-            log.debug("Calling log_daily_readiness...")
-            try:
-                await log_daily_readiness(
-                    notion,
-                    sleep_quality=values.get("sleep_quality", value),
-                    energy=values.get("energy", value),
-                    mood=values.get("mood", value),
-                    stress=values.get("stress", value),
-                    soreness=values.get("soreness", value),
-                    daily_readiness_db_id=_cf_config(config, "NOTION_DAILY_READINESS_DB"),
-                )
-            except Exception as e:
-                log.error("Readiness logging failed: %s", e)
-                log.exception("Readiness logging failed")
-                await q.edit_message_text(f"❌ Error logging readiness: {e}", reply_markup=None)
-                return
-            log.debug("Readiness logged successfully")
-            await q.edit_message_text(_readiness_final_text(values), parse_mode="Markdown", reply_markup=None)
-            if chain_after:
-                cf_pending[key] = {"session_chain": ["b", "c"], "session_origin": "a"}
-                await q.message.reply_text("💪 Did you do Section B (Strength) today?", reply_markup=_chain_keyboard("b"))
-            else:
-                cf_pending.pop(key, None)
-            return
-
-        state["stage"] = next_field
-        cf_pending[key] = state
-        await q.edit_message_text(
-            _readiness_progress_text(values, next_field),
-            parse_mode="Markdown",
-            reply_markup=_readiness_keyboard(next_field, values, message_id),
-        )
-    elif parts[1] == "fmt" and len(parts) >= 4:
-        key = parts[2]
-        state = cf_pending.get(key, {"mode": "wod"})
-        state["format"] = parts[3]
-        cf_pending[key] = state
-        log.debug("WOD format selected: %s", _format_label(parts[3]))
-        await q.edit_message_text(f"✅ Format: {_format_label(parts[3])}", parse_mode="Markdown")
-        if state.get("movement_page_ids") or state.get("movements"):
-            if _needs_time_cap_before_result(state) and state.get("time_cap_mins") is None:
-                await _prompt_wod_time_cap(q.message, key, state)
-            else:
-                await _prompt_wod_result_before_rx(q.message, key, state)
-        else:
-            state["stage"] = "movement"
-            cf_pending[key] = state
-            await q.message.reply_text(
-                "🏋️ Which movement(s) were in the WOD?\n(Enter in natural language or comma-separated)",
-                parse_mode="Markdown",
-            )
-    elif parts[1] == "rx" and len(parts) >= 4:
-        key = parts[2]
-        state = cf_pending.get(key, {"mode": "wod"})
-        state["rx_scaled"] = _rx_scaled_label(parts[3])
-        cf_pending[key] = state
-        await q.edit_message_text(f"✅ {_rx_scaled_label(parts[3])}", parse_mode="Markdown")
-        if state.get("result_notes") is not None:
-            await _finalize_flow(q.message, key, notion, config, cf_pending, state.get("result_notes"))
-        else:
-            state["stage"] = "result"
-            cf_pending[key] = state
-            await _prompt_wod_result_notes(q.message, key, state)
-    elif parts[1] == "feel" and len(parts) == 4:
-        rating = parts[2]
-        key = parts[3]
-        state = cf_pending.get(key, {})
-        state["session_feel"] = int(rating)
-        cf_pending[key] = state
-        mode = state.get("mode")
-        workout_date = state.get("workout_date") or local_today().isoformat()
-        daily_readiness_db_id = _cf_config(config, "NOTION_DAILY_READINESS_DB")
-        try:
-            if mode == "strength":
-                page_id = state.get("last_workout_page_id")
-                if page_id and hasattr(notion, "pages"):
-                    await _maybe_await(
-                        notion_call(
-                            notion.pages.update,
-                            page_id=page_id,
-                            properties={"Strength Feel": {"select": {"name": rating}}},
-                        )
-                    )
-                    logger.info(f"[FEEL_B] page_id={page_id} rating={rating}")
-                else:
-                    logger.warning("[FEEL_B] missing last_workout_page_id key=%r state=%r", key, state)
-                await upsert_training_log_field(notion, workout_date, "Strength Feel", rating, daily_readiness_db_id)
-            elif mode == "wod":
-                page_id = state.get("last_wod_page_id")
-                if page_id and hasattr(notion, "pages"):
-                    await _maybe_await(
-                        notion_call(
-                            notion.pages.update,
-                            page_id=page_id,
-                            properties={"WOD Feel": {"select": {"name": rating}}},
-                        )
-                    )
-                    logger.info(f"[FEEL_C] page_id={page_id} rating={rating}")
-                else:
-                    logger.warning("[FEEL_C] missing last_wod_page_id key=%r state=%r", key, state)
-                await upsert_training_log_field(notion, workout_date, "WOD Feel", rating, daily_readiness_db_id)
-            else:
-                logger.warning("[FEEL] Unknown feel mode=%r key=%r", mode, key)
-        except Exception as e:
-            logger.exception("Session feel logging failed")
-            cf_pending.pop(key, None)
-            await q.edit_message_text(f"❌ Error logging session feel: {e}", parse_mode="Markdown")
-            return
-        chain = list(state.get("session_chain") or [])
-        origin = state.get("session_origin")
-        cf_pending.pop(key, None)
-        await q.edit_message_text(f"✅ Session feel logged: {rating}/5", parse_mode="Markdown")
-        if mode == "strength" and "c" in chain:
-            cf_pending[key] = {"session_chain": chain, "session_origin": origin}
-            await q.message.reply_text("🏆 Did you do Section C (WOD) today?", reply_markup=_chain_keyboard("c"))
-        elif mode == "wod":
-            cf_pending.pop(key, None)
-    elif parts[1] == "skip" and len(parts) == 3:
-        key = parts[2]
-        logger.info(f"[CF_STATE_B] skip received key={key!r} type={type(key)} cf_pending_keys={list(cf_pending.keys())}")
-        logger.info(f"[CF_STATE_B] state at skip={cf_pending.get(key)}")
-        state = cf_pending.get(key, {})
-        if state.get("mode") == "wod" and state.get("stage") == "time_cap":
-            state["time_cap_mins"] = None
-            cf_pending[key] = state
-            await q.edit_message_text(
-                f"{_wod_time_cap_question_text(state)} {_markdown_bold_value('Skipped')}",
-                parse_mode="Markdown",
-                reply_markup=None,
-            )
-            await _prompt_wod_result_before_rx(q.message, key, state)
-        elif state.get("mode") == "wod" and state.get("stage") == "result":
-            await q.edit_message_text(
-                f"{_wod_result_question_text(state)} {_markdown_bold_value('Skipped')}",
-                parse_mode="Markdown",
-                reply_markup=None,
-            )
-            await _finalize_flow(q.message, key, notion, config, cf_pending, None)
-        else:
-            await _finalize_flow(q.message, key, notion, config, cf_pending, None)
-    elif parts[1] == "cancel":
-        cf_pending.pop(str(q.message.chat_id), None)
-        await q.message.reply_text("❌ Session cancelled.")
-    elif parts[1] == "levelok" and len(parts) == 3:
-        key = parts[2]
-        state = cf_pending.get(key, {})
-        state["awaiting_level_confirm"] = False
-        cf_pending[key] = state
-        await q.edit_message_text(f"✅ Logging at {state.get('level_current_name', 'current level')}", parse_mode="Markdown")
-        await _finalize_flow(q.message, key, notion, config, cf_pending, None)
-    elif parts[1] == "changelevel" and len(parts) == 3:
-        key = parts[2]
-        state = cf_pending.get(key, {})
-        await q.edit_message_text("🪜 Choose your current level:", parse_mode="Markdown", reply_markup=my_level_keyboard(key, state.get("level_steps", [])))
-    elif parts[1] == "setlevel" and len(parts) == 4:
-        key = parts[2]
-        page_id = _restore_pid(parts[3])
-        state = cf_pending.get(key, {})
-        await asyncio.get_running_loop().run_in_executor(None, lambda: set_current_level(notion, config.get("NOTION_PROGRESSIONS_DB", ""), state.get("level_movement_page_id"), page_id))
-        chosen = next((s for s in state.get("level_steps", []) if s.get("page_id") == page_id), {})
-        state["level_current_name"] = chosen.get("name")
-        cf_pending[key] = state
-        await q.edit_message_text(f"✅ Level set to {chosen.get('name', 'selected level')}", parse_mode="Markdown")
-        await _finalize_flow(q.message, key, notion, config, cf_pending, None)
-    elif parts[1] == "levelup" and len(parts) == 3:
-        key = parts[2]
-        state = cf_pending.get(key, {})
-        steps = state.get("level_steps", [])
-        current_idx = next((i for i, s in enumerate(steps) if s.get("name") == state.get("level_current_name")), None)
-        if current_idx is None or current_idx + 1 >= len(steps):
-            await q.edit_message_text("🏆 Already at top of ladder!", parse_mode="Markdown")
-            return
-        goal = steps[current_idx + 1]
-        await asyncio.get_running_loop().run_in_executor(None, lambda: set_current_level(notion, config.get("NOTION_PROGRESSIONS_DB", ""), state.get("level_movement_page_id"), goal.get("page_id")))
-        state["level_current_name"] = goal.get("name")
-        cf_pending[key] = state
-        await q.edit_message_text(f"🎉 {goal.get('name')} unlocked!", parse_mode="Markdown")
-        await _finalize_flow(q.message, key, notion, config, cf_pending, None)
+    handler = _CF_CALLBACK_HANDLERS.get(action)
+    if handler:
+        await handler(q, parts, claude, notion, config, cf_pending)
+    else:
+        log.warning("Unhandled CrossFit callback action: %s", action)
+        await q.answer("Action unavailable.", show_alert=False)
 
 
 # TESTING CHECKLIST — Phase 1 WOD Log Handler

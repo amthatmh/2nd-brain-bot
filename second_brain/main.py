@@ -1989,6 +1989,7 @@ async def post_init(app: Application) -> None:
         id="cleanup_batch_confirmations",
         replace_existing=True,
         max_instances=1,
+        misfire_grace_time=120,
     )
     log.info("Batch cleanup scheduler started (every 60 seconds)")
     try:
