@@ -321,6 +321,71 @@ def _resolve_monthly_target_day(repeat_day: str, today: date) -> int | None:
     return min(configured_day, month_last_day)
 
 
+def next_repeat_day_date(
+    recurring: str,
+    repeat_day: str | None,
+    today: date | None = None,
+    *,
+    anchor: date | None = None,
+) -> date | None:
+    """Resolve the next occurrence date for weekly/monthly/quarterly repeat settings."""
+    if not repeat_day:
+        return None
+    today = today or local_today()
+
+    if recurring == "📅 Weekly" and repeat_day in REPEAT_DAY_TO_WEEKDAY:
+        weekday = REPEAT_DAY_TO_WEEKDAY[repeat_day]
+        days_ahead = (weekday - today.weekday()) % 7
+        if days_ahead == 0:
+            days_ahead = 7
+        return today + timedelta(days=days_ahead)
+
+    if recurring == "🗓️ Monthly":
+        for month_offset in (0, 1):
+            year = today.year + ((today.month - 1 + month_offset) // 12)
+            month = ((today.month - 1 + month_offset) % 12) + 1
+            month_last_day = calendar.monthrange(year, month)[1]
+            if repeat_day == "Last":
+                target_day = month_last_day
+            else:
+                day_value = REPEAT_DAY_TO_MONTHDAY.get(repeat_day)
+                if day_value is None:
+                    return None
+                target_day = min(day_value, month_last_day)
+            target = date(year, month, target_day)
+            if target >= today:
+                return target
+        return None
+
+    if recurring == "📆 Quarterly":
+        if repeat_day != "Last" and repeat_day not in REPEAT_DAY_TO_MONTHDAY:
+            return None
+        if anchor:
+            quarter_cycle = (anchor.month - 1) % 3
+        else:
+            quarter_cycle = (today.month - 1) % 3
+
+        for months_ahead in range(0, 16):
+            year = today.year + ((today.month - 1 + months_ahead) // 12)
+            month = ((today.month - 1 + months_ahead) % 12) + 1
+            if (month - 1) % 3 != quarter_cycle:
+                continue
+            month_last_day = calendar.monthrange(year, month)[1]
+            if repeat_day == "Last":
+                target_day = month_last_day
+            else:
+                day_value = REPEAT_DAY_TO_MONTHDAY.get(repeat_day)
+                if day_value is None:
+                    return None
+                target_day = min(day_value, month_last_day)
+            target = date(year, month, target_day)
+            if target >= today:
+                return target
+        return None
+
+    return None
+
+
 def should_spawn_today(template: dict, today: date) -> bool:
     recurring = template["recurring"]
     repeat_day = template["repeat_day"]
