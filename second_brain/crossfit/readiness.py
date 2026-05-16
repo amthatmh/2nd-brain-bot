@@ -84,6 +84,19 @@ async def log_daily_readiness(
     )
 
 
+def extract_readiness_score(page: dict) -> Optional[float]:
+    """Return the value of the Notion formula property named 'Readiness', or None."""
+    try:
+        prop = page.get("properties", {}).get("Readiness", {})
+        formula = prop.get("formula", {})
+        value = formula.get("number")
+        if value is not None:
+            return round(float(value), 2)
+    except Exception:
+        pass
+    return None
+
+
 # TESTING CHECKLIST — Phase 1 Daily Readiness
 # [ ] Test check_readiness_logged_today returns False on first run
 # [ ] Test log_daily_readiness creates entry in Daily Readiness DB

@@ -300,6 +300,9 @@ Output: {{"movements":["Hang Squat Clean"],"date":"{current_date.year}-05-06","s
 
 Input: "3x Wall walks, 6 hang cleans, 9 burpees, 12 v-ups"
 Output: {{"movements":["Wall Walks","Hang Power Clean","Burpee","V-Up"],"date":null,"sets":null,"reps":null,"weight_lbs":null,"weight_kg":null,"scheme":null,"notes":null,"workout_structure":"3x Wall walks, 6 hang cleans, 9 burpees, 12 v-ups","raw_input":"3x Wall walks, 6 hang cleans, 9 burpees, 12 v-ups","wod_name":null}}
+
+Input: "3 sets of 15x 45lb Dumbbell row, 3 sets of 15x 100lb Chest press"
+Output: {{"movements":["Dumbbell Row","Chest Press"],"date":null,"sets":3,"reps":15,"weight_lbs":45.0,"weight_kg":20.4,"scheme":"3x15","notes":null,"workout_structure":"3 sets of 15x 45lb Dumbbell row, 3 sets of 15x 100lb Chest press","raw_input":"3 sets of 15x 45lb Dumbbell row, 3 sets of 15x 100lb Chest press","wod_name":null}}
 """
 
     try:
