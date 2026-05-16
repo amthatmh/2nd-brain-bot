@@ -33,6 +33,26 @@ def _cleanup_extracted_text(text: str | None) -> str:
     return cleaned.strip(" ,;-–|:")
 
 
+def _strip_surrounding_quotes(s: str | None) -> str | None:
+    if s and len(s) > 1 and s[0] == '"' and s[-1] == '"':
+        return s[1:-1]
+    return s
+
+
+def _merge_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Merge overlapping or adjacent spans so removals don't clobber each other."""
+    if not spans:
+        return []
+    sorted_spans = sorted(spans)
+    merged: list[list[int]] = [list(sorted_spans[0])]
+    for start, end in sorted_spans[1:]:
+        if start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(s[0], s[1]) for s in merged]
+
+
 def _month_name_pattern() -> str:
     month_names = {
         name.lower()
@@ -63,6 +83,22 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
     rest = (remainder or "").strip()
     if not rest:
         return None
+
+    # Pre-extract explicit Name:/Title: labels so they don't confuse title/venue parsing.
+    # Quoted form wins over unquoted to avoid consuming too much.
+    forced_title: str | None = None
+    for label_pat in [
+        r'\bname\s*:\s*"([^"]+)"',
+        r'\btitle\s*:\s*"([^"]+)"',
+        r'\bname\s*:\s*([^,";\n]+)',
+        r'\btitle\s*:\s*([^,";\n]+)',
+    ]:
+        lm = re.search(label_pat, rest, re.IGNORECASE)
+        if lm:
+            forced_title = lm.group(1).strip().strip('"')
+            rest = rest[:lm.start()] + " " + rest[lm.end():]
+            rest = _cleanup_extracted_text(rest)
+            break
 
     def _extract_favourite_marker(raw_text: str | None) -> tuple[str | None, bool]:
         if not raw_text:
@@ -144,7 +180,7 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
         date_spans: list[tuple[int, int]] = []
         month_names = _month_name_pattern()
         date_patterns = [
-            rf"\b(?:on\s+)?(?P<month>{month_names})\.?\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+\d{{4}})?\b",
+            rf"\b(?:on\s+)?(?P<month>{month_names})\.?\s+\d{{1,2}}(?:st|nd|rd|th)?(?!:\d)(?:,?\s+\d{{4}})?\b",
             rf"\b(?:on\s+)?\d{{1,2}}(?:st|nd|rd|th)?\s+(?P<month2>{month_names})\.?(?:,?\s+\d{{4}})?\b",
             r"\b(?:on\s+)?\d{4}[/-]\d{1,2}[/-]\d{1,2}\b",
             r"\b(?:on\s+)?\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b",
@@ -163,7 +199,7 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
                 date_spans.append(rm.span())
         if explicit_date or relative_date:
             parsed_date = explicit_date or relative_date
-            for span_start, span_end in sorted(date_spans, reverse=True):
+            for span_start, span_end in sorted(_merge_spans(date_spans), reverse=True):
                 rest = rest[:span_start] + " " + rest[span_end:]
             rest = _cleanup_extracted_text(rest)
 
@@ -193,8 +229,20 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
         raw_venue = (title_and_venue.group("venue") or "").strip()
     else:
         raw_title = rest
+        # rest starts with "at VENUE" when the title came from a Name: label
+        at_start = re.match(r'^\s*at\s+(.+)$', rest, re.IGNORECASE)
+        if at_start:
+            raw_venue = at_start.group(1).strip()
+            raw_title = ""
 
-    title = (raw_title or "").strip().rstrip(":")
+    if forced_title:
+        raw_title = forced_title
+
+    # Strip surrounding double-quotes that users use to delimit values
+    raw_title = _strip_surrounding_quotes((raw_title or "").strip()) or ""
+    raw_venue = _strip_surrounding_quotes(raw_venue) if raw_venue else raw_venue
+
+    title = raw_title.strip().rstrip(":")
     title = re.sub(
         r"^(?:i\s+)?(?:watched|watch|saw|caught|went\s+to|attended)\s+",
         "",
