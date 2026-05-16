@@ -201,6 +201,33 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["date"], "2026-05-09")
         self.assertEqual(parsed["venue"], "AMC Newcity")
 
+    def test_parse_quoted_venue_and_name_label_for_performance(self):
+        # Regression: "at "Venue"" at the start + "Name: "Title"" label must parse correctly.
+        # The date pattern must not steal "7" from "May 7:00pm" into a "May 7" date match,
+        # and overlapping span removal must not corrupt the time to "0pm" → 12:00.
+        with patch("second_brain.entertainment.log.local_today", return_value=date(2026, 5, 16)):
+            parsed = self.ent_log.parse_explicit_entertainment_log(
+                '/log performance at "Grand Ole Opry" on 15th May 7:00pm Name: "GRAND OLE OPRY: OPRY 100"'
+            )
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["log_type"], "performance")
+        self.assertEqual(parsed["title"], "GRAND OLE OPRY: OPRY 100")
+        self.assertEqual(parsed["venue"], "Grand Ole Opry")
+        self.assertEqual(parsed["date"], "2026-05-15T19:00:00")
+
+    def test_parse_quoted_movie_title_strips_surrounding_quotes(self):
+        # Regression: quoted titles like "Cold War 1994" should have quotes stripped.
+        parsed = self.ent_log.parse_explicit_entertainment_log(
+            '/log movie "Cold War 1994" at AMC River East on 5/13 at 22:20'
+        )
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["log_type"], "cinema")
+        self.assertEqual(parsed["title"], "Cold War 1994")
+        self.assertEqual(parsed["venue"], "AMC River East")
+        self.assertEqual(parsed["date"], "2026-05-13T22:20:00")
+
     def test_maybe_prompt_explicit_venue_does_not_silently_substitute_literal_input(self):
         self.ent_log.NOTION_PERFORMANCE_LOG_DB = "performances_db"
         self.ent_log.entertainment_schemas["performances"] = {
