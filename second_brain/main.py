@@ -623,6 +623,42 @@ def logs_this_week(habit_page_id: str) -> int:
 def is_on_pace(habit: dict) -> bool:
     return _habit_is_on_pace(notion, NOTION_LOG_DB, habit, TZ)
 
+async def check_and_notify_weekly_goals(
+    bot,
+    chat_id=None,
+    notion_client=None,
+    log_db_id=None,
+    habit_db_id=None,
+    cache=None,
+    notified_set=None,
+    week_count_fn=None,
+    frequency_fn=None,
+) -> None:
+    """Check each habit's weekly completion count; notify once per week when goal is hit."""
+    chat_id = chat_id or MY_CHAT_ID
+    cache = cache if cache is not None else habit_cache
+    notified_set = notified_set if notified_set is not None else notified_goals_this_week
+    week_count_fn = week_count_fn or get_week_completion_count
+    frequency_fn = frequency_fn or get_habit_frequency
+    try:
+        for name, habit in list(cache.items()):
+            pid = habit.get("page_id")
+            if not pid or pid in notified_set:
+                continue
+            freq = frequency_fn(pid)
+            if not freq:
+                continue
+            count = week_count_fn(pid)
+            if count >= freq:
+                notified_set.add(pid)
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=f"🎯 Weekly goal hit: *{name}* ({count}/{freq})",
+                    parse_mode="Markdown",
+                )
+    except Exception as e:
+        log.warning("check_and_notify_weekly_goals failed: %s", e)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # NOTION — TO-DO
 # ══════════════════════════════════════════════════════════════════════════════

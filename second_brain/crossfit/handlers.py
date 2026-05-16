@@ -14,7 +14,7 @@ from .classify import parse_programme
 from .keyboards import level_confirm_keyboard, my_level_keyboard, rx_scaled_keyboard, session_feel_keyboard, wod_format_keyboard
 from .notion import create_strength_log, create_wod_log, get_available_tracks_today, get_movement_category, get_movement_details, get_movement_load_type, get_or_create_movement, get_progressions_for_movement, get_today_workout_structure, match_movement, normalise_movement_name, notion_query_wod_log_by_date, save_programme, set_current_level, this_monday
 from .nlp import extract_movements_from_log, extract_workout_data, fuzzy_match_movements, load_movements_cache
-from .readiness import check_readiness_logged_today, log_daily_readiness
+from .readiness import check_readiness_logged_today, extract_readiness_score, log_daily_readiness
 from second_brain.notion import notion_call
 from second_brain.utils import local_today
 from .weekly_program import get_current_week_program_url, get_todays_workout_day
@@ -112,13 +112,14 @@ def _readiness_progress_text(values: dict[str, str], next_field: str | None = No
     return "\n".join(lines)
 
 
-def _readiness_final_text(values: dict[str, str]) -> str:
+def _readiness_final_text(values: dict[str, str], readiness_score: float | None = None) -> str:
     summary = " | ".join(
         f"{READINESS_EMOJIS[field]} {READINESS_LABELS[field]}: {values[field]}"
         for field in READINESS_ORDER
         if field in values
     )
-    return f"✅ *Readiness logged!*\n\n{summary}"
+    score_line = f"\n\n📈 Readiness score: *{readiness_score:.2f}*" if readiness_score is not None else ""
+    return f"✅ *Readiness logged!*\n\n{summary}{score_line}"
 
 
 async def _maybe_await(value):
@@ -934,7 +935,8 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
     if movement_ids:
         for idx, movement in enumerate(cf_pending[key].get("movements") or []):
             load_type = await asyncio.get_running_loop().run_in_executor(None, lambda mid=movement_ids[idx]: get_movement_load_type(notion, mid))
-            if load_type == "Bodyweight":
+            explicit_weight = movement.get("load_lbs") or cf_pending[key].get("weight_lbs")
+            if load_type == "Bodyweight" and not explicit_weight:
                 movement["load_lbs"] = None
                 movement["bodyweight"] = True
                 await _prompt_bodyweight_confirm(message, key, cf_pending[key], cf_pending)
@@ -1659,7 +1661,8 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
             state_workout_date,
         )
         load_type = await asyncio.get_running_loop().run_in_executor(None, lambda: get_movement_load_type(notion, movement_id)) if movement_id else "External Load"
-        if load_type == "Bodyweight":
+        explicit_weight = state.get("weight_lbs")
+        if load_type == "Bodyweight" and not explicit_weight:
             await _prompt_bodyweight_confirm(message, key, state, cf_pending)
         else:
             if await _prompt_track_or_notes(message, key, notion, config, cf_pending):
@@ -1954,7 +1957,7 @@ async def _cf_readiness_field(q, parts, claude, notion, config, cf_pending) -> N
         log.debug("All readiness scores collected: %s", values)
         log.debug("Calling log_daily_readiness...")
         try:
-            await log_daily_readiness(
+            page = await log_daily_readiness(
                 notion,
                 sleep_quality=values.get("sleep_quality", value),
                 energy=values.get("energy", value),
@@ -1969,7 +1972,8 @@ async def _cf_readiness_field(q, parts, claude, notion, config, cf_pending) -> N
             await q.edit_message_text(f"❌ Error logging readiness: {e}", reply_markup=None)
             return
         log.debug("Readiness logged successfully")
-        await q.edit_message_text(_readiness_final_text(values), parse_mode="Markdown", reply_markup=None)
+        readiness_score = extract_readiness_score(page)
+        await q.edit_message_text(_readiness_final_text(values, readiness_score), parse_mode="Markdown", reply_markup=None)
         if chain_after:
             cf_pending[key] = {"session_chain": ["b", "c"], "session_origin": "a"}
             await q.message.reply_text("💪 Did you do Section B (Strength) today?", reply_markup=_chain_keyboard("b"))
@@ -2058,7 +2062,7 @@ async def _cf_ready(q, parts, claude, notion, config, cf_pending) -> None:
         log.debug("All readiness scores collected: %s", values)
         log.debug("Calling log_daily_readiness...")
         try:
-            await log_daily_readiness(
+            page = await log_daily_readiness(
                 notion,
                 sleep_quality=values.get("sleep_quality", value),
                 energy=values.get("energy", value),
@@ -2073,7 +2077,8 @@ async def _cf_ready(q, parts, claude, notion, config, cf_pending) -> None:
             await q.edit_message_text(f"❌ Error logging readiness: {e}", reply_markup=None)
             return
         log.debug("Readiness logged successfully")
-        await q.edit_message_text(_readiness_final_text(values), parse_mode="Markdown", reply_markup=None)
+        readiness_score = extract_readiness_score(page)
+        await q.edit_message_text(_readiness_final_text(values, readiness_score), parse_mode="Markdown", reply_markup=None)
         if chain_after:
             cf_pending[key] = {"session_chain": ["b", "c"], "session_origin": "a"}
             await q.message.reply_text("💪 Did you do Section B (Strength) today?", reply_markup=_chain_keyboard("b"))
