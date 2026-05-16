@@ -8,10 +8,10 @@ from zoneinfo import ZoneInfo
 
 from notion_client import APIResponseError
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from second_brain.config import NUMBER_EMOJIS  # noqa: F401 — re-exported for callers
 from second_brain.services.task_parsing import split_tasks  # noqa: F401
 
 log = logging.getLogger(__name__)
-NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 
 
 def local_today(tz: ZoneInfo | None = None) -> date:

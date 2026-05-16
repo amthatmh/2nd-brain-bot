@@ -56,7 +56,7 @@ from second_brain.cinema.config import (
 )
 from second_brain.sync_telemetry import init_sync_status, utc_now_iso, format_sync_status_message
 from second_brain.notion import notes as notion_notes
-from second_brain import digests as digests_mod
+from second_brain.digest import manual_digest_config_now as _manual_digest_config_now_fn
 from second_brain.notion import daily_log as notion_daily_log
 from second_brain.notes.flow import (
     ordered_topics,
@@ -152,7 +152,7 @@ from second_brain import keyboards as kb
 from second_brain import formatters as fmt
 from second_brain import digest as digest_helpers
 from second_brain import mute as mute_helpers
-from second_brain.utils import _safe_user_error, parse_time_to_minutes
+from second_brain.utils import _safe_user_error, get_current_monday, parse_time_to_minutes
 from second_brain.digest import (
     get_digest_config,
     _filter_digest_tasks,
@@ -282,13 +282,6 @@ def _resolve_state_dir() -> Path:
 # ── Config ───────────────────────────────────────────────────────────────────
 _rc_h, _rc_m = config.parse_hhmm_env("RECURRING_CHECK_TIME", "7:00")
 
-def get_current_monday() -> date:
-    """Return Monday date for the current week in local time."""
-    today = datetime.now(TZ).date()
-    if today.weekday() == 0:
-        return today
-    return today - timedelta(days=today.weekday())
-
 def format_reminder_snapshot(mode: str = "priority", limit: int = 8) -> str:
     return fmt.format_reminder_snapshot(notion, NOTION_DB_ID, TZ, mode=mode, limit=limit)
 
@@ -367,16 +360,12 @@ def _store_habit_selection_session(message_id: int, habits: list[dict], selected
     _habit_selections[message_id] = {"selected": selected or set(), "habits": habits}
 
 def _habit_selection_session(message_id: int) -> dict[str, object]:
-    """Return a habit selection session, migrating legacy set-only state if present."""
+    """Return a habit selection session, creating one if absent."""
     session = _habit_selections.get(message_id)
     if isinstance(session, dict):
         session.setdefault("selected", set())
         session.setdefault("habits", [])
         return session
-    if isinstance(session, set):
-        migrated: dict[str, object] = {"selected": session, "habits": []}
-        _habit_selections[message_id] = migrated
-        return migrated
     session = {"selected": set(), "habits": []}
     _habit_selections[message_id] = session
     return session
@@ -425,7 +414,6 @@ HORIZON_LABELS = {
     "t": "🔴 Today", "w": "🟠 This Week",
     "m": "🟡 This Month", "b": "⚪ Backburner",
 }
-NUMBER_EMOJIS = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
 REPEAT_DAY_TO_WEEKDAY  = {"Mon":0,"Tue":1,"Wed":2,"Thu":3,"Fri":4,"Sat":5,"Sun":6}
 REPEAT_DAY_TO_MONTHDAY = {
     **{
@@ -442,7 +430,6 @@ BTN_CROSSFIT = "💪 CrossFit"
 BTN_NOTES = "📝 Notes"
 BTN_WEATHER = "🌤️ Weather"
 BTN_MUTE = "🔕 Mute"
-LEGACY_BTN_ALL_OPEN = "📋 All Open"
 TOPIC_OPTIONS = [
     "🎵 Acoustics", "💼 Work", "🏠 Personal",
     "💪 Health", "🏢 LEED", "✅ WELL", "💡 Ideas", "📚 Research",
@@ -1283,7 +1270,7 @@ async def cmd_refresh(message, context: ContextTypes.DEFAULT_TYPE | None = None)
     try:
         slots = digest_helpers.load_digest_slots(rows=notion_query_all(NOTION_DIGEST_SELECTOR_DB), logger=log)
         now_dt = datetime.now(TZ)
-        config = digests_mod.manual_digest_config_now(slots, now_dt=now_dt, is_weekday=now_dt.weekday() < 5)
+        config = _manual_digest_config_now_fn(slots, now_dt=now_dt, is_weekday=now_dt.weekday() < 5)
     except Exception as e:
         log.warning("Manual digest fallback config failed: %s", e)
 
@@ -1292,7 +1279,7 @@ async def cmd_refresh(message, context: ContextTypes.DEFAULT_TYPE | None = None)
 
 def _manual_digest_config_now(slots: list[dict], now_dt: datetime | None = None) -> dict | None:
     now_dt = now_dt or datetime.now(TZ)
-    return digests_mod.manual_digest_config_now(slots, now_dt=now_dt, is_weekday=now_dt.weekday() < 5)
+    return _manual_digest_config_now_fn(slots, now_dt=now_dt, is_weekday=now_dt.weekday() < 5)
 
 async def cmd_todo(message, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
     del context
