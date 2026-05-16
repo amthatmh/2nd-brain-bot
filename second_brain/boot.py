@@ -3,11 +3,35 @@
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
 from datetime import datetime
 
 from second_brain.notion.properties import rich_text_prop, title_prop
 
 log = logging.getLogger(__name__)
+
+
+def git_sha() -> str:
+    """Best-effort short commit SHA for deploy receipts."""
+    for env_key in (
+        "RAILWAY_GIT_COMMIT_SHA",
+        "GIT_SHA",
+        "RENDER_GIT_COMMIT",
+        "COMMIT_SHA",
+        "SOURCE_VERSION",
+    ):
+        val = os.environ.get(env_key, "").strip()
+        if val:
+            return val[:12]
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except Exception:
+        return "unknown"
 
 
 async def write_boot_log(

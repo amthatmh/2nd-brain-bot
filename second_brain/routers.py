@@ -1597,7 +1597,7 @@ async def _cb_d(q, parts, context) -> None:
 async def _cb_h_horizon(q, parts, context) -> None:
     _, pid_clean, code = parts
     page_id = _main()._restore_pid(pid_clean)
-    horizon_label = _main().HORIZON_LABELS.get(code, "⚪ Backburner")
+    horizon_label = config.HORIZON_LABELS.get(code, "⚪ Backburner")
     try:
         notion_tasks.set_deadline_from_horizon_code(_notion(), page_id, code)
         await q.edit_message_text(f"Updated → {horizon_label} ✓")

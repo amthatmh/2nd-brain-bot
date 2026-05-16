@@ -815,17 +815,19 @@ def format_trip_reminder_block(trip: dict) -> str:
     return "\n".join(lines)
 
 
-def append_trip_reminders_to_text(text: str, within_days: int = 2) -> str:
-    import second_brain.main as _main  # transition import
-
-    upcoming_trips = _main.get_upcoming_trips_needing_reminder(within_days=within_days)
+def append_trip_reminders_to_text(
+    text: str, within_days: int = 2, *, notion=None, notion_trips_db: str | None = None
+) -> str:
+    upcoming_trips = get_upcoming_trips_needing_reminder(
+        within_days=within_days, notion=notion, notion_trips_db=notion_trips_db
+    )
     if not upcoming_trips:
         return text
 
     trip_blocks = [format_trip_reminder_block(trip) for trip in upcoming_trips]
     text = f"{text}\n\n{'─' * 30}\n\n" + "\n\n".join(trip_blocks)
     for trip in upcoming_trips:
-        _main.mark_trip_reminder_sent(trip["page_id"])
+        mark_trip_reminder_sent(trip["page_id"], notion=notion)
     return text
 
 

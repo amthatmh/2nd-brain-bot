@@ -159,6 +159,7 @@ from second_brain.config import (
     NOTION_LOG_DB,
     NOTION_DAILY_LOG_DB,
     NOTION_NOTES_DB,
+    NOTION_TRIPS_DB,
     CLAUDE_MODEL,
     TZ,
 )
@@ -489,7 +490,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
         lines.append("")
 
     message = "\n".join(lines).strip()
-    message = trips_mod.append_trip_reminders_to_text(message, within_days=2)
+    message = trips_mod.append_trip_reminders_to_text(message, within_days=2, notion=_notion, notion_trips_db=NOTION_TRIPS_DB)
 
     include_feel = bool(config.get("include_feel", False)) if config else False
     digest_keyboard_rows: list[list[InlineKeyboardButton]] = []

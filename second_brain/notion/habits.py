@@ -356,3 +356,49 @@ def is_on_pace(notion, log_db_id: str, habit: dict, tz) -> bool:
     if not target:
         return False
     return logs_this_week(notion, log_db_id, habit["page_id"], tz) >= target
+
+
+async def record_weekly_streaks(
+    bot,
+    notion,
+    log_db_id: str,
+    habit_db_id: str,
+    streak_db_id: str,
+    habit_cache: dict,
+    get_current_monday_fn,
+    get_habit_frequency_fn,
+) -> None:
+    """Record whether each habit met its weekly goal (called every Monday morning)."""
+    if not streak_db_id or not habit_cache:
+        return
+    monday = get_current_monday_fn()
+    last_monday = monday - timedelta(days=7)
+    last_sunday = monday - timedelta(days=1)
+    recorded = 0
+    for page_id, habit in habit_cache.items():
+        try:
+            freq = get_habit_frequency_fn(page_id)
+            if not freq:
+                continue
+            pages = query_all(notion, log_db_id, filter={
+                "and": [
+                    {"property": "Habit", "relation": {"contains": page_id}},
+                    {"property": "Completed", "checkbox": {"equals": True}},
+                    {"property": "Date", "date": {"on_or_after": last_monday.isoformat()}},
+                    {"property": "Date", "date": {"on_or_before": last_sunday.isoformat()}},
+                ]
+            })
+            goal_met = len(pages) >= freq
+            notion.pages.create(
+                parent={"database_id": streak_db_id},
+                properties={
+                    "Name": {"title": [{"text": {"content": habit.get("name", "Habit")}}]},
+                    "Week Of": {"date": {"start": last_monday.isoformat()}},
+                    "Goal Met": {"checkbox": goal_met},
+                },
+            )
+            recorded += 1
+            log.debug("Streak: %s — %d/%d → goal_met=%s", habit.get("name"), len(pages), freq, goal_met)
+        except Exception as exc:  # noqa: BLE001
+            log.error("record_weekly_streaks: %s — %s", habit.get("name"), exc)
+    log.info("record_weekly_streaks: recorded %d habit streaks for week of %s", recorded, last_monday)

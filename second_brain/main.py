@@ -29,6 +29,7 @@ from telegram import (
     BotCommandScopeChat,
     BotCommandScopeDefault,
 )
+from telegram.helpers import escape_markdown as _escape_markdown_v2
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -146,7 +147,9 @@ from second_brain.notion.habits import (
     _count_habit_completions_this_week as _habit_count_this_week,
     logs_this_week as _habit_logs_this_week,
     is_on_pace as _habit_is_on_pace,
+    record_weekly_streaks,
 )
+from second_brain.notion.tasks import next_repeat_day_date
 from second_brain.notion import tasks as notion_tasks
 from second_brain import keyboards as kb
 from second_brain import formatters as fmt
@@ -197,6 +200,7 @@ from second_brain.services import note_utils as note_utils_service
 from second_brain.handlers.commands import CommandHandlers
 from second_brain.handlers.admin_commands import test_alert_command, test_channel_send
 from second_brain.monitoring import track_job_execution
+from second_brain.boot import git_sha as _git_sha
 
 from second_brain.monitoring.metrics import generate_weekly_summary
 from utils.date_parser import parse_date
@@ -409,19 +413,6 @@ STATE_DIR = _resolve_state_dir()
 mute_state_file = STATE_DIR / "mute_state.json"
 
 # ── Constants ────────────────────────────────────────────────────────────────
-HORIZON_DEADLINE_OFFSETS = {"t": 0, "w": 6, "m": 30, "b": None}
-HORIZON_LABELS = {
-    "t": "🔴 Today", "w": "🟠 This Week",
-    "m": "🟡 This Month", "b": "⚪ Backburner",
-}
-REPEAT_DAY_TO_WEEKDAY  = {"Mon":0,"Tue":1,"Wed":2,"Thu":3,"Fri":4,"Sat":5,"Sun":6}
-REPEAT_DAY_TO_MONTHDAY = {
-    **{
-        f"{d}{'th' if 10 <= d % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(d % 10, 'th')}": d
-        for d in range(1, 32)
-    },
-    "Last": -1,
-}
 _BULLET_RE = re.compile(r"^[\s]*(?:[-•*]|\d+[.):])\s+", re.MULTILINE)
 BTN_REFRESH = "📜Digest"
 BTN_ALL_OPEN = "✅ To Do"
@@ -439,70 +430,6 @@ _URL_RE = re.compile(r"https?://[^\s\)\]>\"']+", re.IGNORECASE)
 def _has_explicit_personal_or_work_context(text: str) -> bool:
     lower = (text or "").lower()
     return bool(re.search(r"\b(personal|work)\b|🏠|💼", lower))
-
-def next_repeat_day_date(
-    recurring: str,
-    repeat_day: str | None,
-    today: date | None = None,
-    *,
-    anchor: date | None = None,
-) -> date | None:
-    """Resolve the next occurrence date for weekly/monthly/quarterly repeat settings."""
-    if not repeat_day:
-        return None
-    today = today or local_today()
-
-    if recurring == "📅 Weekly" and repeat_day in REPEAT_DAY_TO_WEEKDAY:
-        weekday = REPEAT_DAY_TO_WEEKDAY[repeat_day]
-        days_ahead = (weekday - today.weekday()) % 7
-        if days_ahead == 0:
-            days_ahead = 7
-        return today + timedelta(days=days_ahead)
-
-    if recurring == "🗓️ Monthly":
-        for month_offset in (0, 1):
-            year = today.year + ((today.month - 1 + month_offset) // 12)
-            month = ((today.month - 1 + month_offset) % 12) + 1
-            month_last_day = calendar.monthrange(year, month)[1]
-            if repeat_day == "Last":
-                target_day = month_last_day
-            else:
-                day_value = REPEAT_DAY_TO_MONTHDAY.get(repeat_day)
-                if day_value is None:
-                    return None
-                target_day = min(day_value, month_last_day)
-            target = date(year, month, target_day)
-            if target >= today:
-                return target
-        return None
-
-    if recurring == "📆 Quarterly":
-        if repeat_day != "Last" and repeat_day not in REPEAT_DAY_TO_MONTHDAY:
-            return None
-        if anchor:
-            quarter_cycle = (anchor.month - 1) % 3
-        else:
-            quarter_cycle = (today.month - 1) % 3
-
-        for months_ahead in range(0, 16):
-            year = today.year + ((today.month - 1 + months_ahead) // 12)
-            month = ((today.month - 1 + months_ahead) % 12) + 1
-            if (month - 1) % 3 != quarter_cycle:
-                continue
-            month_last_day = calendar.monthrange(year, month)[1]
-            if repeat_day == "Last":
-                target_day = month_last_day
-            else:
-                day_value = REPEAT_DAY_TO_MONTHDAY.get(repeat_day)
-                if day_value is None:
-                    return None
-                target_day = min(day_value, month_last_day)
-            target = date(year, month, target_day)
-            if target >= today:
-                return target
-        return None
-
-    return None
 
 def _load_mute_state() -> None:
     STATE.mute_until = mute_helpers.load_mute_state(mute_state_file, TZ, log)
@@ -743,16 +670,6 @@ def get_and_clear_claude_activity() -> list[str]:
     items = STATE.claude_activity_today
     STATE.claude_activity_today = []
     return items
-
-def _resolve_monthly_target_day(repeat_day: str, today: date) -> int | None:
-    if repeat_day not in REPEAT_DAY_TO_MONTHDAY:
-        return None
-    configured_day = REPEAT_DAY_TO_MONTHDAY[repeat_day]
-    month_last_day = calendar.monthrange(today.year, today.month)[1]
-    if configured_day == -1:
-        return month_last_day
-    # For days that exceed month length (e.g., 31st in April), run on the month's last day.
-    return min(configured_day, month_last_day)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # BATCH CAPTURE
@@ -1760,29 +1677,6 @@ async def _try_send_telegram(bot, text: str) -> None:
     except Exception as e:
         log.error("Could not send operational alert via Telegram: %s", e)
 
-def _git_sha() -> str:
-    """Best-effort short commit SHA for deploy receipts."""
-    # Prefer CI/deploy-provided commit SHAs because production images often
-    # don't include a full .git directory (e.g., Render/Heroku containers).
-    for env_key in (
-        "RAILWAY_GIT_COMMIT_SHA",
-        "GIT_SHA",
-        "RENDER_GIT_COMMIT",
-        "COMMIT_SHA",
-        "SOURCE_VERSION",
-    ):
-        val = os.environ.get(env_key, "").strip()
-        if val:
-            return val[:12]
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"],
-            stderr=subprocess.DEVNULL,
-            text=True,
-        ).strip()
-    except Exception:
-        return "unknown"
-
 def v10_feature_flags() -> str:
     flags = [
         f"watchlist={'ON' if NOTION_WATCHLIST_DB else 'OFF'}",
@@ -2418,7 +2312,7 @@ async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if update.effective_chat.id != MY_CHAT_ID:
         return
     try:
-        weather_text = append_trip_reminders_to_text(fmt.format_weather_snapshot(), within_days=2)
+        weather_text = append_trip_reminders_to_text(fmt.format_weather_snapshot(), within_days=2, notion=notion, notion_trips_db=NOTION_TRIPS_DB)
         await update.message.reply_text(weather_text, parse_mode="Markdown")
     except Exception as e:
         log.error("/weather failed: %s", e)
@@ -2474,7 +2368,7 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _ent_handle_log(notion, update.message, parsed, rule_engine=rule_engine)
     except Exception as e:
         log.error("Explicit /log save error: %s", e)
-        await update.message.reply_text(_entertainment_save_error_text(e, parsed))
+        await update.message.reply_text(ent_log._entertainment_save_error_text(e, parsed))
 
 async def on_confirm_batch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Create a pending mixed-confidence task batch after user confirmation."""
