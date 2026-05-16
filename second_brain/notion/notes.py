@@ -6,7 +6,7 @@ import re
 from datetime import date
 from typing import Any
 
-from second_brain.notes_flow import create_note_payload
+from second_brain.notes.flow import create_note_payload
 from second_brain.notion.properties import rich_text_prop, title_prop
 
 
