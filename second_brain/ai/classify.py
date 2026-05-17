@@ -122,6 +122,12 @@ Examples:
 - "Water plants daily" → recurring_type="daily", repeat_day=null
 - "Check email" → recurring_type=null, repeat_day=null
 
+Context rules (pick the BEST match):
+- 💼 Work: meetings, reports, clients, projects, emails, deadlines, invoices, work-related
+- 🏠 Personal: home, errands, family, finances, hobbies, personal admin
+- 🏃 Health: exercise, gym, run, weigh, diet, doctor, medication, fitness, health, workout, steps, water intake
+- 🤝 Collab: shared tasks with others, collaborations, group projects
+
 If TASK: {{"type":"task","task_name":"clean concise action","deadline_days":<integer or null>,"context":"one of: 💼 Work | 🏠 Personal | 🏃 Health | 🤝 Collab","confidence":"high|low","recurring_type":"daily|weekly|monthly or null","repeat_day":"Mon|Tue|Wed|Thu|Fri|Sat|Sun|1st..31st|Last or null"}}"""
     try:
         resp = claude.messages.create(

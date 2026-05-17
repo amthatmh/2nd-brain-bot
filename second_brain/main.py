@@ -720,7 +720,9 @@ def _run_capture(raw_text: str, force_create: bool = False,
         result        = ai_classify.classify_message(claude, CLAUDE_MODEL, raw_text, habit_names, bool(NOTION_WATCHLIST_DB), bool(NOTION_WANTSLIST_V2_DB), bool(NOTION_PHOTO_DB), bool(NOTION_NOTES_DB), today)
         task_name     = result.get("task_name") or raw_text
         deadline_days = result.get("deadline_days")
-        ctx           = context_override or result.get("context", "🏠 Personal")
+        ai_ctx        = result.get("context", "🏠 Personal")
+        kw_overrides  = infer_batch_overrides(raw_text)
+        ctx           = context_override or kw_overrides.get("context") or ai_ctx
         recurring, repeat_day = _recurring_fields_from_classification(result)
         target_date = next_repeat_day_date(recurring, repeat_day)
         if target_date is not None:
