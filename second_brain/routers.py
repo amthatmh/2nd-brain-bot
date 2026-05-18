@@ -1377,7 +1377,13 @@ async def _cb_h_toggle(q, parts, context) -> None:
             "Habit selection cache missing for message_id=%s; falling back to Notion refresh",
             message_id,
         )
-        habits = _main().pending_habits_for_digest(time_str=page_time)
+        import second_brain.digest as _digest
+        habits = _digest.pending_habits_for_digest(
+            habit_cache=_habit_cache(),
+            time_str=page_time,
+            already_logged_today=_main().already_logged_today,
+            is_on_pace=_main().is_on_pace,
+        )
         if check_type == "manual":
             habits = [
                 h
@@ -1433,7 +1439,7 @@ async def _cb_h_done(q, parts, context) -> None:
         await q.message.reply_text(f"✅ Logged: {', '.join(logged_names)}")
         asyncio.create_task(
             _main().check_and_notify_weekly_goals(
-                q.bot,
+                context.bot,
                 MY_CHAT_ID,
                 _notion(),
                 NOTION_LOG_DB,
