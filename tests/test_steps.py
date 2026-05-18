@@ -945,6 +945,64 @@ class TestStepsRoutes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 204)
         self.assertIn("X-Health-Secret", response.headers.get("Access-Control-Allow-Headers", ""))
 
+    async def test_steps_sync_processes_all_dates_in_multi_date_payload(self):
+        """Morning sync with yesterday+today must not discard yesterday's final count."""
+        app = web.Application()
+        register_health_routes(
+            app,
+            notion=MagicMock(),
+            habit_db_id="h",
+            log_db_id="l",
+            env_db_id="",
+            tz=None,
+            bot_getter=lambda: None,
+            chat_id=123,
+        )
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with patch("second_brain.healthtrack.routes.WEBHOOK_SECRET", "secret"), \
+                 patch("second_brain.healthtrack.routes.handle_steps_sync", new_callable=AsyncMock) as sync_mock:
+                sync_mock.side_effect = lambda **kw: {
+                    "action": "updated" if kw["date_str"] == "2026-05-17" else "skipped",
+                    "steps": kw["steps"],
+                    "date": kw["date_str"],
+                    "completed": kw["steps"] >= 10000,
+                    "timestamp": "2026-05-18T08:00:00+00:00",
+                }
+                # Payload from a morning Health Auto Export sync: yesterday's final
+                # count (11763) + today's early count (500) in the same payload.
+                response = await client.post(
+                    "/api/v1/steps-sync",
+                    headers={"X-Health-Secret": "secret"},
+                    json={
+                        "data": [
+                            {
+                                "name": "Step Count",
+                                "data": [
+                                    {"date": "2026-05-17", "qty": 11763},
+                                    {"date": "2026-05-18", "qty": 500},
+                                ],
+                            }
+                        ]
+                    },
+                )
+                body = await response.text()
+        finally:
+            await client.close()
+
+        self.assertEqual(response.status, 200, body)
+        payload = json.loads(body)
+        self.assertTrue(payload["ok"])
+        # Both dates must appear in the result
+        self.assertIn("2026-05-17", payload["result"])
+        self.assertIn("2026-05-18", payload["result"])
+        self.assertEqual(payload["result"]["2026-05-17"]["steps"], 11763)
+        # handle_steps_sync must be called for each date
+        self.assertEqual(sync_mock.await_count, 2)
+        called_dates = {c.kwargs["date_str"] for c in sync_mock.await_args_list}
+        self.assertEqual(called_dates, {"2026-05-17", "2026-05-18"})
+
     async def test_steps_sync_awaits_async_telemetry_callback(self):
         callback = AsyncMock()
         app = web.Application()
