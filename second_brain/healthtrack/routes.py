@@ -595,8 +595,8 @@ def register_health_routes(
                 headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
             )
 
-        parsed = _parse_health_export_payload(body)
-        if parsed is None:
+        date_steps_pairs = _parse_all_dates_from_payload(body)
+        if not date_steps_pairs:
             summary = _payload_summary(body)
             received_keys = list(body.keys()) if isinstance(body, dict) else []
             log.warning("steps_sync: could not parse payload. Body keys: %s", received_keys)
@@ -628,14 +628,17 @@ def register_health_routes(
                 headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
             )
 
-        steps, date_str = parsed
-        log.info("steps_sync: received %d steps for %s", steps, date_str)
+        log.info(
+            "steps_sync: received %d date(s) in payload: %s",
+            len(date_steps_pairs),
+            [(d, s) for s, d in date_steps_pairs],
+        )
         _record_steps_webhook(
             request,
             status="parsed",
             detail={
                 "payload_summary": _payload_summary(body),
-                "parsed": {"steps": steps, "date": date_str},
+                "parsed": [{"steps": s, "date": d} for s, d in date_steps_pairs],
             },
         )
 
@@ -644,35 +647,38 @@ def register_health_routes(
         except Exception:
             bot = None
 
-        result = await handle_steps_sync(
-            steps=steps,
-            date_str=date_str,
-            notion=notion,
-            habit_db_id=habit_db_id,
-            log_db_id=log_db_id,
-            env_db_id=env_db_id,
-            habit_name=health_config.STEPS_HABIT_NAME,
-            threshold=STEPS_THRESHOLD,
-            source_label=STEPS_SOURCE_LABEL,
-            tz=tz,
-            bot=bot,
-            chat_id=chat_id,
-            write_intraday_below_threshold=STEPS_WRITE_INTRADAY_BELOW_THRESHOLD,
-            force_write=False,
-        )
-        if on_sync_result:
-            try:
-                callback_result = on_sync_result(result)
-                if inspect.isawaitable(callback_result):
-                    await callback_result
-            except Exception as e:
-                log.warning("steps_sync: telemetry callback failed: %s", e)
+        all_results: dict[str, dict] = {}
+        for steps, date_str in date_steps_pairs:
+            result = await handle_steps_sync(
+                steps=steps,
+                date_str=date_str,
+                notion=notion,
+                habit_db_id=habit_db_id,
+                log_db_id=log_db_id,
+                env_db_id=env_db_id,
+                habit_name=health_config.STEPS_HABIT_NAME,
+                threshold=STEPS_THRESHOLD,
+                source_label=STEPS_SOURCE_LABEL,
+                tz=tz,
+                bot=bot,
+                chat_id=chat_id,
+                write_intraday_below_threshold=STEPS_WRITE_INTRADAY_BELOW_THRESHOLD,
+                force_write=False,
+            )
+            all_results[date_str] = result
+            if on_sync_result:
+                try:
+                    callback_result = on_sync_result(result)
+                    if inspect.isawaitable(callback_result):
+                        await callback_result
+                except Exception as e:
+                    log.warning("steps_sync: telemetry callback failed: %s", e)
 
         _last_steps_webhook["status"] = "processed"
-        _last_steps_webhook["result"] = result
+        _last_steps_webhook["result"] = all_results
 
         return web.Response(
-            text=json.dumps({"ok": True, "result": result}),
+            text=json.dumps({"ok": True, "result": all_results}),
             content_type="application/json",
             headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
         )
