@@ -375,7 +375,8 @@ async def record_weekly_streaks(
     last_monday = monday - timedelta(days=7)
     last_sunday = monday - timedelta(days=1)
     recorded = 0
-    for page_id, habit in habit_cache.items():
+    for _name, habit in habit_cache.items():
+        page_id = habit["page_id"]
         try:
             freq = get_habit_frequency_fn(page_id)
             if not freq:
