@@ -1003,7 +1003,7 @@ async def _cb_task_preview(q, parts, context) -> None:
                 parse_mode="Markdown",
             )
         else:
-            page_id = notion_tasks.create_task(
+            page_id, auto_horizon = notion_tasks.create_task(
                 _notion(),
                 NOTION_DB_ID,
                 task_name,
@@ -1012,7 +1012,7 @@ async def _cb_task_preview(q, parts, context) -> None:
                 recurring=recurring,
                 repeat_day=repeat_day,
             )
-            horizon_label = _main().deadline_days_to_label(deadline_days)
+            horizon_label = auto_horizon or _main().deadline_days_to_label(deadline_days)
             await q.edit_message_text(
                 f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}\n\n_Saved to Notion_",
                 parse_mode="Markdown",
@@ -1021,7 +1021,6 @@ async def _cb_task_preview(q, parts, context) -> None:
         log.error("Notion error for preview task '%s': %s", task_name, e)
         await q.edit_message_text("⚠️ Preview confirmed but couldn't write to Notion.")
         return
-    horizon_label = _main().deadline_days_to_label(deadline_days)
     recur_tag = f"\n🔁 {recurring}" if recurring != "None" else ""
     await q.edit_message_text(
         f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}{recur_tag}\n\n_Saved to Notion_",
