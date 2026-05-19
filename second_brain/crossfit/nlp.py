@@ -136,13 +136,23 @@ def _fallback_extract_workout_data(log_message: str, current_date: datetime) -> 
     data = _empty_workout_data([text] if text else [])
     lower = text.lower()
 
+    emom_pattern = re.search(r"\bEMOM\s*(\d+)\b", text, re.IGNORECASE)
     sets_reps_pattern = re.search(
         r"\b(\d+)\s+sets?\s+(?:of\s+)?(\d+)\s*(?:x|reps?)?\b",
         lower,
         re.IGNORECASE,
     )
     scheme_pattern = re.search(r"\b(\d+)\s*[x×]\s*(\d+)\b", lower, re.IGNORECASE)
-    if sets_reps_pattern:
+    if emom_pattern:
+        data["sets"] = int(emom_pattern.group(1))
+        data["scheme"] = f"EMOM{emom_pattern.group(1)}"
+        # Find the first rep count appearing AFTER the EMOM tag (e.g. "/ 1 Rope Climb")
+        remaining = lower[emom_pattern.end():]
+        first_reps = re.search(r"(?<![a-z\d])(\d+)\s+[a-z]", remaining)
+        if first_reps:
+            data["reps"] = int(first_reps.group(1))
+        log.debug("Fallback EMOM: sets=%s scheme=%s reps=%s", data["sets"], data["scheme"], data["reps"])
+    elif sets_reps_pattern:
         data["sets"] = int(sets_reps_pattern.group(1))
         data["reps"] = int(sets_reps_pattern.group(2))
         data["scheme"] = f"{data['sets']}x{data['reps']}"
@@ -265,6 +275,10 @@ EXTRACTION RULES:
    - "6 sets of 4x" -> sets 6, reps 4, scheme "6x4"
    - "5x5" -> sets 5, reps 5, scheme "5x5"
    - "3 rounds" -> sets 3, reps null, scheme "3 rounds"
+   - EMOM (Every Minute On the Minute): the number after EMOM is the number of sets/rounds.
+     "EMOM10 / 1 Rope Climb / 8x Toes to Bar" -> sets 10, reps 1 (first movement), scheme "EMOM10"
+     "EMOM8 - 3 hang squat cleans at 115lbs" -> sets 8, reps 3, weight 115lbs, scheme "EMOM8"
+     For EMOM with mixed rep schemes across movements, use the reps of the FIRST listed movement.
 
 4. WEIGHT: Extract load and convert both directions using 1 lb = 0.453592 kg.
    - "115lbs" or "225#" are pounds

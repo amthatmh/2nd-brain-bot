@@ -1497,7 +1497,18 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
             if result_reps is None:
                 result_reps = parse_reps_only(notes)
             if result_seconds is not None:
-                result_type = "Time"
+                if _infer_result_type(state.get("format")) == "Time":
+                    result_type = "Time"
+                else:
+                    # Rounds-based WOD (AMRAP/EMOM/Tabata): user likely typed "4:30"
+                    # meaning "4 rounds + 30 reps", not a time duration.
+                    if result_rounds is None:
+                        result_rounds = result_seconds // 60
+                        extra = int(result_seconds % 60)
+                        if result_reps is None and extra > 0:
+                            result_reps = extra
+                    result_seconds = None
+                    result_type = "Rounds+Reps" if result_reps else "Rounds"
             elif result_rounds is not None and result_reps is not None:
                 result_type = "Rounds+Reps"
         weekly_program_id = await get_current_week_program_url(notion)
