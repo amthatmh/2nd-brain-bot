@@ -137,19 +137,23 @@ def test_telegram_recurring_template_first_instance_passes_telegram_source():
 def test_generate_next_recurring_instances_preserves_template_source():
     async def run():
         main = load_main_module()
-        main.notion.databases.query.return_value = {
-            "results": [
-                {
-                    "id": "completed-1",
-                    "properties": {
-                        "Recurring Parent ID": {
-                            "rich_text": [{"text": {"content": "template-1"}}]
+        # First call: completed instances; second call: existence check (no active child)
+        main.notion.databases.query.side_effect = [
+            {
+                "results": [
+                    {
+                        "id": "completed-1",
+                        "properties": {
+                            "Recurring Parent ID": {
+                                "rich_text": [{"text": {"content": "template-1"}}]
+                            },
+                            "Deadline": {"date": {"start": "2026-05-15"}},
                         },
-                        "Deadline": {"date": {"start": "2026-05-15"}},
-                    },
-                }
-            ]
-        }
+                    }
+                ]
+            },
+            {"results": []},
+        ]
         main.notion.pages.retrieve.return_value = {
             "properties": {
                 "Name": {"title": [{"text": {"content": "Water plants"}}]},
@@ -168,5 +172,51 @@ def test_generate_next_recurring_instances_preserves_template_source():
             await main.generate_next_recurring_instances(bot=None)
 
         assert spawn.call_args.kwargs["source"] == "📱 Telegram"
+
+    asyncio.run(run())
+
+
+def test_generate_next_recurring_skips_spawn_when_active_child_exists():
+    """If a previous run spawned but failed to mark the instance, skip the duplicate spawn."""
+    async def run():
+        main = load_main_module()
+        # First call: completed instances; second call: existence check finds active child
+        main.notion.databases.query.side_effect = [
+            {
+                "results": [
+                    {
+                        "id": "completed-1",
+                        "properties": {
+                            "Recurring Parent ID": {
+                                "rich_text": [{"text": {"content": "template-1"}}]
+                            },
+                            "Deadline": {"date": {"start": "2026-05-15"}},
+                        },
+                    }
+                ]
+            },
+            {"results": [{"id": "active-child-1"}]},
+        ]
+        main.notion.pages.retrieve.return_value = {
+            "properties": {
+                "Name": {"title": [{"text": {"content": "Weigh for health"}}]},
+                "Context": {"select": {"name": "🏠 Personal"}},
+                "Recurring": {"select": {"name": "📅 Weekly"}},
+                "Source": {"select": {"name": "📱 Telegram"}},
+                "Repeat Day": {"select": None},
+                "Deadline": {"date": None},
+                "Recurrence Pattern": {"rich_text": []},
+            }
+        }
+
+        with patch.object(
+            main.notion_tasks, "spawn_recurring_instance"
+        ) as spawn, patch.object(
+            main.notion_tasks, "set_last_generated"
+        ) as mark:
+            await main.generate_next_recurring_instances(bot=None)
+
+        spawn.assert_not_called()
+        mark.assert_called_once_with(main.notion, "completed-1", main.notion_tasks.local_today())
 
     asyncio.run(run())
