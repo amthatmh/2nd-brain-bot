@@ -1452,17 +1452,33 @@ async def generate_next_recurring_instances(bot) -> None:
                 ref_date = notion_tasks._parse_deadline(completed_deadline) or notion_tasks.local_today()
                 next_deadline = notion_tasks.calculate_next_deadline(template, from_date=ref_date)
 
-                notion_tasks.spawn_recurring_instance(
-                    notion,
-                    NOTION_DB_ID,
-                    template,
-                    next_deadline=next_deadline,
-                    source=template_source,
+                # Guard against re-spawning when a previous run created the instance
+                # but failed to mark the completed instance (set_last_generated below).
+                # If an active child already exists for this parent, skip the spawn.
+                existing_active = notion.databases.query(
+                    database_id=NOTION_DB_ID,
+                    filter={
+                        "and": [
+                            {"property": "Recurring Parent ID", "rich_text": {"equals": parent_id}},
+                            {"property": "Done", "checkbox": {"equals": False}},
+                        ]
+                    },
+                    page_size=1,
                 )
-                notion_tasks.set_last_generated(notion, page["id"], notion_tasks.local_today())
+                if not existing_active.get("results"):
+                    notion_tasks.spawn_recurring_instance(
+                        notion,
+                        NOTION_DB_ID,
+                        template,
+                        next_deadline=next_deadline,
+                        source=template_source,
+                    )
+                    spawned += 1
+                    log.info("Generated next recurring instance for parent %s, due %s", parent_id, next_deadline)
+                else:
+                    log.info("Active instance already exists for parent %s, skipping spawn", parent_id)
 
-                spawned += 1
-                log.info("Generated next recurring instance for parent %s, due %s", parent_id, next_deadline)
+                notion_tasks.set_last_generated(notion, page["id"], notion_tasks.local_today())
             except Exception as e:
                 page_id = page.get("id")
                 log.error("Failed to generate next instance for page %s: %s", page_id, e)
