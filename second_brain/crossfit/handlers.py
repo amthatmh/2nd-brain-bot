@@ -496,7 +496,7 @@ async def _prompt_track_or_notes(message, key: str, notion, config: dict, cf_pen
         return False
     tracks = await asyncio.get_event_loop().run_in_executor(
         None,
-        lambda: get_available_tracks_today(notion, config.get("NOTION_WORKOUT_DAYS_DB", "")),
+        lambda: get_available_tracks_today(notion, _cf_config(config, "NOTION_WORKOUT_DAYS_DB")),
     )
     if not tracks:
         state["workout_day_id"] = None
@@ -971,7 +971,7 @@ async def handle_cf_wod_flow(message, workout_result, notion, config, cf_pending
         workout_structure = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: get_today_workout_structure(
-                notion, config.get("NOTION_WORKOUT_DAYS_DB", "")
+                notion, _cf_config(config, "NOTION_WORKOUT_DAYS_DB")
             ),
         )
     except Exception:
@@ -2228,7 +2228,10 @@ async def _cf_skip(q, parts, claude, notion, config, cf_pending) -> None:
 
 async def _cf_cancel(q, parts, claude, notion, config, cf_pending) -> None:
     cf_pending.pop(str(q.message.chat_id), None)
-    await q.message.reply_text("❌ Session cancelled.")
+    try:
+        await q.edit_message_text("❌ Session cancelled.", reply_markup=None)
+    except Exception:
+        await q.message.reply_text("❌ Session cancelled.")
 
 
 async def _cf_levelok(q, parts, claude, notion, config, cf_pending) -> None:
@@ -2319,16 +2322,19 @@ _CF_CALLBACK_HANDLERS: dict[str, object] = {
 
 
 async def handle_cf_callback(q, parts, claude, notion, config, cf_pending, chain_after: bool = False):
-    try:
-        await q.edit_message_reply_markup(reply_markup=None)
-    except Exception:
-        log.debug("Could not clear message markup in CF callback", exc_info=True)
     log.debug("CrossFit callback parts: %s", parts)
     if len(parts) < 2:
         await q.answer("Action unavailable.", show_alert=False)
         return
 
     action = parts[1]
+
+    # Cancel edits the message in-place; all other actions just strip the keyboard first.
+    if action != "cancel":
+        try:
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            log.debug("Could not clear message markup in CF callback", exc_info=True)
 
     # Readiness field slugs are dynamic — check before dict lookup
     if action in READINESS_FIELDS_BY_SLUG and len(parts) >= 4:

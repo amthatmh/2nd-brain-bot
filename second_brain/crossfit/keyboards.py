@@ -6,11 +6,25 @@ def _clean_pid(pid: str) -> str:
 
 
 def crossfit_submenu_keyboard(readiness_logged: bool = True) -> InlineKeyboardMarkup:
-    top_row = [InlineKeyboardButton("🏋️ Strength (B)", callback_data="cf:log_strength")]
-    if not readiness_logged:
-        top_row.insert(0, InlineKeyboardButton("📊 Readiness (A)", callback_data="cf:log_readiness"))
+    if readiness_logged:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🏋️ Strength (B)", callback_data="cf:log_strength"),
+                InlineKeyboardButton("🏆 Log WOD (C)", callback_data="cf:log_wod"),
+            ],
+            [
+                InlineKeyboardButton("🥇 My PRs", callback_data="cf:my_prs"),
+                InlineKeyboardButton("🔍 Sub / Add-on", callback_data="cf:sub_addon"),
+            ],
+            [
+                InlineKeyboardButton("❌ Cancel", callback_data="cf:cancel"),
+            ],
+        ])
     return InlineKeyboardMarkup([
-        top_row,
+        [
+            InlineKeyboardButton("📊 Readiness (A)", callback_data="cf:log_readiness"),
+            InlineKeyboardButton("🏋️ Strength (B)", callback_data="cf:log_strength"),
+        ],
         [
             InlineKeyboardButton("🏆 Log WOD (C)", callback_data="cf:log_wod"),
             InlineKeyboardButton("🥇 My PRs", callback_data="cf:my_prs"),
