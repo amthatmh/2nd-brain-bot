@@ -586,7 +586,7 @@ async def handle_trip_command(update, context) -> None:
     nights = (date.fromisoformat(ret) - date.fromisoformat(dep)).days
     _main.trip_map[key]["nights"] = nights
     trip_days = nights + 1
-    _main.trip_map[key]["duration_label"] = "Overnight" if trip_days <= 1 else ("2-3 Days" if trip_days <= 3 else "4-5 Days")
+    _main.trip_map[key]["duration_label"] = "Daytrip" if nights == 0 else ("Overnight" if nights == 1 else ("2-3 Days" if trip_days <= 3 else "4-5 Days"))
     purpose_str = " + ".join(_main.trip_map[key]["purpose_list"])
     await message.reply_text(f"✈️ {destination} — {format_trip_dates(dep, ret)} ({nights} night(s), {purpose_str})\n\nWhat field work are you doing?\n(Tap all that apply, then tap ✅ Done)", reply_markup=_main.kb.field_work_keyboard(key, _main.trip_map))
 
