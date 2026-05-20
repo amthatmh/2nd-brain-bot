@@ -159,21 +159,42 @@ def _update_log_entry_steps(
     """Update Steps Count (and Completed) on an existing Habit Log entry."""
     try:
         current_page = notion.pages.retrieve(page_id=page_id)
+        properties = current_page.get("properties", {})
         current_completed = (
-            current_page
-            .get("properties", {})
+            properties
             .get("Completed", {})
             .get("checkbox", False)
         )
         final_completed = current_completed or completed
 
+        update_properties = {
+            "Steps Count": {"number": steps},
+        }
+        if "Completed" in properties:
+            update_properties["Completed"] = {"checkbox": final_completed}
+
         notion.pages.update(
             page_id=page_id,
-            properties={
-                "Steps Count": {"number": steps},
-                "Completed": {"checkbox": final_completed},
-            },
+            properties=update_properties,
         )
+
+        # Best-effort sync for databases that surface a Status column ("OPEN"/"DONE")
+        # separate from the Completed checkbox used by dashboards.
+        if "Status" in properties:
+            try:
+                notion.pages.update(
+                    page_id=page_id,
+                    properties={
+                        "Status": {
+                            "status": {
+                                "name": "Done" if final_completed else "Open",
+                            }
+                        },
+                    },
+                )
+            except Exception as status_err:
+                log.debug("steps: Status field update skipped for %s: %s", page_id, status_err)
+
         log.info(
             "steps: updated log entry %s — %d steps, completed=%s (was %s)",
             page_id,
