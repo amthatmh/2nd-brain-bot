@@ -475,21 +475,32 @@ async def log_habit_http_handler(
                 headers=cors_headers(),
             )
 
-        if already_logged_today(notion, log_db, matched["page_id"], tz):
+        if matched["page_id"] in STATE.habit_log_in_progress:
             return web.Response(
                 text=json.dumps({"ok": True, "alreadyLogged": True, "habitName": matched["name"]}),
                 content_type="application/json",
                 headers=cors_headers(),
             )
 
-        create_habit_log(notion, log_db, matched["page_id"], matched["name"], source="🌐 HabitKit")
-        STATE.habits_data_cache.clear()
-        log.info("habits_data_cache: invalidated after HabitKit log")
-        return web.Response(
-            text=json.dumps({"ok": True, "alreadyLogged": False, "habitName": matched["name"]}),
-            content_type="application/json",
-            headers=cors_headers(),
-        )
+        STATE.habit_log_in_progress.add(matched["page_id"])
+        try:
+            if already_logged_today(notion, log_db, matched["page_id"], tz):
+                return web.Response(
+                    text=json.dumps({"ok": True, "alreadyLogged": True, "habitName": matched["name"]}),
+                    content_type="application/json",
+                    headers=cors_headers(),
+                )
+
+            create_habit_log(notion, log_db, matched["page_id"], matched["name"], source="🌐 HabitKit")
+            STATE.habits_data_cache.clear()
+            log.info("habits_data_cache: invalidated after HabitKit log")
+            return web.Response(
+                text=json.dumps({"ok": True, "alreadyLogged": False, "habitName": matched["name"]}),
+                content_type="application/json",
+                headers=cors_headers(),
+            )
+        finally:
+            STATE.habit_log_in_progress.discard(matched["page_id"])
     except Exception as e:
         log.error("/log-habit error: %s", e)
         return web.Response(

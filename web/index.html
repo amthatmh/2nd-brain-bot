@@ -236,8 +236,12 @@ function toggleTheme() {
   applyTheme(saved);
 })();
 
+const _loggingInFlight = new Set();
+
 async function logHabitFromWeb(habit, triggerEl) {
   if (!habit?.id || !triggerEl) return;
+  if (_loggingInFlight.has(habit.id)) return;
+  _loggingInFlight.add(habit.id);
   const old = triggerEl.textContent;
   triggerEl.textContent = '…';
   triggerEl.disabled = true;
@@ -254,6 +258,8 @@ async function logHabitFromWeb(habit, triggerEl) {
     triggerEl.textContent = old;
     triggerEl.disabled = false;
     alert(`Could not log "${habit.name}" right now.\n${e.message}`);
+  } finally {
+    _loggingInFlight.delete(habit.id);
   }
 }
 

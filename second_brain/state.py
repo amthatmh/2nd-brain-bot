@@ -20,6 +20,7 @@ class BotState:
     todo_picker_counter: int = 0
     v10_counter: int = 0
     habits_data_cache: ExpiringDict = field(default_factory=lambda: ExpiringDict(ttl_seconds=300))
+    habit_log_in_progress: set[str] = field(default_factory=set)
     mute_until: Optional[datetime] = None
     signoff_notes_today: dict[str, str] = field(default_factory=lambda: {"second_brain": "", "brian_ii": ""})
     claude_activity_today: list[str] = field(default_factory=list)
