@@ -431,9 +431,8 @@ async def handle_message_text(
         _trip_map()[key]["nights"] = nights
         trip_days = nights + 1
         _trip_map()[key]["duration_label"] = (
-            "Overnight"
-            if trip_days <= 1
-            else ("2-3 Days" if trip_days <= 3 else "4-5 Days")
+            "Daytrip" if nights == 0
+            else ("Overnight" if nights == 1 else ("2-3 Days" if trip_days <= 3 else "4-5 Days"))
         )
         purpose_str = " + ".join(_trip_map()[key]["purpose_list"])
         await message.reply_text(
