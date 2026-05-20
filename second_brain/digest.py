@@ -95,6 +95,7 @@ def load_digest_slots(*, rows: list[dict], logger) -> list[dict]:
         include_weather = bool(props.get("Weather", {}).get("checkbox", False))
         include_uvi = bool(props.get("UVI", {}).get("checkbox", False))
         include_feel = bool(props.get("Feel", {}).get("checkbox", False))
+        include_log = bool(props.get("Log", {}).get("checkbox", False))
 
         for is_weekday in weekday_variants:
             slot_key = (slot_time, is_weekday)
@@ -102,7 +103,7 @@ def load_digest_slots(*, rows: list[dict], logger) -> list[dict]:
                 logger.warning("Skipping duplicate digest selector slot %s (%s)", slot_time, "weekday" if is_weekday else "weekend")
                 continue
             seen_slot_keys.add(slot_key)
-            slots.append({"time": slot_time, "is_weekday": is_weekday, "include_habits": include_habits, "max_items": max_items, "contexts": contexts, "include_weather": include_weather, "include_uvi": include_uvi, "include_feel": include_feel})
+            slots.append({"time": slot_time, "is_weekday": is_weekday, "include_habits": include_habits, "max_items": max_items, "contexts": contexts, "include_weather": include_weather, "include_uvi": include_uvi, "include_feel": include_feel, "include_log": include_log})
 
     logger.info("Loaded %d digest selector slot(s) from Notion", len(slots))
     return slots
@@ -427,7 +428,8 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
     lines = [f"☀️ *{date_str}*", ""]
 
-    if _last_daily_log_url:
+    include_log = config.get("include_log", True) if config is not None else True
+    if _last_daily_log_url and include_log:
         log_date_label = (today - timedelta(days=1)).isoformat()
         lines.append(f"📓 [{log_date_label} Log]({_last_daily_log_url})")
         lines.append("")
