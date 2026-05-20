@@ -1513,7 +1513,9 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 result_type = "Rounds+Reps"
         weekly_program_id = await get_current_week_program_url(notion)
         time_cap_mins = state.get("time_cap_mins")
-        raw_log = state.get("raw_log") or ""
+        raw_log = state.get("raw_log") or state.get("workout_structure") or ""
+        if notes and notes.strip() and notes.strip() not in raw_log:
+            raw_log = f"{raw_log}\nResult: {notes.strip()}" if raw_log else notes.strip()
         workout_structure = state.get("workout_structure") or ""
         workout_day_id = state.get("workout_day_id")
         wod_name = state.get("wod_name")
@@ -1617,6 +1619,7 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
             return
 
         key = cf_flow_key
+        state["raw_log"] = state.get("raw_log") or raw_input
         thinking = await message.reply_text("⏳ Analyzing movements...")
         try:
             extracted = await extract_workout_data(raw_input, claude)
