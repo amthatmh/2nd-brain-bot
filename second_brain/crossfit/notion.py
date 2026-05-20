@@ -560,7 +560,8 @@ def parse_weekly_program_text(full_text: str, week_label: str | None = None) -> 
     tracks = [{"track": track, "days": days} for track, days in tracks_by_name.items() if days]
     if not tracks:
         raise ValueError("No day/track workout blocks found in Full Program")
-    return {"week_label": f"Week of {this_monday()}", "tracks": tracks}
+    monday_iso = _week_start_from_label(week_label) if week_label else this_monday()
+    return {"week_label": f"Week of {monday_iso}", "tracks": tracks}
 
 def get_current_week_programme(notion, program_db_id: str):
     res = notion_call(notion.databases.query, database_id=program_db_id, sorts=[{"timestamp": "created_time", "direction": "descending"}], page_size=1).get("results", [])
@@ -706,7 +707,7 @@ def save_programme_from_notion_row(
             "tracks": [{"track": "Performance", "days": parsed.get("days", [])}],
         }
 
-    monday_iso = this_monday()
+    monday_iso = _week_start_from_label(parsed.get("week_label")) if parsed.get("week_label") else this_monday()
     week_label = f"Week of {monday_iso}"
     del program_db_id, cycles_db_id
 
@@ -809,7 +810,7 @@ def save_programme_from_notion_row(
         for section_key in ("section_b", "section_c")
         for raw in (day_row.get(section_key) or {}).get("movements") or []
         for canonical in normalise_movement_name(raw)
-        if canonical and canonical in movement_cache
+        if canonical and is_valid_movement_candidate(canonical) and canonical in movement_cache
     }) or sorted(day_movement_ids or program_movement_ids)
 
     if all_movement_ids:

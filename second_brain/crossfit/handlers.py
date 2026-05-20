@@ -496,7 +496,7 @@ async def _prompt_track_or_notes(message, key: str, notion, config: dict, cf_pen
         return False
     tracks = await asyncio.get_event_loop().run_in_executor(
         None,
-        lambda: get_available_tracks_today(notion, config.get("NOTION_WORKOUT_DAYS_DB", "")),
+        lambda: get_available_tracks_today(notion, _cf_config(config, "NOTION_WORKOUT_DAYS_DB")),
     )
     if not tracks:
         state["workout_day_id"] = None
@@ -971,7 +971,7 @@ async def handle_cf_wod_flow(message, workout_result, notion, config, cf_pending
         workout_structure = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: get_today_workout_structure(
-                notion, config.get("NOTION_WORKOUT_DAYS_DB", "")
+                notion, _cf_config(config, "NOTION_WORKOUT_DAYS_DB")
             ),
         )
     except Exception:
@@ -1497,12 +1497,25 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
             if result_reps is None:
                 result_reps = parse_reps_only(notes)
             if result_seconds is not None:
-                result_type = "Time"
+                if _infer_result_type(state.get("format")) == "Time":
+                    result_type = "Time"
+                else:
+                    # Rounds-based WOD (AMRAP/EMOM/Tabata): user likely typed "4:30"
+                    # meaning "4 rounds + 30 reps", not a time duration.
+                    if result_rounds is None:
+                        result_rounds = result_seconds // 60
+                        extra = int(result_seconds % 60)
+                        if result_reps is None and extra > 0:
+                            result_reps = extra
+                    result_seconds = None
+                    result_type = "Rounds+Reps" if result_reps else "Rounds"
             elif result_rounds is not None and result_reps is not None:
                 result_type = "Rounds+Reps"
         weekly_program_id = await get_current_week_program_url(notion)
         time_cap_mins = state.get("time_cap_mins")
-        raw_log = state.get("raw_log") or ""
+        raw_log = state.get("raw_log") or state.get("workout_structure") or ""
+        if notes and notes.strip() and notes.strip() not in raw_log:
+            raw_log = f"{raw_log}\nResult: {notes.strip()}" if raw_log else notes.strip()
         workout_structure = state.get("workout_structure") or ""
         workout_day_id = state.get("workout_day_id")
         wod_name = state.get("wod_name")
@@ -1606,6 +1619,7 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
             return
 
         key = cf_flow_key
+        state["raw_log"] = state.get("raw_log") or raw_input
         thinking = await message.reply_text("⏳ Analyzing movements...")
         try:
             extracted = await extract_workout_data(raw_input, claude)
@@ -2228,7 +2242,10 @@ async def _cf_skip(q, parts, claude, notion, config, cf_pending) -> None:
 
 async def _cf_cancel(q, parts, claude, notion, config, cf_pending) -> None:
     cf_pending.pop(str(q.message.chat_id), None)
-    await q.message.reply_text("❌ Session cancelled.")
+    try:
+        await q.edit_message_text("❌ Session cancelled.", reply_markup=None)
+    except Exception:
+        await q.message.reply_text("❌ Session cancelled.")
 
 
 async def _cf_levelok(q, parts, claude, notion, config, cf_pending) -> None:
@@ -2319,16 +2336,19 @@ _CF_CALLBACK_HANDLERS: dict[str, object] = {
 
 
 async def handle_cf_callback(q, parts, claude, notion, config, cf_pending, chain_after: bool = False):
-    try:
-        await q.edit_message_reply_markup(reply_markup=None)
-    except Exception:
-        log.debug("Could not clear message markup in CF callback", exc_info=True)
     log.debug("CrossFit callback parts: %s", parts)
     if len(parts) < 2:
         await q.answer("Action unavailable.", show_alert=False)
         return
 
     action = parts[1]
+
+    # Cancel edits the message in-place; all other actions just strip the keyboard first.
+    if action != "cancel":
+        try:
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            log.debug("Could not clear message markup in CF callback", exc_info=True)
 
     # Readiness field slugs are dynamic — check before dict lookup
     if action in READINESS_FIELDS_BY_SLUG and len(parts) >= 4:

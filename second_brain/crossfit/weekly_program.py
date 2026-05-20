@@ -18,6 +18,7 @@ from second_brain.notion import notion_call
 
 from second_brain.crossfit.notion import parse_weekly_program_text, save_programme_from_notion_row
 from second_brain.notion.properties import query_all, rich_text_prop
+from second_brain.utils import local_today
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ async def get_current_week_program_url(notion_client) -> Optional[str]:
     The function name is kept for compatibility with the Phase 1 plan, but it
     returns the Notion page ID because relation properties require page IDs.
     """
-    today = datetime.now()
+    today = local_today()
     monday = today - timedelta(days=today.weekday())
     week_string = f"Week of {monday.strftime('%Y-%m-%d')}"
     weekly_programs_db_id = _weekly_programs_db_id()
@@ -81,7 +82,7 @@ async def get_todays_workout_day(notion_client) -> Optional[Dict]:
     Returns selected Section B/C properties and relations, or None if no row is
     found for the current weekday in the last seven days.
     """
-    today = datetime.now()
+    today = local_today()
     monday = today - timedelta(days=today.weekday())
     day_name = today.strftime("%A")
     workout_days_db_id = os.getenv("NOTION_WORKOUT_DAYS_DB", "")
