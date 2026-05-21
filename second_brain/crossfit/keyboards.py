@@ -68,6 +68,19 @@ def session_feel_keyboard(key: str) -> InlineKeyboardMarkup:
         InlineKeyboardButton("🔥 5", callback_data=f"cf:feel:5:{key}"),
     ], [InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]])
 
+
+def strength_post_keyboard(key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("😫 1", callback_data=f"cf:feel:1:{key}"),
+            InlineKeyboardButton("😕 2", callback_data=f"cf:feel:2:{key}"),
+            InlineKeyboardButton("😐 3", callback_data=f"cf:feel:3:{key}"),
+            InlineKeyboardButton("💪 4", callback_data=f"cf:feel:4:{key}"),
+            InlineKeyboardButton("🔥 5", callback_data=f"cf:feel:5:{key}"),
+        ],
+        [InlineKeyboardButton("➕ Add another movement", callback_data=f"cf:add_strength:{key}")],
+    ])
+
 def readiness_keyboard(key: str, field: str) -> InlineKeyboardMarkup:
     labels = {"1": "😴", "2": "😕", "3": "😐", "4": "🙂", "5": "💪"}
     return InlineKeyboardMarkup([[InlineKeyboardButton(f"{v} {k}", callback_data=f"cf:ready:{key}:{field}:{k}") for k, v in labels.items()], [InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")]])
