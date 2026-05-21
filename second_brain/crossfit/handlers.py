@@ -11,7 +11,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from utils.date_parser import parse_date
 
 from .classify import parse_programme
-from .keyboards import level_confirm_keyboard, my_level_keyboard, rx_scaled_keyboard, session_feel_keyboard, wod_format_keyboard
+from .keyboards import level_confirm_keyboard, my_level_keyboard, rx_scaled_keyboard, session_feel_keyboard, strength_post_keyboard, wod_format_keyboard
 from .notion import create_strength_log, create_wod_log, get_available_tracks_today, get_movement_category, get_movement_details, get_movement_load_type, get_or_create_movement, get_progressions_for_movement, get_today_workout_structure, match_movement, normalise_movement_name, notion_query_wod_log_by_date, save_programme, set_current_level, this_monday
 from .nlp import extract_movements_from_log, extract_workout_data, fuzzy_match_movements, load_movements_cache
 from .readiness import check_readiness_logged_today, extract_readiness_score, log_daily_readiness
@@ -330,6 +330,19 @@ def _infer_result_type(fmt: str | None) -> str:
     }.get(_format_label(fmt), "Rounds")
 
 
+def _format_wod_result(result_type, result_seconds, result_rounds, result_reps):
+    if result_seconds is not None:
+        mins, secs = divmod(int(result_seconds), 60)
+        return "⏱", f"{mins}:{secs:02d}"
+    if result_rounds is not None and result_reps is not None:
+        return "🔄", f"{result_rounds} rounds + {result_reps} reps"
+    if result_rounds is not None:
+        return "🔄", f"{result_rounds} rounds"
+    if result_reps is not None:
+        return "💪", f"{result_reps} reps"
+    return None, None
+
+
 def _rx_scaled_label(value: str | None) -> str:
     return {
         "rx": "Rx",
@@ -403,17 +416,25 @@ def _normalize_strength_movements(workout_result: dict | None, workout_data: dic
     extracted_names = workout_data.get("movements") or []
     if isinstance(extracted_names, str):
         extracted_names = [extracted_names]
-    movement_name = ", ".join(str(name).strip() for name in extracted_names if str(name).strip())
-    if not movement_name:
+    extracted_names = [str(n).strip() for n in extracted_names if str(n).strip()]
+    if not extracted_names:
         movement_name = (workout_result.get("movement") or "").strip()
-    if not movement_name:
-        return []
-    return [{
-        "movement": movement_name,
-        "sets": workout_data.get("sets") or workout_result.get("sets") or 1,
-        "reps": workout_data.get("reps") or workout_result.get("reps") or 1,
-        "load_lbs": workout_data.get("weight_lbs") if workout_data.get("weight_lbs") is not None else workout_result.get("load_lbs"),
-    }]
+        if not movement_name:
+            return []
+        extracted_names = [movement_name]
+    shared_sets = workout_data.get("sets") or workout_result.get("sets") or 1
+    shared_reps = workout_data.get("reps") or workout_result.get("reps") or 1
+    shared_load = workout_data.get("weight_lbs") if workout_data.get("weight_lbs") is not None else workout_result.get("load_lbs")
+    movement_loads = workout_data.get("movement_loads") or {}
+    return [
+        {
+            "movement": name,
+            "sets": shared_sets,
+            "reps": shared_reps,
+            "load_lbs": movement_loads.get(name) if movement_loads.get(name) is not None else shared_load,
+        }
+        for name in extracted_names
+    ]
 
 
 def _has_complete_strength_metadata(state: dict) -> bool:
@@ -534,6 +555,12 @@ async def _prompt_session_feel(message, key: str, state: dict, cf_pending: dict)
     state["stage"] = "awaiting_feel"
     cf_pending[key] = state
     await message.reply_text("💬 How did that session feel?", reply_markup=session_feel_keyboard(key))
+
+
+async def _prompt_strength_post(message, key: str, state: dict, cf_pending: dict) -> None:
+    state["stage"] = "awaiting_feel"
+    cf_pending[key] = state
+    await message.reply_text("💬 How did that session feel?", reply_markup=strength_post_keyboard(key))
 
 def _markdown_bold_value(value: str) -> str:
     escaped = re.sub(r"([\\_*`\[])", r"\\\1", str(value))
@@ -945,8 +972,9 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
         return
     if movement_ids and len(cf_pending[key].get("movements") or []) == 1 and await handle_gymnastics_level_check(message, movement_ids[0], cf_pending[key]["movement"], notion, config, cf_pending, key):
         return
-    has_complete_extraction = bool(raw_text and sets is not None and reps is not None and load_lbs is not None)
-    if has_complete_extraction and len(cf_pending[key].get("movements") or []) <= 1:
+    all_movements = cf_pending[key].get("movements") or []
+    has_complete_extraction = bool(raw_text and sets is not None and reps is not None and (load_lbs is not None or len(all_movements) > 1))
+    if has_complete_extraction:
         await _finalize_flow(message, key, notion, config, cf_pending, cf_pending[key].get("notes"))
         return
     await _prompt_strength_notes_with_pr_context(message, key, notion, config, cf_pending)
@@ -1463,16 +1491,19 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
             for m in movements
         )
         first_load = movements[0].get("load_lbs") if movements else None
+        notes_line = f"📝 Notes: {notes}\n" if notes and notes.strip() else ""
+        weight_line = f"⚖️ Weight: {_format_lbs(first_load) + 'lbs' if first_load else 'BW'}\n" if len(movements) == 1 else ""
         await message.reply_text(
             f"✅ Strength logged!\n\n"
             f"🏋️ {movement_summary}\n"
             f"📅 Date: {workout_date}\n"
             f"📊 Scheme: {scheme_summary}\n"
-            f"⚖️ Weight: {_format_lbs(first_load) + 'lbs' if first_load else 'BW'}\n"
+            f"{weight_line}"
+            f"{notes_line}"
             f"_Saved to Notion_",
             parse_mode="Markdown",
         )
-        await _prompt_session_feel(message, key, state, cf_pending)
+        await _prompt_strength_post(message, key, state, cf_pending)
         return
     elif state.get("mode") == "wod":
         target_wod_db = _cf_config(config, "NOTION_WOD_LOG_DB")
@@ -1545,6 +1576,11 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
             if mid and mid not in movement_ids:
                 movement_ids.append(mid)
         state["movement_page_ids"] = movement_ids
+        if not movement_names and movement_ids:
+            for mid in movement_ids:
+                name = next((k for k, v in movement_cache.items() if v == mid), None)
+                if name and name not in movement_names:
+                    movement_names.append(name)
 
         def _create_wod_log_with_optional_structure():
             kwargs = {}
@@ -1583,10 +1619,22 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         state["last_wod_page_id"] = wod_page_id
         cf_pending[key] = state
         movement_summary = ", ".join(movement_names) if movement_names else "movements not parsed"
+        result_emoji, result_value = _format_wod_result(result_type, result_seconds, result_rounds, result_reps)
+        format_display = f"{wod_format} {time_cap_mins} mins" if time_cap_mins else wod_format
+        confirmation_lines = [
+            "✅ WOD logged!\n",
+            f"🏋️ {movement_summary}",
+            f"📅 Date: {workout_date}",
+            f"📊 Format: {format_display}",
+        ]
+        if result_value:
+            confirmation_lines.append(f"{result_emoji} Result: {result_value}")
+        confirmation_lines.append(f"⚖️ Scale: {_rx_scaled_label(state.get('rx_scaled'))}")
+        if notes and notes.strip():
+            confirmation_lines.append(f"📝 Notes: {notes.strip()}")
+        confirmation_lines.append("_Saved to Notion_")
         await message.reply_text(
-            f"✅ WOD logged!\n\n"
-            f"🏋️ {movement_summary}\n"
-            f"_Saved to Notion_",
+            "\n".join(confirmation_lines),
             parse_mode="Markdown",
         )
         await _prompt_session_feel(message, key, state, cf_pending)
@@ -1627,19 +1675,27 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
             await _safe_delete_message(thinking)
         state = _store_extracted_strength_state(cf_pending, key, extracted, raw_input)
 
-        extracted_movements = extracted.get("movements") or []
-        movement_name = ", ".join(extracted_movements) if extracted_movements else raw_input
-        movement_ids, names = await _resolve_movement_ids(movement_name, claude, notion, config, message)
-        if not movement_ids:
-            await message.reply_text(
-                f"❓ *{movement_name}* isn't in your movement library.\n\n"
-                f"Add it to the Movements DB in Notion, then use /cf_reload_movements to refresh.",
-                parse_mode="Markdown",
-            )
-            cf_pending.pop(key, None)
-            return
+        movement_dicts = _normalize_strength_movements({}, extracted)
+        if not movement_dicts:
+            movement_dicts = [{"movement": raw_input, "sets": state.get("sets") or 1, "reps": state.get("reps") or 1, "load_lbs": state.get("weight_lbs")}]
+        movement_ids: list[str] = []
+        resolved_movements: list[dict] = []
+        for m in movement_dicts:
+            m_ids, m_names = await _resolve_movement_ids(m["movement"], claude, notion, config, message)
+            if not m_ids:
+                await message.reply_text(
+                    f"❓ *{m['movement']}* isn't in your movement library.\n\n"
+                    f"Add it to the Movements DB in Notion, then use /cf_reload_movements to refresh.",
+                    parse_mode="Markdown",
+                )
+                cf_pending.pop(key, None)
+                return
+            for canonical in m_names:
+                movement_ids.append(m_ids[0] if len(m_ids) == 1 else m_ids[m_names.index(canonical)])
+                resolved_movements.append({**m, "movement": canonical})
         movement_id = movement_ids[0] if movement_ids else None
-        state["movement"] = ", ".join(names) if names else movement_name
+        state["movements"] = resolved_movements
+        state["movement"] = resolved_movements[0]["movement"] if resolved_movements else raw_input
         state["movement_name"] = state["movement"]
         state["movement_page_ids"] = movement_ids
         state["movement_page_id"] = movement_id
@@ -1680,6 +1736,11 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
             await _prompt_bodyweight_confirm(message, key, state, cf_pending)
         else:
             if await _prompt_track_or_notes(message, key, notion, config, cf_pending):
+                return
+            all_movements_txt = state.get("movements") or []
+            has_complete = bool(state.get("sets") is not None and state.get("reps") is not None and (state.get("weight_lbs") is not None or len(all_movements_txt) > 1))
+            if has_complete:
+                await _finalize_flow(message, key, notion, config, cf_pending, state.get("notes"))
                 return
             await _prompt_strength_notes_with_pr_context(message, key, notion, config, cf_pending)
         return
@@ -1826,6 +1887,19 @@ async def _cf_log_wod(q, parts, claude, notion, config, cf_pending) -> None:
     key = str(q.message.chat_id)
     cf_pending[key] = {"session_origin": "c"}
     await handle_cf_wod_flow(q.message, {}, notion, config, cf_pending)
+
+
+async def _cf_add_strength(q, parts, claude, notion, config, cf_pending) -> None:
+    if len(parts) < 3:
+        await q.answer("Action unavailable.", show_alert=False)
+        return
+    key = parts[2]
+    state = cf_pending.get(key, {})
+    workout_date = state.get("workout_date") or local_today().isoformat()
+    chain_state = _preserve_chain_state(state)
+    cf_pending[key] = {**chain_state, "workout_date": workout_date}
+    await q.answer()
+    await handle_cf_strength_flow(q.message, {}, claude, notion, config, cf_pending)
 
 
 async def _cf_chain_yes(q, parts, claude, notion, config, cf_pending) -> None:
@@ -2309,6 +2383,7 @@ _CF_CALLBACK_HANDLERS: dict[str, object] = {
     "track":            _cf_track,
     "log_strength":     _cf_log_strength,
     "log_wod":          _cf_log_wod,
+    "add_strength":     _cf_add_strength,
     "chain_yes":        _cf_chain_yes,
     "chain_no":         _cf_chain_no,
     "date_pick":        _cf_date_pick,
