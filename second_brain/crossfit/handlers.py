@@ -330,6 +330,19 @@ def _infer_result_type(fmt: str | None) -> str:
     }.get(_format_label(fmt), "Rounds")
 
 
+def _format_wod_result(result_type, result_seconds, result_rounds, result_reps):
+    if result_seconds is not None:
+        mins, secs = divmod(int(result_seconds), 60)
+        return "⏱", f"{mins}:{secs:02d}"
+    if result_rounds is not None and result_reps is not None:
+        return "🔄", f"{result_rounds} rounds + {result_reps} reps"
+    if result_rounds is not None:
+        return "🔄", f"{result_rounds} rounds"
+    if result_reps is not None:
+        return "💪", f"{result_reps} reps"
+    return None, None
+
+
 def _rx_scaled_label(value: str | None) -> str:
     return {
         "rx": "Rx",
@@ -1463,12 +1476,14 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
             for m in movements
         )
         first_load = movements[0].get("load_lbs") if movements else None
+        notes_line = f"📝 Notes: {notes}\n" if notes and notes.strip() else ""
         await message.reply_text(
             f"✅ Strength logged!\n\n"
             f"🏋️ {movement_summary}\n"
             f"📅 Date: {workout_date}\n"
             f"📊 Scheme: {scheme_summary}\n"
             f"⚖️ Weight: {_format_lbs(first_load) + 'lbs' if first_load else 'BW'}\n"
+            f"{notes_line}"
             f"_Saved to Notion_",
             parse_mode="Markdown",
         )
@@ -1545,6 +1560,11 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
             if mid and mid not in movement_ids:
                 movement_ids.append(mid)
         state["movement_page_ids"] = movement_ids
+        if not movement_names and movement_ids:
+            for mid in movement_ids:
+                name = next((k for k, v in movement_cache.items() if v == mid), None)
+                if name and name not in movement_names:
+                    movement_names.append(name)
 
         def _create_wod_log_with_optional_structure():
             kwargs = {}
@@ -1583,10 +1603,22 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         state["last_wod_page_id"] = wod_page_id
         cf_pending[key] = state
         movement_summary = ", ".join(movement_names) if movement_names else "movements not parsed"
+        result_emoji, result_value = _format_wod_result(result_type, result_seconds, result_rounds, result_reps)
+        format_display = f"{wod_format} {time_cap_mins} mins" if time_cap_mins else wod_format
+        confirmation_lines = [
+            "✅ WOD logged!\n",
+            f"🏋️ {movement_summary}",
+            f"📅 Date: {workout_date}",
+            f"📊 Format: {format_display}",
+        ]
+        if result_value:
+            confirmation_lines.append(f"{result_emoji} Result: {result_value}")
+        confirmation_lines.append(f"⚖️ Scale: {_rx_scaled_label(state.get('rx_scaled'))}")
+        if notes and notes.strip():
+            confirmation_lines.append(f"📝 Notes: {notes.strip()}")
+        confirmation_lines.append("_Saved to Notion_")
         await message.reply_text(
-            f"✅ WOD logged!\n\n"
-            f"🏋️ {movement_summary}\n"
-            f"_Saved to Notion_",
+            "\n".join(confirmation_lines),
             parse_mode="Markdown",
         )
         await _prompt_session_feel(message, key, state, cf_pending)
