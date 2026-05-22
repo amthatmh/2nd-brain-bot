@@ -163,6 +163,7 @@ from second_brain.config import (
     NOTION_TRIPS_DB,
     CLAUDE_MODEL,
     TZ,
+    NOTION_DAILY_READINESS_DB,
 )
 from second_brain.notion.properties import query_all
 from second_brain import formatters as fmt
@@ -172,6 +173,7 @@ from second_brain import trips as trips_mod
 from second_brain.notion import habits as notion_habits
 from second_brain.notion import tasks as notion_tasks
 from second_brain.notion import daily_log as notion_daily_log
+from second_brain.crossfit.readiness import check_readiness_logged_today
 from second_brain.state import STATE
 from second_brain.utils import local_today
 from second_brain.ai.client import get_claude_client
@@ -201,7 +203,7 @@ async def get_digest_config(slot_time: str, weekday: bool, digest_selector_db_id
         slots = load_digest_slots(rows=rows, logger=log)
     except Exception as e:
         log.error("Failed to read digest config for %s (%s): %s", slot_time, "weekday" if weekday else "weekend", e)
-        return {"contexts": None, "max_items": None, "include_habits": False, "include_weather": False, "include_uvi": False, "include_feel": False}
+        return {"contexts": None, "max_items": None, "include_habits": False, "include_weather": False, "include_uvi": False, "include_feel": False, "include_log": False}
     for slot in slots:
         if slot.get("time") == slot_time and bool(slot.get("is_weekday")) == bool(weekday):
             return {
@@ -211,8 +213,9 @@ async def get_digest_config(slot_time: str, weekday: bool, digest_selector_db_id
                 "include_weather": bool(slot.get("include_weather")),
                 "include_uvi": bool(slot.get("include_uvi")),
                 "include_feel": bool(slot.get("include_feel")),
+                "include_log": bool(slot.get("include_log")),
             }
-    return {"contexts": None, "max_items": None, "include_habits": False, "include_weather": False, "include_uvi": False, "include_feel": False}
+    return {"contexts": None, "max_items": None, "include_habits": False, "include_weather": False, "include_uvi": False, "include_feel": False, "include_log": False}
 
 
 def _filter_digest_tasks(tasks: list[dict], config: dict | None = None) -> list[dict]:
@@ -428,7 +431,7 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
     lines = [f"☀️ *{date_str}*", ""]
 
-    include_log = config.get("include_log", True) if config is not None else True
+    include_log = config.get("include_log", False) if config is not None else False
     if _last_daily_log_url and include_log:
         log_date_label = (today - timedelta(days=1)).isoformat()
         lines.append(f"📓 [{log_date_label} Log]({_last_daily_log_url})")
@@ -495,6 +498,8 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     message = trips_mod.append_trip_reminders_to_text(message, within_days=2, notion=_notion, notion_trips_db=NOTION_TRIPS_DB)
 
     include_feel = bool(config.get("include_feel", False)) if config else False
+    if include_feel and _notion:
+        include_feel = not await check_readiness_logged_today(_notion, NOTION_DAILY_READINESS_DB)
     digest_keyboard_rows: list[list[InlineKeyboardButton]] = []
     if habits:
         digest_keyboard_rows.extend([list(row) for row in kb.habit_buttons(habits, "morning", selected=set()).inline_keyboard])
@@ -543,6 +548,7 @@ def manual_digest_config_now(slots: list[dict], now_dt: datetime, is_weekday: bo
         "include_weather": True,
         "include_uvi": bool(chosen.get("include_uvi")),
         "include_feel": bool(chosen.get("include_feel")),
+        "include_log": bool(chosen.get("include_log")),
         "contexts": chosen.get("contexts"),
         "max_items": chosen.get("max_items"),
     }
