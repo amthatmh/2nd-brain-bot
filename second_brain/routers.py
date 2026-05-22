@@ -173,6 +173,18 @@ async def route_classified_message_v10(message, text: str) -> None:
             parse_mode="Markdown",
         )
         return
+    # "Nx movement" with no weight is a PR AIM query, not a strength log entry
+    _AIM_QUERY_RE = re.compile(r'^\d+\s*[xX×]\s+\S', re.IGNORECASE)
+    if (
+        workout_result.get("type") == "strength"
+        and workout_result.get("confidence") == "high"
+        and workout_result.get("load_lbs") is None
+        and _AIM_QUERY_RE.match(text.strip())
+    ):
+        await thinking.delete()
+        await _main().handle_cf_prs_reply(message, text, _notion(), _crossfit_config(), _cf_pending())
+        return
+
     if (
         workout_result.get("type") in ("strength", "conditioning")
         and workout_result.get("confidence") == "high"
