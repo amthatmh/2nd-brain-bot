@@ -1493,6 +1493,8 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         first_load = movements[0].get("load_lbs") if movements else None
         notes_line = f"📝 Notes: {notes}\n" if notes and notes.strip() else ""
         weight_line = f"⚖️ Weight: {_format_lbs(first_load) + 'lbs' if first_load else 'BW'}\n" if len(movements) == 1 else ""
+        state["stage"] = "awaiting_feel"
+        cf_pending[key] = state
         await message.reply_text(
             f"✅ Strength logged!\n\n"
             f"🏋️ {movement_summary}\n"
@@ -1500,10 +1502,11 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
             f"📊 Scheme: {scheme_summary}\n"
             f"{weight_line}"
             f"{notes_line}"
-            f"_Saved to Notion_",
+            f"_Saved to Notion_\n\n"
+            f"💬 How did that session feel?",
             parse_mode="Markdown",
+            reply_markup=strength_post_keyboard(key),
         )
-        await _prompt_strength_post(message, key, state, cf_pending)
         return
     elif state.get("mode") == "wod":
         target_wod_db = _cf_config(config, "NOTION_WOD_LOG_DB")
@@ -1633,11 +1636,14 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         if notes and notes.strip():
             confirmation_lines.append(f"📝 Notes: {notes.strip()}")
         confirmation_lines.append("_Saved to Notion_")
+        confirmation_lines.append("\n💬 How did that session feel?")
+        state["stage"] = "awaiting_feel"
+        cf_pending[key] = state
         await message.reply_text(
             "\n".join(confirmation_lines),
             parse_mode="Markdown",
+            reply_markup=session_feel_keyboard(key),
         )
-        await _prompt_session_feel(message, key, state, cf_pending)
         return
     cf_pending.pop(key, None)
 
