@@ -2047,16 +2047,16 @@ def _workout_row(load, sets, reps, est_1rm, workout_date):
 def test_my_prs_target_reps_uses_workout_log_v2_and_clears_state(monkeypatch):
     import second_brain.crossfit.handlers as handlers
 
-    async def fake_match(notion, config, movement_text, threshold=0.70):
+    async def fake_match(notion, config, movement_text, threshold=80):
         del notion, config
         assert movement_text == "back squat"
-        assert threshold == 0.80
+        assert threshold == 80
         return "Back Squat", "mov-back-squat"
 
-    captured = {}
+    captured_queries = []
 
     def query(**kwargs):
-        captured.update(kwargs)
+        captured_queries.append(kwargs)
         return {"results": [
             _workout_row(245, 1, 3, 266, "2026-05-06"),
             _workout_row(235, 1, 4, 261, "2026-04-28"),
@@ -2078,10 +2078,10 @@ def test_my_prs_target_reps_uses_workout_log_v2_and_clears_state(monkeypatch):
         )
     )
 
-    assert captured["database_id"] == "workout-log"
-    assert captured["filter"] == {"property": "Movement", "relation": {"contains": "mov-back-squat"}}
-    assert captured["sorts"] == [{"property": "load_lbs", "direction": "descending"}]
-    assert captured["page_size"] == 10
+    assert {q["database_id"] for q in captured_queries} == {"workout-log"}
+    assert {q["filter"]["relation"]["contains"] for q in captured_queries} == {"mov-back-squat"}
+    assert {q["sorts"][0]["property"] for q in captured_queries} == {"load_lbs", "Date"}
+    assert {q["page_size"] for q in captured_queries} == {10}
     assert str(message.chat_id) not in pending
     reply = message.replies[-1][0]
     assert "Back Squat — 6 Rep Target" in reply
@@ -2731,3 +2731,83 @@ def test_all_fixture_weeks_parse_without_exceptions():
                 assert day.get("section_b") or day.get("section_c"), (
                     f"{name}: {track['track']} {day['day']} had no sections"
                 )
+
+
+def test_my_prs_recent_sessions_query_separately_by_date(monkeypatch):
+    """Recent sessions must come from a date-sorted query, not the top-by-load query."""
+    from second_brain.crossfit import handlers
+
+    captured_queries: list[dict] = []
+
+    def fake_query(**kwargs):
+        captured_queries.append(kwargs)
+        sort = kwargs.get("sorts", [{}])[0]
+        if sort.get("property") == "load_lbs":
+            return {"results": [
+                {"id": "old-heavy", "properties": {"Date": {"date": {"start": "2020-01-01"}}, "load_lbs": {"number": 300}, "effort_reps": {"number": 1}, "effort_sets": {"number": 1}}},
+            ]}
+        if sort.get("property") == "Date":
+            return {"results": [
+                {"id": "recent-light", "properties": {"Date": {"date": {"start": "2026-05-20"}}, "load_lbs": {"number": 200}, "effort_reps": {"number": 5}, "effort_sets": {"number": 3}}},
+            ]}
+        return {"results": []}
+
+    notion = SimpleNamespace(databases=SimpleNamespace(query=fake_query))
+    handlers.MOVEMENTS_CACHE.clear()
+    handlers.MOVEMENTS_CACHE["Back Squat"] = "mov-back-squat"
+
+    message = _DummyMessage()
+    asyncio.run(handlers.handle_cf_prs_reply(
+        message, "Back Squat", notion,
+        {"NOTION_WORKOUT_LOG_DB": "log", "NOTION_MOVEMENTS_DB": "movements"},
+        cf_pending={str(message.chat_id): {"mode": "prs"}},
+    ))
+
+    sort_props = {q.get("sorts", [{}])[0].get("property") for q in captured_queries}
+    assert "load_lbs" in sort_props
+    assert "Date" in sort_props
+
+    reply = message.replies[-1][0]
+    assert "2026-05-20" in reply
+    assert "300 lbs" in reply
+
+
+def test_resolve_user_movement_rejects_bare_squat():
+    """`squat` alone must NOT silently pick Back Squat or Air Squat."""
+    from second_brain.crossfit.handlers import MOVEMENTS_CACHE, resolve_user_movement
+
+    MOVEMENTS_CACHE.clear()
+    MOVEMENTS_CACHE.update({"Back Squat": "bs", "Air Squat": "as", "Front Squat": "fs"})
+
+    result = asyncio.run(resolve_user_movement(notion=None, config={}, user_text="squat"))
+    assert result is None
+
+
+def test_resolve_user_movement_exact_and_singular():
+    from second_brain.crossfit.handlers import MOVEMENTS_CACHE, resolve_user_movement
+
+    MOVEMENTS_CACHE.clear()
+    MOVEMENTS_CACHE.update({"Back Squat": "bs", "Deadlift": "dl", "Hang Squat Clean": "hsc"})
+
+    assert asyncio.run(resolve_user_movement(None, {}, "Back Squat")) == ("Back Squat", "bs")
+    assert asyncio.run(resolve_user_movement(None, {}, "Deadlifts")) == ("Deadlift", "dl")
+    assert asyncio.run(resolve_user_movement(None, {}, "Hang Squat Cleans")) == ("Hang Squat Clean", "hsc")
+
+
+def test_handle_cf_sub_search_uses_unified_matcher():
+    """Sub search should refuse bare 'squat' the same way PR search does."""
+    from second_brain.crossfit import handlers
+
+    handlers.MOVEMENTS_CACHE.clear()
+    handlers.MOVEMENTS_CACHE.update({"Back Squat": "bs", "Air Squat": "as"})
+
+    message = _DummyMessage()
+    cf_pending = {str(message.chat_id): {"mode": "subs"}}
+    asyncio.run(handlers.handle_cf_sub_search_reply(
+        message, "squat", notion=None,
+        config={"NOTION_MOVEMENTS_DB": "movements"},
+        cf_pending=cf_pending, key=str(message.chat_id),
+    ))
+
+    reply = message.replies[-1][0]
+    assert "Couldn't find that movement" in reply

@@ -13,7 +13,7 @@ from utils.date_parser import parse_date
 from .classify import parse_programme
 from .keyboards import level_confirm_keyboard, my_level_keyboard, rx_scaled_keyboard, session_feel_keyboard, strength_post_keyboard, wod_format_keyboard
 from .notion import create_strength_log, create_wod_log, get_available_tracks_today, get_movement_category, get_movement_details, get_movement_load_type, get_or_create_movement, get_progressions_for_movement, get_today_workout_structure, match_movement, normalise_movement_name, notion_query_wod_log_by_date, save_programme, set_current_level, this_monday
-from .nlp import extract_movements_from_log, extract_workout_data, fuzzy_match_movements, load_movements_cache
+from .nlp import extract_movements_from_log, extract_workout_data, load_movements_cache
 from .readiness import check_readiness_logged_today, extract_readiness_score, log_daily_readiness
 from second_brain.notion import notion_call
 from second_brain.utils import local_today
@@ -244,15 +244,36 @@ def _prop_date(props: dict, *names: str) -> str:
     return "Unknown date"
 
 
-async def _match_movement_from_cache(notion, config: dict, movement_text: str, threshold: float = 0.70) -> tuple[str, str] | None:
+async def resolve_user_movement(
+    notion,
+    config: dict,
+    user_text: str,
+    threshold: int = 80,
+) -> tuple[str, str] | None:
+    """Resolve a user-typed movement name to (canonical_name, page_id).
+
+    Uses the hardened `match_movement` logic from `crossfit/notion.py`:
+    exact -> singular -> plural -> multi-token substring -> fuzzy. Single-token
+    inputs (e.g. "squat", "row", "push") return None unless they hit an exact
+    or singular cache entry, preventing silent ambiguous matches.
+
+    Threshold is passed through to the fuzzy fallback.
+    """
     cache = await _ensure_movements_cache(notion, config)
-    matches = await fuzzy_match_movements([movement_text], cache, threshold=threshold)
-    if not matches:
+    if not cache:
         return None
-    _raw, matched_name, score = matches[0]
-    if not matched_name or score < threshold:
+    page_id = match_movement(user_text, cache, threshold=threshold)
+    if not page_id:
         return None
-    return matched_name, cache[matched_name]
+    matched_name = next(
+        (name for name, pid in cache.items() if pid == page_id),
+        user_text.strip(),
+    )
+    return matched_name, page_id
+
+
+async def _match_movement_from_cache(notion, config: dict, movement_text: str, threshold: int = 80) -> tuple[str, str] | None:
+    return await resolve_user_movement(notion, config, movement_text, threshold=threshold)
 
 
 async def query_wod_log_by_date(notion, wod_log_db_id: str, workout_date: str, wod_format: str | None = None) -> list[dict]:
@@ -1114,16 +1135,13 @@ async def handle_cf_sub_search_reply(message, movement_text: str, notion, config
         await message.reply_text("Which movement do you need a sub for?", parse_mode="Markdown")
         return
 
-    cache = await _ensure_movements_cache(notion, config)
-    matches = await fuzzy_match_movements([movement_name], cache, threshold=0.80)
-    if not matches:
+    match = await resolve_user_movement(notion, config, movement_name)
+    if not match:
         await message.reply_text("❓ Couldn't find that movement. Try again.", parse_mode="Markdown")
         return
-    _raw, matched_name, score = matches[0]
-    if not matched_name or score < 0.80:
-        await message.reply_text("❓ Couldn't find that movement. Try again.", parse_mode="Markdown")
-        return
-    details = await _movement_sub_details(notion, cache[matched_name], {})
+    matched_name, movement_id = match
+    details = await _movement_sub_details(notion, movement_id, {})
+    details["name"] = matched_name
     cf_pending.pop(key, None)
     await message.reply_text(_format_sub_search_result(details), parse_mode="Markdown")
 
@@ -1341,22 +1359,42 @@ async def handle_cf_prs_reply(message, movement_text: str, notion, config, cf_pe
     if not requested_movement:
         await message.reply_text("🏆 Which movement? (e.g. 'back squat' or '6x back squat')", parse_mode="Markdown")
         return
-    match = await _match_movement_from_cache(notion, config, requested_movement, threshold=0.80)
+    match = await _match_movement_from_cache(notion, config, requested_movement, threshold=80)
     if not match:
         await message.reply_text("❓ Couldn't find that movement. Try again.", parse_mode="Markdown")
         return
     movement_name, movement_id = match
     workout_log_db_id = _cf_config(config, "NOTION_WORKOUT_LOG_DB")
-    rows = await _query_workout_log_for_movement(notion, workout_log_db_id, movement_id, page_size=10)
-    entries = [_extract_pr_entry(row) for row in rows]
-    if not entries:
+    heaviest_rows = await _query_workout_log_for_movement(
+        notion, workout_log_db_id, movement_id,
+        page_size=10, sort_property="load_lbs", sort_direction="descending",
+    )
+    recent_rows = await _query_workout_log_for_movement(
+        notion, workout_log_db_id, movement_id,
+        page_size=10, sort_property="Date", sort_direction="descending",
+    )
+
+    seen_ids: set[str] = set()
+    merged_rows: list[dict] = []
+    for row in (*heaviest_rows, *recent_rows):
+        row_id = row.get("id")
+        if row_id and row_id in seen_ids:
+            continue
+        if row_id:
+            seen_ids.add(row_id)
+        merged_rows.append(row)
+
+    heaviest_entries = [_extract_pr_entry(row) for row in heaviest_rows]
+    recent_entries = [_extract_pr_entry(row) for row in recent_rows]
+    all_entries = [_extract_pr_entry(row) for row in merged_rows]
+    if not all_entries:
         cf_pending.pop(key, None)
         await message.reply_text(f"No logged entries found for {movement_name} yet.", parse_mode="Markdown")
         return
 
-    all_time_pr = max(entries, key=lambda entry: (entry.get("load_lbs") or 0, entry.get("estimated_1rm") or 0))
-    best_estimated_1rm = max((entry.get("estimated_1rm") or 0 for entry in entries), default=0)
-    recent_sessions = _recent_unique_sessions(entries)
+    all_time_pr = max(heaviest_entries or all_entries, key=lambda entry: (entry.get("load_lbs") or 0, entry.get("estimated_1rm") or 0))
+    best_estimated_1rm = max((entry.get("estimated_1rm") or 0 for entry in all_entries), default=0)
+    recent_sessions = _recent_unique_sessions(recent_entries or all_entries)
     cf_pending.pop(key, None)
 
     if target_reps is None:
