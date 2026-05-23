@@ -2935,3 +2935,120 @@ def test_todays_sub_renders_directly_for_single_track():
     keyboard = last_kwargs.get("reply_markup")
     assert keyboard is None, "Single-track should not show a picker"
     assert "Monday" in last_reply or "Performance" in last_reply
+
+def test_parse_pr_request_extracts_since_date():
+    from second_brain.crossfit.handlers import _parse_pr_request
+    from datetime import date
+
+    movement, reps, since = _parse_pr_request("back squat since=30d")
+    assert movement == "back squat"
+    assert reps is None
+    assert since is not None
+    parsed = date.fromisoformat(since)
+    assert (date.today() - parsed).days in range(29, 32)
+
+    movement2, reps2, since2 = _parse_pr_request("6x front squat since=2w")
+    assert movement2 == "front squat"
+    assert reps2 == 6
+    assert since2 is not None
+    parsed2 = date.fromisoformat(since2)
+    assert (date.today() - parsed2).days in range(13, 16)
+
+    movement3, reps3, since3 = _parse_pr_request("deadlift")
+    assert movement3 == "deadlift"
+    assert reps3 is None
+    assert since3 is None
+
+
+def test_query_workout_log_passes_after_date_filter():
+    from second_brain.crossfit import handlers
+
+    captured: list[dict] = []
+
+    def fake_query(**kwargs):
+        captured.append(kwargs)
+        return {"results": []}
+
+    notion = SimpleNamespace(databases=SimpleNamespace(query=fake_query))
+    asyncio.run(handlers._query_workout_log_for_movement(
+        notion, "db-id", "mov-id",
+        sort_property="Date", sort_direction="descending",
+        after_date="2026-01-01",
+    ))
+
+    assert captured
+    f = captured[0].get("filter", {})
+    assert f.get("and"), "Expected compound 'and' filter when after_date is set"
+    clauses = f["and"]
+    date_clauses = [c for c in clauses if c.get("property") == "Date"]
+    assert date_clauses, "Expected a Date filter clause"
+    assert date_clauses[0]["date"]["after"] == "2026-01-01"
+
+
+def test_prs_reply_includes_since_note_when_date_filtered():
+    from second_brain.crossfit import handlers
+
+    def fake_query(**kwargs):
+        return {"results": [
+            {"id": "r1", "properties": {
+                "Date": {"date": {"start": "2026-04-01"}},
+                "load_lbs": {"number": 200},
+                "effort_reps": {"number": 5},
+                "effort_sets": {"number": 3},
+            }}
+        ]}
+
+    notion = SimpleNamespace(databases=SimpleNamespace(query=fake_query))
+    handlers.MOVEMENTS_CACHE.clear()
+    handlers.MOVEMENTS_CACHE["Back Squat"] = "bs-id"
+
+    message = _DummyMessage()
+    asyncio.run(handlers.handle_cf_prs_reply(
+        message, "back squat since=30d", notion,
+        {"NOTION_WORKOUT_LOG_DB": "log", "NOTION_MOVEMENTS_DB": "mv"},
+        cf_pending={str(message.chat_id): {"mode": "prs"}},
+    ))
+
+    reply = message.replies[-1][0]
+    assert "since" in reply.lower(), "Reply should mention the since filter"
+
+
+def test_format_sub_search_result_shows_scaling_notes_for_relations():
+    from second_brain.crossfit.handlers import _format_sub_search_result
+
+    details = {
+        "name": "Front Squat",
+        "scaling_notes": "Reduce weight; use goblet as regression",
+        "notes": "",
+        "complementary_movements": [
+            {"name": "Back Squat", "scaling_notes": "Primary strength driver"},
+            {"name": "Air Squat", "scaling_notes": ""},
+        ],
+        "antagonist_movements": [
+            {"name": "Nordic Curl", "scaling_notes": "Hamstring balance"}
+        ],
+    }
+
+    result = _format_sub_search_result(details)
+    assert "• *Back Squat*: Primary strength driver" in result
+    assert "• *Air Squat*" in result
+    assert "• *Nordic Curl*: Hamstring balance" in result
+    assert "Complementary" in result
+    assert "Antagonist" in result
+
+
+def test_format_sub_search_result_handles_legacy_string_lists():
+    """Should not crash if complementary_movements is still a list of strings."""
+    from second_brain.crossfit.handlers import _format_sub_search_result
+
+    details = {
+        "name": "Deadlift",
+        "scaling_notes": "Sub: Romanian Deadlift",
+        "notes": "",
+        "complementary_movements": ["Good Morning", "Hip Hinge"],
+        "antagonist_movements": [],
+    }
+    result = _format_sub_search_result(details)
+    assert "Good Morning" in result
+    assert "Hip Hinge" in result
+    assert "None set" in result
