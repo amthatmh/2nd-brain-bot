@@ -67,7 +67,14 @@ def load_movement_library(notion, movements_db_id: str) -> dict[str, str]:
 
 
 def match_movement(name: str, movement_cache: dict[str, str], threshold: int = 80) -> str | None:
-    """Match name against loaded library. Returns page_id or None. Never creates pages."""
+    """Match name against loaded library. Returns page_id or None. Never creates pages.
+
+    Resolution order: exact lookup, singularised lookup, pluralised lookup,
+    multi-token substring search (handles cache keys like "Hang Cleans (115/85)"),
+    then fuzzy match. Single-token keys ("push", "squat", "row") skip the
+    substring/fuzzy fallbacks — otherwise the first cache row containing that
+    token wins (e.g. "push" → "Sled Push", "squat" → "Back Squat").
+    """
     from rapidfuzz import process, fuzz
     if not name or not movement_cache:
         return None
@@ -75,13 +82,20 @@ def match_movement(name: str, movement_cache: dict[str, str], threshold: int = 8
     lowered = {str(k).lower(): v for k, v in movement_cache.items()}
     if key in lowered:
         return lowered[key]
-    simple_key = re.sub(r"[^a-z0-9 ]+", " ", key)
-    simple_key = re.sub(r"\s+", " ", simple_key).strip()
+    singular_key = re.sub(r"\b(\w+)s\b", r"\1", key)
+    if singular_key != key and singular_key in lowered:
+        return lowered[singular_key]
+    plural_key = " ".join(word + "s" if not word.endswith("s") else word for word in key.split())
+    if plural_key != key and plural_key in lowered:
+        return lowered[plural_key]
+    if len(key.split()) < 2:
+        log.debug("match_movement: no match for '%s' (single token, no exact hit)", name)
+        return None
+    simple_key = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", key)).strip()
     for candidate, page_id in lowered.items():
-        simple_candidate = re.sub(r"[^a-z0-9 ]+", " ", candidate)
-        simple_candidate = re.sub(r"\s+", " ", simple_candidate).strip()
+        simple_candidate = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", candidate)).strip()
         singular_candidate = re.sub(r"\b(\w+)s\b", r"\1", simple_candidate)
-        if simple_key and (simple_key in simple_candidate or simple_key in singular_candidate):
+        if simple_key and f" {simple_key} " in f" {singular_candidate} ":
             return page_id
     result = process.extractOne(key, lowered.keys(), scorer=fuzz.token_sort_ratio, score_cutoff=threshold)
     if result:
@@ -211,7 +225,6 @@ MOVEMENT_ALIAS_MAP = [
     (r"box\s+jump\s+over", "Box Jump"),
     (r"burpee\s+broad\s+jump", "Burpee"),
     (r"line[\s-]facing\s+burpee", "Burpee"),
-    (r"rope\s+climb", "Pull-Up"),
     (r"lying\s+to\s+stand\s+rope\s+(climb|pull)", "Ring Row"),
     (r"(db|dumbbell)\s+push\s+press", "Dumbbell Push Press"),
     (r"(kb|kettlebell)\s+hang\s+clean", "Kettlebell Clean"),
@@ -251,16 +264,40 @@ def normalise_movement_name(raw: str) -> list[str]:
         return []
 
     slash_parts = re.split(r"\s*/\s*", s)
-    if len(slash_parts) > 1 and all(re.search(r"[a-zA-Z]{3,}", p) for p in slash_parts):
-        if len(slash_parts) == 2:
-            right_words = slash_parts[1].split()
-            left_words = slash_parts[0].split()
-            if len(left_words) == 1 and len(right_words) > 1:
-                slash_parts[0] = f"{slash_parts[0]} {' '.join(right_words[1:])}"
-        out: list[str] = []
-        for part in slash_parts:
-            out.extend(normalise_movement_name(part))
-        return out
+    # Only treat the slash as an alternation separator when every side looks like a
+    # short movement phrase. A long sentence like "Touch N Go push/power jerk means as
+    # the barbell comes down..." used to split into "Touch N Go push" → "push" — a
+    # bare token that then substring-matched onto Sled Push.
+    if len(slash_parts) > 1:
+        # Strip leading "200'" / "500 Meter" style prefixes from each side before
+        # gauging shape and smart-splitting. Otherwise "200' Sled Pull/Push" looks
+        # like (left=3 words, right=1) and skips the reverse smart-split, leaving a
+        # bare "Push" candidate that would substring-match onto Sled Push.
+        lead_num_re = re.compile(
+            r"^\d[\d/'\"\.]*\s*(meter|m|cal|calories|foot|feet)?\s*",
+            re.IGNORECASE,
+        )
+        stripped_parts = [lead_num_re.sub("", p).strip() for p in slash_parts]
+        if (
+            all(re.search(r"[a-zA-Z]{3,}", p) for p in stripped_parts)
+            and all(len(p.split()) <= 4 for p in stripped_parts)
+        ):
+            if len(slash_parts) == 2:
+                right_words = stripped_parts[1].split()
+                left_words = stripped_parts[0].split()
+                if len(left_words) == 1 and len(right_words) > 1:
+                    # "Push/Power Jerk" → left "Push" gets the trailing "Jerk" of the right
+                    slash_parts[0] = f"{slash_parts[0]} {' '.join(right_words[1:])}"
+                elif len(right_words) == 1 and len(left_words) == 2:
+                    # "Sled Push/Pull" → right "Pull" inherits left's leading "Sled".
+                    # Conservative: only when left has exactly two words (after
+                    # stripping leading number/distance), so we know which token is
+                    # the shared prefix and which is the alternation point.
+                    slash_parts[1] = f"{left_words[0]} {slash_parts[1]}"
+            out: list[str] = []
+            for part in slash_parts:
+                out.extend(normalise_movement_name(part))
+            return out
 
     s = re.sub(r"\s*\(.*?\)\s*$", "", s).strip()
     s = re.sub(r"^\d[\d/'\"\.]*\s*(meter|m|cal|calories|foot|feet)?\s*", "", s, flags=re.IGNORECASE).strip()
@@ -341,16 +378,47 @@ def _run_fuzzy_match_sync(names: list[str], cache: dict[str, str]):
 
 
 def _movement_names_from_text(section_text: str, movement_cache: dict[str, str]) -> list[str]:
-    """Find cache movements mentioned in section text, then preserve order."""
+    """Find cache movements mentioned in section text, keeping only the longest match per range.
+
+    Without the containment filter, a text like "Hang Squat Clean" would match both
+    "Hang Squat Clean" and "Squat Clean" — and any short alias such as "Squat" (for
+    Back Squat) or "Row" (within "Ring Row"). We collect every occurrence with its
+    span, then drop any occurrence fully contained inside a longer one.
+    """
     normalized_text = f" {normalize_movement_name(section_text or '')} "
-    found: list[str] = []
+    matches: list[tuple[str, int, int]] = []
     for movement_name in movement_cache:
         normalized_name = normalize_movement_name(movement_name)
         if not normalized_name:
             continue
-        if f" {normalized_name} " in normalized_text and movement_name not in found:
-            found.append(movement_name)
-    return sorted(found, key=lambda name: (section_text.lower().find(name.lower()), name))
+        needle = f" {normalized_name} "
+        cursor = 0
+        while True:
+            idx = normalized_text.find(needle, cursor)
+            if idx < 0:
+                break
+            content_start = idx + 1
+            content_end = idx + len(needle) - 1
+            matches.append((movement_name, content_start, content_end))
+            cursor = content_end
+
+    if not matches:
+        return []
+
+    matches.sort(key=lambda m: (-(m[2] - m[1]), m[1]))
+    kept: list[tuple[str, int, int]] = []
+    for name, start, end in matches:
+        if any(k_start <= start and end <= k_end for _, k_start, k_end in kept):
+            continue
+        kept.append((name, start, end))
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for name, _, _ in kept:
+        if name not in seen:
+            seen.add(name)
+            ordered.append(name)
+    return sorted(ordered, key=lambda name: (section_text.lower().find(name.lower()), name))
 
 
 def _resolve_section_movements(section: dict, movement_cache: dict[str, str], notion=None, movements_db_id: str = "") -> list[str]:
@@ -474,8 +542,13 @@ _TRACK_NAMES = ("Performance", "Fitness", "Hyrox")
 
 
 def _header_line_pattern(names: tuple[str, ...]) -> re.Pattern:
+    # The lookahead allows the common trailing punctuation we see in coach
+    # emails: whitespace, markdown decoration, colon, dash, period, close paren.
+    # The period is essential — "FITNESS." (with trailing dot) is used on
+    # Saturday week-of-04.27 and would otherwise leak its content into the
+    # preceding PERFORMANCE block.
     choices = "|".join(re.escape(name) for name in names)
-    return re.compile(rf"(?im)^\s*[*_`#>\-\s]*(?P<name>{choices})(?=[\s*_`:#>\-–—)]|$)[^\n]*$", re.IGNORECASE)
+    return re.compile(rf"(?im)^\s*[*_`#>\-\s]*(?P<name>{choices})(?=[\s*_`:#>\-–—).]|$)[^\n]*$", re.IGNORECASE)
 
 
 def _split_by_headers(text: str, names: tuple[str, ...]) -> list[tuple[str, str]]:
@@ -529,7 +602,11 @@ def _extract_sections(block: str) -> tuple[str, str, str]:
             continue
         lines.append(line)
     body = "\n".join(lines)
-    marker = re.compile(r"(?im)^\s*[*_`]*(?:section\s*)?(?P<section>[BC])[*_`]*[\.)]\s+")
+    # `[\.)]\s*` accepts both "B. Take 15 Minutes..." and "B.Take 15 Minutes..."
+    # (the latter appears in Friday Fitness week-of-04.27). The trailing `[A-Z]`
+    # ensures we still anchor to the start of a section header, not random
+    # mid-sentence "B." references.
+    marker = re.compile(r"(?im)^\s*[*_`]*(?:section\s*)?(?P<section>[BC])[*_`]*[\.)]\s*(?=[A-Z\d])")
     matches = list(marker.finditer(body))
     section_text: dict[str, str] = {"B": "", "C": ""}
     for idx, match in enumerate(matches):
@@ -542,21 +619,43 @@ def _extract_sections(block: str) -> tuple[str, str, str]:
     return section_text["B"], section_text["C"], ""
 
 
+def _day_entry(day: str, section_b: str, section_c: str, training_notes: str) -> dict:
+    return {
+        "day": day,
+        "section_b": {
+            "description": section_b,
+            "movements": _extract_candidate_movements_from_section(section_b),
+        } if section_b else {},
+        "section_c": {
+            "description": section_c,
+            "movements": _extract_candidate_movements_from_section(section_c),
+            "is_partner": "partner" in section_c.lower(),
+        } if section_c else {},
+        "training_notes": training_notes,
+    }
+
+
 def parse_weekly_program_text(full_text: str, week_label: str | None = None) -> dict:
-    """Parse raw Weekly Programs text into tracks/days using day and track headers."""
+    """Parse raw Weekly Programs text into tracks/days using day and track headers.
+
+    Thursday is treated as the Hyrox day regardless of any Performance/Fitness
+    header that appears in the source text — the coach's program puts the Hyrox
+    workout under "PERFORMANCE" on Thursdays, but downstream consumers expect the
+    Hyrox track tag.
+    """
     tracks_by_name: dict[str, list[dict]] = {track: [] for track in _TRACK_NAMES}
     for day, day_block in _split_by_headers(full_text or "", _DAY_NAMES):
+        if day == "Thursday":
+            section_b, section_c, training_notes = _extract_sections(day_block)
+            if section_b or section_c:
+                tracks_by_name["Hyrox"].append(_day_entry(day, section_b, section_c, training_notes))
+            continue
         track_blocks = _split_by_headers(day_block, _TRACK_NAMES)
         if not track_blocks:
             continue
         for track, track_block in track_blocks:
             section_b, section_c, training_notes = _extract_sections(track_block)
-            tracks_by_name[track].append({
-                "day": day,
-                "section_b": {"description": section_b, "movements": _extract_candidate_movements_from_section(section_b)} if section_b else {},
-                "section_c": {"description": section_c, "movements": _extract_candidate_movements_from_section(section_c), "is_partner": "partner" in section_c.lower()} if section_c else {},
-                "training_notes": training_notes,
-            })
+            tracks_by_name[track].append(_day_entry(day, section_b, section_c, training_notes))
     tracks = [{"track": track, "days": days} for track, days in tracks_by_name.items() if days]
     if not tracks:
         raise ValueError("No day/track workout blocks found in Full Program")
