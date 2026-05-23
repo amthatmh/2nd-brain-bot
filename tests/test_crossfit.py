@@ -2811,3 +2811,127 @@ def test_handle_cf_sub_search_uses_unified_matcher():
 
     reply = message.replies[-1][0]
     assert "Couldn't find that movement" in reply
+
+def test_prs_rejects_out_of_range_target_reps():
+    """target_reps outside [1, 20] should reply with a warning and not query Notion."""
+    from second_brain.crossfit import handlers
+
+    queried = []
+
+    def fake_query(**kwargs):
+        queried.append(kwargs)
+        return {"results": []}
+
+    notion = SimpleNamespace(databases=SimpleNamespace(query=fake_query))
+    handlers.MOVEMENTS_CACHE.clear()
+    handlers.MOVEMENTS_CACHE["Back Squat"] = "bs-id"
+
+    for bad_input in ("100x back squat", "0x back squat", "21x back squat"):
+        message = _DummyMessage()
+        asyncio.run(handlers.handle_cf_prs_reply(
+            message, bad_input, notion,
+            {"NOTION_WORKOUT_LOG_DB": "log", "NOTION_MOVEMENTS_DB": "mv"},
+            cf_pending={str(message.chat_id): {"mode": "prs"}},
+        ))
+        assert not queried, f"Should not query Notion for '{bad_input}'"
+        reply = message.replies[-1][0]
+        assert "Rep target must be between" in reply
+
+
+def test_prs_accepts_boundary_target_reps():
+    """target_reps 1 and 20 should pass the guardrail and query Notion."""
+    from second_brain.crossfit import handlers
+
+    def fake_query(**kwargs):
+        return {"results": [
+            {"id": "r1", "properties": {
+                "Date": {"date": {"start": "2026-01-01"}},
+                "load_lbs": {"number": 200},
+                "effort_reps": {"number": 5},
+                "effort_sets": {"number": 3},
+            }}
+        ]}
+
+    notion = SimpleNamespace(databases=SimpleNamespace(query=fake_query))
+    handlers.MOVEMENTS_CACHE.clear()
+    handlers.MOVEMENTS_CACHE["Back Squat"] = "bs-id"
+
+    for good_input in ("1x back squat", "20x back squat"):
+        message = _DummyMessage()
+        asyncio.run(handlers.handle_cf_prs_reply(
+            message, good_input, notion,
+            {"NOTION_WORKOUT_LOG_DB": "log", "NOTION_MOVEMENTS_DB": "mv"},
+            cf_pending={str(message.chat_id): {"mode": "prs"}},
+        ))
+        reply = message.replies[-1][0]
+        assert "Rep target must be between" not in reply
+
+
+def test_todays_sub_shows_track_picker_for_multiple_tracks():
+    """When today has >1 track row, handle_todays_sub replies with an inline keyboard."""
+    from second_brain.crossfit import handlers
+
+    def fake_query(**kwargs):
+        return {"results": [
+            {"id": "r1", "properties": {
+                "Day": {"select": {"name": "Monday"}},
+                "Track": {"select": {"name": "Performance"}},
+                "Week Of": {"date": {"start": "2026-05-18"}},
+                "Section B Movements": {"relation": []},
+                "Section C Movements": {"relation": []},
+            }},
+            {"id": "r2", "properties": {
+                "Day": {"select": {"name": "Monday"}},
+                "Track": {"select": {"name": "Hyrox"}},
+                "Week Of": {"date": {"start": "2026-05-18"}},
+                "Section B Movements": {"relation": []},
+                "Section C Movements": {"relation": []},
+            }},
+        ]}
+
+    notion = SimpleNamespace(databases=SimpleNamespace(query=fake_query))
+    message = _DummyMessage()
+    asyncio.run(handlers.handle_todays_sub(
+        message, notion,
+        {"NOTION_WORKOUT_DAYS_DB": "days-db"},
+    ))
+
+    assert message.replies, "Expected at least one reply"
+    last_reply, last_kwargs = message.replies[-1]
+    keyboard = last_kwargs.get("reply_markup")
+    assert keyboard is not None, "Expected an inline keyboard"
+    button_labels = [btn.text for row in keyboard.inline_keyboard for btn in row]
+    assert "Performance" in button_labels
+    assert "Hyrox" in button_labels
+    assert "Section B" not in last_reply
+
+
+def test_todays_sub_renders_directly_for_single_track():
+    """When today has only one track, handle_todays_sub renders it without a picker."""
+    from second_brain.crossfit import handlers
+
+    def fake_query(**kwargs):
+        return {"results": [
+            {"id": "r1", "properties": {
+                "Day": {"select": {"name": "Monday"}},
+                "Track": {"select": {"name": "Performance"}},
+                "Week Of": {"date": {"start": "2026-05-18"}},
+                "Section B Movements": {"relation": []},
+                "Section C Movements": {"relation": []},
+            }},
+        ]}
+
+    notion = SimpleNamespace(
+        databases=SimpleNamespace(query=fake_query),
+        pages=SimpleNamespace(retrieve=lambda **kw: {"properties": {}}),
+    )
+    message = _DummyMessage()
+    asyncio.run(handlers.handle_todays_sub(
+        message, notion,
+        {"NOTION_WORKOUT_DAYS_DB": "days-db"},
+    ))
+
+    last_reply, last_kwargs = message.replies[-1]
+    keyboard = last_kwargs.get("reply_markup")
+    assert keyboard is None, "Single-track should not show a picker"
+    assert "Monday" in last_reply or "Performance" in last_reply

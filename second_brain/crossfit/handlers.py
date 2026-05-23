@@ -1218,14 +1218,39 @@ async def handle_todays_sub(message, notion, config) -> None:
         await message.reply_text("📅 No programme found for today. Use 🔍 Search Subs instead.", parse_mode="Markdown")
         return
 
+    if len(rows) > 1:
+        buttons = [[
+            InlineKeyboardButton(
+                _select_name(row.get("properties", {}), "Track", "Workout"),
+                callback_data=f"cf:sub_track:{_select_name(row.get('properties', {}), 'Track', 'Workout')}",
+            )
+        ] for row in rows]
+        await message.reply_text(
+            "📅 *Today's Subs — which track?*",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode="Markdown",
+        )
+        return
+
+    await _render_todays_sub_rows(message, notion, rows, day_name)
+
+
+async def _render_todays_sub_rows(
+    message, notion, rows: list[dict], day_name: str
+) -> None:
+    """Fetch movement sub-details for each row and send the result."""
     request_cache: dict[str, dict] = {}
     blocks: list[str] = []
     for row in rows:
         props = row.get("properties", {})
         row_day = _select_name(props, "Day", day_name)
         track = _select_name(props, "Track", "Workout")
-        b_details = await _movement_details_for_section(notion, props, "Section B Movements", request_cache)
-        c_details = await _movement_details_for_section(notion, props, "Section C Movements", request_cache)
+        b_details = await _movement_details_for_section(
+            notion, props, "Section B Movements", request_cache
+        )
+        c_details = await _movement_details_for_section(
+            notion, props, "Section C Movements", request_cache
+        )
         lines = [f"📅 *{row_day} — {track}*", ""]
         lines.extend(_section_lines("Section B", b_details))
         lines.append("")
@@ -1244,6 +1269,9 @@ def _parse_pr_request(raw_text: str) -> tuple[str, int | None]:
     if target_match:
         return target_match.group(2).strip(), int(target_match.group(1))
     return text, None
+
+
+MAX_TARGET_REPS = 20
 
 
 def _rep_percent(target_reps: int) -> float:
@@ -1358,6 +1386,12 @@ async def handle_cf_prs_reply(message, movement_text: str, notion, config, cf_pe
     requested_movement, target_reps = _parse_pr_request(movement_text)
     if not requested_movement:
         await message.reply_text("🏆 Which movement? (e.g. 'back squat' or '6x back squat')", parse_mode="Markdown")
+        return
+    if target_reps is not None and not (1 <= target_reps <= MAX_TARGET_REPS):
+        await message.reply_text(
+            f"⚠️ Rep target must be between 1 and {MAX_TARGET_REPS}. Try e.g. '5x back squat'.",
+            parse_mode="Markdown",
+        )
         return
     match = await _match_movement_from_cache(notion, config, requested_movement, threshold=80)
     if not match:
@@ -2053,6 +2087,32 @@ async def _cf_sub_today(q, parts, claude, notion, config, cf_pending) -> None:
     await handle_todays_sub(q.message, notion, config)
 
 
+async def _cf_sub_track(q, parts, claude, notion, config, cf_pending) -> None:
+    """Handle 'cf:sub_track:{track_name}' — show subs for one specific track."""
+    if len(parts) < 3:
+        await q.answer("Track not found.", show_alert=False)
+        return
+    chosen_track = parts[2]
+    workout_days_db_id = _cf_config(config, "NOTION_WORKOUT_DAYS_DB")
+    if not workout_days_db_id:
+        await q.message.reply_text(
+            "📅 No programme found for today.", parse_mode="Markdown"
+        )
+        return
+    day_name, rows = await _workout_day_rows_for_today(notion, workout_days_db_id)
+    matching = [
+        r for r in rows
+        if _select_name(r.get("properties", {}), "Track", "") == chosen_track
+    ]
+    if not matching:
+        await q.message.reply_text(
+            f"📅 No programme found for *{chosen_track}* today.",
+            parse_mode="Markdown",
+        )
+        return
+    await _render_todays_sub_rows(q.message, notion, matching, day_name)
+
+
 async def _cf_prs(q, parts, claude, notion, config, cf_pending) -> None:
     await handle_cf_prs(q.message, notion, config, cf_pending)
 
@@ -2437,6 +2497,7 @@ _CF_CALLBACK_HANDLERS: dict[str, object] = {
     "sub_search":       _cf_sub_search,
     "subs_search":      _cf_sub_search,
     "sub_today":        _cf_sub_today,
+    "sub_track":        _cf_sub_track,
     "todays_sub":       _cf_sub_today,
     "prs":              _cf_prs,
     "my_prs":           _cf_prs,
