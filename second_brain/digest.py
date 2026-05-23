@@ -264,12 +264,14 @@ async def send_digest_for_slot(bot, slot: dict) -> None:
         config.get("contexts"),
         config.get("max_items"),
     )
-    if not config.get("contexts") and not config.get("include_habits") and not config.get("include_weather") and not config.get("include_feel"):
+    if not config.get("contexts") and not config.get("include_habits") and not config.get("include_weather") and not config.get("include_feel") and not config.get("include_log"):
         log.info(
-            "Skipping slot %s — nothing selected (no contexts, habits, weather, or feel)",
+            "Skipping slot %s — nothing selected (no contexts, habits, weather, feel, or log)",
             slot.get("time"),
         )
         return
+    if config.get("include_log") and not _last_daily_log_url:
+        await generate_daily_log(bot)
     await send_daily_digest(
         bot,
         include_habits=bool(config.get("include_habits")),

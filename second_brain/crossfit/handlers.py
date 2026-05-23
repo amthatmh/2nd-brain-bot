@@ -1350,9 +1350,6 @@ def _parse_pr_request(raw_text: str) -> tuple[str, int | None, str | None]:
 MAX_TARGET_REPS = 20
 
 
-MAX_TARGET_REPS = 20
-
-
 def _rep_percent(target_reps: int) -> float:
     if target_reps in REPS_TO_PERCENT:
         return REPS_TO_PERCENT[target_reps]
