@@ -2811,3 +2811,244 @@ def test_handle_cf_sub_search_uses_unified_matcher():
 
     reply = message.replies[-1][0]
     assert "Couldn't find that movement" in reply
+
+def test_prs_rejects_out_of_range_target_reps():
+    """target_reps outside [1, 20] should reply with a warning and not query Notion."""
+    from second_brain.crossfit import handlers
+
+    queried = []
+
+    def fake_query(**kwargs):
+        queried.append(kwargs)
+        return {"results": []}
+
+    notion = SimpleNamespace(databases=SimpleNamespace(query=fake_query))
+    handlers.MOVEMENTS_CACHE.clear()
+    handlers.MOVEMENTS_CACHE["Back Squat"] = "bs-id"
+
+    for bad_input in ("100x back squat", "0x back squat", "21x back squat"):
+        message = _DummyMessage()
+        asyncio.run(handlers.handle_cf_prs_reply(
+            message, bad_input, notion,
+            {"NOTION_WORKOUT_LOG_DB": "log", "NOTION_MOVEMENTS_DB": "mv"},
+            cf_pending={str(message.chat_id): {"mode": "prs"}},
+        ))
+        assert not queried, f"Should not query Notion for '{bad_input}'"
+        reply = message.replies[-1][0]
+        assert "Rep target must be between" in reply
+
+
+def test_prs_accepts_boundary_target_reps():
+    """target_reps 1 and 20 should pass the guardrail and query Notion."""
+    from second_brain.crossfit import handlers
+
+    def fake_query(**kwargs):
+        return {"results": [
+            {"id": "r1", "properties": {
+                "Date": {"date": {"start": "2026-01-01"}},
+                "load_lbs": {"number": 200},
+                "effort_reps": {"number": 5},
+                "effort_sets": {"number": 3},
+            }}
+        ]}
+
+    notion = SimpleNamespace(databases=SimpleNamespace(query=fake_query))
+    handlers.MOVEMENTS_CACHE.clear()
+    handlers.MOVEMENTS_CACHE["Back Squat"] = "bs-id"
+
+    for good_input in ("1x back squat", "20x back squat"):
+        message = _DummyMessage()
+        asyncio.run(handlers.handle_cf_prs_reply(
+            message, good_input, notion,
+            {"NOTION_WORKOUT_LOG_DB": "log", "NOTION_MOVEMENTS_DB": "mv"},
+            cf_pending={str(message.chat_id): {"mode": "prs"}},
+        ))
+        reply = message.replies[-1][0]
+        assert "Rep target must be between" not in reply
+
+
+def test_todays_sub_shows_track_picker_for_multiple_tracks():
+    """When today has >1 track row, handle_todays_sub replies with an inline keyboard."""
+    from second_brain.crossfit import handlers
+
+    def fake_query(**kwargs):
+        return {"results": [
+            {"id": "r1", "properties": {
+                "Day": {"select": {"name": "Monday"}},
+                "Track": {"select": {"name": "Performance"}},
+                "Week Of": {"date": {"start": "2026-05-18"}},
+                "Section B Movements": {"relation": []},
+                "Section C Movements": {"relation": []},
+            }},
+            {"id": "r2", "properties": {
+                "Day": {"select": {"name": "Monday"}},
+                "Track": {"select": {"name": "Hyrox"}},
+                "Week Of": {"date": {"start": "2026-05-18"}},
+                "Section B Movements": {"relation": []},
+                "Section C Movements": {"relation": []},
+            }},
+        ]}
+
+    notion = SimpleNamespace(databases=SimpleNamespace(query=fake_query))
+    message = _DummyMessage()
+    asyncio.run(handlers.handle_todays_sub(
+        message, notion,
+        {"NOTION_WORKOUT_DAYS_DB": "days-db"},
+    ))
+
+    assert message.replies, "Expected at least one reply"
+    last_reply, last_kwargs = message.replies[-1]
+    keyboard = last_kwargs.get("reply_markup")
+    assert keyboard is not None, "Expected an inline keyboard"
+    button_labels = [btn.text for row in keyboard.inline_keyboard for btn in row]
+    assert "Performance" in button_labels
+    assert "Hyrox" in button_labels
+    assert "Section B" not in last_reply
+
+
+def test_todays_sub_renders_directly_for_single_track():
+    """When today has only one track, handle_todays_sub renders it without a picker."""
+    from second_brain.crossfit import handlers
+
+    def fake_query(**kwargs):
+        return {"results": [
+            {"id": "r1", "properties": {
+                "Day": {"select": {"name": "Monday"}},
+                "Track": {"select": {"name": "Performance"}},
+                "Week Of": {"date": {"start": "2026-05-18"}},
+                "Section B Movements": {"relation": []},
+                "Section C Movements": {"relation": []},
+            }},
+        ]}
+
+    notion = SimpleNamespace(
+        databases=SimpleNamespace(query=fake_query),
+        pages=SimpleNamespace(retrieve=lambda **kw: {"properties": {}}),
+    )
+    message = _DummyMessage()
+    asyncio.run(handlers.handle_todays_sub(
+        message, notion,
+        {"NOTION_WORKOUT_DAYS_DB": "days-db"},
+    ))
+
+    last_reply, last_kwargs = message.replies[-1]
+    keyboard = last_kwargs.get("reply_markup")
+    assert keyboard is None, "Single-track should not show a picker"
+    assert "Monday" in last_reply or "Performance" in last_reply
+
+def test_parse_pr_request_extracts_since_date():
+    from second_brain.crossfit.handlers import _parse_pr_request
+    from datetime import date
+
+    movement, reps, since = _parse_pr_request("back squat since=30d")
+    assert movement == "back squat"
+    assert reps is None
+    assert since is not None
+    parsed = date.fromisoformat(since)
+    assert (date.today() - parsed).days in range(29, 32)
+
+    movement2, reps2, since2 = _parse_pr_request("6x front squat since=2w")
+    assert movement2 == "front squat"
+    assert reps2 == 6
+    assert since2 is not None
+    parsed2 = date.fromisoformat(since2)
+    assert (date.today() - parsed2).days in range(13, 16)
+
+    movement3, reps3, since3 = _parse_pr_request("deadlift")
+    assert movement3 == "deadlift"
+    assert reps3 is None
+    assert since3 is None
+
+
+def test_query_workout_log_passes_after_date_filter():
+    from second_brain.crossfit import handlers
+
+    captured: list[dict] = []
+
+    def fake_query(**kwargs):
+        captured.append(kwargs)
+        return {"results": []}
+
+    notion = SimpleNamespace(databases=SimpleNamespace(query=fake_query))
+    asyncio.run(handlers._query_workout_log_for_movement(
+        notion, "db-id", "mov-id",
+        sort_property="Date", sort_direction="descending",
+        after_date="2026-01-01",
+    ))
+
+    assert captured
+    f = captured[0].get("filter", {})
+    assert f.get("and"), "Expected compound 'and' filter when after_date is set"
+    clauses = f["and"]
+    date_clauses = [c for c in clauses if c.get("property") == "Date"]
+    assert date_clauses, "Expected a Date filter clause"
+    assert date_clauses[0]["date"]["after"] == "2026-01-01"
+
+
+def test_prs_reply_includes_since_note_when_date_filtered():
+    from second_brain.crossfit import handlers
+
+    def fake_query(**kwargs):
+        return {"results": [
+            {"id": "r1", "properties": {
+                "Date": {"date": {"start": "2026-04-01"}},
+                "load_lbs": {"number": 200},
+                "effort_reps": {"number": 5},
+                "effort_sets": {"number": 3},
+            }}
+        ]}
+
+    notion = SimpleNamespace(databases=SimpleNamespace(query=fake_query))
+    handlers.MOVEMENTS_CACHE.clear()
+    handlers.MOVEMENTS_CACHE["Back Squat"] = "bs-id"
+
+    message = _DummyMessage()
+    asyncio.run(handlers.handle_cf_prs_reply(
+        message, "back squat since=30d", notion,
+        {"NOTION_WORKOUT_LOG_DB": "log", "NOTION_MOVEMENTS_DB": "mv"},
+        cf_pending={str(message.chat_id): {"mode": "prs"}},
+    ))
+
+    reply = message.replies[-1][0]
+    assert "since" in reply.lower(), "Reply should mention the since filter"
+
+
+def test_format_sub_search_result_shows_scaling_notes_for_relations():
+    from second_brain.crossfit.handlers import _format_sub_search_result
+
+    details = {
+        "name": "Front Squat",
+        "scaling_notes": "Reduce weight; use goblet as regression",
+        "notes": "",
+        "complementary_movements": [
+            {"name": "Back Squat", "scaling_notes": "Primary strength driver"},
+            {"name": "Air Squat", "scaling_notes": ""},
+        ],
+        "antagonist_movements": [
+            {"name": "Nordic Curl", "scaling_notes": "Hamstring balance"}
+        ],
+    }
+
+    result = _format_sub_search_result(details)
+    assert "• *Back Squat*: Primary strength driver" in result
+    assert "• *Air Squat*" in result
+    assert "• *Nordic Curl*: Hamstring balance" in result
+    assert "Complementary" in result
+    assert "Antagonist" in result
+
+
+def test_format_sub_search_result_handles_legacy_string_lists():
+    """Should not crash if complementary_movements is still a list of strings."""
+    from second_brain.crossfit.handlers import _format_sub_search_result
+
+    details = {
+        "name": "Deadlift",
+        "scaling_notes": "Sub: Romanian Deadlift",
+        "notes": "",
+        "complementary_movements": ["Good Morning", "Hip Hinge"],
+        "antagonist_movements": [],
+    }
+    result = _format_sub_search_result(details)
+    assert "Good Morning" in result
+    assert "Hip Hinge" in result
+    assert "None set" in result
