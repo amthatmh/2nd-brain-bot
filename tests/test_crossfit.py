@@ -269,6 +269,198 @@ def test_rich_text_chunks_short_text():
     assert len(chunks) == 1
     assert chunks[0]["text"]["content"] == "hello"
 
+
+def test_normalise_strips_alt_prefix():
+    from second_brain.crossfit.notion import normalise_movement_name
+
+    assert normalise_movement_name("Alt. DB Snatch (50/35)") == ["DB Snatch"]
+    assert normalise_movement_name("Alt. DB Snatch") == ["DB Snatch"]
+    assert normalise_movement_name("Alternating Dumbbell Snatch") == ["Dumbbell Snatch"]
+
+
+def test_normalise_db_sb_lunge_resolves_to_lunge():
+    from second_brain.crossfit.notion import normalise_movement_name
+
+    assert normalise_movement_name("Max DB/SB Lunges in Remaining Time (35/25)") == ["Lunge"]
+    assert normalise_movement_name("Max DB/SB Lunges in Remaining Time") == ["Lunge"]
+    assert normalise_movement_name("DB/SB Lunges") == ["Lunge"]
+
+
+def test_thursday_hyrox_b_only_goes_to_section_c():
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = """THURSDAY
+
+PERFORMANCE
+
+B. 15 Minute AMRAP
+
+1000 Meter Run
+
+Rest 3 Minutes
+
+15 Minute AMRAP
+
+21 Calorie Row/Ski
+
+15 Burpee Box Jump Overs
+"""
+    result = parse_weekly_program_text(text)
+    hyrox = next(t for t in result["tracks"] if t["track"] == "Hyrox")
+    thursday = hyrox["days"][0]
+    assert thursday["section_c"], "Thursday Hyrox content must be in section_c"
+    assert not thursday["section_b"], "Thursday Hyrox section_b must be empty"
+    assert "Run" in thursday["section_c"]["description"]
+
+
+def test_sunday_hyrox_b_only_goes_to_section_c():
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = """SUNDAY
+
+PERFORMANCE
+
+Hyrox — 20:00-56:00
+
+B. 14 Minute AMRAP (W/Partner)
+
+1000 Meter Row/Ski
+
+800 Meter Run
+"""
+    result = parse_weekly_program_text(text)
+    hyrox = next(t for t in result["tracks"] if t["track"] == "Hyrox")
+    sunday = hyrox["days"][0]
+    assert sunday["section_c"], "Sunday Hyrox content must be in section_c"
+    assert not sunday["section_b"], "Sunday Hyrox section_b must be empty"
+
+
+def test_hyrox_explicit_b_and_c_not_swapped():
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = """THURSDAY
+
+PERFORMANCE
+
+B. Every 6 Minutes for 36 Minutes
+
+800 Meter Run
+
+C. 15 Minute AMRAP
+
+21 Calorie Row
+
+15 Burpees
+"""
+    result = parse_weekly_program_text(text)
+    hyrox = next(t for t in result["tracks"] if t["track"] == "Hyrox")
+    thursday = hyrox["days"][0]
+    assert thursday["section_b"], "Explicit B. must be kept in section_b"
+    assert thursday["section_c"], "Explicit C. must be kept in section_c"
+
+
+def test_email_footer_stripped_before_parse():
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = """MONDAY
+
+PERFORMANCE
+
+B. For Time:
+
+1 Mile Run
+
+100 Pull Ups
+
+Unsubscribe | Update your profile | 645 S Clark, Chicago IL 60605
+"""
+    result = parse_weekly_program_text(text)
+    perf = next(t for t in result["tracks"] if t["track"] == "Performance")
+    monday = perf["days"][0]
+    desc = (monday.get("section_b") or monday.get("section_c") or {}).get("description", "")
+    assert "Unsubscribe" not in desc
+    assert "S Clark" not in desc
+
+
+def test_is_partner_detected_from_section_b():
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = """SATURDAY
+
+PERFORMANCE
+
+B. 30 Minute AMRAP (W/Partner)
+
+20 Deadlifts (225/155)
+
+400 Meter Run
+"""
+    result = parse_weekly_program_text(text)
+    perf = next(t for t in result["tracks"] if t["track"] == "Performance")
+    saturday = perf["days"][0]
+    assert saturday.get("is_partner") is True, \
+        "is_partner must be True when (W/Partner) appears in Section B"
+
+
+def test_is_partner_false_for_solo_workouts():
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = """MONDAY
+
+PERFORMANCE
+
+B. For Time:
+
+1 Mile Run
+
+100 Pull Ups
+"""
+    result = parse_weekly_program_text(text)
+    perf = next(t for t in result["tracks"] if t["track"] == "Performance")
+    monday = perf["days"][0]
+    assert monday.get("is_partner") is False
+
+
+def test_lying_to_stand_rope_pull_not_aliased_to_ring_row():
+    from second_brain.crossfit.notion import normalise_movement_name
+
+    result = normalise_movement_name("2 Lying to Stand Rope Pulls")
+    assert result != ["Ring Row"], "Must not alias to Ring Row — it is its own movement now"
+    assert result == ["Lying to Stand Rope Pulls"]
+
+
+def test_real_program_2026_05_25_key_movements():
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    fixture = os.path.join(os.path.dirname(__file__), "fixtures", "crossfit_program_2026_05_25.txt")
+    with open(fixture) as f:
+        text = f.read()
+
+    result = parse_weekly_program_text(text, week_label="2026-05-25")
+
+    perf = next(t for t in result["tracks"] if t["track"] == "Performance")
+    tuesday = next(d for d in perf["days"] if d["day"] == "Tuesday")
+    c_movements = tuesday["section_c"]["movements"]
+    assert any("Snatch" in m or "snatch" in m.lower() for m in c_movements), \
+        f"Dumbbell Snatch not found in Tuesday C movements: {c_movements}"
+
+    hyrox = next(t for t in result["tracks"] if t["track"] == "Hyrox")
+    thursday = next(d for d in hyrox["days"] if d["day"] == "Thursday")
+    assert thursday["section_c"], "Thursday Hyrox must be in section_c"
+    assert not thursday["section_b"], "Thursday Hyrox section_b must be empty"
+
+    sunday = next(d for d in hyrox["days"] if d["day"] == "Sunday")
+    assert sunday["section_c"], "Sunday Hyrox must be in section_c"
+    assert not sunday["section_b"], "Sunday Hyrox section_b must be empty"
+
+    desc = sunday["section_c"].get("description", "")
+    assert "Unsubscribe" not in desc
+
+    s_movements = sunday["section_c"]["movements"]
+    assert any("Lunge" in m or "lunge" in m.lower() for m in s_movements), \
+        f"Lunge not found in Sunday Hyrox movements: {s_movements}"
+
+
 def test_infer_primary_patterns_olympic_for_hang_clean():
     from second_brain.crossfit.notion import infer_primary_patterns
 
@@ -2600,8 +2792,8 @@ def test_slash_splitter_ignores_digit_only_left_side():
     assert any("assault bike" in r.lower() for r in result), result
 
 
-def test_real_program_2026_04_06_thursday_b_extracts_run_and_ski_in_hyrox():
-    """Thursday is Hyrox; multi-AMRAP Section B should extract Run plus Ski/Wall Ball, not spill anything."""
+def test_real_program_2026_04_06_thursday_c_extracts_run_and_ski_in_hyrox():
+    """Thursday is Hyrox; B-only coach text should parse as Section C conditioning."""
     from second_brain.crossfit.notion import (
         _movement_names_from_text,
         parse_weekly_program_text,
@@ -2610,13 +2802,14 @@ def test_real_program_2026_04_06_thursday_b_extracts_run_and_ski_in_hyrox():
     text = _load_fixture("crossfit_program_2026_04_06.txt")
     parsed = parse_weekly_program_text(text, "Week of 2026-04-06")
     thursday = _day(_tracks_index(parsed), "Hyrox", "Thursday")
-    b_desc = (thursday.get("section_b") or {}).get("description") or ""
-    assert "1000 Meter Run" in b_desc
-    assert "1000 Meter Ski" in b_desc
-    assert "Wall Balls" in b_desc
+    c_desc = (thursday.get("section_c") or {}).get("description") or ""
+    assert not thursday.get("section_b")
+    assert "1000 Meter Run" in c_desc
+    assert "1000 Meter Ski" in c_desc
+    assert "Wall Balls" in c_desc
 
     cache = {"Run": "run-id", "SkiErg": "ski-id", "Wall Ball": "wb-id", "Sled Push": "sled-id"}
-    matches = _movement_names_from_text(b_desc, cache)
+    matches = _movement_names_from_text(c_desc, cache)
     assert "Run" in matches
     assert "Wall Ball" in matches
     assert "Sled Push" not in matches  # Sled never mentioned this Thursday
@@ -2650,13 +2843,14 @@ def test_real_program_2026_04_06_sunday_box_burpee_jump_overs_extracted():
 
 
 def test_real_program_2026_03_30_thursday_sled_pull_push_expands_correctly():
-    """Thursday Hyrox B includes 'Sled Pull/Push' — both Sled Pull and Sled Push must be candidates."""
+    """Thursday Hyrox conditioning includes 'Sled Pull/Push' — both sides must be candidates."""
     from second_brain.crossfit.notion import parse_weekly_program_text
 
     text = _load_fixture("crossfit_program_2026_03_30.txt")
     parsed = parse_weekly_program_text(text, "Week of 2026-03-30")
     thursday = _day(_tracks_index(parsed), "Hyrox", "Thursday")
-    movements = thursday["section_b"]["movements"]
+    assert not thursday.get("section_b")
+    movements = thursday["section_c"]["movements"]
     # The slash-split candidates are normalised, then deduped by lowercase key —
     # we expect both Sled Pull and Sled Push to appear.
     movements_lower = {m.lower() for m in movements}
