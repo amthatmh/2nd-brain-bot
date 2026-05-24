@@ -225,7 +225,6 @@ MOVEMENT_ALIAS_MAP = [
     (r"box\s+jump\s+over", "Box Jump"),
     (r"burpee\s+broad\s+jump", "Burpee"),
     (r"line[\s-]facing\s+burpee", "Burpee"),
-    (r"lying\s+to\s+stand\s+rope\s+(climb|pull)", "Ring Row"),
     (r"(db|dumbbell)\s+push\s+press", "Dumbbell Push Press"),
     (r"(kb|kettlebell)\s+hang\s+clean", "Kettlebell Clean"),
     (r"farmer[\s']*s?\s+(carry|walk)", "Farmer's Carry"),
@@ -238,6 +237,7 @@ MOVEMENT_ALIAS_MAP = [
     (r"push[\s-]?ups?(?!\s+press)", "Push-Up"),
     (r"pull[\s-]?ups?", "Pull-Up"),
     (r"push\s*/\s*power\s+jerk", "Push Jerk"),
+    (r"(?:max\s+)?(?:db|dumbbell)\s*/\s*(?:sb|sandbag)\s+(?:walking\s+)?lunges?", "Lunge"),
     (r"wall\s+ball", "Wall Ball"),
     (r"wall\s+walk", "Wall Walk"),
     (r"air\s+squat", "Air Squat"),
@@ -310,7 +310,7 @@ def normalise_movement_name(raw: str) -> list[str]:
             return [canonical]
 
     s = re.sub(
-        r"^(double|single|s/a|sa|db|dumbbell|kb|kettlebell|barbell|"
+        r"^(alt\.?|alternating|double|single|s/a|sa|db|dumbbell|kb|kettlebell|barbell|"
         r"banded|weighted|strict|kipping|touch\s*n?\s*go|tng)\s+",
         "", s, flags=re.IGNORECASE,
     ).strip()
@@ -620,8 +620,10 @@ def _extract_sections(block: str) -> tuple[str, str, str]:
 
 
 def _day_entry(day: str, section_b: str, section_c: str, training_notes: str) -> dict:
+    full_text = f"{section_b} {section_c}".lower()
     return {
         "day": day,
+        "is_partner": "partner" in full_text,
         "section_b": {
             "description": section_b,
             "movements": _extract_candidate_movements_from_section(section_b),
@@ -629,7 +631,6 @@ def _day_entry(day: str, section_b: str, section_c: str, training_notes: str) ->
         "section_c": {
             "description": section_c,
             "movements": _extract_candidate_movements_from_section(section_c),
-            "is_partner": "partner" in section_c.lower(),
         } if section_c else {},
         "training_notes": training_notes,
     }
@@ -643,10 +644,15 @@ def parse_weekly_program_text(full_text: str, week_label: str | None = None) -> 
     workout under "PERFORMANCE" on Thursdays, but downstream consumers expect the
     Hyrox track tag.
     """
+    full_text = re.sub(
+        r"\s*\bUnsubscribe\b.*$", "", full_text or "", flags=re.IGNORECASE | re.DOTALL
+    ).strip()
     tracks_by_name: dict[str, list[dict]] = {track: [] for track in _TRACK_NAMES}
-    for day, day_block in _split_by_headers(full_text or "", _DAY_NAMES):
+    for day, day_block in _split_by_headers(full_text, _DAY_NAMES):
         if day == "Thursday":
             section_b, section_c, training_notes = _extract_sections(day_block)
+            if section_b and not section_c:
+                section_b, section_c = "", section_b
             if section_b or section_c:
                 tracks_by_name["Hyrox"].append(_day_entry(day, section_b, section_c, training_notes))
             continue
@@ -655,6 +661,8 @@ def parse_weekly_program_text(full_text: str, week_label: str | None = None) -> 
             continue
         for track, track_block in track_blocks:
             section_b, section_c, training_notes = _extract_sections(track_block)
+            if track == "Hyrox" and section_b and not section_c:
+                section_b, section_c = "", section_b
             tracks_by_name[track].append(_day_entry(day, section_b, section_c, training_notes))
     tracks = [{"track": track, "days": days} for track, days in tracks_by_name.items() if days]
     if not tracks:
@@ -746,7 +754,7 @@ def save_programme(notion, program_db_id: str, workout_days_db_id: str, movement
                 "Track": {"select": {"name": track}},
                 "Week": {"relation": [{"id": parent_page_id}]},
                 "Week Of": {"date": {"start": monday_iso}},
-                "Is Partner": {"checkbox": bool(section_c.get("is_partner"))},
+                "Is Partner": {"checkbox": bool(day_row.get("is_partner"))},
             }
             if b_desc:
                 props["Section B"] = {"rich_text": _rich_text_chunks(b_desc)}
@@ -871,7 +879,7 @@ def save_programme_from_notion_row(
                 "Track": {"select": {"name": track}},
                 "Week": {"relation": [{"id": parent_page_id}]},
                 "Week Of": {"date": {"start": monday_iso}},
-                "Is Partner": {"checkbox": bool(section_c.get("is_partner"))},
+                "Is Partner": {"checkbox": bool(day_row.get("is_partner"))},
             }
             if b_desc:
                 props["Section B"] = {"rich_text": _rich_text_chunks(b_desc)}
