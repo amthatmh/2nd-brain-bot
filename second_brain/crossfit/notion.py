@@ -576,7 +576,7 @@ def _extract_candidate_movements_from_section(description: str) -> list[str]:
         line = raw_line.strip().lstrip("•- ").strip()
         if not line or skip_re.search(line):
             continue
-        for piece in re.split(r",|;|\+", line):
+        for piece in re.split(r",|;|\+|\bor\b", line, flags=re.IGNORECASE):
             for canonical in normalise_movement_name(piece):
                 if not canonical or len(canonical) < 3:
                     continue
@@ -649,7 +649,7 @@ def parse_weekly_program_text(full_text: str, week_label: str | None = None) -> 
     ).strip()
     tracks_by_name: dict[str, list[dict]] = {track: [] for track in _TRACK_NAMES}
     for day, day_block in _split_by_headers(full_text, _DAY_NAMES):
-        if day == "Thursday":
+        if day in ("Thursday", "Sunday"):
             section_b, section_c, training_notes = _extract_sections(day_block)
             if section_b and not section_c:
                 section_b, section_c = "", section_b
