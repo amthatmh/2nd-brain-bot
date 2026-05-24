@@ -273,8 +273,8 @@ def test_rich_text_chunks_short_text():
 def test_normalise_strips_alt_prefix():
     from second_brain.crossfit.notion import normalise_movement_name
 
-    assert normalise_movement_name("Alt. DB Snatch (50/35)") == ["DB Snatch"]
-    assert normalise_movement_name("Alt. DB Snatch") == ["DB Snatch"]
+    assert normalise_movement_name("Alt. DB Snatch (50/35)") == ["Dumbbell Snatch"]
+    assert normalise_movement_name("Alt. DB Snatch") == ["Dumbbell Snatch"]
     assert normalise_movement_name("Alternating Dumbbell Snatch") == ["Dumbbell Snatch"]
 
 
@@ -284,6 +284,18 @@ def test_normalise_db_sb_lunge_resolves_to_lunge():
     assert normalise_movement_name("Max DB/SB Lunges in Remaining Time (35/25)") == ["Lunge"]
     assert normalise_movement_name("Max DB/SB Lunges in Remaining Time") == ["Lunge"]
     assert normalise_movement_name("DB/SB Lunges") == ["Lunge"]
+
+
+def test_extract_candidates_splits_on_or():
+    from second_brain.crossfit.notion import _extract_candidate_movements_from_section
+
+    text = "1 Scaled Rope Climb or 2 Lying to Stand Rope Pulls"
+    candidates = _extract_candidate_movements_from_section(text)
+    combined = " ".join(candidates).lower()
+    assert "rope climb" in combined, \
+        f"Rope Climb not found in candidates: {candidates}"
+    assert "ring row" in combined, \
+        f"Ring Row not found in candidates: {candidates}"
 
 
 def test_thursday_hyrox_b_only_goes_to_section_c():
@@ -313,7 +325,28 @@ Rest 3 Minutes
     assert "Run" in thursday["section_c"]["description"]
 
 
-def test_sunday_hyrox_b_only_goes_to_section_c():
+def test_sunday_hardcoded_to_hyrox_without_header():
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = """SUNDAY
+
+PERFORMANCE
+
+B. 14 Minute AMRAP (W/Partner)
+
+1000 Meter Row/Ski
+
+800 Meter Run
+"""
+    result = parse_weekly_program_text(text)
+    tracks = {t["track"]: t for t in result["tracks"]}
+    assert "Hyrox" in tracks, "Sunday must be routed to Hyrox even without a Hyrox heading"
+    sunday = tracks["Hyrox"]["days"][0]
+    assert sunday["section_c"], "Sunday Hyrox content must be in section_c"
+    assert not sunday["section_b"], "Sunday Hyrox section_b must be empty"
+
+
+def test_sunday_with_hyrox_header_still_routes_to_hyrox():
     from second_brain.crossfit.notion import parse_weekly_program_text
 
     text = """SUNDAY
@@ -421,12 +454,10 @@ B. For Time:
     assert monday.get("is_partner") is False
 
 
-def test_lying_to_stand_rope_pull_not_aliased_to_ring_row():
+def test_lying_to_stand_rope_pulls_aliases_to_ring_row():
     from second_brain.crossfit.notion import normalise_movement_name
 
-    result = normalise_movement_name("2 Lying to Stand Rope Pulls")
-    assert result != ["Ring Row"], "Must not alias to Ring Row — it is its own movement now"
-    assert result == ["Lying to Stand Rope Pulls"]
+    assert normalise_movement_name("2 Lying to Stand Rope Pulls") == ["Ring Row"]
 
 
 def test_real_program_2026_05_25_key_movements():
@@ -2413,6 +2444,14 @@ def test_match_movement_still_resolves_exact_and_singular_keys():
     assert match_movement("Hang Squat Cleans", cache) == "hsc-id"
 
 
+def test_match_movement_farmer_carry_does_not_prefer_single_arm():
+    from second_brain.crossfit.notion import match_movement
+
+    cache = {"Farmer's Carry": "id-a", "Single Arm Farmer's Carry": "id-b"}
+    assert match_movement("Farmer's Carry", cache) == "id-a"
+    assert match_movement("Farmer Carry", cache) == "id-a"
+
+
 def test_movement_names_from_text_prefers_longest_match():
     """Ring Row should subsume Row when both appear in the same span."""
     from second_brain.crossfit.notion import _movement_names_from_text
@@ -2574,7 +2613,7 @@ def _day(tracks_index, track, day_name):
 
 
 def test_real_program_2026_05_18_top_level_routing():
-    """Every weekday lands in the correct track, Thursday is Hyrox, Saturday Fitness is preserved."""
+    """Every weekday lands in the correct track, Thursday/Sunday are Hyrox, Saturday Fitness is preserved."""
     from second_brain.crossfit.notion import parse_weekly_program_text
 
     text = _load_fixture("crossfit_program_2026_05_18.txt")
@@ -2583,10 +2622,13 @@ def test_real_program_2026_05_18_top_level_routing():
 
     assert set(tracks) >= {"Performance", "Hyrox"}
     perf_days = {d["day"] for d in tracks["Performance"]["days"]}
-    assert {"Monday", "Tuesday", "Wednesday", "Friday", "Saturday", "Sunday"}.issubset(perf_days)
-    # Thursday is the Hyrox-only day this week.
+    assert {"Monday", "Tuesday", "Wednesday", "Friday", "Saturday"}.issubset(perf_days)
+    # Thursday and Sunday are Hyrox-only days this week.
     assert "Thursday" not in perf_days
-    assert "Thursday" in {d["day"] for d in tracks["Hyrox"]["days"]}
+    assert "Sunday" not in perf_days
+    hyrox_days = {d["day"] for d in tracks["Hyrox"]["days"]}
+    assert "Thursday" in hyrox_days
+    assert "Sunday" in hyrox_days
     # Saturday FITNESS. (with trailing period) must be preserved as a Fitness day.
     assert "Fitness" in tracks
     fit_days = {d["day"] for d in tracks["Fitness"]["days"]}
@@ -2834,11 +2876,12 @@ def test_real_program_2026_04_06_sunday_box_burpee_jump_overs_extracted():
 
     text = _load_fixture("crossfit_program_2026_04_06.txt")
     parsed = parse_weekly_program_text(text, "Week of 2026-04-06")
-    sunday = _day(_tracks_index(parsed), "Performance", "Sunday")
-    b_desc = (sunday.get("section_b") or {}).get("description") or ""
-    assert "Box Burpee Jump Overs" in b_desc
+    sunday = _day(_tracks_index(parsed), "Hyrox", "Sunday")
+    c_desc = (sunday.get("section_c") or {}).get("description") or ""
+    assert not sunday.get("section_b")
+    assert "Box Burpee Jump Overs" in c_desc
     # Movements list (raw candidates) should pick up Run; Push Ups in the second AMRAP.
-    movements = sunday["section_b"]["movements"]
+    movements = sunday["section_c"]["movements"]
     assert any("Run" == m or "Run" in m for m in movements), movements
 
 

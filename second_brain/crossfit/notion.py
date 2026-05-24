@@ -92,10 +92,15 @@ def match_movement(name: str, movement_cache: dict[str, str], threshold: int = 8
         log.debug("match_movement: no match for '%s' (single token, no exact hit)", name)
         return None
     simple_key = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", key)).strip()
+    key_word_count = len(re.findall(r"[a-z]+", simple_key))
     for candidate, page_id in lowered.items():
-        simple_candidate = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", candidate)).strip()
+        simple_candidate = re.sub(r"[^a-z0-9 ]+", " ", candidate)
+        simple_candidate = re.sub(r"\s+", " ", simple_candidate).strip()
         singular_candidate = re.sub(r"\b(\w+)s\b", r"\1", simple_candidate)
-        if simple_key and f" {simple_key} " in f" {singular_candidate} ":
+        candidate_word_count = len(re.findall(r"[a-z]+", simple_candidate))
+        if simple_key and candidate_word_count <= key_word_count + 1 and (
+            simple_key in simple_candidate or simple_key in singular_candidate
+        ):
             return page_id
     result = process.extractOne(key, lowered.keys(), scorer=fuzz.token_sort_ratio, score_cutoff=threshold)
     if result:
@@ -225,6 +230,8 @@ MOVEMENT_ALIAS_MAP = [
     (r"box\s+jump\s+over", "Box Jump"),
     (r"burpee\s+broad\s+jump", "Burpee"),
     (r"line[\s-]facing\s+burpee", "Burpee"),
+    (r"lying\s+to\s+stand\s+rope\s+(climb|pulls?)", "Ring Row"),
+    (r"(alt\.?\s+)?(db|dumbbell)\s+snatch", "Dumbbell Snatch"),
     (r"(db|dumbbell)\s+push\s+press", "Dumbbell Push Press"),
     (r"(kb|kettlebell)\s+hang\s+clean", "Kettlebell Clean"),
     (r"farmer[\s']*s?\s+(carry|walk)", "Farmer's Carry"),
@@ -576,7 +583,7 @@ def _extract_candidate_movements_from_section(description: str) -> list[str]:
         line = raw_line.strip().lstrip("•- ").strip()
         if not line or skip_re.search(line):
             continue
-        for piece in re.split(r",|;|\+", line):
+        for piece in re.split(r",|;|\+|\bor\b", line, flags=re.IGNORECASE):
             for canonical in normalise_movement_name(piece):
                 if not canonical or len(canonical) < 3:
                     continue
@@ -649,7 +656,7 @@ def parse_weekly_program_text(full_text: str, week_label: str | None = None) -> 
     ).strip()
     tracks_by_name: dict[str, list[dict]] = {track: [] for track in _TRACK_NAMES}
     for day, day_block in _split_by_headers(full_text, _DAY_NAMES):
-        if day == "Thursday":
+        if day in ("Thursday", "Sunday"):
             section_b, section_c, training_notes = _extract_sections(day_block)
             if section_b and not section_c:
                 section_b, section_c = "", section_b
