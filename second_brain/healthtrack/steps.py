@@ -167,8 +167,11 @@ def _update_log_entry_steps(
         )
         final_completed = current_completed or completed
 
+        current_steps = properties.get("Steps Count", {}).get("number") or 0
+        final_steps = max(steps, current_steps)
+
         update_properties = {
-            "Steps Count": {"number": steps},
+            "Steps Count": {"number": final_steps},
         }
         if "Completed" in properties:
             update_properties["Completed"] = {"checkbox": final_completed}
@@ -196,9 +199,10 @@ def _update_log_entry_steps(
                 log.debug("steps: Status field update skipped for %s: %s", page_id, status_err)
 
         log.info(
-            "steps: updated log entry %s — %d steps, completed=%s (was %s)",
+            "steps: updated log entry %s — %d steps (was %d), completed=%s (was %s)",
             page_id,
-            steps,
+            final_steps,
+            current_steps,
             final_completed,
             current_completed,
         )
@@ -380,7 +384,7 @@ async def handle_steps_sync(
     is_yesterday = (date_str == yesterday)
 
     state = _date_state(date_str)
-    state["last_steps"] = steps
+    state["last_steps"] = max(state["last_steps"], steps)
 
     completed = steps >= threshold
 
