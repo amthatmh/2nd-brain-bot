@@ -269,6 +269,36 @@ def test_rich_text_chunks_short_text():
     assert len(chunks) == 1
     assert chunks[0]["text"]["content"] == "hello"
 
+
+def test_normalise_alt_db_snatch_aliases_to_dumbbell_snatch():
+    from second_brain.crossfit.notion import normalise_movement_name
+
+    assert normalise_movement_name("Alt. DB Snatch") == ["Dumbbell Snatch"]
+    assert normalise_movement_name("alt db snatch") == ["Dumbbell Snatch"]
+
+
+def test_extract_candidates_splits_or_alternatives():
+    from second_brain.crossfit.notion import _extract_candidate_movements_from_section
+
+    movements = _extract_candidate_movements_from_section(
+        "1 Scaled Rope Climb or 2 Lying to Stand Rope Pulls"
+    )
+    names = [m.lower() for m in movements]
+    assert any("rope" in n or "pull-up" in n for n in names), "Rope Climb variant missing"
+    assert any("lying" in n for n in names), "Lying to Stand missing"
+
+
+def test_match_movement_farmer_carry_does_not_prefer_single_arm():
+    from second_brain.crossfit.notion import match_movement
+
+    cache = {"Farmer's Carry": "id-a", "Single Arm Farmer's Carry": "id-b"}
+    assert match_movement("Farmer's Carry", cache) == "id-a"
+    assert match_movement("Single Arm Farmer's Carry", cache) == "id-b"
+
+    alias_first_cache = {"Single Arm Farmer's Carry": "id-b", "Farmer Carry": "id-a"}
+    assert match_movement("Farmer's Carry", alias_first_cache) == "id-a"
+
+
 def test_infer_primary_patterns_olympic_for_hang_clean():
     from second_brain.crossfit.notion import infer_primary_patterns
 
