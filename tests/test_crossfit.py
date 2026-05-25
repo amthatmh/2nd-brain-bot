@@ -288,6 +288,27 @@ def test_extract_candidates_splits_or_alternatives():
     assert any("lying" in n for n in names), "Lying to Stand missing"
 
 
+def test_resolve_section_movements_creates_uncached_candidates(monkeypatch):
+    from second_brain.crossfit import notion as notion_mod
+
+    created = []
+
+    def fake_get_or_create_movement(notion, movements_db_id, name):
+        created.append((notion, movements_db_id, name))
+        return f"created-{len(created)}"
+
+    monkeypatch.setattr(notion_mod, "get_or_create_movement", fake_get_or_create_movement)
+
+    notion = SimpleNamespace()
+    section = {"movements": ["Rope Climb", "Lying to Stand Rope Pulls"]}
+    movement_cache = {"Rope Climb": "rope-id"}
+
+    resolved = notion_mod._resolve_section_movements(section, movement_cache, notion, "movements")
+
+    assert resolved == ["rope-id", "created-1"]
+    assert created == [(notion, "movements", "Lying to Stand Rope Pulls")]
+
+
 def test_match_movement_farmer_carry_does_not_prefer_single_arm():
     from second_brain.crossfit.notion import match_movement
 
