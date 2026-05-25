@@ -1984,6 +1984,64 @@ Every 3 minutes Row
     assert wed_perf["section_c"]["format"] == "Chipper"
 
 
+def test_parse_programme_text_strips_hyphenated_clean_up_time_markers():
+    from second_brain.crossfit.classify import parse_programme
+
+    text = """
+MONDAY
+PERFORMANCE
+B. Skill Work
+1 Scaled Rope Climb
+Clean-up — 55:00-60:00
+C. AMRAP 12
+10 Burpees
+"""
+    parsed = parse_programme(text, _FakeClaude('{"should":"not call"}'), "model", 1000)
+    monday = parsed["tracks"][0]["days"][0]
+
+    assert "Clean-up" not in monday["section_b"]["description"]
+    assert "Clean-Up" not in monday["section_b"]["movements"]
+    assert "Clean-up" not in monday["section_c"]["description"]
+
+
+def test_parse_programme_text_splits_or_movement_alternatives_without_or_suffix():
+    from second_brain.crossfit.classify import parse_programme
+
+    text = """
+MONDAY
+PERFORMANCE
+B. Gymnastics
+1 Scaled Rope Climb or 2 Lying to Stand Rope Pulls
+"""
+    parsed = parse_programme(text, _FakeClaude('{"should":"not call"}'), "model", 1000)
+    movements = parsed["tracks"][0]["days"][0]["section_b"]["movements"]
+
+    assert "Scaled Rope Climb" in movements
+    assert "Lying To Stand Rope Pulls" in movements
+    assert all(not movement.endswith(" Or") for movement in movements)
+
+
+def test_parse_programme_claude_prompt_mentions_or_alternatives_and_hyphenated_time_markers():
+    from second_brain.crossfit.classify import parse_programme
+
+    calls = []
+
+    class CaptureClaude:
+        def __init__(self):
+            self.messages = SimpleNamespace(create=self._create)
+
+        def _create(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(content=[SimpleNamespace(text='{"week_label":"Week","tracks":[]}')])
+
+    parse_programme("short workout", CaptureClaude(), "model", 1000)
+    prompt = calls[0]["messages"][0]["content"]
+
+    assert r"^[\w][\w\s\-]+—" in prompt
+    assert "both sides are scaled alternatives" in prompt
+    assert "Lying to Stand Rope Pulls" in prompt
+
+
 def test_save_programme_links_week_cycle_and_section_movements_from_text():
     from second_brain.crossfit.notion import save_programme, this_monday
 
@@ -2377,6 +2435,28 @@ def test_extract_sections_handles_b_without_space_after_period():
     assert "Bench Press" in section_b
     assert "1000 Meter Row" in section_c
     assert "Bench Press" not in section_c
+
+
+def test_extract_sections_strips_hyphenated_clean_up_time_markers():
+    from second_brain.crossfit.notion import _extract_sections
+
+    block = (
+        "B. Skill Work\n"
+        "1 Rope Climb\n"
+        "Clean-up — 55:00-60:00\n"
+        "C. AMRAP 12\n"
+        "10 Burpees\n"
+    )
+    section_b, section_c, _ = _extract_sections(block)
+
+    assert "Clean-up" not in section_b
+    assert "Clean-up" not in section_c
+
+
+def test_normalise_movement_ignores_hyphenated_clean_up_time_marker():
+    from second_brain.crossfit.notion import normalise_movement_name
+
+    assert normalise_movement_name("Clean-up — 55:00-60:00") == []
 
 
 def test_slash_splitter_handles_sled_push_pull():
