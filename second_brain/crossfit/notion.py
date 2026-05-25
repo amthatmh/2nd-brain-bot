@@ -10,6 +10,7 @@ from second_brain.notion.properties import (
     rich_text_prop,
     title_prop,
 )
+from second_brain.crossfit.classify import _extract_time_cap
 from second_brain.utils import local_today
 from .nlp import fuzzy_match_movements, normalize_movement_name
 import logging
@@ -212,7 +213,6 @@ MOVEMENT_ALIAS_MAP = [
     (r"burpee\s+broad\s+jump", "Burpee"),
     (r"line[\s-]facing\s+burpee", "Burpee"),
     (r"rope\s+climb", "Pull-Up"),
-    (r"lying\s+to\s+stand\s+rope\s+(climb|pull)", "Ring Row"),
     (r"(db|dumbbell)\s+push\s+press", "Dumbbell Push Press"),
     (r"(kb|kettlebell)\s+hang\s+clean", "Kettlebell Clean"),
     (r"farmer[\s']*s?\s+(carry|walk)", "Farmer's Carry"),
@@ -468,6 +468,28 @@ def infer_section_c_format(section_c: dict) -> str | None:
     return None
 
 
+def _fill_section_c_timing(section_c: dict, extra_text: str = "") -> dict:
+    """Back-fill duration_mins / time_cap_mins from description text when the parser left them null."""
+    if not section_c:
+        return section_c
+    if section_c.get("duration_mins") is not None and section_c.get("time_cap_mins") is not None:
+        return section_c
+    search_text = " ".join(filter(None, [section_c.get("description"), extra_text]))
+    if not search_text:
+        return section_c
+    fmt = section_c.get("format") or infer_section_c_format(section_c)
+    result = dict(section_c)
+    if result.get("duration_mins") is None and fmt in {"AMRAP", "EMOM", "Intervals", "Partner AMRAP"}:
+        extracted = _extract_time_cap(search_text)
+        if extracted is not None:
+            result["duration_mins"] = extracted
+    if result.get("time_cap_mins") is None and fmt == "For Time":
+        extracted = _extract_time_cap(search_text)
+        if extracted is not None:
+            result["time_cap_mins"] = extracted
+    return result
+
+
 
 _DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 _TRACK_NAMES = ("Performance", "Fitness", "Hyrox")
@@ -630,6 +652,7 @@ def save_programme(notion, program_db_id: str, workout_days_db_id: str, movement
             section_b = day_row.get("section_b") or {}
             section_c = day_row.get("section_c") or {}
             training_notes = day_row.get("training_notes") or ""
+            section_c = _fill_section_c_timing(section_c, training_notes)
             b_desc = section_b.get("description") or ""
             c_desc = section_c.get("description") or ""
 
@@ -755,6 +778,7 @@ def save_programme_from_notion_row(
             section_b = day_row.get("section_b") or {}
             section_c = day_row.get("section_c") or {}
             training_notes = day_row.get("training_notes") or ""
+            section_c = _fill_section_c_timing(section_c, training_notes)
             b_desc = section_b.get("description") or ""
             c_desc = section_c.get("description") or ""
 
