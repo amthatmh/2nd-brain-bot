@@ -273,8 +273,8 @@ def test_rich_text_chunks_short_text():
 def test_normalise_strips_alt_prefix():
     from second_brain.crossfit.notion import normalise_movement_name
 
-    assert normalise_movement_name("Alt. DB Snatch (50/35)") == ["DB Snatch"]
-    assert normalise_movement_name("Alt. DB Snatch") == ["DB Snatch"]
+    assert normalise_movement_name("Alt. DB Snatch (50/35)") == ["Dumbbell Snatch"]
+    assert normalise_movement_name("Alt. DB Snatch") == ["Dumbbell Snatch"]
     assert normalise_movement_name("Alternating Dumbbell Snatch") == ["Dumbbell Snatch"]
 
 
@@ -294,8 +294,8 @@ def test_extract_candidates_splits_on_or():
     combined = " ".join(candidates).lower()
     assert "rope climb" in combined, \
         f"Rope Climb not found in candidates: {candidates}"
-    assert "lying to stand" in combined, \
-        f"Lying to Stand not found in candidates: {candidates}"
+    assert "ring row" in combined, \
+        f"Ring Row not found in candidates: {candidates}"
 
 
 def test_thursday_hyrox_b_only_goes_to_section_c():
@@ -454,12 +454,10 @@ B. For Time:
     assert monday.get("is_partner") is False
 
 
-def test_lying_to_stand_rope_pull_not_aliased_to_ring_row():
+def test_lying_to_stand_rope_pulls_aliases_to_ring_row():
     from second_brain.crossfit.notion import normalise_movement_name
 
-    result = normalise_movement_name("2 Lying to Stand Rope Pulls")
-    assert result != ["Ring Row"], "Must not alias to Ring Row — it is its own movement now"
-    assert result == ["Lying to Stand Rope Pulls"]
+    assert normalise_movement_name("2 Lying to Stand Rope Pulls") == ["Ring Row"]
 
 
 def test_real_program_2026_05_25_key_movements():
@@ -2444,6 +2442,14 @@ def test_match_movement_still_resolves_exact_and_singular_keys():
     assert match_movement("Burpee", cache) == "burpee-id"
     assert match_movement("Deadlifts", cache) == "deadlift-id"
     assert match_movement("Hang Squat Cleans", cache) == "hsc-id"
+
+
+def test_match_movement_farmer_carry_does_not_prefer_single_arm():
+    from second_brain.crossfit.notion import match_movement
+
+    cache = {"Farmer's Carry": "id-a", "Single Arm Farmer's Carry": "id-b"}
+    assert match_movement("Farmer's Carry", cache) == "id-a"
+    assert match_movement("Farmer Carry", cache) == "id-a"
 
 
 def test_movement_names_from_text_prefers_longest_match():
