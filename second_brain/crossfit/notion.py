@@ -78,12 +78,12 @@ def match_movement(name: str, movement_cache: dict[str, str], threshold: int = 8
         return lowered[key]
     simple_key = re.sub(r"[^a-z0-9 ]+", " ", key)
     simple_key = re.sub(r"\s+", " ", simple_key).strip()
-    key_word_count = len(re.findall(r"[a-z]+", simple_key))
+    key_word_count = len(simple_key.split())
     for candidate, page_id in lowered.items():
         simple_candidate = re.sub(r"[^a-z0-9 ]+", " ", candidate)
         simple_candidate = re.sub(r"\s+", " ", simple_candidate).strip()
         singular_candidate = re.sub(r"\b(\w+)s\b", r"\1", simple_candidate)
-        candidate_word_count = len(re.findall(r"[a-z]+", simple_candidate))
+        candidate_word_count = len(simple_candidate.split())
         if simple_key and candidate_word_count <= key_word_count + 1 and (
             simple_key in simple_candidate or simple_key in singular_candidate
         ):

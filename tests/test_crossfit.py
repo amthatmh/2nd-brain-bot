@@ -284,7 +284,7 @@ def test_extract_candidates_splits_or_alternatives():
         "1 Scaled Rope Climb or 2 Lying to Stand Rope Pulls"
     )
     names = [m.lower() for m in movements]
-    assert any("rope" in n or "pull-up" in n for n in names), "Rope Climb variant missing"
+    assert any("rope" in n for n in names), "Rope Climb variant missing"
     assert any("lying" in n for n in names), "Lying to Stand missing"
 
 
