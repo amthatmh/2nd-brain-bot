@@ -35,6 +35,10 @@ MOVEMENT_BLOCKLIST_PATTERNS = [
     r"^this\s+workout\b", r"^other\b", r"^rep\s+scheme\b",
 ]
 
+MOVEMENT_CANDIDATE_ALLOWLIST_PATTERNS = [
+    r"^lying\s+to\s+stand\s+rope\s+pulls?$",
+]
+
 
 def is_valid_movement_candidate(name: str) -> bool:
     s = (name or "").strip()
@@ -43,6 +47,9 @@ def is_valid_movement_candidate(name: str) -> bool:
     for pattern in MOVEMENT_BLOCKLIST_PATTERNS:
         if re.search(pattern, s, re.IGNORECASE):
             return False
+    for pattern in MOVEMENT_CANDIDATE_ALLOWLIST_PATTERNS:
+        if re.search(pattern, s, re.IGNORECASE):
+            return True
     if len(s.split()) >= 5:
         return False
     if re.search(r"[,\.](?!\d)", s):
@@ -422,7 +429,6 @@ def _movement_names_from_text(section_text: str, movement_cache: dict[str, str])
 
 
 def _resolve_section_movements(section: dict, movement_cache: dict[str, str], notion=None, movements_db_id: str = "") -> list[str]:
-    del notion, movements_db_id
     section = section or {}
     candidates: list[str] = []
     for name in section.get("movements") or []:
@@ -442,6 +448,10 @@ def _resolve_section_movements(section: dict, movement_cache: dict[str, str], no
                 continue
             mid = match_movement(canonical, movement_cache)
             if mid:
+                if mid not in resolved:
+                    resolved.append(mid)
+            elif notion and movements_db_id:
+                mid = get_or_create_movement(notion, movements_db_id, canonical)
                 if mid not in resolved:
                     resolved.append(mid)
             else:
