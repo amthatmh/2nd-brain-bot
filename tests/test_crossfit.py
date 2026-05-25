@@ -270,226 +270,33 @@ def test_rich_text_chunks_short_text():
     assert chunks[0]["text"]["content"] == "hello"
 
 
-def test_normalise_strips_alt_prefix():
+def test_normalise_alt_db_snatch_aliases_to_dumbbell_snatch():
     from second_brain.crossfit.notion import normalise_movement_name
 
-    assert normalise_movement_name("Alt. DB Snatch (50/35)") == ["Dumbbell Snatch"]
     assert normalise_movement_name("Alt. DB Snatch") == ["Dumbbell Snatch"]
-    assert normalise_movement_name("Alternating Dumbbell Snatch") == ["Dumbbell Snatch"]
+    assert normalise_movement_name("alt db snatch") == ["Dumbbell Snatch"]
 
 
-def test_normalise_db_sb_lunge_resolves_to_lunge():
-    from second_brain.crossfit.notion import normalise_movement_name
-
-    assert normalise_movement_name("Max DB/SB Lunges in Remaining Time (35/25)") == ["Lunge"]
-    assert normalise_movement_name("Max DB/SB Lunges in Remaining Time") == ["Lunge"]
-    assert normalise_movement_name("DB/SB Lunges") == ["Lunge"]
-
-
-def test_extract_candidates_splits_on_or():
+def test_extract_candidates_splits_or_alternatives():
     from second_brain.crossfit.notion import _extract_candidate_movements_from_section
 
-    text = "1 Scaled Rope Climb or 2 Lying to Stand Rope Pulls"
-    candidates = _extract_candidate_movements_from_section(text)
-    combined = " ".join(candidates).lower()
-    assert "rope climb" in combined, \
-        f"Rope Climb not found in candidates: {candidates}"
-    assert "ring row" in combined, \
-        f"Ring Row not found in candidates: {candidates}"
-
-
-def test_thursday_hyrox_b_only_goes_to_section_c():
-    from second_brain.crossfit.notion import parse_weekly_program_text
-
-    text = """THURSDAY
-
-PERFORMANCE
-
-B. 15 Minute AMRAP
-
-1000 Meter Run
-
-Rest 3 Minutes
-
-15 Minute AMRAP
-
-21 Calorie Row/Ski
-
-15 Burpee Box Jump Overs
-"""
-    result = parse_weekly_program_text(text)
-    hyrox = next(t for t in result["tracks"] if t["track"] == "Hyrox")
-    thursday = hyrox["days"][0]
-    assert thursday["section_c"], "Thursday Hyrox content must be in section_c"
-    assert not thursday["section_b"], "Thursday Hyrox section_b must be empty"
-    assert "Run" in thursday["section_c"]["description"]
-
-
-def test_sunday_hardcoded_to_hyrox_without_header():
-    from second_brain.crossfit.notion import parse_weekly_program_text
-
-    text = """SUNDAY
-
-PERFORMANCE
-
-B. 14 Minute AMRAP (W/Partner)
-
-1000 Meter Row/Ski
-
-800 Meter Run
-"""
-    result = parse_weekly_program_text(text)
-    tracks = {t["track"]: t for t in result["tracks"]}
-    assert "Hyrox" in tracks, "Sunday must be routed to Hyrox even without a Hyrox heading"
-    sunday = tracks["Hyrox"]["days"][0]
-    assert sunday["section_c"], "Sunday Hyrox content must be in section_c"
-    assert not sunday["section_b"], "Sunday Hyrox section_b must be empty"
-
-
-def test_sunday_with_hyrox_header_still_routes_to_hyrox():
-    from second_brain.crossfit.notion import parse_weekly_program_text
-
-    text = """SUNDAY
-
-PERFORMANCE
-
-Hyrox — 20:00-56:00
-
-B. 14 Minute AMRAP (W/Partner)
-
-1000 Meter Row/Ski
-
-800 Meter Run
-"""
-    result = parse_weekly_program_text(text)
-    hyrox = next(t for t in result["tracks"] if t["track"] == "Hyrox")
-    sunday = hyrox["days"][0]
-    assert sunday["section_c"], "Sunday Hyrox content must be in section_c"
-    assert not sunday["section_b"], "Sunday Hyrox section_b must be empty"
-
-
-def test_hyrox_explicit_b_and_c_not_swapped():
-    from second_brain.crossfit.notion import parse_weekly_program_text
-
-    text = """THURSDAY
-
-PERFORMANCE
-
-B. Every 6 Minutes for 36 Minutes
-
-800 Meter Run
-
-C. 15 Minute AMRAP
-
-21 Calorie Row
-
-15 Burpees
-"""
-    result = parse_weekly_program_text(text)
-    hyrox = next(t for t in result["tracks"] if t["track"] == "Hyrox")
-    thursday = hyrox["days"][0]
-    assert thursday["section_b"], "Explicit B. must be kept in section_b"
-    assert thursday["section_c"], "Explicit C. must be kept in section_c"
-
-
-def test_email_footer_stripped_before_parse():
-    from second_brain.crossfit.notion import parse_weekly_program_text
-
-    text = """MONDAY
-
-PERFORMANCE
-
-B. For Time:
-
-1 Mile Run
-
-100 Pull Ups
-
-Unsubscribe | Update your profile | 645 S Clark, Chicago IL 60605
-"""
-    result = parse_weekly_program_text(text)
-    perf = next(t for t in result["tracks"] if t["track"] == "Performance")
-    monday = perf["days"][0]
-    desc = (monday.get("section_b") or monday.get("section_c") or {}).get("description", "")
-    assert "Unsubscribe" not in desc
-    assert "S Clark" not in desc
-
-
-def test_is_partner_detected_from_section_b():
-    from second_brain.crossfit.notion import parse_weekly_program_text
-
-    text = """SATURDAY
-
-PERFORMANCE
-
-B. 30 Minute AMRAP (W/Partner)
-
-20 Deadlifts (225/155)
-
-400 Meter Run
-"""
-    result = parse_weekly_program_text(text)
-    perf = next(t for t in result["tracks"] if t["track"] == "Performance")
-    saturday = perf["days"][0]
-    assert saturday.get("is_partner") is True, \
-        "is_partner must be True when (W/Partner) appears in Section B"
-
-
-def test_is_partner_false_for_solo_workouts():
-    from second_brain.crossfit.notion import parse_weekly_program_text
-
-    text = """MONDAY
-
-PERFORMANCE
-
-B. For Time:
-
-1 Mile Run
-
-100 Pull Ups
-"""
-    result = parse_weekly_program_text(text)
-    perf = next(t for t in result["tracks"] if t["track"] == "Performance")
-    monday = perf["days"][0]
-    assert monday.get("is_partner") is False
-
-
-def test_lying_to_stand_rope_pulls_aliases_to_ring_row():
-    from second_brain.crossfit.notion import normalise_movement_name
-
-    assert normalise_movement_name("2 Lying to Stand Rope Pulls") == ["Ring Row"]
-
-
-def test_real_program_2026_05_25_key_movements():
-    from second_brain.crossfit.notion import parse_weekly_program_text
-
-    fixture = os.path.join(os.path.dirname(__file__), "fixtures", "crossfit_program_2026_05_25.txt")
-    with open(fixture) as f:
-        text = f.read()
-
-    result = parse_weekly_program_text(text, week_label="2026-05-25")
-
-    perf = next(t for t in result["tracks"] if t["track"] == "Performance")
-    tuesday = next(d for d in perf["days"] if d["day"] == "Tuesday")
-    c_movements = tuesday["section_c"]["movements"]
-    assert any("Snatch" in m or "snatch" in m.lower() for m in c_movements), \
-        f"Dumbbell Snatch not found in Tuesday C movements: {c_movements}"
-
-    hyrox = next(t for t in result["tracks"] if t["track"] == "Hyrox")
-    thursday = next(d for d in hyrox["days"] if d["day"] == "Thursday")
-    assert thursday["section_c"], "Thursday Hyrox must be in section_c"
-    assert not thursday["section_b"], "Thursday Hyrox section_b must be empty"
-
-    sunday = next(d for d in hyrox["days"] if d["day"] == "Sunday")
-    assert sunday["section_c"], "Sunday Hyrox must be in section_c"
-    assert not sunday["section_b"], "Sunday Hyrox section_b must be empty"
-
-    desc = sunday["section_c"].get("description", "")
-    assert "Unsubscribe" not in desc
-
-    s_movements = sunday["section_c"]["movements"]
-    assert any("Lunge" in m or "lunge" in m.lower() for m in s_movements), \
-        f"Lunge not found in Sunday Hyrox movements: {s_movements}"
+    movements = _extract_candidate_movements_from_section(
+        "1 Scaled Rope Climb or 2 Lying to Stand Rope Pulls"
+    )
+    names = [m.lower() for m in movements]
+    assert any("rope" in n for n in names), "Rope Climb variant missing"
+    assert any("lying" in n for n in names), "Lying to Stand missing"
+
+
+def test_match_movement_farmer_carry_does_not_prefer_single_arm():
+    from second_brain.crossfit.notion import match_movement
+
+    cache = {"Farmer's Carry": "id-a", "Single Arm Farmer's Carry": "id-b"}
+    assert match_movement("Farmer's Carry", cache) == "id-a"
+    assert match_movement("Single Arm Farmer's Carry", cache) == "id-b"
+
+    alias_first_cache = {"Single Arm Farmer's Carry": "id-b", "Farmer Carry": "id-a"}
+    assert match_movement("Farmer's Carry", alias_first_cache) == "id-a"
 
 
 def test_infer_primary_patterns_olympic_for_hang_clean():

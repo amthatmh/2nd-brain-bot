@@ -10,6 +10,7 @@ from second_brain.notion.properties import (
     rich_text_prop,
     title_prop,
 )
+from second_brain.crossfit.classify import _extract_time_cap
 from second_brain.utils import local_today
 from .nlp import fuzzy_match_movements, normalize_movement_name
 import logging
@@ -82,22 +83,14 @@ def match_movement(name: str, movement_cache: dict[str, str], threshold: int = 8
     lowered = {str(k).lower(): v for k, v in movement_cache.items()}
     if key in lowered:
         return lowered[key]
-    singular_key = re.sub(r"\b(\w+)s\b", r"\1", key)
-    if singular_key != key and singular_key in lowered:
-        return lowered[singular_key]
-    plural_key = " ".join(word + "s" if not word.endswith("s") else word for word in key.split())
-    if plural_key != key and plural_key in lowered:
-        return lowered[plural_key]
-    if len(key.split()) < 2:
-        log.debug("match_movement: no match for '%s' (single token, no exact hit)", name)
-        return None
-    simple_key = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", key)).strip()
-    key_word_count = len(re.findall(r"[a-z]+", simple_key))
+    simple_key = re.sub(r"[^a-z0-9 ]+", " ", key)
+    simple_key = re.sub(r"\s+", " ", simple_key).strip()
+    key_word_count = len(simple_key.split())
     for candidate, page_id in lowered.items():
         simple_candidate = re.sub(r"[^a-z0-9 ]+", " ", candidate)
         simple_candidate = re.sub(r"\s+", " ", simple_candidate).strip()
         singular_candidate = re.sub(r"\b(\w+)s\b", r"\1", simple_candidate)
-        candidate_word_count = len(re.findall(r"[a-z]+", simple_candidate))
+        candidate_word_count = len(simple_candidate.split())
         if simple_key and candidate_word_count <= key_word_count + 1 and (
             simple_key in simple_candidate or simple_key in singular_candidate
         ):
@@ -230,7 +223,7 @@ MOVEMENT_ALIAS_MAP = [
     (r"box\s+jump\s+over", "Box Jump"),
     (r"burpee\s+broad\s+jump", "Burpee"),
     (r"line[\s-]facing\s+burpee", "Burpee"),
-    (r"lying\s+to\s+stand\s+rope\s+(climb|pulls?)", "Ring Row"),
+    (r"rope\s+climb", "Pull-Up"),
     (r"(alt\.?\s+)?(db|dumbbell)\s+snatch", "Dumbbell Snatch"),
     (r"(db|dumbbell)\s+push\s+press", "Dumbbell Push Press"),
     (r"(kb|kettlebell)\s+hang\s+clean", "Kettlebell Clean"),
@@ -543,6 +536,28 @@ def infer_section_c_format(section_c: dict) -> str | None:
     return None
 
 
+def _fill_section_c_timing(section_c: dict, extra_text: str = "") -> dict:
+    """Back-fill duration_mins / time_cap_mins from description text when the parser left them null."""
+    if not section_c:
+        return section_c
+    if section_c.get("duration_mins") is not None and section_c.get("time_cap_mins") is not None:
+        return section_c
+    search_text = " ".join(filter(None, [section_c.get("description"), extra_text]))
+    if not search_text:
+        return section_c
+    fmt = section_c.get("format") or infer_section_c_format(section_c)
+    result = dict(section_c)
+    if result.get("duration_mins") is None and fmt in {"AMRAP", "EMOM", "Intervals", "Partner AMRAP"}:
+        extracted = _extract_time_cap(search_text)
+        if extracted is not None:
+            result["duration_mins"] = extracted
+    if result.get("time_cap_mins") is None and fmt == "For Time":
+        extracted = _extract_time_cap(search_text)
+        if extracted is not None:
+            result["time_cap_mins"] = extracted
+    return result
+
+
 
 _DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 _TRACK_NAMES = ("Performance", "Fitness", "Hyrox")
@@ -583,7 +598,7 @@ def _extract_candidate_movements_from_section(description: str) -> list[str]:
         line = raw_line.strip().lstrip("•- ").strip()
         if not line or skip_re.search(line):
             continue
-        for piece in re.split(r",|;|\+|\bor\b", line, flags=re.IGNORECASE):
+        for piece in re.split(r",|;|\+|\s+or\s+", line):
             for canonical in normalise_movement_name(piece):
                 if not canonical or len(canonical) < 3:
                     continue
@@ -744,6 +759,7 @@ def save_programme(notion, program_db_id: str, workout_days_db_id: str, movement
             section_b = day_row.get("section_b") or {}
             section_c = day_row.get("section_c") or {}
             training_notes = day_row.get("training_notes") or ""
+            section_c = _fill_section_c_timing(section_c, training_notes)
             b_desc = section_b.get("description") or ""
             c_desc = section_c.get("description") or ""
 
@@ -869,6 +885,7 @@ def save_programme_from_notion_row(
             section_b = day_row.get("section_b") or {}
             section_c = day_row.get("section_c") or {}
             training_notes = day_row.get("training_notes") or ""
+            section_c = _fill_section_c_timing(section_c, training_notes)
             b_desc = section_b.get("description") or ""
             c_desc = section_c.get("description") or ""
 
