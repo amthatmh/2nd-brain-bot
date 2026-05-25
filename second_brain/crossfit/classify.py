@@ -111,7 +111,7 @@ def _extract_candidate_movements(description: str) -> list[str]:
     """
     text = re.sub(r"\([^)]*\)", " ", description or "")
     text = re.sub(r"\b(?:amrap|emom|for time|time cap|every|rounds?|reps?|cal(?:ories)?|minutes?|mins?)\b", " ", text, flags=re.I)
-    pieces = re.split(r"[,;/\n]|\d+\s*(?:x|×|-|to)\s*\d+|\d+", text)
+    pieces = re.split(r"[,;/\n]|\bor\b|\d+\s*(?:x|×|-|to)\s*\d+|\d+", text, flags=re.I)
     out: list[str] = []
     seen: set[str] = set()
     for piece in pieces:
@@ -309,7 +309,7 @@ Section splitting rules (must follow exactly):
 - RULE 2: Section C starts at the first line matching r'^C[\.)]\s' with optional bold/italic markdown around C.
 - RULE 3: Everything between B. and C. is Section B content including any training notes that follow B.
 - RULE 4: Everything after C. until the next day/track header or end of track block is Section C content including its training notes.
-- RULE 5: Time markers are NOT section boundaries. Ignore/strip lines matching r'^\w[\w\s]+—\s*\d{{1,2}}:\d{{2}}-\d{{1,2}}:\d{{2}}', e.g. "Murph Prep — 35:00-55:00", "Sprint Couplets — 45:00-55:00", "Clean-up — 55:00-60:00".
+- RULE 5: Time markers are NOT section boundaries. Ignore/strip lines matching r'^[\w][\w\s\-]+—\s*\d{{1,2}}:\d{{2}}-\d{{1,2}}:\d{{2}}', e.g. "Murph Prep — 35:00-55:00", "Sprint Couplets — 45:00-55:00", "Clean-up — 55:00-60:00".
 - RULE 6: Training notes that appear AFTER C. belong to Section C. Only training notes between B. and C. belong to Section B.
 - RULE 7: Include the "Training notes:" label and bullet points in the relevant section description; do not extract them as a separate top-level field.
 
@@ -352,6 +352,7 @@ Rules:
 - Use null for unknown/missing number fields
 - Thursday and Saturday are often partner WODs (is_partner: true)
 - Keep descriptions concise, but preserve Training notes labels and bullets inside the relevant Section B/C description
+- When a movement line contains "or" (e.g. "1 Rope Climb or 2 Lying to Stand Rope Pulls"), both sides are scaled alternatives. Extract each as a separate movement using its exact multi-word name as written. Never substitute a generic CrossFit name — for example, do not simplify "Lying to Stand Rope Pulls" to "Pull-Up".
 """
     try:
         resp = claude_client.messages.create(

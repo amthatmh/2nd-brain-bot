@@ -223,7 +223,7 @@ MOVEMENT_ALIAS_MAP = [
     (r"box\s+jump\s+over", "Box Jump"),
     (r"burpee\s+broad\s+jump", "Burpee"),
     (r"line[\s-]facing\s+burpee", "Burpee"),
-    (r"rope\s+climb", "Pull-Up"),
+    (r"rope\s+climb", "Rope Climb"),
     (r"(alt\.?\s+)?(db|dumbbell)\s+snatch", "Dumbbell Snatch"),
     (r"(db|dumbbell)\s+push\s+press", "Dumbbell Push Press"),
     (r"(kb|kettlebell)\s+hang\s+clean", "Kettlebell Clean"),
@@ -302,7 +302,7 @@ def normalise_movement_name(raw: str) -> list[str]:
     s = re.sub(r"\s*\(.*?\)\s*$", "", s).strip()
     s = re.sub(r"^\d[\d/'\"\.]*\s*(meter|m|cal|calories|foot|feet)?\s*", "", s, flags=re.IGNORECASE).strip()
 
-    if re.match(r"^\w[\w\s]+—\s*\d{1,2}:\d{2}-\d{1,2}:\d{2}", s):
+    if re.match(r"^[\w][\w\s\-]+—\s*\d{1,2}:\d{2}-\d{1,2}:\d{2}", s):
         return []
 
     for pattern, canonical in MOVEMENT_ALIAS_MAP:
@@ -618,7 +618,7 @@ def _extract_training_notes(block: str) -> tuple[str, str]:
 
 def _extract_sections(block: str) -> tuple[str, str, str]:
     lines = []
-    time_marker = re.compile(r"^\s*\w[\w\s]+—\s*\d{1,2}:\d{2}-\d{1,2}:\d{2}\s*$")
+    time_marker = re.compile(r"^\s*[\w][\w\s\-]+—\s*\d{1,2}:\d{2}-\d{1,2}:\d{2}\s*$")
     for line in (block or "").splitlines():
         if time_marker.match(line):
             continue

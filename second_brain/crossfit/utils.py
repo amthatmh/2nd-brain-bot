@@ -27,7 +27,7 @@ DAY_CANONICAL = {
 DAY_HEADER_RE = re.compile(r"(?im)^[ \t]*(MONDAY|TUESDAY|WEDNESDAY|THURSDAY|FRIDAY|SATURDAY|SUNDAY)[ \t]*:?.*$")
 TRACK_HEADER_RE = re.compile(r"(?im)^[ \t]*(PERFORMANCE|FITNESS|HYROX)[ \t]*:?.*$")
 SECTION_HEADER_RE = re.compile(r"(?im)^[ \t]*[*_`]*(?:SECTION[ \t]*)?([BC])[*_`]*[ \t]*[\.)][ \t]+(.*)$")
-TIME_MARKER_RE = re.compile(r"(?im)^\s*\w[\w\s]+—\s*\d{1,2}:\d{2}-\d{1,2}:\d{2}\s*$")
+TIME_MARKER_RE = re.compile(r"(?im)^\s*[\w][\w\s\-]+—\s*\d{1,2}:\d{2}-\d{1,2}:\d{2}\s*$")
 
 
 def _app_tz() -> ZoneInfo:
