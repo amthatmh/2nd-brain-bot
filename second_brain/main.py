@@ -214,6 +214,7 @@ from second_brain.crossfit.classify import classify_workout_message
 from second_brain.crossfit.handlers import (
     MOVEMENTS_CACHE,
     handle_cf_callback,
+    handle_cf_prs_reply,
     handle_cf_strength_flow,
     handle_cf_text_reply,
     handle_cf_upload_programme,

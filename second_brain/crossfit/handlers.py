@@ -13,7 +13,7 @@ from utils.date_parser import parse_date
 from .classify import parse_programme
 from .keyboards import level_confirm_keyboard, my_level_keyboard, rx_scaled_keyboard, session_feel_keyboard, strength_post_keyboard, wod_format_keyboard
 from .notion import create_strength_log, create_wod_log, get_available_tracks_today, get_movement_category, get_movement_details, get_movement_load_type, get_or_create_movement, get_progressions_for_movement, get_today_workout_structure, match_movement, normalise_movement_name, notion_query_wod_log_by_date, save_programme, set_current_level, this_monday
-from .nlp import extract_movements_from_log, extract_workout_data, fuzzy_match_movements, load_movements_cache
+from .nlp import extract_movements_from_log, extract_workout_data, load_movements_cache
 from .readiness import check_readiness_logged_today, extract_readiness_score, log_daily_readiness
 from second_brain.notion import notion_call
 from second_brain.utils import local_today
@@ -244,15 +244,36 @@ def _prop_date(props: dict, *names: str) -> str:
     return "Unknown date"
 
 
-async def _match_movement_from_cache(notion, config: dict, movement_text: str, threshold: float = 0.70) -> tuple[str, str] | None:
+async def resolve_user_movement(
+    notion,
+    config: dict,
+    user_text: str,
+    threshold: int = 80,
+) -> tuple[str, str] | None:
+    """Resolve a user-typed movement name to (canonical_name, page_id).
+
+    Uses the hardened `match_movement` logic from `crossfit/notion.py`:
+    exact -> singular -> plural -> multi-token substring -> fuzzy. Single-token
+    inputs (e.g. "squat", "row", "push") return None unless they hit an exact
+    or singular cache entry, preventing silent ambiguous matches.
+
+    Threshold is passed through to the fuzzy fallback.
+    """
     cache = await _ensure_movements_cache(notion, config)
-    matches = await fuzzy_match_movements([movement_text], cache, threshold=threshold)
-    if not matches:
+    if not cache:
         return None
-    _raw, matched_name, score = matches[0]
-    if not matched_name or score < threshold:
+    page_id = match_movement(user_text, cache, threshold=threshold)
+    if not page_id:
         return None
-    return matched_name, cache[matched_name]
+    matched_name = next(
+        (name for name, pid in cache.items() if pid == page_id),
+        user_text.strip(),
+    )
+    return matched_name, page_id
+
+
+async def _match_movement_from_cache(notion, config: dict, movement_text: str, threshold: int = 80) -> tuple[str, str] | None:
+    return await resolve_user_movement(notion, config, movement_text, threshold=threshold)
 
 
 async def query_wod_log_by_date(notion, wod_log_db_id: str, workout_date: str, wod_format: str | None = None) -> list[dict]:
@@ -1080,32 +1101,92 @@ async def _relation_names_cached(notion, relation_items: list[dict], request_cac
     return names
 
 
-async def _movement_sub_details(notion, movement_page_id: str, request_cache: dict[str, dict] | None = None) -> dict:
+async def _fetch_relation_details(
+    notion, relation_items: list[dict], request_cache: dict[str, dict]
+) -> list[dict]:
+    """Return [{"name": str, "scaling_notes": str}, ...] for each related page."""
+    details: list[dict] = []
+    for rel in relation_items or []:
+        page_id = rel.get("id") or rel.get("page_id")
+        if not page_id:
+            continue
+        try:
+            page = await _retrieve_page(notion, page_id, request_cache)
+            p = page.get("properties", {})
+            details.append({
+                "name": _plain_title(p) or "Movement",
+                "scaling_notes": _plain_rich_text_prop(p, "Scaling Notes") or "",
+            })
+        except Exception as exc:
+            log.warning("Could not retrieve relation %s: %s", page_id, exc)
+    return details
+
+
+async def _movement_sub_details(
+    notion, movement_page_id: str,
+    request_cache: dict[str, dict] | None = None,
+    *,
+    fetch_relations: bool = False,
+) -> dict:
     request_cache = request_cache if request_cache is not None else {}
     page = await _retrieve_page(notion, movement_page_id, request_cache)
     props = page.get("properties", {})
+    if fetch_relations:
+        comp = await _fetch_relation_details(
+            notion, _relation_items(props, "Complementary Movements"), request_cache
+        )
+        ant = await _fetch_relation_details(
+            notion, _relation_items(props, "Antagonist Movements"), request_cache
+        )
+    else:
+        comp = await _relation_names_cached(
+            notion, _relation_items(props, "Complementary Movements"), request_cache
+        )
+        ant = await _relation_names_cached(
+            notion, _relation_items(props, "Antagonist Movements"), request_cache
+        )
     return {
         "page_id": movement_page_id,
         "name": _plain_title(props) or "Movement",
         "scaling_notes": _plain_rich_text_prop(props, "Scaling Notes"),
         "notes": _plain_rich_text_prop(props, "Notes"),
-        "complementary_movements": await _relation_names_cached(notion, _relation_items(props, "Complementary Movements"), request_cache),
-        "antagonist_movements": await _relation_names_cached(notion, _relation_items(props, "Antagonist Movements"), request_cache),
+        "complementary_movements": comp,
+        "antagonist_movements": ant,
     }
 
 
 def _format_sub_search_result(details: dict) -> str:
-    comp = ", ".join(details.get("complementary_movements") or []) or "None set"
-    ant = ", ".join(details.get("antagonist_movements") or []) or "None set"
+    def _fmt_relation_list(items) -> str:
+        if not items:
+            return "  • None set"
+        lines = []
+        for item in items:
+            if isinstance(item, dict):
+                name = item.get("name") or "Movement"
+                scaling = item.get("scaling_notes") or ""
+                lines.append(f"  • *{name}*" + (f": {scaling}" if scaling else ""))
+            else:
+                lines.append(f"  • {item}")
+        return "\n".join(lines)
+
     scaling = details.get("scaling_notes") or "None set"
     notes = details.get("notes") or ""
-    return (
-        f"🎯 *{details.get('name') or 'Movement'}*\n\n"
-        f"📝 *Scaling:* {scaling}\n\n"
-        f"🔄 *Complementary:* {comp}\n\n"
-        f"⬅️ *Antagonist:* {ant}\n\n"
-        f"📋 *Notes:* {notes}"
-    )
+    comp_block = _fmt_relation_list(details.get("complementary_movements") or [])
+    ant_block = _fmt_relation_list(details.get("antagonist_movements") or [])
+    parts = [
+        f"🎯 *{details.get('name') or 'Movement'}*",
+        "",
+        f"📝 *Scaling:* {scaling}",
+        "",
+        "🔄 *Complementary:*",
+        comp_block,
+        "",
+        "⬅️ *Antagonist:*",
+        ant_block,
+    ]
+    if notes:
+        parts += ["", f"📋 *Notes:* {notes}"]
+    return "\n".join(parts)
 
 
 async def handle_cf_sub_search_reply(message, movement_text: str, notion, config, cf_pending, key: str) -> None:
@@ -1114,16 +1195,13 @@ async def handle_cf_sub_search_reply(message, movement_text: str, notion, config
         await message.reply_text("Which movement do you need a sub for?", parse_mode="Markdown")
         return
 
-    cache = await _ensure_movements_cache(notion, config)
-    matches = await fuzzy_match_movements([movement_name], cache, threshold=0.80)
-    if not matches:
+    match = await resolve_user_movement(notion, config, movement_name)
+    if not match:
         await message.reply_text("❓ Couldn't find that movement. Try again.", parse_mode="Markdown")
         return
-    _raw, matched_name, score = matches[0]
-    if not matched_name or score < 0.80:
-        await message.reply_text("❓ Couldn't find that movement. Try again.", parse_mode="Markdown")
-        return
-    details = await _movement_sub_details(notion, cache[matched_name], {})
+    matched_name, movement_id = match
+    details = await _movement_sub_details(notion, movement_id, {}, fetch_relations=True)
+    details["name"] = matched_name
     cf_pending.pop(key, None)
     await message.reply_text(_format_sub_search_result(details), parse_mode="Markdown")
 
@@ -1200,14 +1278,39 @@ async def handle_todays_sub(message, notion, config) -> None:
         await message.reply_text("📅 No programme found for today. Use 🔍 Search Subs instead.", parse_mode="Markdown")
         return
 
+    if len(rows) > 1:
+        buttons = [[
+            InlineKeyboardButton(
+                _select_name(row.get("properties", {}), "Track", "Workout"),
+                callback_data=f"cf:sub_track:{_select_name(row.get('properties', {}), 'Track', 'Workout')}",
+            )
+        ] for row in rows]
+        await message.reply_text(
+            "📅 *Today's Subs — which track?*",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode="Markdown",
+        )
+        return
+
+    await _render_todays_sub_rows(message, notion, rows, day_name)
+
+
+async def _render_todays_sub_rows(
+    message, notion, rows: list[dict], day_name: str
+) -> None:
+    """Fetch movement sub-details for each row and send the result."""
     request_cache: dict[str, dict] = {}
     blocks: list[str] = []
     for row in rows:
         props = row.get("properties", {})
         row_day = _select_name(props, "Day", day_name)
         track = _select_name(props, "Track", "Workout")
-        b_details = await _movement_details_for_section(notion, props, "Section B Movements", request_cache)
-        c_details = await _movement_details_for_section(notion, props, "Section C Movements", request_cache)
+        b_details = await _movement_details_for_section(
+            notion, props, "Section B Movements", request_cache
+        )
+        c_details = await _movement_details_for_section(
+            notion, props, "Section C Movements", request_cache
+        )
         lines = [f"📅 *{row_day} — {track}*", ""]
         lines.extend(_section_lines("Section B", b_details))
         lines.append("")
@@ -1218,14 +1321,33 @@ async def handle_todays_sub(message, notion, config) -> None:
         await message.reply_text(chunk, parse_mode="Markdown")
 
 
-def _parse_pr_request(raw_text: str) -> tuple[str, int | None]:
+def _parse_pr_request(raw_text: str) -> tuple[str, int | None, str | None]:
+    """Returns (movement_text, target_reps, since_date_iso)."""
     text = (raw_text or "").strip()
+    since_date: str | None = None
+    since_re = re.compile(
+        r"\bsince=(\d{4}-\d{2}-\d{2}|\d+[dwm])\b", re.IGNORECASE
+    )
+    since_match = since_re.search(text)
+    if since_match:
+        text = since_re.sub("", text).strip()
+        raw_since = since_match.group(1)
+        if re.match(r"\d{4}-\d{2}-\d{2}", raw_since):
+            since_date = raw_since
+        else:
+            qty = int(re.match(r"(\d+)", raw_since).group(1))
+            unit = raw_since[-1].lower()
+            days = qty if unit == "d" else qty * 7 if unit == "w" else qty * 30
+            since_date = (local_today() - timedelta(days=days)).isoformat()
     target_match = re.match(r"(\d+)\s*[xX×]\s*(.+)", text)
     if not target_match:
         target_match = re.match(r"(\d+)\s*(?:reps?|rep)\s+(.+)", text, re.IGNORECASE)
     if target_match:
-        return target_match.group(2).strip(), int(target_match.group(1))
-    return text, None
+        return target_match.group(2).strip(), int(target_match.group(1)), since_date
+    return text, None, since_date
+
+
+MAX_TARGET_REPS = 20
 
 
 def _rep_percent(target_reps: int) -> float:
@@ -1301,11 +1423,19 @@ def _format_recent_pr_lines(entries: list[dict], include_sets: bool = False) -> 
     return lines
 
 
-async def _query_workout_log_for_movement(notion, workout_log_db_id: str, movement_id: str, page_size: int = 10, sort_property: str = "load_lbs", sort_direction: str = "descending") -> list[dict]:
+async def _query_workout_log_for_movement(notion, workout_log_db_id: str, movement_id: str, page_size: int = 10, sort_property: str = "load_lbs", sort_direction: str = "descending", after_date: str | None = None) -> list[dict]:
+    movement_filter: dict = {"property": "Movement", "relation": {"contains": movement_id}}
+    if after_date:
+        db_filter: dict = {"and": [
+            movement_filter,
+            {"property": "Date", "date": {"after": after_date}},
+        ]}
+    else:
+        db_filter = movement_filter
     results = await _maybe_await(notion_call(
         notion.databases.query,
         database_id=workout_log_db_id,
-        filter={"property": "Movement", "relation": {"contains": movement_id}},
+        filter=db_filter,
         sorts=[{"property": sort_property, "direction": sort_direction}],
         page_size=page_size,
     ))
@@ -1337,31 +1467,59 @@ async def handle_cf_prs(message, notion, config, cf_pending=None):
 
 async def handle_cf_prs_reply(message, movement_text: str, notion, config, cf_pending) -> None:
     key = str(message.chat_id)
-    requested_movement, target_reps = _parse_pr_request(movement_text)
+    requested_movement, target_reps, since_date = _parse_pr_request(movement_text)
     if not requested_movement:
         await message.reply_text("🏆 Which movement? (e.g. 'back squat' or '6x back squat')", parse_mode="Markdown")
         return
-    match = await _match_movement_from_cache(notion, config, requested_movement, threshold=0.80)
+    if target_reps is not None and not (1 <= target_reps <= MAX_TARGET_REPS):
+        await message.reply_text(
+            f"⚠️ Rep target must be between 1 and {MAX_TARGET_REPS}. Try e.g. '5x back squat'.",
+            parse_mode="Markdown",
+        )
+        return
+    match = await _match_movement_from_cache(notion, config, requested_movement, threshold=80)
     if not match:
         await message.reply_text("❓ Couldn't find that movement. Try again.", parse_mode="Markdown")
         return
     movement_name, movement_id = match
     workout_log_db_id = _cf_config(config, "NOTION_WORKOUT_LOG_DB")
-    rows = await _query_workout_log_for_movement(notion, workout_log_db_id, movement_id, page_size=10)
-    entries = [_extract_pr_entry(row) for row in rows]
-    if not entries:
+    heaviest_rows = await _query_workout_log_for_movement(
+        notion, workout_log_db_id, movement_id,
+        page_size=10, sort_property="load_lbs", sort_direction="descending",
+    )
+    recent_rows = await _query_workout_log_for_movement(
+        notion, workout_log_db_id, movement_id,
+        page_size=10, sort_property="Date", sort_direction="descending",
+        after_date=since_date,
+    )
+
+    seen_ids: set[str] = set()
+    merged_rows: list[dict] = []
+    for row in (*heaviest_rows, *recent_rows):
+        row_id = row.get("id")
+        if row_id and row_id in seen_ids:
+            continue
+        if row_id:
+            seen_ids.add(row_id)
+        merged_rows.append(row)
+
+    heaviest_entries = [_extract_pr_entry(row) for row in heaviest_rows]
+    recent_entries = [_extract_pr_entry(row) for row in recent_rows]
+    all_entries = [_extract_pr_entry(row) for row in merged_rows]
+    if not all_entries:
         cf_pending.pop(key, None)
         await message.reply_text(f"No logged entries found for {movement_name} yet.", parse_mode="Markdown")
         return
 
-    all_time_pr = max(entries, key=lambda entry: (entry.get("load_lbs") or 0, entry.get("estimated_1rm") or 0))
-    best_estimated_1rm = max((entry.get("estimated_1rm") or 0 for entry in entries), default=0)
-    recent_sessions = _recent_unique_sessions(entries)
+    all_time_pr = max(heaviest_entries or all_entries, key=lambda entry: (entry.get("load_lbs") or 0, entry.get("estimated_1rm") or 0))
+    best_estimated_1rm = max((entry.get("estimated_1rm") or 0 for entry in all_entries), default=0)
+    recent_sessions = _recent_unique_sessions(recent_entries or all_entries)
     cf_pending.pop(key, None)
 
     if target_reps is None:
+        since_note = f"  _(since {since_date})_" if since_date else ""
         lines = [
-            f"🏆 *{movement_name} — PR Summary*",
+            f"🏆 *{movement_name} — PR Summary*{since_note}",
             "",
             f"📊 *Best logged:* {_format_best_logged(all_time_pr)}",
             f"🧮 *Est. 1RM:* {round(best_estimated_1rm)} lbs (Brzycki)",
@@ -1374,10 +1532,11 @@ async def handle_cf_prs_reply(message, movement_text: str, notion, config, cf_pe
             f"💡 Tip: Type '6x {movement_name}' to get a target weight.",
         ])
     else:
+        since_note = f"  _(since {since_date})_" if since_date else ""
         percent = _rep_percent(target_reps)
         suggested_weight = _round_to_nearest_5(best_estimated_1rm * percent)
         lines = [
-            f"🏋️ *{movement_name} — {target_reps} Rep Target*",
+            f"🏋️ *{movement_name} — {target_reps} Rep Target*{since_note}",
             "",
             f"🧮 *Est. 1RM:* {round(best_estimated_1rm)} lbs",
             f"🎯 *Suggested for {target_reps} reps:* {suggested_weight} lbs ({round(percent * 100)}% of 1RM)",
@@ -1493,6 +1652,8 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         first_load = movements[0].get("load_lbs") if movements else None
         notes_line = f"📝 Notes: {notes}\n" if notes and notes.strip() else ""
         weight_line = f"⚖️ Weight: {_format_lbs(first_load) + 'lbs' if first_load else 'BW'}\n" if len(movements) == 1 else ""
+        state["stage"] = "awaiting_feel"
+        cf_pending[key] = state
         await message.reply_text(
             f"✅ Strength logged!\n\n"
             f"🏋️ {movement_summary}\n"
@@ -1500,10 +1661,11 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
             f"📊 Scheme: {scheme_summary}\n"
             f"{weight_line}"
             f"{notes_line}"
-            f"_Saved to Notion_",
+            f"_Saved to Notion_\n\n"
+            f"💬 How did that session feel?",
             parse_mode="Markdown",
+            reply_markup=strength_post_keyboard(key),
         )
-        await _prompt_strength_post(message, key, state, cf_pending)
         return
     elif state.get("mode") == "wod":
         target_wod_db = _cf_config(config, "NOTION_WOD_LOG_DB")
@@ -1633,11 +1795,14 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         if notes and notes.strip():
             confirmation_lines.append(f"📝 Notes: {notes.strip()}")
         confirmation_lines.append("_Saved to Notion_")
+        confirmation_lines.append("\n💬 How did that session feel?")
+        state["stage"] = "awaiting_feel"
+        cf_pending[key] = state
         await message.reply_text(
             "\n".join(confirmation_lines),
             parse_mode="Markdown",
+            reply_markup=session_feel_keyboard(key),
         )
-        await _prompt_session_feel(message, key, state, cf_pending)
         return
     cf_pending.pop(key, None)
 
@@ -2007,6 +2172,32 @@ async def _cf_sub_search(q, parts, claude, notion, config, cf_pending) -> None:
 
 async def _cf_sub_today(q, parts, claude, notion, config, cf_pending) -> None:
     await handle_todays_sub(q.message, notion, config)
+
+
+async def _cf_sub_track(q, parts, claude, notion, config, cf_pending) -> None:
+    """Handle 'cf:sub_track:{track_name}' — show subs for one specific track."""
+    if len(parts) < 3:
+        await q.answer("Track not found.", show_alert=False)
+        return
+    chosen_track = parts[2]
+    workout_days_db_id = _cf_config(config, "NOTION_WORKOUT_DAYS_DB")
+    if not workout_days_db_id:
+        await q.message.reply_text(
+            "📅 No programme found for today.", parse_mode="Markdown"
+        )
+        return
+    day_name, rows = await _workout_day_rows_for_today(notion, workout_days_db_id)
+    matching = [
+        r for r in rows
+        if _select_name(r.get("properties", {}), "Track", "") == chosen_track
+    ]
+    if not matching:
+        await q.message.reply_text(
+            f"📅 No programme found for *{chosen_track}* today.",
+            parse_mode="Markdown",
+        )
+        return
+    await _render_todays_sub_rows(q.message, notion, matching, day_name)
 
 
 async def _cf_prs(q, parts, claude, notion, config, cf_pending) -> None:
@@ -2393,6 +2584,7 @@ _CF_CALLBACK_HANDLERS: dict[str, object] = {
     "sub_search":       _cf_sub_search,
     "subs_search":      _cf_sub_search,
     "sub_today":        _cf_sub_today,
+    "sub_track":        _cf_sub_track,
     "todays_sub":       _cf_sub_today,
     "prs":              _cf_prs,
     "my_prs":           _cf_prs,

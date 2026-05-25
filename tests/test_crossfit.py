@@ -2077,16 +2077,16 @@ def _workout_row(load, sets, reps, est_1rm, workout_date):
 def test_my_prs_target_reps_uses_workout_log_v2_and_clears_state(monkeypatch):
     import second_brain.crossfit.handlers as handlers
 
-    async def fake_match(notion, config, movement_text, threshold=0.70):
+    async def fake_match(notion, config, movement_text, threshold=80):
         del notion, config
         assert movement_text == "back squat"
-        assert threshold == 0.80
+        assert threshold == 80
         return "Back Squat", "mov-back-squat"
 
-    captured = {}
+    captured_queries = []
 
     def query(**kwargs):
-        captured.update(kwargs)
+        captured_queries.append(kwargs)
         return {"results": [
             _workout_row(245, 1, 3, 266, "2026-05-06"),
             _workout_row(235, 1, 4, 261, "2026-04-28"),
@@ -2108,10 +2108,10 @@ def test_my_prs_target_reps_uses_workout_log_v2_and_clears_state(monkeypatch):
         )
     )
 
-    assert captured["database_id"] == "workout-log"
-    assert captured["filter"] == {"property": "Movement", "relation": {"contains": "mov-back-squat"}}
-    assert captured["sorts"] == [{"property": "load_lbs", "direction": "descending"}]
-    assert captured["page_size"] == 10
+    assert {q["database_id"] for q in captured_queries} == {"workout-log"}
+    assert {q["filter"]["relation"]["contains"] for q in captured_queries} == {"mov-back-squat"}
+    assert {q["sorts"][0]["property"] for q in captured_queries} == {"load_lbs", "Date"}
+    assert {q["page_size"] for q in captured_queries} == {10}
     assert str(message.chat_id) not in pending
     reply = message.replies[-1][0]
     assert "Back Squat — 6 Rep Target" in reply
@@ -2188,3 +2188,911 @@ def test_strength_movement_reply_prepends_recent_pr_context(monkeypatch):
     assert "• 2026-05-06 — 115 lbs × 6×4" in reply
     assert "🧮 Est. 1RM: 130 lbs" in reply
     assert "Any notes about this session" in reply
+
+
+# ----------------------------------------------------------------------------
+# Regression tests for movement-resolution bugs in the weekly-program parser.
+# ----------------------------------------------------------------------------
+
+
+def test_normalise_keeps_rope_climb_as_its_own_movement():
+    from second_brain.crossfit.notion import normalise_movement_name
+
+    assert normalise_movement_name("Rope Climb") == ["Rope Climb"]
+    assert normalise_movement_name("Rope Climbs") == ["Rope Climb"]
+    # Rope Climb must no longer alias to Pull-Up.
+    assert "Pull-Up" not in normalise_movement_name("Rope Climb")
+    assert "Pull-Up" not in normalise_movement_name("1 Rope Climb")
+
+
+def test_normalise_does_not_split_long_sentence_on_slash():
+    """A training-note sentence with an embedded slash must not be slash-split.
+
+    The Tuesday Section B training notes contained "Touch N Go push/power jerk
+    means as the barbell comes down…" — the slash splitter used to produce a
+    bare 'push' candidate that substring-matched onto Sled Push.
+    """
+    from second_brain.crossfit.notion import normalise_movement_name
+
+    result = normalise_movement_name(
+        "Touch N Go push/power jerk means as the barbell comes down to the shoulders"
+    )
+    assert "push" not in [r.lower() for r in result]
+
+
+def test_normalise_still_splits_short_slash_alternations():
+    from second_brain.crossfit.notion import normalise_movement_name
+
+    result = normalise_movement_name("Push/Power Jerk")
+    assert "Push Jerk" in result
+    assert "Power Jerk" in result
+
+
+def test_match_movement_rejects_generic_single_word_substring():
+    """`match_movement('push', cache)` must NOT return Sled Push via substring search."""
+    from second_brain.crossfit.notion import match_movement
+
+    cache = {
+        "Sled Push": "sled-id",
+        "Push Press": "press-id",
+        "Push Jerk": "jerk-id",
+        "Push-Up": "pushup-id",
+    }
+    assert match_movement("push", cache) is None
+    assert match_movement("squat", {"Back Squat": "bs", "Air Squat": "as"}) is None
+
+
+def test_match_movement_still_resolves_exact_and_singular_keys():
+    from second_brain.crossfit.notion import match_movement
+
+    cache = {"Burpee": "burpee-id", "Deadlift": "deadlift-id", "Hang Squat Clean": "hsc-id"}
+    assert match_movement("Burpee", cache) == "burpee-id"
+    assert match_movement("Deadlifts", cache) == "deadlift-id"
+    assert match_movement("Hang Squat Cleans", cache) == "hsc-id"
+
+
+def test_match_movement_farmer_carry_does_not_prefer_single_arm():
+    from second_brain.crossfit.notion import match_movement
+
+    cache = {"Farmer's Carry": "id-a", "Single Arm Farmer's Carry": "id-b"}
+    assert match_movement("Farmer's Carry", cache) == "id-a"
+    assert match_movement("Farmer Carry", cache) == "id-a"
+
+
+def test_movement_names_from_text_prefers_longest_match():
+    """Ring Row should subsume Row when both appear in the same span."""
+    from second_brain.crossfit.notion import _movement_names_from_text
+
+    cache = {"Row": "row-id", "Ring Row": "ring-id"}
+    assert _movement_names_from_text("10 Ring Rows", cache) == ["Ring Row"]
+
+
+def test_movement_names_from_text_renegade_row_subsumes_row():
+    from second_brain.crossfit.notion import _movement_names_from_text
+
+    cache = {"Row": "row-id", "Renegade Row": "ren-id"}
+    assert _movement_names_from_text("6 DB Renegade Rows", cache) == ["Renegade Row"]
+
+
+def test_movement_names_from_text_assault_bike_subsumes_bike():
+    from second_brain.crossfit.notion import _movement_names_from_text
+
+    cache = {"Bike": "bike-id", "Assault Bike": "assault-id"}
+    assert _movement_names_from_text("15/11 Assault Bike Calories", cache) == ["Assault Bike"]
+
+
+def test_movement_names_from_text_hang_squat_clean_subsumes_squat_clean_and_squat():
+    """Air-squat/Back-squat aliases should not leak in when a longer match covers them."""
+    from second_brain.crossfit.notion import _movement_names_from_text
+
+    cache = {
+        "Hang Squat Clean": "hsc-id",
+        "Squat Clean": "sc-id",
+        "Back Squat": "bs-id",
+        "squat": "bs-id",  # short alias loaded from the Aliases field
+        "Clean Pull": "cp-id",
+    }
+    result = _movement_names_from_text(
+        "5-7 Sets of Clean Pull + Below the Knee Hang Squat Clean (2+2)", cache
+    )
+    assert "Hang Squat Clean" in result
+    assert "Clean Pull" in result
+    assert "Squat Clean" not in result
+    assert "Back Squat" not in result
+    assert "squat" not in result
+
+
+def test_movement_names_from_text_air_squat_subsumes_bare_squat_alias():
+    from second_brain.crossfit.notion import _movement_names_from_text
+
+    cache = {"Air Squat": "as-id", "Back Squat": "bs-id", "squat": "bs-id"}
+    assert _movement_names_from_text("30 Air Squats", cache) == ["Air Squat"]
+
+
+def test_movement_names_from_text_box_jump_over_subsumes_box_jump():
+    """Longer movements subsume shorter ones at the same span."""
+    from second_brain.crossfit.notion import _movement_names_from_text
+
+    cache = {"Box Jump": "bj-id", "Box Jump Over": "bjo-id"}
+    assert _movement_names_from_text("18 Box Jump Overs at 24", cache) == ["Box Jump Over"]
+
+
+def test_parse_weekly_program_text_thursday_defaults_to_hyrox():
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = (
+        "MONDAY\n"
+        "PERFORMANCE\n"
+        "B. EMOM10\n"
+        "1. Pull Ups\n"
+        "C. AMRAP\n"
+        "Run\n"
+        "\n"
+        "THURSDAY\n"
+        "PERFORMANCE\n"
+        "B. 30 Minute AMRAP (W/Partner)\n"
+        "400 Meter Run\n"
+        "200' Sled Push\n"
+    )
+    parsed = parse_weekly_program_text(text, "Week of 2026-05-18")
+    tracks = {t["track"]: t for t in parsed["tracks"]}
+    assert "Hyrox" in tracks
+    thursday_days = [d["day"] for d in tracks["Hyrox"]["days"]]
+    assert "Thursday" in thursday_days
+    if "Performance" in tracks:
+        perf_days = [d["day"] for d in tracks["Performance"]["days"]]
+        assert "Thursday" not in perf_days
+
+
+# ----------------------------------------------------------------------------
+# Targeted regressions for header / section-marker / slash-split edge cases
+# observed in real coach emails.
+# ----------------------------------------------------------------------------
+
+
+def test_header_pattern_matches_track_with_trailing_period():
+    """`FITNESS.` (period after the track name) was leaking content into PERFORMANCE."""
+    from second_brain.crossfit.notion import _header_line_pattern
+
+    pattern = _header_line_pattern(("Performance", "Fitness", "Hyrox"))
+    text = "FITNESS.\nB. 30 Minute AMRAP\n"
+    match = pattern.search(text)
+    assert match is not None
+    assert match.group("name").lower() == "fitness"
+
+
+def test_extract_sections_handles_b_without_space_after_period():
+    """`B.Take 15 Minutes...` (no space after the period) used to drop Section B."""
+    from second_brain.crossfit.notion import _extract_sections
+
+    block = (
+        "B.Take 15 Minutes to Establish 1-3 Rep Max:\n"
+        "Bench Press\n"
+        "C. For Time:\n"
+        "1000 Meter Row\n"
+        "50 Thrusters (45/35)\n"
+        "30 Ring Rows\n"
+    )
+    section_b, section_c, _ = _extract_sections(block)
+    assert "Bench Press" in section_b
+    assert "1000 Meter Row" in section_c
+    assert "Bench Press" not in section_c
+
+
+def test_slash_splitter_handles_sled_push_pull():
+    """`Sled Push/Pull` should expand to both Sled Push and Sled Pull."""
+    from second_brain.crossfit.notion import normalise_movement_name
+
+    result = normalise_movement_name("Sled Push/Pull")
+    assert "Sled Push" in result
+    assert "Sled Pull" in result
+    # A bare "Pull" must NOT leak out (would later substring-match Sled Pull / Pull-Up).
+    assert "Pull" not in result
+
+
+def test_slash_splitter_still_handles_push_power_jerk():
+    """Forward smart-split case is preserved alongside the new reverse case."""
+    from second_brain.crossfit.notion import normalise_movement_name
+
+    result = normalise_movement_name("Push/Power Jerk")
+    assert "Push Jerk" in result
+    assert "Power Jerk" in result
+
+
+# ----------------------------------------------------------------------------
+# Real-program regressions: parse the actual coach emails and assert structure.
+# ----------------------------------------------------------------------------
+
+
+def _load_fixture(name: str) -> str:
+    from pathlib import Path
+
+    fixture_path = Path(__file__).parent / "fixtures" / name
+    return fixture_path.read_text(encoding="utf-8")
+
+
+def _tracks_index(parsed):
+    return {t["track"]: t for t in parsed["tracks"]}
+
+
+def _day(tracks_index, track, day_name):
+    return next(d for d in tracks_index[track]["days"] if d["day"] == day_name)
+
+
+def test_real_program_2026_05_18_top_level_routing():
+    """Every weekday lands in the correct track, Thursday/Sunday are Hyrox, Saturday Fitness is preserved."""
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = _load_fixture("crossfit_program_2026_05_18.txt")
+    parsed = parse_weekly_program_text(text, "Week of 2026-05-18")
+    tracks = _tracks_index(parsed)
+
+    assert set(tracks) >= {"Performance", "Hyrox"}
+    perf_days = {d["day"] for d in tracks["Performance"]["days"]}
+    assert {"Monday", "Tuesday", "Wednesday", "Friday", "Saturday"}.issubset(perf_days)
+    # Thursday and Sunday are Hyrox-only days this week.
+    assert "Thursday" not in perf_days
+    assert "Sunday" not in perf_days
+    hyrox_days = {d["day"] for d in tracks["Hyrox"]["days"]}
+    assert "Thursday" in hyrox_days
+    assert "Sunday" in hyrox_days
+    # Saturday FITNESS. (with trailing period) must be preserved as a Fitness day.
+    assert "Fitness" in tracks
+    fit_days = {d["day"] for d in tracks["Fitness"]["days"]}
+    assert "Saturday" in fit_days
+
+
+def test_real_program_2026_05_18_monday_sections():
+    """Monday Performance: Section B has Rope Climbs + Toes to Bar, Section C has Run/Pull/Push/Squat."""
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = _load_fixture("crossfit_program_2026_05_18.txt")
+    parsed = parse_weekly_program_text(text, "Week of 2026-05-18")
+    monday = _day(_tracks_index(parsed), "Performance", "Monday")
+
+    b_desc = (monday.get("section_b") or {}).get("description") or ""
+    c_desc = (monday.get("section_c") or {}).get("description") or ""
+    assert "Rope Climb" in b_desc
+    assert "Toes to Bar" in b_desc
+    assert "Pull Ups" in c_desc
+    assert "Air Squats" in c_desc
+    assert "Air Squats" not in b_desc
+
+
+def test_real_program_2026_05_18_tuesday_section_b_no_sled_push_spill():
+    """Tuesday B is Push Press / Push Jerk / Push-Power Jerk — Sled Push must NOT appear."""
+    from second_brain.crossfit.notion import (
+        _movement_names_from_text,
+        parse_weekly_program_text,
+    )
+
+    text = _load_fixture("crossfit_program_2026_05_18.txt")
+    parsed = parse_weekly_program_text(text, "Week of 2026-05-18")
+    tuesday = _day(_tracks_index(parsed), "Performance", "Tuesday")
+    b_desc = (tuesday.get("section_b") or {}).get("description") or ""
+
+    cache = {
+        "Sled Push": "sled-id",
+        "Push Press": "press-id",
+        "Push Jerk": "jerk-id",
+        "Power Jerk": "power-id",
+        "Push-Up": "pu-id",
+    }
+    matches = _movement_names_from_text(b_desc, cache)
+    assert "Sled Push" not in matches
+    assert "Push Press" in matches
+    assert "Push Jerk" in matches
+    assert "Power Jerk" in matches
+
+
+def test_real_program_2026_05_18_wednesday_section_b_no_back_squat_or_squat_clean_spill():
+    """Wednesday B is Clean Pull + Hang Squat Clean — Back Squat and Squat Clean must NOT appear."""
+    from second_brain.crossfit.notion import (
+        _movement_names_from_text,
+        parse_weekly_program_text,
+    )
+
+    text = _load_fixture("crossfit_program_2026_05_18.txt")
+    parsed = parse_weekly_program_text(text, "Week of 2026-05-18")
+    wednesday = _day(_tracks_index(parsed), "Performance", "Wednesday")
+    b_desc = (wednesday.get("section_b") or {}).get("description") or ""
+
+    cache = {
+        "Clean Pull": "cp-id",
+        "Hang Squat Clean": "hsc-id",
+        "Squat Clean": "sc-id",
+        "Back Squat": "bs-id",
+        "squat": "bs-id",  # old alias that used to leak
+    }
+    matches = _movement_names_from_text(b_desc, cache)
+    assert "Hang Squat Clean" in matches
+    assert "Clean Pull" in matches
+    assert "Squat Clean" not in matches
+    assert "Back Squat" not in matches
+    assert "squat" not in matches
+
+
+def test_real_program_2026_05_18_monday_section_c_no_back_squat_or_sled_push_spill():
+    """Monday C (Murph prep) — Air Squats and Push Ups must not pull in Back Squat or Sled Push."""
+    from second_brain.crossfit.notion import (
+        _movement_names_from_text,
+        parse_weekly_program_text,
+    )
+
+    text = _load_fixture("crossfit_program_2026_05_18.txt")
+    parsed = parse_weekly_program_text(text, "Week of 2026-05-18")
+    monday = _day(_tracks_index(parsed), "Performance", "Monday")
+    c_desc = (monday.get("section_c") or {}).get("description") or ""
+
+    cache = {
+        "Run": "run-id",
+        "Pull-Up": "pull-id",
+        "Push-Up": "pushup-id",
+        "Air Squat": "as-id",
+        "Sled Push": "sled-id",
+        "Back Squat": "bs-id",
+        "squat": "bs-id",
+    }
+    matches = _movement_names_from_text(c_desc, cache)
+    assert "Air Squat" in matches
+    assert "Sled Push" not in matches
+    assert "Back Squat" not in matches
+    assert "squat" not in matches
+
+
+def test_real_program_2026_05_18_friday_section_c_assault_bike_subsumes_bike():
+    """Friday C says 'Assault Bike' — the standalone Bike entry must not also match."""
+    from second_brain.crossfit.notion import (
+        _movement_names_from_text,
+        parse_weekly_program_text,
+    )
+
+    text = _load_fixture("crossfit_program_2026_05_18.txt")
+    parsed = parse_weekly_program_text(text, "Week of 2026-05-18")
+    friday = _day(_tracks_index(parsed), "Performance", "Friday")
+    c_desc = (friday.get("section_c") or {}).get("description") or ""
+
+    cache = {"Bike": "bike-id", "Assault Bike": "ab-id", "Bar Muscle Up": "bmu-id", "Snatch": "snatch-id"}
+    matches = _movement_names_from_text(c_desc, cache)
+    assert "Assault Bike" in matches
+    assert "Bike" not in matches
+
+
+def test_real_program_2026_04_27_saturday_fitness_period_does_not_leak_into_performance():
+    """`FITNESS.` (with period) on Saturday must split out as a Fitness day, not stay in Performance."""
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = _load_fixture("crossfit_program_2026_04_27.txt")
+    parsed = parse_weekly_program_text(text, "Week of 2026-04-27")
+    tracks = _tracks_index(parsed)
+
+    sat_perf = _day(tracks, "Performance", "Saturday")
+    perf_b = (sat_perf.get("section_b") or {}).get("description") or ""
+
+    # Performance Saturday has Burpees Over Bar; Fitness Saturday has Ab Mat Sit Ups.
+    # If FITNESS. doesn't split, the Fitness section's "Ab Mat Sit Ups" would leak in.
+    assert "Burpees Over Bar" in perf_b
+    assert "Ab Mat Sit Ups" not in perf_b
+
+    assert "Fitness" in tracks
+    sat_fit = _day(tracks, "Fitness", "Saturday")
+    fit_b = (sat_fit.get("section_b") or {}).get("description") or ""
+    assert "Ab Mat Sit Ups" in fit_b
+
+
+def test_real_program_2026_04_27_friday_fitness_b_dot_take_preserves_section_b():
+    """`B.Take 15 Minutes...` (no space) must still register Section B (Bench Press)."""
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = _load_fixture("crossfit_program_2026_04_27.txt")
+    parsed = parse_weekly_program_text(text, "Week of 2026-04-27")
+    fri_fit = _day(_tracks_index(parsed), "Fitness", "Friday")
+    b_desc = (fri_fit.get("section_b") or {}).get("description") or ""
+    c_desc = (fri_fit.get("section_c") or {}).get("description") or ""
+    assert "Bench Press" in b_desc
+    assert "1000 Meter Row" in c_desc
+    assert "Bench Press" not in c_desc
+
+
+def test_real_program_2026_04_27_saturday_hyrox_extracted_as_third_track():
+    """The standalone HYROX block on Saturday must land in the Hyrox track.
+
+    The HYROX block this week has no `B.`/`C.` markers — the parser's fallback
+    routes the whole block into Section C.
+    """
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = _load_fixture("crossfit_program_2026_04_27.txt")
+    parsed = parse_weekly_program_text(text, "Week of 2026-04-27")
+    tracks = _tracks_index(parsed)
+
+    assert "Hyrox" in tracks
+    hyrox_days = {d["day"] for d in tracks["Hyrox"]["days"]}
+    assert "Saturday" in hyrox_days
+    hyrox_sat = _day(tracks, "Hyrox", "Saturday")
+    body = ((hyrox_sat.get("section_b") or {}).get("description") or "") + "\n" + (
+        (hyrox_sat.get("section_c") or {}).get("description") or ""
+    )
+    assert "Plate Ground to Overhead" in body
+    assert "Burpee Pull Ups" in body
+
+
+# ----------------------------------------------------------------------------
+# Additional real-program regressions covering weeks 04.06, 03.30, and 03.09.
+# ----------------------------------------------------------------------------
+
+
+def test_slash_splitter_handles_sled_pull_push_reverse_order():
+    """`Sled Pull/Push` (left=Sled Pull, right=Push) should expand to both."""
+    from second_brain.crossfit.notion import normalise_movement_name
+
+    result = normalise_movement_name("Sled Pull/Push")
+    assert "Sled Pull" in result
+    assert "Sled Push" in result
+    assert "Push" not in result
+
+
+def test_slash_splitter_ignores_digit_only_left_side():
+    """`1/.7 Mile Assault Bike` must NOT slash-split — left side has no 3+ letter word."""
+    from second_brain.crossfit.notion import normalise_movement_name
+
+    result = normalise_movement_name("1/.7 Mile Assault Bike")
+    # The string should stay as one candidate, ultimately matching Assault Bike via alias.
+    assert any("assault bike" in r.lower() for r in result), result
+
+
+def test_real_program_2026_04_06_thursday_c_extracts_run_and_ski_in_hyrox():
+    """Thursday is Hyrox; B-only coach text should parse as Section C conditioning."""
+    from second_brain.crossfit.notion import (
+        _movement_names_from_text,
+        parse_weekly_program_text,
+    )
+
+    text = _load_fixture("crossfit_program_2026_04_06.txt")
+    parsed = parse_weekly_program_text(text, "Week of 2026-04-06")
+    thursday = _day(_tracks_index(parsed), "Hyrox", "Thursday")
+    c_desc = (thursday.get("section_c") or {}).get("description") or ""
+    assert not thursday.get("section_b")
+    assert "1000 Meter Run" in c_desc
+    assert "1000 Meter Ski" in c_desc
+    assert "Wall Balls" in c_desc
+
+    cache = {"Run": "run-id", "SkiErg": "ski-id", "Wall Ball": "wb-id", "Sled Push": "sled-id"}
+    matches = _movement_names_from_text(c_desc, cache)
+    assert "Run" in matches
+    assert "Wall Ball" in matches
+    assert "Sled Push" not in matches  # Sled never mentioned this Thursday
+
+
+def test_real_program_2026_04_06_saturday_unbalanced_paren_section_b_parsed():
+    """`B. 32 Minutes W/Partner)` (stray close paren) must still register as a Section B header."""
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = _load_fixture("crossfit_program_2026_04_06.txt")
+    parsed = parse_weekly_program_text(text, "Week of 2026-04-06")
+    saturday = _day(_tracks_index(parsed), "Performance", "Saturday")
+    b_desc = (saturday.get("section_b") or {}).get("description") or ""
+    assert "Power Snatch" in b_desc
+    assert "Clean and Jerks" in b_desc
+    assert "Box Jump Overs" in b_desc
+
+
+def test_real_program_2026_04_06_sunday_box_burpee_jump_overs_extracted():
+    """Out-of-order naming `Box Burpee Jump Overs` should be extracted as a candidate."""
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = _load_fixture("crossfit_program_2026_04_06.txt")
+    parsed = parse_weekly_program_text(text, "Week of 2026-04-06")
+    sunday = _day(_tracks_index(parsed), "Hyrox", "Sunday")
+    c_desc = (sunday.get("section_c") or {}).get("description") or ""
+    assert not sunday.get("section_b")
+    assert "Box Burpee Jump Overs" in c_desc
+    # Movements list (raw candidates) should pick up Run; Push Ups in the second AMRAP.
+    movements = sunday["section_c"]["movements"]
+    assert any("Run" == m or "Run" in m for m in movements), movements
+
+
+def test_real_program_2026_03_30_thursday_sled_pull_push_expands_correctly():
+    """Thursday Hyrox conditioning includes 'Sled Pull/Push' — both sides must be candidates."""
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = _load_fixture("crossfit_program_2026_03_30.txt")
+    parsed = parse_weekly_program_text(text, "Week of 2026-03-30")
+    thursday = _day(_tracks_index(parsed), "Hyrox", "Thursday")
+    assert not thursday.get("section_b")
+    movements = thursday["section_c"]["movements"]
+    # The slash-split candidates are normalised, then deduped by lowercase key —
+    # we expect both Sled Pull and Sled Push to appear.
+    movements_lower = {m.lower() for m in movements}
+    assert "sled pull" in movements_lower, movements
+    assert "sled push" in movements_lower, movements
+    # The bare "Push" candidate must NOT leak through.
+    assert "push" not in movements_lower, movements
+
+
+def test_real_program_2026_03_30_monday_c_contains_both_workout_blocks():
+    """Monday Section C has TWO workout bodies (Quarter Finals + UIC Partner) — both should be preserved."""
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = _load_fixture("crossfit_program_2026_03_30.txt")
+    parsed = parse_weekly_program_text(text, "Week of 2026-03-30")
+    monday = _day(_tracks_index(parsed), "Performance", "Monday")
+    c_desc = (monday.get("section_c") or {}).get("description") or ""
+    assert "1000 Meter Row" in c_desc
+    assert "Clean and Jerks" in c_desc
+    assert "Strict Hand Stand Pushups" in c_desc
+    # The second block (UIC Partner Workout) lives in the same Section C body.
+    assert "Alt. DB Hang Snatch" in c_desc
+    assert "Box Step Overs" in c_desc
+
+
+def test_real_program_2026_03_09_saturday_b_is_open_benchmark_reference():
+    """`B. 26.3` should parse cleanly: Section B text contains the reference, no spurious movements."""
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = _load_fixture("crossfit_program_2026_03_09.txt")
+    parsed = parse_weekly_program_text(text, "Week of 2026-03-09")
+    tracks = _tracks_index(parsed)
+
+    sat_perf = _day(tracks, "Performance", "Saturday")
+    b_desc = (sat_perf.get("section_b") or {}).get("description") or ""
+    assert "26.3" in b_desc
+    # Section B must NOT silently inherit the HYROX block's movements.
+    assert "Russian KB Swings" not in b_desc
+    assert "Burpees Over Rower" not in b_desc
+    # Movement candidates from "26.3" alone should be empty.
+    movements = sat_perf["section_b"]["movements"]
+    assert movements == [], movements
+
+    # Fitness with `FITNESS.` and `B. 26.3` should also parse.
+    sat_fit = _day(tracks, "Fitness", "Saturday")
+    assert "26.3" in ((sat_fit.get("section_b") or {}).get("description") or "")
+
+    # Hyrox Saturday should still hold the actual partner WOD content.
+    assert "Hyrox" in tracks
+    sat_hyrox_days = [d["day"] for d in tracks["Hyrox"]["days"]]
+    assert "Saturday" in sat_hyrox_days
+
+
+def test_all_fixture_weeks_parse_without_exceptions():
+    """Smoke: every saved week of real coach text parses end-to-end."""
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    fixture_names = [
+        "crossfit_program_2026_05_18.txt",
+        "crossfit_program_2026_04_27.txt",
+        "crossfit_program_2026_04_06.txt",
+        "crossfit_program_2026_03_30.txt",
+        "crossfit_program_2026_03_09.txt",
+    ]
+    for name in fixture_names:
+        text = _load_fixture(name)
+        parsed = parse_weekly_program_text(text, name)
+        assert "tracks" in parsed and parsed["tracks"], f"{name}: no tracks parsed"
+        # Every parsed day must have at least one section.
+        for track in parsed["tracks"]:
+            for day in track["days"]:
+                assert day.get("section_b") or day.get("section_c"), (
+                    f"{name}: {track['track']} {day['day']} had no sections"
+                )
+
+
+def test_my_prs_recent_sessions_query_separately_by_date(monkeypatch):
+    """Recent sessions must come from a date-sorted query, not the top-by-load query."""
+    from second_brain.crossfit import handlers
+
+    captured_queries: list[dict] = []
+
+    def fake_query(**kwargs):
+        captured_queries.append(kwargs)
+        sort = kwargs.get("sorts", [{}])[0]
+        if sort.get("property") == "load_lbs":
+            return {"results": [
+                {"id": "old-heavy", "properties": {"Date": {"date": {"start": "2020-01-01"}}, "load_lbs": {"number": 300}, "effort_reps": {"number": 1}, "effort_sets": {"number": 1}}},
+            ]}
+        if sort.get("property") == "Date":
+            return {"results": [
+                {"id": "recent-light", "properties": {"Date": {"date": {"start": "2026-05-20"}}, "load_lbs": {"number": 200}, "effort_reps": {"number": 5}, "effort_sets": {"number": 3}}},
+            ]}
+        return {"results": []}
+
+    notion = SimpleNamespace(databases=SimpleNamespace(query=fake_query))
+    handlers.MOVEMENTS_CACHE.clear()
+    handlers.MOVEMENTS_CACHE["Back Squat"] = "mov-back-squat"
+
+    message = _DummyMessage()
+    asyncio.run(handlers.handle_cf_prs_reply(
+        message, "Back Squat", notion,
+        {"NOTION_WORKOUT_LOG_DB": "log", "NOTION_MOVEMENTS_DB": "movements"},
+        cf_pending={str(message.chat_id): {"mode": "prs"}},
+    ))
+
+    sort_props = {q.get("sorts", [{}])[0].get("property") for q in captured_queries}
+    assert "load_lbs" in sort_props
+    assert "Date" in sort_props
+
+    reply = message.replies[-1][0]
+    assert "2026-05-20" in reply
+    assert "300 lbs" in reply
+
+
+def test_resolve_user_movement_rejects_bare_squat():
+    """`squat` alone must NOT silently pick Back Squat or Air Squat."""
+    from second_brain.crossfit.handlers import MOVEMENTS_CACHE, resolve_user_movement
+
+    MOVEMENTS_CACHE.clear()
+    MOVEMENTS_CACHE.update({"Back Squat": "bs", "Air Squat": "as", "Front Squat": "fs"})
+
+    result = asyncio.run(resolve_user_movement(notion=None, config={}, user_text="squat"))
+    assert result is None
+
+
+def test_resolve_user_movement_exact_and_singular():
+    from second_brain.crossfit.handlers import MOVEMENTS_CACHE, resolve_user_movement
+
+    MOVEMENTS_CACHE.clear()
+    MOVEMENTS_CACHE.update({"Back Squat": "bs", "Deadlift": "dl", "Hang Squat Clean": "hsc"})
+
+    assert asyncio.run(resolve_user_movement(None, {}, "Back Squat")) == ("Back Squat", "bs")
+    assert asyncio.run(resolve_user_movement(None, {}, "Deadlifts")) == ("Deadlift", "dl")
+    assert asyncio.run(resolve_user_movement(None, {}, "Hang Squat Cleans")) == ("Hang Squat Clean", "hsc")
+
+
+def test_handle_cf_sub_search_uses_unified_matcher():
+    """Sub search should refuse bare 'squat' the same way PR search does."""
+    from second_brain.crossfit import handlers
+
+    handlers.MOVEMENTS_CACHE.clear()
+    handlers.MOVEMENTS_CACHE.update({"Back Squat": "bs", "Air Squat": "as"})
+
+    message = _DummyMessage()
+    cf_pending = {str(message.chat_id): {"mode": "subs"}}
+    asyncio.run(handlers.handle_cf_sub_search_reply(
+        message, "squat", notion=None,
+        config={"NOTION_MOVEMENTS_DB": "movements"},
+        cf_pending=cf_pending, key=str(message.chat_id),
+    ))
+
+    reply = message.replies[-1][0]
+    assert "Couldn't find that movement" in reply
+
+def test_prs_rejects_out_of_range_target_reps():
+    """target_reps outside [1, 20] should reply with a warning and not query Notion."""
+    from second_brain.crossfit import handlers
+
+    queried = []
+
+    def fake_query(**kwargs):
+        queried.append(kwargs)
+        return {"results": []}
+
+    notion = SimpleNamespace(databases=SimpleNamespace(query=fake_query))
+    handlers.MOVEMENTS_CACHE.clear()
+    handlers.MOVEMENTS_CACHE["Back Squat"] = "bs-id"
+
+    for bad_input in ("100x back squat", "0x back squat", "21x back squat"):
+        message = _DummyMessage()
+        asyncio.run(handlers.handle_cf_prs_reply(
+            message, bad_input, notion,
+            {"NOTION_WORKOUT_LOG_DB": "log", "NOTION_MOVEMENTS_DB": "mv"},
+            cf_pending={str(message.chat_id): {"mode": "prs"}},
+        ))
+        assert not queried, f"Should not query Notion for '{bad_input}'"
+        reply = message.replies[-1][0]
+        assert "Rep target must be between" in reply
+
+
+def test_prs_accepts_boundary_target_reps():
+    """target_reps 1 and 20 should pass the guardrail and query Notion."""
+    from second_brain.crossfit import handlers
+
+    def fake_query(**kwargs):
+        return {"results": [
+            {"id": "r1", "properties": {
+                "Date": {"date": {"start": "2026-01-01"}},
+                "load_lbs": {"number": 200},
+                "effort_reps": {"number": 5},
+                "effort_sets": {"number": 3},
+            }}
+        ]}
+
+    notion = SimpleNamespace(databases=SimpleNamespace(query=fake_query))
+    handlers.MOVEMENTS_CACHE.clear()
+    handlers.MOVEMENTS_CACHE["Back Squat"] = "bs-id"
+
+    for good_input in ("1x back squat", "20x back squat"):
+        message = _DummyMessage()
+        asyncio.run(handlers.handle_cf_prs_reply(
+            message, good_input, notion,
+            {"NOTION_WORKOUT_LOG_DB": "log", "NOTION_MOVEMENTS_DB": "mv"},
+            cf_pending={str(message.chat_id): {"mode": "prs"}},
+        ))
+        reply = message.replies[-1][0]
+        assert "Rep target must be between" not in reply
+
+
+def test_todays_sub_shows_track_picker_for_multiple_tracks():
+    """When today has >1 track row, handle_todays_sub replies with an inline keyboard."""
+    from second_brain.crossfit import handlers
+
+    def fake_query(**kwargs):
+        return {"results": [
+            {"id": "r1", "properties": {
+                "Day": {"select": {"name": "Monday"}},
+                "Track": {"select": {"name": "Performance"}},
+                "Week Of": {"date": {"start": "2026-05-18"}},
+                "Section B Movements": {"relation": []},
+                "Section C Movements": {"relation": []},
+            }},
+            {"id": "r2", "properties": {
+                "Day": {"select": {"name": "Monday"}},
+                "Track": {"select": {"name": "Hyrox"}},
+                "Week Of": {"date": {"start": "2026-05-18"}},
+                "Section B Movements": {"relation": []},
+                "Section C Movements": {"relation": []},
+            }},
+        ]}
+
+    notion = SimpleNamespace(databases=SimpleNamespace(query=fake_query))
+    message = _DummyMessage()
+    asyncio.run(handlers.handle_todays_sub(
+        message, notion,
+        {"NOTION_WORKOUT_DAYS_DB": "days-db"},
+    ))
+
+    assert message.replies, "Expected at least one reply"
+    last_reply, last_kwargs = message.replies[-1]
+    keyboard = last_kwargs.get("reply_markup")
+    assert keyboard is not None, "Expected an inline keyboard"
+    button_labels = [btn.text for row in keyboard.inline_keyboard for btn in row]
+    assert "Performance" in button_labels
+    assert "Hyrox" in button_labels
+    assert "Section B" not in last_reply
+
+
+def test_todays_sub_renders_directly_for_single_track():
+    """When today has only one track, handle_todays_sub renders it without a picker."""
+    from second_brain.crossfit import handlers
+
+    def fake_query(**kwargs):
+        return {"results": [
+            {"id": "r1", "properties": {
+                "Day": {"select": {"name": "Monday"}},
+                "Track": {"select": {"name": "Performance"}},
+                "Week Of": {"date": {"start": "2026-05-18"}},
+                "Section B Movements": {"relation": []},
+                "Section C Movements": {"relation": []},
+            }},
+        ]}
+
+    notion = SimpleNamespace(
+        databases=SimpleNamespace(query=fake_query),
+        pages=SimpleNamespace(retrieve=lambda **kw: {"properties": {}}),
+    )
+    message = _DummyMessage()
+    asyncio.run(handlers.handle_todays_sub(
+        message, notion,
+        {"NOTION_WORKOUT_DAYS_DB": "days-db"},
+    ))
+
+    last_reply, last_kwargs = message.replies[-1]
+    keyboard = last_kwargs.get("reply_markup")
+    assert keyboard is None, "Single-track should not show a picker"
+    assert "Monday" in last_reply or "Performance" in last_reply
+
+def test_parse_pr_request_extracts_since_date():
+    from second_brain.crossfit.handlers import _parse_pr_request
+    from datetime import date
+
+    movement, reps, since = _parse_pr_request("back squat since=30d")
+    assert movement == "back squat"
+    assert reps is None
+    assert since is not None
+    parsed = date.fromisoformat(since)
+    assert (date.today() - parsed).days in range(29, 32)
+
+    movement2, reps2, since2 = _parse_pr_request("6x front squat since=2w")
+    assert movement2 == "front squat"
+    assert reps2 == 6
+    assert since2 is not None
+    parsed2 = date.fromisoformat(since2)
+    assert (date.today() - parsed2).days in range(13, 16)
+
+    movement3, reps3, since3 = _parse_pr_request("deadlift")
+    assert movement3 == "deadlift"
+    assert reps3 is None
+    assert since3 is None
+
+
+def test_query_workout_log_passes_after_date_filter():
+    from second_brain.crossfit import handlers
+
+    captured: list[dict] = []
+
+    def fake_query(**kwargs):
+        captured.append(kwargs)
+        return {"results": []}
+
+    notion = SimpleNamespace(databases=SimpleNamespace(query=fake_query))
+    asyncio.run(handlers._query_workout_log_for_movement(
+        notion, "db-id", "mov-id",
+        sort_property="Date", sort_direction="descending",
+        after_date="2026-01-01",
+    ))
+
+    assert captured
+    f = captured[0].get("filter", {})
+    assert f.get("and"), "Expected compound 'and' filter when after_date is set"
+    clauses = f["and"]
+    date_clauses = [c for c in clauses if c.get("property") == "Date"]
+    assert date_clauses, "Expected a Date filter clause"
+    assert date_clauses[0]["date"]["after"] == "2026-01-01"
+
+
+def test_prs_reply_includes_since_note_when_date_filtered():
+    from second_brain.crossfit import handlers
+
+    def fake_query(**kwargs):
+        return {"results": [
+            {"id": "r1", "properties": {
+                "Date": {"date": {"start": "2026-04-01"}},
+                "load_lbs": {"number": 200},
+                "effort_reps": {"number": 5},
+                "effort_sets": {"number": 3},
+            }}
+        ]}
+
+    notion = SimpleNamespace(databases=SimpleNamespace(query=fake_query))
+    handlers.MOVEMENTS_CACHE.clear()
+    handlers.MOVEMENTS_CACHE["Back Squat"] = "bs-id"
+
+    message = _DummyMessage()
+    asyncio.run(handlers.handle_cf_prs_reply(
+        message, "back squat since=30d", notion,
+        {"NOTION_WORKOUT_LOG_DB": "log", "NOTION_MOVEMENTS_DB": "mv"},
+        cf_pending={str(message.chat_id): {"mode": "prs"}},
+    ))
+
+    reply = message.replies[-1][0]
+    assert "since" in reply.lower(), "Reply should mention the since filter"
+
+
+def test_format_sub_search_result_shows_scaling_notes_for_relations():
+    from second_brain.crossfit.handlers import _format_sub_search_result
+
+    details = {
+        "name": "Front Squat",
+        "scaling_notes": "Reduce weight; use goblet as regression",
+        "notes": "",
+        "complementary_movements": [
+            {"name": "Back Squat", "scaling_notes": "Primary strength driver"},
+            {"name": "Air Squat", "scaling_notes": ""},
+        ],
+        "antagonist_movements": [
+            {"name": "Nordic Curl", "scaling_notes": "Hamstring balance"}
+        ],
+    }
+
+    result = _format_sub_search_result(details)
+    assert "• *Back Squat*: Primary strength driver" in result
+    assert "• *Air Squat*" in result
+    assert "• *Nordic Curl*: Hamstring balance" in result
+    assert "Complementary" in result
+    assert "Antagonist" in result
+
+
+def test_format_sub_search_result_handles_legacy_string_lists():
+    """Should not crash if complementary_movements is still a list of strings."""
+    from second_brain.crossfit.handlers import _format_sub_search_result
+
+    details = {
+        "name": "Deadlift",
+        "scaling_notes": "Sub: Romanian Deadlift",
+        "notes": "",
+        "complementary_movements": ["Good Morning", "Hip Hinge"],
+        "antagonist_movements": [],
+    }
+    result = _format_sub_search_result(details)
+    assert "Good Morning" in result
+    assert "Hip Hinge" in result
+    assert "None set" in result
