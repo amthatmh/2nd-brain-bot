@@ -4,6 +4,7 @@ import json
 import os
 import re
 from datetime import date, datetime, timedelta
+from typing import Any
 from second_brain.notion import notion_call
 from second_brain.notion.properties import (
     query_all,
@@ -16,6 +17,55 @@ from .nlp import fuzzy_match_movements, normalize_movement_name
 import logging
 
 log = logging.getLogger(__name__)
+
+_DATABASE_PROPERTY_CACHE: dict[str, set[str]] = {}
+
+
+def _database_property_names(notion, database_id: str) -> set[str] | None:
+    """Return property names for a Notion database when schema lookup is available."""
+    if not notion or not database_id:
+        return None
+    if database_id in _DATABASE_PROPERTY_CACHE:
+        return _DATABASE_PROPERTY_CACHE[database_id]
+    databases = getattr(notion, "databases", None)
+    retrieve = getattr(databases, "retrieve", None)
+    if retrieve is None:
+        return None
+    try:
+        db = notion_call(retrieve, database_id=database_id)
+    except Exception as exc:
+        log.warning("could not retrieve Notion database schema for %s: %s", database_id, exc)
+        return None
+    prop_names = set((db.get("properties") or {}).keys())
+    _DATABASE_PROPERTY_CACHE[database_id] = prop_names
+    return prop_names
+
+
+def _filter_properties_for_database(
+    notion,
+    database_id: str,
+    props: dict[str, Any],
+    *,
+    required: tuple[str, ...] = (),
+    context: str = "Notion write",
+) -> dict[str, Any]:
+    """Drop optional properties that are absent from the live Notion schema."""
+    prop_names = _database_property_names(notion, database_id)
+    if prop_names is None:
+        return props
+    missing_required = [name for name in required if name not in prop_names]
+    if missing_required:
+        raise ValueError(
+            f"{context}: database is missing required properties: {', '.join(missing_required)}"
+        )
+    skipped = [name for name in props if name not in prop_names]
+    if skipped:
+        log.warning(
+            "%s: skipping properties not present in database schema: %s",
+            context,
+            ", ".join(sorted(skipped)),
+        )
+    return {name: value for name, value in props.items() if name in prop_names}
 
 MOVEMENT_BLOCKLIST_PATTERNS = [
     r"^clean[\s-]?up",
@@ -725,14 +775,22 @@ def save_programme(notion, program_db_id: str, workout_days_db_id: str, movement
     cycle_id, week_number = _get_or_create_cycle_metadata(notion, cycles_db_id or os.getenv("NOTION_CYCLES_DB", ""), program_db_id, monday_iso)
 
     try:
+        parent_props = {
+            "Name": title_prop(week_label),
+            "Full Program": {"rich_text": _rich_text_chunks(full_text)},
+            **_weekly_program_metadata_props(cycle_id, week_number, monday_iso),
+        }
+        parent_props = _filter_properties_for_database(
+            notion,
+            program_db_id,
+            parent_props,
+            required=("Name", "Full Program"),
+            context="Weekly Programs create",
+        )
         parent = notion_call(
             notion.pages.create,
             parent={"database_id": program_db_id},
-            properties={
-                "Name": title_prop(week_label),
-                "Full Program": {"rich_text": _rich_text_chunks(full_text)},
-                **_weekly_program_metadata_props(cycle_id, week_number, monday_iso),
-            },
+            properties=parent_props,
         )
         parent_page_id = parent["id"]
         log.info("save_programme: created parent row %s", parent_page_id)
@@ -809,6 +867,13 @@ def save_programme(notion, program_db_id: str, workout_days_db_id: str, movement
                 props["Training Notes"] = {"rich_text": _rich_text_chunks(training_notes)}
 
             try:
+                props = _filter_properties_for_database(
+                    notion,
+                    workout_days_db_id,
+                    props,
+                    required=("Name", "Day", "Track", "Week", "Week Of"),
+                    context="Workout Days create",
+                )
                 notion_call(notion.pages.create, parent={"database_id": workout_days_db_id}, properties=props)
                 days_created += 1
                 log.info("save_programme: created day row %s / %s", track, day)
@@ -849,16 +914,24 @@ def save_programme_from_notion_row(
 
     monday_iso = _week_start_from_label(parsed.get("week_label")) if parsed.get("week_label") else this_monday()
     week_label = f"Week of {monday_iso}"
-    del program_db_id, cycles_db_id
+    del cycles_db_id
 
     try:
+        parent_props = {
+            "Name": title_prop(week_label),
+            "Start Date": {"date": {"start": monday_iso}},
+        }
+        parent_props = _filter_properties_for_database(
+            notion,
+            program_db_id or "",
+            parent_props,
+            required=("Name",),
+            context="Weekly Programs metadata update",
+        )
         notion_call(
             notion.pages.update,
             page_id=parent_page_id,
-            properties={
-                "Name": title_prop(week_label),
-                "Start Date": {"date": {"start": monday_iso}},
-            },
+            properties=parent_props,
         )
     except Exception as e:
         log.warning("save_programme_from_notion_row: could not update parent name: %s", e)
@@ -883,7 +956,15 @@ def save_programme_from_notion_row(
         if program_movement_ids:
             parent_props["Movements"] = {"relation": [{"id": mid} for mid in sorted(program_movement_ids)]}
             parent_props["Movement Summary"] = {"rich_text": _rich_text_chunks(", ".join(sorted(all_names)[:25]))}
-        notion_call(notion.pages.update, page_id=parent_page_id, properties=parent_props)
+        parent_props = _filter_properties_for_database(
+            notion,
+            program_db_id or "",
+            parent_props,
+            required=("Name",),
+            context="Weekly Programs movement metadata update",
+        )
+        if parent_props:
+            notion_call(notion.pages.update, page_id=parent_page_id, properties=parent_props)
     except Exception as e:
         log.warning("save_programme_from_notion_row: could not update parent metadata: %s", e)
 
@@ -935,6 +1016,13 @@ def save_programme_from_notion_row(
                 props["Training Notes"] = {"rich_text": _rich_text_chunks(training_notes)}
 
             try:
+                props = _filter_properties_for_database(
+                    notion,
+                    workout_days_db_id,
+                    props,
+                    required=("Name", "Day", "Track", "Week", "Week Of"),
+                    context="Workout Days create",
+                )
                 notion_call(notion.pages.create, parent={"database_id": workout_days_db_id}, properties=props)
                 day_movement_ids.update(b_ids)
                 day_movement_ids.update(c_ids)
@@ -956,10 +1044,18 @@ def save_programme_from_notion_row(
 
     if all_movement_ids:
         try:
+            props = _filter_properties_for_database(
+                notion,
+                program_db_id or "",
+                {"Movements": {"relation": [{"id": mid} for mid in all_movement_ids]}},
+                context="Weekly Programs movements update",
+            )
+            if not props:
+                raise ValueError("Weekly Programs movements update: no supported properties to write")
             notion_call(
                 notion.pages.update,
                 page_id=parent_page_id,
-                properties={"Movements": {"relation": [{"id": mid} for mid in all_movement_ids]}},
+                properties=props,
             )
             log.info(
                 "save_programme_from_notion_row: wrote %d movements to Weekly Programs",
@@ -1150,6 +1246,13 @@ def create_wod_log(notion, wod_log_db_id, wod_format, duration_mins, time_cap_mi
         props["Workout Structure"] = {"relation": [{"id": workout_day_id}]}
     if scaling_notes:
         props["Scaling Notes"] = rich_text_prop(str(scaling_notes))
+    props = _filter_properties_for_database(
+        notion,
+        wod_log_db_id,
+        props,
+        required=("Name", "Date"),
+        context="WOD Log create",
+    )
     page = notion_call(notion.pages.create, parent={"database_id": wod_log_db_id}, properties=props)
     return page["id"]
 

@@ -56,6 +56,7 @@ from second_brain.cinema.config import (
     validate_config as validate_cinema_config,
 )
 from second_brain.sync_telemetry import init_sync_status, utc_now_iso, format_sync_status_message
+from second_brain.error_reporting import telegram_error_location
 from second_brain.notion import notes as notion_notes
 from second_brain.digest import manual_digest_config_now as _manual_digest_config_now_fn
 from second_brain.notion import daily_log as notion_daily_log
@@ -2509,9 +2510,10 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     if not chat:
         return
     try:
+        location = telegram_error_location(context.error)
         await context.bot.send_message(
             chat_id=chat.id,
-            text="❌ Something went wrong. I've logged it for review.",
+            text=f"❌ Something went wrong while handling {location}. I've logged it for review.",
         )
     except Exception:
         log.debug("error_handler: could not send user-facing error message", exc_info=True)
