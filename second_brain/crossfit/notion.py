@@ -32,12 +32,23 @@ MOVEMENT_BLOCKLIST_PATTERNS = [
     r"^the\s+\w+", r"^if\s+you\b", r"^it\s+may\b",
     r"^as\s+the\b", r"^hang\s+from\b", r"^but\s+allows?\b",
     r"^this\s+workout\b", r"^other\b", r"^rep\s+scheme\b",
+    # Equipment specs and coaching cues
+    r"^partition\b",
+    r"\bvest\b",
+    r"\bas\s+desired\b",
+    r"^\d+/\d+\s*lb\b",
+    r"\bmost\s+athletes\b",
+    r"\bfor\s+some\b",
+    r"\bpractice\s+good\b",
+    r"\brefer\s+to\b",
 ]
 
 
 def is_valid_movement_candidate(name: str) -> bool:
     s = (name or "").strip()
     if not s:
+        return False
+    if re.fullmatch(r"[\d\-/\.]+", s):
         return False
     for pattern in MOVEMENT_BLOCKLIST_PATTERNS:
         if re.search(pattern, s, re.IGNORECASE):
@@ -201,6 +212,17 @@ MOVEMENT_BLOCKLIST = {
 
 
 MOVEMENT_ALIAS_MAP = [
+    # Distance and calorie movement normalisation
+    (r"\d*\s*mile\s+run\b", "Run"),
+    (r"\d+\s*(?:m\b|meter|meters?|km)\s+run\b", "Run"),
+    (r"\d+\s*(?:m\b|meter|meters?|km)\s+row\b", "Row"),
+    (r"calorie\s+row\b", "Row"),
+    (r"cal(?:orie)?\s+row\b", "Row"),
+    (r"calorie\s+ski\b", "SkiErg"),
+    (r"cal(?:orie)?\s+ski\b", "SkiErg"),
+    (r"calorie\s+bike\b", "Assault Bike"),
+    (r"^ski\b", "SkiErg"),
+    # Existing aliases
     (r"russian\s+(kb|kettlebell)\s+swing", "Kettlebell Swing"),
     (r"american\s+(kb|kettlebell)\s+swing", "American Kettlebell Swing"),
     (r"(s/?a|single[\s-]arm)\s+(db|dumbbell)\s+overhead\s+(walking\s+)?lunge", "Overhead Carry"),
@@ -263,7 +285,8 @@ def normalise_movement_name(raw: str) -> list[str]:
         return out
 
     s = re.sub(r"\s*\(.*?\)\s*$", "", s).strip()
-    s = re.sub(r"^\d[\d/'\"\.]*\s*(meter|m|cal|calories|foot|feet)?\s*", "", s, flags=re.IGNORECASE).strip()
+    # Use negative lookahead on "m" so "1 Mile Run" doesn't strip the "M" in "Mile"
+    s = re.sub(r"^\d[\d/'\"\.]*\s*(?:meters?\b|m(?![a-z])|cal(?:ories)?\b|foot\b|feet\b)?\s*", "", s, flags=re.IGNORECASE).strip()
 
     if re.match(r"^\w[\w\s]+—\s*\d{1,2}:\d{2}-\d{1,2}:\d{2}", s):
         return []

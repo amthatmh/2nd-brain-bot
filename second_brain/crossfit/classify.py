@@ -352,6 +352,9 @@ Rules:
 - Use null for unknown/missing number fields
 - Thursday and Saturday are often partner WODs (is_partner: true)
 - Keep descriptions concise, but preserve Training notes labels and bullets inside the relevant Section B/C description
+- movements arrays must contain only actual exercise names (e.g. "Run", "Pull-Up", "Air Squat")
+- Do NOT include in movements: equipment specs ("20/14 lb Vest"), coaching cues ("Partition Repetitions as Desired"), rep schemes ("21-15-9"), or any phrase that is not itself a named exercise
+- Strip rep-count prefixes when extracting: "100 Ring Rows" → "Ring Row", "1 Mile Run" → "Run", "21 Calorie Row" → "Row"
 """
     try:
         resp = claude_client.messages.create(
