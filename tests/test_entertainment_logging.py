@@ -108,6 +108,19 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["notes"], "Seat D6 Auditorium D5")
         self.assertTrue(parsed["favourite"])
 
+    def test_parse_explicit_cinema_extracts_seat_without_auditorium(self):
+        with patch("second_brain.entertainment.log.local_today", return_value=date(2026, 5, 26)):
+            parsed = self.ent_log.parse_explicit_entertainment_log(
+                "/log movie The Sheep Detective at AMC Roosevelt Collection on 5/24 at 19:45\n\nSeat G14"
+            )
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["log_type"], "cinema")
+        self.assertEqual(parsed["title"], "The Sheep Detective")
+        self.assertEqual(parsed["venue"], "AMC Roosevelt Collection")
+        self.assertEqual(parsed["date"], "2026-05-24T19:45:00")
+        self.assertEqual(parsed["notes"], "Seat G14")
+
     def test_parse_explicit_performance_parses_date_time_and_tail_notes(self):
         parsed = self.ent_log.parse_explicit_entertainment_log(
             "/log performance The Drama at Martin Theatre on 2026/04/29 at 20:40 Seat D6"
@@ -355,6 +368,42 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
             "favourite": False,
         })
         self.assertEqual(page_id, "page-1")
+        self.assertFalse(fav_saved)
+
+    def test_create_cinema_entry_saves_seat_without_auditorium(self):
+        self.ent_log.NOTION_CINEMA_LOG_DB = "cinema_db"
+        self.ent_log.entertainment_schemas["cinema"] = {
+            "Film": "title",
+            "Date": "date",
+            "Place": "status",
+            "Notes": "rich_text",
+            "Seat": "rich_text",
+            "Auditorium": "number",
+        }
+
+        def fake_notion_call(fn, **kwargs):
+            if fn == self.main.notion.pages.create:
+                props = kwargs["properties"]
+                self.assertEqual(props["Date"]["date"]["start"], "2026-05-24T19:45:00")
+                self.assertEqual(props["Place"]["status"]["name"], "AMC Roosevelt Collection")
+                self.assertEqual(props["Seat"]["rich_text"][0]["text"]["content"], "G14")
+                self.assertNotIn("Auditorium", props)
+                self.assertNotIn("Notes", props)
+                return {"id": "page-seat-only"}
+            if fn == self.main.notion.databases.query:
+                return {"results": []}
+            return {}
+
+        self.ent_log.notion_call = fake_notion_call
+        page_id, fav_saved = self.ent_log.create_entertainment_log_entry(self.main.notion, {
+            "log_type": "cinema",
+            "title": "The Sheep Detective",
+            "date": "2026-05-24T19:45:00",
+            "venue": "AMC Roosevelt Collection",
+            "notes": "Seat G14",
+            "favourite": False,
+        })
+        self.assertEqual(page_id, "page-seat-only")
         self.assertFalse(fav_saved)
 
     def test_create_performance_entry_lazy_loads_schema_when_missing(self):

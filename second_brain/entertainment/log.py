@@ -69,7 +69,11 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
         return None
 
     normalized = re.sub(r"^\s*/?log\s+", "log ", raw, flags=re.IGNORECASE)
-    m = re.match(r"^log\s+(cinema|movie|film|performance|sports|sport)\s*:?\s*(.+)$", normalized, re.IGNORECASE)
+    m = re.match(
+        r"^log\s+(cinema|movie|film|performance|sports|sport)\s*:?\s*(.+)$",
+        normalized,
+        re.IGNORECASE | re.DOTALL,
+    )
     if not m:
         return None
 
@@ -222,6 +226,15 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
             for span_start, span_end in sorted(time_spans, reverse=True):
                 rest = rest[:span_start] + " " + rest[span_end:]
             rest = _cleanup_extracted_text(rest)
+
+    if log_type == "cinema":
+        rest, structured_notes = _extract_cinema_structured_details_from_text(rest)
+        if structured_notes:
+            extracted_notes = _cleanup_extracted_text(
+                " ".join(part for part in [extracted_notes, structured_notes] if part)
+            )
+
+    rest = _cleanup_extracted_text(rest)
 
     title_and_venue = re.match(r"^(?P<title>.+?)\s+at\s+(?P<venue>.+)$", rest, re.IGNORECASE)
     if title_and_venue:
@@ -423,14 +436,32 @@ def _remember_pending_sport_competition(message, page_id: str) -> None:
         return
     pending_sport_competition_map[chat_id] = {"page_id": page_id}
 
+_CINEMA_STRUCTURED_DETAIL_RE = re.compile(
+    r"\b(?:seat\s*:?\s*[A-Za-z0-9-]+|auditorium\s*:?\s*[A-Za-z0-9-]+)\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_cinema_structured_details_from_text(text: str | None) -> tuple[str, str | None]:
+    if not text:
+        return "", None
+
+    matches = [m.group(0).strip() for m in _CINEMA_STRUCTURED_DETAIL_RE.finditer(text)]
+    if not matches:
+        return text, None
+
+    cleaned = _CINEMA_STRUCTURED_DETAIL_RE.sub(" ", text)
+    return _cleanup_extracted_text(cleaned), _cleanup_extracted_text(" ".join(matches))
+
+
 def _extract_cinema_visit_details(notes: str | None) -> tuple[str | None, int | None]:
     if not notes:
         return None, None
 
-    seat_match = re.search(r"\bseat\s*([A-Za-z0-9-]+)\b", notes, re.IGNORECASE)
+    seat_match = re.search(r"\bseat\s*:?\s*([A-Za-z0-9-]+)\b", notes, re.IGNORECASE)
     seat = seat_match.group(1).strip().upper() if seat_match else None
 
-    auditorium_match = re.search(r"\bauditorium\s*([A-Za-z0-9-]+)\b", notes, re.IGNORECASE)
+    auditorium_match = re.search(r"\bauditorium\s*:?\s*([A-Za-z0-9-]+)\b", notes, re.IGNORECASE)
     auditorium_value = None
     if auditorium_match:
         num_match = re.search(r"\d+", auditorium_match.group(1))

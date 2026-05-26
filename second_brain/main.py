@@ -238,6 +238,8 @@ from second_brain.routers import (
     handle_callback,
     route_classified_message_v10,
 )
+handle_entertainment_log = _ent_handle_log
+
 
 def _apply_shared_date_parse(payload: dict) -> object:
     raw_date = payload.get("date")
