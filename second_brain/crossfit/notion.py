@@ -33,6 +33,15 @@ MOVEMENT_BLOCKLIST_PATTERNS = [
     r"^the\s+\w+", r"^if\s+you\b", r"^it\s+may\b",
     r"^as\s+the\b", r"^hang\s+from\b", r"^but\s+allows?\b",
     r"^this\s+workout\b", r"^other\b", r"^rep\s+scheme\b",
+    # Equipment specs and coaching cues — not exercise names
+    r"^partition\b",
+    r"\bvest\b",
+    r"\bas\s+desired\b",
+    r"^\d+/\d+\s*lb\b",
+    r"\bmost\s+athletes\b",
+    r"\bfor\s+some\b",
+    r"\bpractice\s+good\b",
+    r"\brefer\s+to\b",
 ]
 
 MOVEMENT_CANDIDATE_ALLOWLIST_PATTERNS = [
@@ -220,6 +229,9 @@ MOVEMENT_BLOCKLIST = {
 
 
 MOVEMENT_ALIAS_MAP = [
+    (r"\d*\s*mile\s+run\b", "Run"),
+    (r"\d+\s*(?:m\b|meter|meters?|km)\s+run\b", "Run"),
+    (r"\d+\s*(?:m\b|meter|meters?|km)\s+row\b", "Row"),
     (r"russian\s+(kb|kettlebell)\s+swing", "Kettlebell Swing"),
     (r"american\s+(kb|kettlebell)\s+swing", "American Kettlebell Swing"),
     (r"(s/?a|single[\s-]arm)\s+(db|dumbbell)\s+overhead\s+(walking\s+)?lunge", "Overhead Carry"),
@@ -265,6 +277,8 @@ def normalise_movement_name(raw: str) -> list[str]:
     compact = re.sub(r"\s+", " ", s.lower()).strip(" :-–—")
     if not compact or compact in MOVEMENT_BLOCKLIST:
         return []
+    if any(re.search(pattern, compact, re.IGNORECASE) for pattern in MOVEMENT_BLOCKLIST_PATTERNS):
+        return []
     if re.fullmatch(r"(?:amrap|emom|tabata|chipper|for time|rest|work)(?:\s+\d+)?", compact):
         return []
     if re.fullmatch(r"\d+(?::\d{2})?(?:\s*(?:min|mins|minutes|sec|seconds|m|meters?|cal|cals|calories))?", compact):
@@ -307,7 +321,7 @@ def normalise_movement_name(raw: str) -> list[str]:
             return out
 
     s = re.sub(r"\s*\(.*?\)\s*$", "", s).strip()
-    s = re.sub(r"^\d[\d/'\"\.]*\s*(meter|m|cal|calories|foot|feet)?\s*", "", s, flags=re.IGNORECASE).strip()
+    s = re.sub(r"^\d[\d/'\"\.]*\s*(?:meters?\b|m(?![a-z])|cal(?:ories)?\b|foot\b|feet\b)?\s*", "", s, flags=re.IGNORECASE).strip()
 
     if re.match(r"^[\w][\w\s\-]+—\s*\d{1,2}:\d{2}-\d{1,2}:\d{2}", s):
         return []
