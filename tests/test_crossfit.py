@@ -277,6 +277,19 @@ def test_normalise_alt_db_snatch_aliases_to_dumbbell_snatch():
     assert normalise_movement_name("alt db snatch") == ["Dumbbell Snatch"]
 
 
+def test_normalise_calorie_row_ski_aliases_to_library_movements():
+    from second_brain.crossfit.notion import normalise_movement_name
+
+    assert normalise_movement_name("21 Calorie Row/Ski") == ["Row", "SkiErg"]
+
+
+def test_invalid_movement_candidates_reject_rep_schemes_and_vests():
+    from second_brain.crossfit.notion import is_valid_movement_candidate
+
+    assert is_valid_movement_candidate("21-15-9") is False
+    assert is_valid_movement_candidate("20/14 lb Vest") is False
+
+
 def test_extract_candidates_splits_or_alternatives():
     from second_brain.crossfit.notion import _extract_candidate_movements_from_section
 
@@ -288,16 +301,14 @@ def test_extract_candidates_splits_or_alternatives():
     assert any("lying" in n for n in names), "Lying to Stand missing"
 
 
-def test_resolve_section_movements_creates_uncached_candidates(monkeypatch):
+def test_resolve_section_movements_skips_uncached_candidates(monkeypatch):
     from second_brain.crossfit import notion as notion_mod
 
-    created = []
-
-    def fake_get_or_create_movement(notion, movements_db_id, name):
-        created.append((notion, movements_db_id, name))
-        return f"created-{len(created)}"
-
-    monkeypatch.setattr(notion_mod, "get_or_create_movement", fake_get_or_create_movement)
+    monkeypatch.setattr(
+        notion_mod,
+        "get_or_create_movement",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not create movements")),
+    )
 
     notion = SimpleNamespace()
     section = {"movements": ["Rope Climb", "Lying to Stand Rope Pulls"]}
@@ -305,8 +316,7 @@ def test_resolve_section_movements_creates_uncached_candidates(monkeypatch):
 
     resolved = notion_mod._resolve_section_movements(section, movement_cache, notion, "movements")
 
-    assert resolved == ["rope-id", "created-1"]
-    assert created == [(notion, "movements", "Lying to Stand Rope Pulls")]
+    assert resolved == ["rope-id"]
 
 
 def test_match_movement_farmer_carry_does_not_prefer_single_arm():
@@ -1055,23 +1065,16 @@ def test_finalize_flow_creates_one_strength_log_per_movement(monkeypatch):
     import second_brain.crossfit.handlers as handlers
 
     created = []
-    created_movements = []
 
     async def fake_week(notion):
         del notion
         return "week-1"
-
-    def fake_get_or_create(notion, db_id, name):
-        del notion
-        created_movements.append((db_id, name))
-        return f"mov-{name.lower().replace(' ', '-')}"
 
     def fake_create_strength_log(**kwargs):
         created.append(kwargs)
         return f"log-{len(created)}"
 
     monkeypatch.setattr(handlers, "get_current_week_program_url", fake_week)
-    monkeypatch.setattr(handlers, "get_or_create_movement", fake_get_or_create)
     monkeypatch.setattr(handlers, "create_strength_log", fake_create_strength_log)
 
     message = _DummyMessage()
@@ -1089,7 +1092,18 @@ def test_finalize_flow_creates_one_strength_log_per_movement(monkeypatch):
         }
     }
 
-    asyncio.run(handlers._finalize_flow(message, "123", SimpleNamespace(), {"NOTION_WORKOUT_LOG_DB": "workout-log", "NOTION_MOVEMENTS_DB": "movements"}, pending, "felt crisp"))
+    asyncio.run(handlers._finalize_flow(
+        message,
+        "123",
+        SimpleNamespace(),
+        {
+            "NOTION_WORKOUT_LOG_DB": "workout-log",
+            "NOTION_MOVEMENTS_DB": "movements",
+            "MOVEMENT_CACHE": {"Push Jerk": "mov-push-jerk"},
+        },
+        pending,
+        "felt crisp",
+    ))
 
     assert len(created) == 2
     assert created[0]["movement_page_id"] == "mov-push-press"
@@ -1104,10 +1118,9 @@ def test_finalize_flow_creates_one_strength_log_per_movement(monkeypatch):
     assert created[1]["load_lbs"] == 105.0
     assert created[0]["workout_date"] == created[1]["workout_date"] == "2026-05-06"
     assert created[0]["raw_log"] == created[1]["raw_log"] == "raw session\n\nNotes: felt crisp"
-    assert created_movements == [("movements", "Push Jerk")]
     assert pending["123"]["last_workout_page_ids"] == ["log-1", "log-2"]
-    assert "Push Press, Push Jerk" in message.replies[-2][0]
-    assert "4x3 105 lbs | 4x5 105 lbs" in message.replies[-2][0]
+    assert "Push Press, Push Jerk" in message.replies[-1][0]
+    assert "4x3 105 lbs | 4x5 105 lbs" in message.replies[-1][0]
 
 
 def test_strength_flow_disambiguates_slash_date_before_notes(monkeypatch):
@@ -1313,7 +1326,6 @@ def test_wod_finalize_resolves_state_movements_and_continues_on_failure(monkeypa
     import second_brain.crossfit.handlers as handlers
 
     created = {}
-    resolved = []
 
     async def fake_week(notion):
         del notion
@@ -1323,15 +1335,6 @@ def test_wod_finalize_resolves_state_movements_and_continues_on_failure(monkeypa
         del notion, wod_log_db_id, workout_date, wod_format
         return []
 
-    def fake_get_or_create(notion, movements_db_id, name):
-        del notion
-        assert movements_db_id == "movements"
-        if name == "Bad Match":
-            raise RuntimeError("boom")
-        page_id = f"mov-{name.lower().replace(' ', '-')}"
-        resolved.append((name, page_id))
-        return page_id
-
     def fake_create_wod_log(*args, **kwargs):
         created["args"] = args
         created["kwargs"] = kwargs
@@ -1339,7 +1342,6 @@ def test_wod_finalize_resolves_state_movements_and_continues_on_failure(monkeypa
 
     monkeypatch.setattr(handlers, "get_current_week_program_url", fake_week)
     monkeypatch.setattr(handlers, "query_wod_log_by_date", fake_query)
-    monkeypatch.setattr(handlers, "get_or_create_movement", fake_get_or_create)
     monkeypatch.setattr(handlers, "create_wod_log", fake_create_wod_log)
 
     message = _DummyMessage()
@@ -1361,17 +1363,20 @@ def test_wod_finalize_resolves_state_movements_and_continues_on_failure(monkeypa
             message,
             key,
             SimpleNamespace(),
-            {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"},
+            {
+                "NOTION_WOD_LOG_DB": "wod",
+                "NOTION_MOVEMENTS_DB": "movements",
+                "MOVEMENT_CACHE": {"Row": "mov-row", "Wall Ball": "mov-wall-ball"},
+            },
             pending,
             "5 rounds",
         )
     )
 
-    assert resolved == [("Row", "mov-row"), ("Wall Ball", "mov-wall-ball")]
     assert created["args"][13] == ["mov-row", "mov-wall-ball"]
     assert pending[key]["last_wod_page_id"] == "wod-log"
     assert pending[key]["stage"] == "awaiting_feel"
-    assert "🏋️ Row, Bad Match, Wall Ball" in message.replies[-2][0]
+    assert "🏋️ Row, Bad Match, Wall Ball" in message.replies[-1][0]
 
 def test_wod_for_time_result_is_captured_before_rx_and_logged(monkeypatch):
     import second_brain.crossfit.handlers as handlers
