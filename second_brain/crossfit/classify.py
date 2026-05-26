@@ -353,6 +353,9 @@ Rules:
 - Thursday and Saturday are often partner WODs (is_partner: true)
 - Keep descriptions concise, but preserve Training notes labels and bullets inside the relevant Section B/C description
 - When a movement line contains "or" (e.g. "1 Rope Climb or 2 Lying to Stand Rope Pulls"), both sides are scaled alternatives. Extract each as a separate movement using its exact multi-word name as written. Never substitute a generic CrossFit name — for example, do not simplify "Lying to Stand Rope Pulls" to "Pull-Up".
+- movements arrays must contain only actual exercise names (e.g. "Run", "Pull-Up", "Air Squat")
+- Do NOT include in movements: equipment specs ("20/14 lb Vest"), rep counts ("100 reps"), coaching cues ("Partition Repetitions as Desired"), vest weights, or any phrase that is not itself a named exercise
+- Strip rep-count prefixes from movements: "100 Ring Rows" → "Ring Row", "1 Mile Run" → "Run"
 """
     try:
         resp = claude_client.messages.create(
