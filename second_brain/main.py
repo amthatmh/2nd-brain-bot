@@ -142,6 +142,7 @@ from second_brain.notion import habits as notion_habits
 from second_brain.notion.habits import (
     log_habit as _habit_log_habit,
     already_logged_today as _habit_already_logged,
+    get_logged_habit_ids_today as _habit_logged_ids_today,
     get_week_completion_count as _habit_week_count,
     get_habit_frequency as _habit_frequency,
     habit_capped_this_week as _habit_capped,
@@ -602,10 +603,13 @@ def deadline_days_to_label(days: int | None) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def log_habit(habit_page_id: str, habit_name: str, source: str = "📱 Telegram") -> None:
-    return _habit_log_habit(notion, NOTION_LOG_DB, habit_page_id, habit_name, source)
+    return _habit_log_habit(notion, NOTION_LOG_DB, habit_page_id, habit_name, source, TZ)
 
 def already_logged_today(habit_page_id: str) -> bool:
     return _habit_already_logged(notion, NOTION_LOG_DB, habit_page_id, TZ)
+
+def get_logged_habit_ids_today() -> set[str]:
+    return _habit_logged_ids_today(notion, NOTION_LOG_DB, TZ)
 
 def get_week_completion_count(habit_page_id: str) -> int:
     return _habit_week_count(notion, NOTION_LOG_DB, habit_page_id, TZ)
@@ -1205,9 +1209,10 @@ async def open_done_picker(message) -> None:
     await message.reply_text("Which task should be marked done?", reply_markup=kb.done_picker_keyboard(key, done_picker_map, page=0))
 
 async def open_habit_picker(message) -> None:
+    logged_ids = get_logged_habit_ids_today()
     pending_habits = [
         h for h in sorted(habit_cache.values(), key=lambda x: x["sort"])
-        if not already_logged_today(h["page_id"])
+        if h["page_id"] not in logged_ids
     ]
     if not pending_habits:
         await message.reply_text("✅ No habits left to log today.")

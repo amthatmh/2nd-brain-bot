@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from typing import Awaitable, Callable
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest as TgBadRequest
 from telegram.ext import ContextTypes
 
 from dotenv import load_dotenv
@@ -1344,7 +1345,10 @@ async def _cb_notes_start(q, parts, context) -> None:
 
 async def _cb_h_check_cancel(q, parts, context) -> None:
     _main()._habit_selections.pop(q.message.message_id, None)
-    await q.edit_message_text("✅ Habit check closed.")
+    try:
+        await q.edit_message_text("✅ Habit check closed.")
+    except TgBadRequest:
+        pass
     await q.answer()
     return
 
@@ -1388,22 +1392,10 @@ async def _cb_h_toggle(q, parts, context) -> None:
     habits = session.get("habits", [])
     if not isinstance(habits, list) or not habits:
         log.warning(
-            "Habit selection cache missing for message_id=%s; falling back to Notion refresh",
+            "Habit selection cache missing for message_id=%s; falling back to cache-only",
             message_id,
         )
-        import second_brain.digest as _digest
-        habits = _digest.pending_habits_for_digest(
-            habit_cache=_habit_cache(),
-            time_str=page_time,
-            already_logged_today=_main().already_logged_today,
-            is_on_pace=_main().is_on_pace,
-        )
-        if check_type == "manual":
-            habits = [
-                h
-                for h in sorted(_habit_cache().values(), key=lambda x: x["sort"])
-                if not _main().already_logged_today(h["page_id"])
-            ]
+        habits = sorted(_habit_cache().values(), key=lambda x: x["sort"])
         session["habits"] = habits
     t3 = time.time()
     log.info("[PERF] Habits loaded in %.0fms", (t3 - t2) * 1000)
@@ -1412,7 +1404,10 @@ async def _cb_h_toggle(q, parts, context) -> None:
     t4 = time.time()
     log.info("[PERF] Buttons rendered in %.0fms", (t4 - t3) * 1000)
 
-    await q.edit_message_reply_markup(reply_markup=new_markup)
+    try:
+        await q.edit_message_reply_markup(reply_markup=new_markup)
+    except TgBadRequest:
+        pass
     t5 = time.time()
     log.info("[PERF] Message edited in %.0fms", (t5 - t4) * 1000)
 

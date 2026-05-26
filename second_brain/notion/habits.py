@@ -232,9 +232,10 @@ def query_tasks_by_auto_horizon(*, notion: Any, notion_db_id: str, horizons: lis
 
 def log_habit(
     notion, log_db_id: str, habit_page_id: str,
-    habit_name: str, source: str = "📱 Telegram"
+    habit_name: str, source: str = "📱 Telegram", tz=None
 ) -> None:
-    today = datetime.now().astimezone().date().isoformat()
+    now = datetime.now(tz) if tz is not None else datetime.now().astimezone()
+    today = now.date().isoformat()
     props = {
         "Entry": title_prop(habit_name),
         "Habit": {"relation": [{"id": habit_page_id}]},
@@ -270,9 +271,29 @@ def already_logged_today(notion, log_db_id: str, habit_page_id: str, tz) -> bool
         })
         return len(pages) > 0
     except Exception as e:
-        # Avoid blocking one-tap habit logs when the dedupe query schema drifts.
         log.warning("already_logged_today query failed for %s: %s", habit_page_id, e)
-        return False
+        return True
+
+
+def get_logged_habit_ids_today(notion, log_db_id: str, tz) -> set[str]:
+    """Return habit page IDs already logged today using a single Notion query."""
+    today = datetime.now(tz).date().isoformat()
+    try:
+        pages = query_all(notion, log_db_id, filter={
+            "and": [
+                {"property": "Completed", "checkbox": {"equals": True}},
+                {"property": "Date", "date": {"equals": today}},
+            ]
+        })
+        return {
+            rel["id"]
+            for page in pages
+            for rel in page.get("properties", {}).get("Habit", {}).get("relation", [])
+            if rel.get("id")
+        }
+    except Exception as e:
+        log.warning("get_logged_habit_ids_today failed: %s", e)
+        return set()
 
 
 def get_week_completion_count(notion, log_db_id: str, habit_page_id: str, tz) -> int:
