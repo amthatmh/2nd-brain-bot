@@ -53,6 +53,9 @@ def is_valid_movement_candidate(name: str) -> bool:
     s = (name or "").strip()
     if not s:
         return False
+    # Reject rep schemes like "21-15-9" and other numeric-only fragments.
+    if re.fullmatch(r"[\d\-/\.]+", s):
+        return False
     for pattern in MOVEMENT_BLOCKLIST_PATTERNS:
         if re.search(pattern, s, re.IGNORECASE):
             return False
@@ -229,9 +232,16 @@ MOVEMENT_BLOCKLIST = {
 
 
 MOVEMENT_ALIAS_MAP = [
+    # Distance and calorie movement normalisation
     (r"\d*\s*mile\s+run\b", "Run"),
     (r"\d+\s*(?:m\b|meter|meters?|km)\s+run\b", "Run"),
     (r"\d+\s*(?:m\b|meter|meters?|km)\s+row\b", "Row"),
+    (r"calorie\s+row\b", "Row"),
+    (r"cal(?:orie)?\s+row\b", "Row"),
+    (r"calorie\s+ski\b", "SkiErg"),
+    (r"cal(?:orie)?\s+ski\b", "SkiErg"),
+    (r"calorie\s+bike\b", "Assault Bike"),
+    (r"^ski\b", "SkiErg"),
     (r"russian\s+(kb|kettlebell)\s+swing", "Kettlebell Swing"),
     (r"american\s+(kb|kettlebell)\s+swing", "American Kettlebell Swing"),
     (r"(s/?a|single[\s-]arm)\s+(db|dumbbell)\s+overhead\s+(walking\s+)?lunge", "Overhead Carry"),
@@ -295,7 +305,7 @@ def normalise_movement_name(raw: str) -> list[str]:
         # like (left=3 words, right=1) and skips the reverse smart-split, leaving a
         # bare "Push" candidate that would substring-match onto Sled Push.
         lead_num_re = re.compile(
-            r"^\d[\d/'\"\.]*\s*(meter|m|cal|calories|foot|feet)?\s*",
+            r"^\d[\d/'\"\.]*\s*(?:meters?\b|m(?![a-z])|cal(?:orie|ories)?\b|foot\b|feet\b)?\s*",
             re.IGNORECASE,
         )
         stripped_parts = [lead_num_re.sub("", p).strip() for p in slash_parts]
@@ -462,10 +472,6 @@ def _resolve_section_movements(section: dict, movement_cache: dict[str, str], no
                 continue
             mid = match_movement(canonical, movement_cache)
             if mid:
-                if mid not in resolved:
-                    resolved.append(mid)
-            elif notion and movements_db_id:
-                mid = get_or_create_movement(notion, movements_db_id, canonical)
                 if mid not in resolved:
                     resolved.append(mid)
             else:

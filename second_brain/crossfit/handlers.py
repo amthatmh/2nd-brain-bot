@@ -12,7 +12,7 @@ from utils.date_parser import parse_date
 
 from .classify import parse_programme
 from .keyboards import level_confirm_keyboard, my_level_keyboard, rx_scaled_keyboard, session_feel_keyboard, strength_post_keyboard, wod_format_keyboard
-from .notion import create_strength_log, create_wod_log, get_available_tracks_today, get_movement_category, get_movement_details, get_movement_load_type, get_or_create_movement, get_progressions_for_movement, get_today_workout_structure, match_movement, normalise_movement_name, notion_query_wod_log_by_date, save_programme, set_current_level, this_monday
+from .notion import create_strength_log, create_wod_log, get_available_tracks_today, get_movement_category, get_movement_details, get_movement_load_type, get_progressions_for_movement, get_today_workout_structure, match_movement, normalise_movement_name, notion_query_wod_log_by_date, save_programme, set_current_level, this_monday
 from .nlp import extract_movements_from_log, extract_workout_data, load_movements_cache
 from .readiness import check_readiness_logged_today, extract_readiness_score, log_daily_readiness
 from second_brain.notion import notion_call
@@ -1587,13 +1587,6 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
             if not movement_page_id:
                 movement_page_id = match_movement(movement_name, movement_cache)
             if not movement_page_id:
-                movements_db_id = _cf_config(config, "NOTION_MOVEMENTS_DB")
-                if movements_db_id:
-                    movement_page_id = await asyncio.get_running_loop().run_in_executor(
-                        None,
-                        lambda movement_name=movement_name: get_or_create_movement(notion, movements_db_id, movement_name),
-                    )
-            if not movement_page_id:
                 log.warning("finalize: no library match for '%s' — skipped", movement_name)
                 continue
             effort_sets = int(movement.get("sets") or 1)
@@ -1729,12 +1722,8 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         movement_cache = config.get("MOVEMENT_CACHE") or MOVEMENTS_CACHE or {}
         for name in movement_names:
             mid = match_movement(name, movement_cache)
-            if not mid and _cf_config(config, "NOTION_MOVEMENTS_DB"):
-                try:
-                    mid = get_or_create_movement(notion, _cf_config(config, "NOTION_MOVEMENTS_DB"), name)
-                except Exception as exc:
-                    log.warning("Could not resolve WOD movement '%s': %s", name, exc)
-                    mid = None
+            if not mid:
+                log.warning("Could not resolve WOD movement '%s' — skipped", name)
             if mid and mid not in movement_ids:
                 movement_ids.append(mid)
         state["movement_page_ids"] = movement_ids
