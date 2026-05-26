@@ -2,7 +2,9 @@ import unittest
 import importlib
 import os
 import sys
+from datetime import datetime as real_datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 from second_brain.notion.habits import extract_habit_frequency
 
@@ -133,6 +135,57 @@ class TestLoadHabitCacheFrequency(unittest.TestCase):
         self.assertEqual(main.habit_cache["Meditate"]["show_after"], "05:00")
 
 
+class TestHabitLogQueries(unittest.TestCase):
+    def test_log_habit_uses_configured_local_timezone_for_date(self):
+        from second_brain.notion import habits as notion_habits
+
+        notion = MagicMock()
+        configured_tz = ZoneInfo("America/Los_Angeles")
+
+        def fake_now(tz=None):
+            utc_now = real_datetime(2026, 5, 26, 6, 47, tzinfo=timezone.utc)
+            return utc_now.astimezone(tz) if tz is not None else utc_now
+
+        with patch("second_brain.notion.habits.datetime") as mock_datetime:
+            mock_datetime.now.side_effect = fake_now
+            notion_habits.log_habit(
+                notion=notion,
+                log_db_id="log-db",
+                habit_page_id="habit-1",
+                habit_name="Read",
+                tz=configured_tz,
+            )
+
+        props = notion.pages.create.call_args.kwargs["properties"]
+        self.assertEqual(props["Date"]["date"]["start"], "2026-05-25")
+
+    def test_already_logged_today_fails_closed_on_notion_error(self):
+        from second_brain.notion import habits as notion_habits
+
+        with patch.object(notion_habits, "query_all", side_effect=RuntimeError("notion down")):
+            self.assertTrue(
+                notion_habits.already_logged_today(
+                    notion=MagicMock(),
+                    log_db_id="log-db",
+                    habit_page_id="habit-1",
+                    tz=timezone.utc,
+                )
+            )
+
+    def test_get_logged_habit_ids_today_returns_empty_set_on_failure(self):
+        from second_brain.notion import habits as notion_habits
+
+        with patch.object(notion_habits, "query_all", side_effect=RuntimeError("notion down")):
+            self.assertEqual(
+                notion_habits.get_logged_habit_ids_today(
+                    notion=MagicMock(),
+                    log_db_id="log-db",
+                    tz=timezone.utc,
+                ),
+                set(),
+            )
+
+
 class TestShowAfterGating(unittest.TestCase):
     def _load_single_habit(self, main, *, show_after):
         props = {
@@ -220,6 +273,33 @@ class TestHabitButtonsMultiSelect(unittest.TestCase):
 
 
 class TestHabitToggleCache(unittest.IsolatedAsyncioTestCase):
+    async def test_open_habit_picker_uses_batched_logged_ids(self):
+        main = load_main_module()
+        logged_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        pending_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        main.habit_cache = {
+            "Already Done": {"page_id": logged_id, "name": "Already Done", "sort": 1},
+            "Workout": {"page_id": pending_id, "name": "Workout", "sort": 2},
+        }
+        sent = MagicMock(message_id=789)
+        message = MagicMock()
+        message.reply_text = AsyncMock(return_value=sent)
+
+        with patch.object(main, "get_logged_habit_ids_today", return_value={logged_id}) as mock_logged_ids, \
+            patch.object(main, "already_logged_today", side_effect=AssertionError("should use batched query")):
+            await main.open_habit_picker(message)
+
+        mock_logged_ids.assert_called_once_with()
+        message.reply_text.assert_awaited_once()
+        labels = [
+            button.text
+            for row in message.reply_text.await_args.kwargs["reply_markup"].inline_keyboard
+            for button in row
+        ]
+        self.assertIn("Workout", labels)
+        self.assertNotIn("Already Done", labels)
+        self.assertEqual(main._habit_selection_habits(sent.message_id), [main.habit_cache["Workout"]])
+
     async def test_toggle_uses_cached_habits_without_refreshing_notion(self):
         main = load_main_module()
         page_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -240,12 +320,40 @@ class TestHabitToggleCache(unittest.IsolatedAsyncioTestCase):
 
         main._store_habit_selection_session(message.message_id, habits)
 
-        with patch.object(main, "pending_habits_for_digest", side_effect=AssertionError("should use cached habits")):
+        with patch("second_brain.digest.pending_habits_for_digest", side_effect=AssertionError("should use cached habits")):
             await main.handle_callback(update, MagicMock())
 
         query.edit_message_reply_markup.assert_awaited_once()
         query.answer.assert_awaited_once()
         self.assertEqual(main._habit_selection_selected(message.message_id), {page_id})
+
+    async def test_toggle_missing_session_falls_back_to_cache_without_notion_dedupe(self):
+        main = load_main_module()
+        import second_brain.routers as routers
+
+        page_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        main.habit_cache = {
+            "Workout": {"page_id": page_id, "name": "Workout", "sort": 1},
+        }
+        message = MagicMock()
+        message.message_id = 456
+        message.text = "🏃 *Which habit did you complete?*"
+        message.caption = None
+        main._habit_selections.pop(message.message_id, None)
+
+        query = MagicMock()
+        query.data = "h:toggle:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        query.message = message
+        query.edit_message_reply_markup = AsyncMock()
+        query.answer = AsyncMock()
+
+        with patch.object(main, "already_logged_today", side_effect=AssertionError("should not query Notion")):
+            await routers._cb_h_toggle(query, ["h", "toggle", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"], MagicMock())
+
+        query.edit_message_reply_markup.assert_awaited_once()
+        query.answer.assert_awaited_once()
+        self.assertEqual(main._habit_selection_selected(message.message_id), {page_id})
+        self.assertEqual(main._habit_selection_habits(message.message_id), list(main.habit_cache.values()))
 
 
 class TestSendDailyDigestHabitsIntegration(unittest.IsolatedAsyncioTestCase):

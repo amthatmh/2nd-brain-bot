@@ -262,6 +262,7 @@ def format_weather_block(weather: dict | None, label: str = "🌤️") -> str:
 
 def format_weather_snapshot() -> str:
     """Compose a richer weather snapshot for quick access."""
+    wx.load_notion_env_location()
     lines = [f"📍 Weather · {wx._loc.location}"]
     current = wx.fetch_weather("current")
     if current:
