@@ -161,12 +161,22 @@ def load_notion_env_location() -> bool:
         value = value_parts[0]["text"]["content"].strip() if value_parts else ""
         lat = props.get("Lat", {}).get("number")
         lon = props.get("Lon", {}).get("number")
-        if value and lat is not None and lon is not None:
+        value_changed = bool(value and _loc.location and value != _loc.location)
+        if value:
+            if value_changed:
+                _loc.lat = None
+                _loc.lon = None
             _loc.location = value
+        if value_changed:
+            log.info("Location changed in Notion ENV; will refresh coordinates for %s", value)
+            return False
+        if value and lat is not None and lon is not None:
             _loc.lat = float(lat)
             _loc.lon = float(lon)
             log.info("Location loaded from Notion ENV: %s (%.4f, %.4f)", value, lat, lon)
             return True
+        if value:
+            log.info("Location loaded from Notion ENV without coordinates: %s", value)
         return False
     except Exception as e:
         log.warning("load_notion_env_location failed: %s", e)
@@ -219,6 +229,18 @@ def set_location(location: str) -> bool:
     except Exception as e:
         log.error("Location geocode failed for %s: %s", location, e)
         return False
+
+
+def ensure_weather_location() -> bool:
+    """Ensure active weather coordinates, preferring Notion ENV Location."""
+    if load_notion_env_location():
+        return True
+    if _loc.lat is not None and _loc.lon is not None:
+        return True
+    location = (_loc.location or WEATHER_LOCATION or "").strip()
+    if not location:
+        return False
+    return set_location(location)
 
 
 def _location_candidates(text: str) -> list[str]:
@@ -350,9 +372,8 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
     if not force_refresh and cached_result is not None:
         return cached_result
     try:
-        if _loc.lat is None or _loc.lon is None:
-            if not set_location(WEATHER_LOCATION):
-                return None
+        if not ensure_weather_location():
+            return None
         if forecast_type == "current":
             resp = httpx.get("https://api.openweathermap.org/data/2.5/weather", params={"lat": _loc.lat, "lon": _loc.lon, "appid": openweather_key, "units": "metric"}, timeout=10)
             resp.raise_for_status()
@@ -474,9 +495,8 @@ def fetch_multi_day_forecast(num_days: int) -> list[dict] | None:
     openweather_key = _openweather_key()
     if not openweather_key or num_days <= 0:
         return None
-    if _loc.lat is None or _loc.lon is None:
-        if not set_location(WEATHER_LOCATION):
-            return None
+    if not ensure_weather_location():
+        return None
     try:
         return _forecast_rows_for_coordinates(float(_loc.lat), float(_loc.lon), num_days=num_days)
     except Exception as e:
@@ -569,9 +589,8 @@ def fetch_daily_weather(days: int = 5, force_refresh: bool = False) -> list[dict
     openweather_key = _openweather_key()
     if not openweather_key or days <= 0:
         return []
-    if _loc.lat is None or _loc.lon is None:
-        if not set_location(WEATHER_LOCATION):
-            return []
+    if not ensure_weather_location():
+        return []
 
     cached_rows = weather_cache.get("daily") or []
     if not force_refresh and len(cached_rows) >= days:
