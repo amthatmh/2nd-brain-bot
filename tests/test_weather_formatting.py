@@ -176,6 +176,47 @@ def test_weather_location_change_refreshes_stale_env_coordinates(monkeypatch):
     assert props["Lon"]["number"] == -86.7816
 
 
+def test_set_location_updates_notion_env_value_and_coordinates(monkeypatch):
+    row = {
+        "id": "location-row",
+        "properties": {
+            "Value": {"rich_text": [{"text": {"content": "Chicago, Illinois, US"}}]},
+            "Lat": {"number": 41.88},
+            "Lon": {"number": -87.63},
+        },
+    }
+    pages = type("Pages", (), {"update": MagicMock()})()
+    notion = type(
+        "FakeNotion",
+        (),
+        {
+            "databases": type("Databases", (), {"query": lambda self, **kwargs: {"results": [row]}})(),
+            "pages": pages,
+        },
+    )()
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return [{"name": "Nashville", "state": "Tennessee", "country": "US", "lat": 36.1627, "lon": -86.7816}]
+
+    monkeypatch.setattr(wx, "NOTION_ENV_DB", "env-db")
+    monkeypatch.setattr(wx, "notion", notion)
+    monkeypatch.setattr(wx, "OPENWEATHER_KEY", "test-openweather-key")
+    monkeypatch.setattr(wx.httpx, "get", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(wx, "save_location_state", lambda location: None)
+
+    assert wx.set_location("Nashville, Tennessee, US") is True
+
+    pages.update.assert_called_once()
+    props = pages.update.call_args.kwargs["properties"]
+    assert props["Value"]["rich_text"][0]["text"]["content"] == "Nashville, Tennessee, US"
+    assert props["Lat"]["number"] == 36.1627
+    assert props["Lon"]["number"] == -86.7816
+
+
 def test_fetch_daily_weather_reuses_cached_one_call_data(monkeypatch):
     monkeypatch.setattr(wx, "OPENWEATHER_KEY", "test-openweather-key")
     wx._loc.lat = 41.88
