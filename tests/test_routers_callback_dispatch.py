@@ -106,6 +106,15 @@ class TestCallbackDispatch(unittest.IsolatedAsyncioTestCase):
         q.answer.assert_awaited_once()
         mock_handler.assert_awaited_once_with(q, ["noop"], context)
 
+    async def test_text_handler_ignores_updates_without_message(self):
+        from second_brain.routers import handle_message_text
+
+        update = MagicMock()
+        update.effective_chat.id = 1
+        update.message = None
+
+        await handle_message_text(update, MagicMock())
+
     async def test_dispatch_digest_today(self):
         update, q, context, fake_main, handle_callback = await self._dispatch_with_patched_main("digest:today")
         mock_handler = AsyncMock()

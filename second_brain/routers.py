@@ -354,7 +354,11 @@ async def route_classified_message_v10(message, text: str) -> None:
 async def handle_message_text(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    user_id = update.effective_chat.id
+    chat = update.effective_chat
+    message = update.message
+    if chat is None or message is None:
+        return
+    user_id = chat.id
     if str(user_id) in _cf_pending():
         cf_pending = _cf_pending()
         cf_pending_state = cf_pending.get(str(user_id), {})
@@ -366,7 +370,6 @@ async def handle_message_text(
         )
     if user_id != MY_CHAT_ID:
         return
-    message = update.message
     text = (message.text or "").strip()
     if not text:
         return

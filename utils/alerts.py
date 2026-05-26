@@ -19,6 +19,22 @@ ALERT_EMOJIS = {
 }
 
 
+def _redact_token(value: str, token: str) -> str:
+    if token:
+        value = value.replace(token, "<telegram-token>")
+    return value
+
+
+def _response_preview(response: httpx.Response | None, token: str) -> str:
+    if response is None:
+        return ""
+    try:
+        body = response.text[:500]
+    except Exception:
+        body = ""
+    return _redact_token(body, token)
+
+
 def _alert_channel_id() -> str:
     """Return the configured alert destination without falling back to owner DMs."""
     return os.getenv("ALERT_CHANNEL_ID", "").strip()
@@ -90,14 +106,41 @@ def send_alert(message: str, level: str = "INFO", cooldown_key: Optional[str] = 
             json=payload,
             timeout=10,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            body = _response_preview(exc.response, token).lower()
+            if exc.response.status_code == 400 and "parse_mode" in payload and (
+                "parse" in body or "entity" in body
+            ):
+                logger.warning("[ALERT_DEBUG] Telegram rejected Markdown; retrying alert as plain text")
+                plain_payload = dict(payload)
+                plain_payload.pop("parse_mode", None)
+                response = httpx.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json=plain_payload,
+                    timeout=10,
+                )
+                response.raise_for_status()
+            else:
+                raise
         result = response.json()
         message_id = result.get("result", {}).get("message_id", "unknown")
         logger.info("[ALERT_DEBUG] ✅ Successfully sent! Message ID: %s", message_id)
         if cooldown_key and level != "CRITICAL":
             set_alert_cooldown(cooldown_key)
         return True
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code if exc.response is not None else "unknown"
+        body = _response_preview(exc.response, token)
+        logger.error("[ALERT_DEBUG] ❌ FAILED to send alert: HTTP %s body=%s", status, body)
+        logger.debug("[ALERT_DEBUG] Stack trace:", exc_info=True)
+        return False
     except Exception as exc:  # noqa: BLE001 - alerts must never crash callers
-        logger.error("[ALERT_DEBUG] ❌ FAILED to send alert: %s: %s", type(exc).__name__, exc)
-        logger.error("[ALERT_DEBUG] Stack trace:", exc_info=True)
+        logger.error(
+            "[ALERT_DEBUG] ❌ FAILED to send alert: %s: %s",
+            type(exc).__name__,
+            _redact_token(str(exc), token),
+        )
+        logger.debug("[ALERT_DEBUG] Stack trace:", exc_info=True)
         return False

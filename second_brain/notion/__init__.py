@@ -34,7 +34,12 @@ def notion_call(
             msg = str(exc).lower()
             if "401" in msg or "unauthorized" in msg:
                 alert_notion_auth_failure(str(exc))
-            is_transient = any(code in msg for code in ("429", "500", "502", "503", "504")) or "rate limited" in msg
+            is_transient = (
+                any(code in msg for code in ("429", "500", "502", "503", "504"))
+                or "rate limited" in msg
+                or "timeout" in msg
+                or "timed out" in msg
+            )
             if is_transient and attempt < retries - 1:
                 wait = min(max_backoff, backoff * (2 ** attempt)) + random.uniform(0.05, 0.35)
                 log.warning(

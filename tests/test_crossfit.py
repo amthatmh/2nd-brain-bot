@@ -918,6 +918,56 @@ def test_create_strength_log_accepts_extracted_date_and_scheme():
     assert "is_max_attempt" not in props
 
 
+def test_create_wod_log_skips_optional_fields_missing_from_schema():
+    from second_brain.crossfit import notion as notion_mod
+
+    calls = []
+    notion_mod._DATABASE_PROPERTY_CACHE.clear()
+    schema_props = {
+        "Name": {"type": "title"},
+        "Date": {"type": "date"},
+        "Format": {"type": "select"},
+        "Result Type": {"type": "select"},
+        "Rx / Scaled": {"type": "select"},
+        "Partner?": {"type": "checkbox"},
+        "Movements": {"type": "relation"},
+    }
+    notion = SimpleNamespace(
+        databases=SimpleNamespace(retrieve=lambda **kwargs: {"properties": schema_props}),
+        pages=SimpleNamespace(create=lambda **kwargs: calls.append(kwargs) or {"id": "wod-log"}),
+    )
+
+    page_id = notion_mod.create_wod_log(
+        notion,
+        "wod-schema-without-name",
+        "For Time",
+        None,
+        None,
+        "Time",
+        1200,
+        None,
+        None,
+        "Rx",
+        "felt good",
+        False,
+        "Mighty WOD",
+        ["mov-1"],
+        "week-1",
+        None,
+        workout_date="2026-05-06",
+        raw_log="raw workout",
+    )
+
+    assert page_id == "wod-log"
+    props = calls[0]["properties"]
+    assert "WOD Name" not in props
+    assert "Weekly Program" not in props
+    assert "Log" not in props
+    assert "Scaling Notes" not in props
+    assert props["Name"] == {"title": [{"text": {"content": "Mighty WOD — 2026-05-06"}}]}
+    assert props["Movements"] == {"relation": [{"id": "mov-1"}]}
+
+
 def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
     import second_brain.crossfit.handlers as handlers
 
@@ -2139,6 +2189,72 @@ def test_save_programme_from_notion_row_returns_days_and_section_movement_ids():
     day_props = created[0]["properties"]
     assert day_props["Section B Movements"] == {"relation": [{"id": "mov-back-squat"}]}
     assert day_props["Section C Movements"] == {"relation": [{"id": "mov-burpee"}]}
+
+
+def test_save_programme_from_notion_row_skips_missing_weekly_optional_props():
+    from second_brain.crossfit import notion as notion_mod
+
+    created = []
+    updated = []
+    notion_mod._DATABASE_PROPERTY_CACHE.clear()
+
+    def query(**kwargs):
+        if kwargs["database_id"] == "movements":
+            return {"results": [
+                {"id": "mov-burpee", "properties": {"Name": {"title": [{"plain_text": "Burpee"}]}}},
+            ]}
+        return {"results": []}
+
+    def retrieve(**kwargs):
+        if kwargs["database_id"] == "program-without-start-summary":
+            return {"properties": {
+                "Name": {"type": "title"},
+                "Movements": {"type": "relation"},
+            }}
+        if kwargs["database_id"] == "days":
+            return {"properties": {
+                "Name": {"type": "title"},
+                "Day": {"type": "select"},
+                "Track": {"type": "select"},
+                "Week": {"type": "relation"},
+                "Week Of": {"type": "date"},
+                "Is Partner": {"type": "checkbox"},
+                "Section C": {"type": "rich_text"},
+                "Section C Format": {"type": "select"},
+                "Section C Movements": {"type": "relation"},
+            }}
+        return {"properties": {}}
+
+    notion = SimpleNamespace(
+        pages=SimpleNamespace(
+            create=lambda **kwargs: created.append(kwargs) or {"id": f"row-{len(created)}"},
+            update=lambda **kwargs: updated.append(kwargs) or {"id": kwargs.get("page_id")},
+        ),
+        databases=SimpleNamespace(query=query, retrieve=retrieve),
+    )
+    parsed = {
+        "week_label": "Week of 2026-05-04",
+        "tracks": [{"track": "Performance", "days": [{
+            "day": "Monday",
+            "section_c": {"description": "AMRAP 8 Burpees", "format": "AMRAP", "movements": []},
+        }]}],
+    }
+
+    result = notion_mod.save_programme_from_notion_row(
+        notion,
+        "week-page",
+        "days",
+        "movements",
+        parsed,
+        "program-without-start-summary",
+        "",
+    )
+
+    assert result == {"days_created": 1, "movement_ids": ["mov-burpee"]}
+    for call in updated:
+        props = call["properties"]
+        assert "Start Date" not in props
+        assert "Movement Summary" not in props
 
 
 def _workout_row(load, sets, reps, est_1rm, workout_date):
