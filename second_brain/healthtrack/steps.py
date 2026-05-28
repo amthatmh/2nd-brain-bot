@@ -54,6 +54,7 @@ log = logging.getLogger(__name__)
 # In-memory state keyed by date string "YYYY-MM-DD"
 # Survives for the process lifetime; Railway redeploys reset it, but the
 # nightly Notion query is the durable source of truth.
+# Kept module-level because health tracking wires in via routes and should not couple to BotState's lifecycle.
 _steps_state: dict[str, dict] = {}
 
 
@@ -179,6 +180,8 @@ def _update_log_entry_steps(
         final_completed = current_completed or completed
 
         current_steps = properties.get("Steps Count", {}).get("number") or 0
+        if not isinstance(current_steps, (int, float)):
+            current_steps = 0
         final_steps = max(steps, current_steps)
 
         update_properties = {
@@ -542,7 +545,8 @@ async def handle_steps_sync(
                     existing_page_ids[1:],
                 )
             # UPDATE existing entry (preserve Completed if already True — don't downgrade)
-            _update_log_entry_steps(notion, existing_page_id, steps, completed)
+            if not _update_log_entry_steps(notion, existing_page_id, steps, completed):
+                return _sync_result("error", reason="notion_update_failed", page_id=existing_page_id)
             state["notion_page_id"] = existing_page_id
             return _sync_result("updated", page_id=existing_page_id)
 
@@ -552,7 +556,8 @@ async def handle_steps_sync(
         )
         if new_page_id:
             state["notion_page_id"] = new_page_id
-        return _sync_result("created", page_id=new_page_id)
+            return _sync_result("created", page_id=new_page_id)
+        return _sync_result("error", reason="notion_create_failed", page_id=None)
 
 
 async def handle_steps_final_stamp(

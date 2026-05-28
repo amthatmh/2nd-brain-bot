@@ -1,7 +1,23 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 import traceback
+
+log = logging.getLogger(__name__)
+
+
+async def send_system_log(bot, text: str) -> None:
+    """Send an internal error report to the configured system logs channel."""
+    from second_brain.config import SYSTEM_LOGS_CHAT_ID
+
+    if bot is None:
+        log.error("System log bot unavailable: %s", text)
+        return
+    try:
+        await bot.send_message(chat_id=SYSTEM_LOGS_CHAT_ID, text=text)
+    except Exception as exc:
+        log.error("Failed to send system log: %s", exc)
 
 
 def friendly_error_area(module: str, function: str) -> str:
