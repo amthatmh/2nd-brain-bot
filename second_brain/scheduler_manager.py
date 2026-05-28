@@ -21,6 +21,7 @@ from second_brain.notion.properties import (
     query_all,
     rich_text_prop,
 )
+from second_brain.error_reporting import send_system_log
 from second_brain.monitoring import (
     check_alert_cooldown,
     get_alert_config,
@@ -258,14 +259,13 @@ class UtilitySchedulerManager:
         try:
             job = self._scheduler.get_job(self._apscheduler_id(job_key))
             next_run = job.next_run_time.strftime("%Y-%m-%d %H:%M %Z") if job and job.next_run_time else "unknown"
-            await self._bot.send_message(
-                chat_id=self._chat_id,
-                text=(
-                    f"🚨 <b>Scheduler: {job_key} failed</b>\n\n"
-                    f"Error: <code>{str(error)[:300]}</code>\n\n"
+            await send_system_log(
+                self._bot,
+                (
+                    f"🚨 Scheduler: {job_key} failed\n\n"
+                    f"Error: {str(error)[:300]}\n\n"
                     f"Next run: {next_run}"
                 ),
-                parse_mode="HTML",
             )
         except Exception as alert_error:
             log.error("scheduler_manager: failed to send Telegram alert: %s", alert_error)

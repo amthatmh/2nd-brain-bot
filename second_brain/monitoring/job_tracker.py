@@ -294,10 +294,15 @@ def _alert_on_overlap(job_key: str, baseline: Optional[float], duration: float, 
         set_alert_cooldown(cooldown_key)
 
 
-def _alert_on_failure(job_key: str, error: Exception, consecutive: int, alert_config: Dict[str, Any]) -> None:
-    """Send a failure alert according to the job-specific alert configuration."""
+def _send_job_failure_system_log(job_key: str, error: Exception, consecutive: int) -> None:
+    """Route job failure alerts through the system-log alert channel."""
     from utils.alert_handlers import alert_job_failure
 
+    alert_job_failure(job_key, str(error), consecutive)
+
+
+def _alert_on_failure(job_key: str, error: Exception, consecutive: int, alert_config: Dict[str, Any]) -> None:
+    """Send a failure alert according to the job-specific alert configuration."""
     failure_mode = alert_config["alert_on_failure"]
     should_alert = failure_mode == "always" or (failure_mode in {"after_3", "critical_only"} and consecutive >= 3)
     if not should_alert:
@@ -305,12 +310,12 @@ def _alert_on_failure(job_key: str, error: Exception, consecutive: int, alert_co
 
     # Critical alerts bypass cooldown so operators always see recurring failures.
     if consecutive >= 3:
-        alert_job_failure(job_key, str(error), consecutive)
+        _send_job_failure_system_log(job_key, error, consecutive)
         return
 
     cooldown_key = f"failure_{job_key}"
     if check_alert_cooldown(cooldown_key, alert_config["failure_cooldown_hours"]):
-        alert_job_failure(job_key, str(error), consecutive)
+        _send_job_failure_system_log(job_key, error, consecutive)
         set_alert_cooldown(cooldown_key)
 
 

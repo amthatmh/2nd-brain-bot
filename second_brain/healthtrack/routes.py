@@ -85,9 +85,11 @@ from second_brain.healthtrack.steps import (
     get_steps_state_summary,
     _find_steps_habit_page_id,
     _find_existing_log_entry,
+    _normalise_existing_log_ids,
     _create_log_entry,
     _update_log_entry_steps,
 )
+from second_brain.error_reporting import send_system_log
 from second_brain.http_utils import cors_headers
 from second_brain.notion.properties import query_all
 from second_brain.notion.habits import already_logged_today, log_habit as create_habit_log
@@ -141,6 +143,18 @@ def _payload_summary(body) -> dict:
         "metric_count": len(metrics),
         "metric_names": metric_names,
     }
+
+
+def _notion_upsert_failure_detail(result: dict) -> str | None:
+    """Return a short failure reason when a steps webhook did not persist to Notion."""
+    action = result.get("action")
+    if action == "error":
+        return str(result.get("reason") or "unknown")
+    if action == "created" and not result.get("page_id"):
+        return "notion_create_failed"
+    if action == "updated" and result.get("ok") is False:
+        return str(result.get("reason") or "notion_update_failed")
+    return None
 
 
 def _record_steps_webhook(request: web.Request, *, status: str, detail: dict | None = None) -> None:
@@ -666,6 +680,16 @@ def register_health_routes(
                 force_write=False,
             )
             all_results[date_str] = result
+            failure_detail = _notion_upsert_failure_detail(result)
+            if failure_detail and bot is not None:
+                await send_system_log(
+                    bot,
+                    "🚨 Steps webhook Notion upsert failed\n"
+                    f"Date: {date_str}\n"
+                    f"Steps: {steps}\n"
+                    f"Failure: {failure_detail}\n"
+                    f"Payload summary: {json.dumps(_payload_summary(body), sort_keys=True)}",
+                )
             if on_sync_result:
                 try:
                     callback_result = on_sync_result(result)
@@ -747,6 +771,17 @@ def register_health_routes(
             )
         except Exception as e:
             log.exception("health_sync: Notion sync failed: %s", e)
+            try:
+                bot = bot_getter()
+            except Exception:
+                bot = None
+            if bot is not None:
+                await send_system_log(
+                    bot,
+                    "🚨 Health metrics webhook Notion upsert failed\n"
+                    f"Failure: {type(e).__name__}: {e}\n"
+                    f"Payload summary: {json.dumps(_payload_summary(body), sort_keys=True)}",
+                )
             return web.Response(
                 status=500,
                 text=json.dumps({"ok": False, "error": "Notion API failure"}),
@@ -851,11 +886,12 @@ def register_health_routes(
             try:
                 completed = steps >= STEPS_THRESHOLD
 
-                existing_page_id = await asyncio.to_thread(
+                existing_page_ids = _normalise_existing_log_ids(await asyncio.to_thread(
                     _find_existing_log_entry, notion, log_db_id, habit_page_id, date_str
-                )
+                ))
 
-                if existing_page_id:
+                if existing_page_ids:
+                    existing_page_id = existing_page_ids[0]
                     success = await asyncio.to_thread(
                         _update_log_entry_steps, notion, existing_page_id, steps, completed
                     )

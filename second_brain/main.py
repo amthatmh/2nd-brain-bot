@@ -56,7 +56,7 @@ from second_brain.cinema.config import (
     validate_config as validate_cinema_config,
 )
 from second_brain.sync_telemetry import init_sync_status, utc_now_iso, format_sync_status_message
-from second_brain.error_reporting import telegram_error_location
+from second_brain.error_reporting import send_system_log, telegram_error_location
 from second_brain.notion import notes as notion_notes
 from second_brain.digest import manual_digest_config_now as _manual_digest_config_now_fn
 from second_brain.notion import daily_log as notion_daily_log
@@ -415,6 +415,7 @@ _app_bot = None  # set during post_init for health route bot access
 rule_engine: RuleEngine | None = None
 _steps_title_migration_ran = False
 STATE_DIR = _resolve_state_dir()
+bot_state_file = STATE_DIR / "bot_state.json"
 mute_state_file = STATE_DIR / "mute_state.json"
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -436,11 +437,45 @@ def _has_explicit_personal_or_work_context(text: str) -> bool:
     lower = (text or "").lower()
     return bool(re.search(r"\b(personal|work)\b|🏠|💼", lower))
 
+def _load_bot_state() -> dict:
+    try:
+        if not bot_state_file.exists():
+            return {}
+        payload = json.loads(bot_state_file.read_text() or "{}")
+        return payload if isinstance(payload, dict) else {}
+    except Exception as e:
+        log.error("Failed loading bot state: %s", e)
+        return {}
+
+
+def _save_bot_state() -> None:
+    try:
+        payload = _load_bot_state()
+        payload["weather_location"] = wx._loc.location
+        payload["mute_until"] = STATE.mute_until.isoformat() if STATE.mute_until else None
+        bot_state_file.write_text(json.dumps(payload))
+    except Exception as e:
+        log.error("Failed saving bot state: %s", e)
+
+
 def _load_mute_state() -> None:
-    STATE.mute_until = mute_helpers.load_mute_state(mute_state_file, TZ, log)
+    payload = _load_bot_state()
+    mute_until = None
+    raw = payload.get("mute_until")
+    try:
+        if raw:
+            mute_until = datetime.fromisoformat(str(raw))
+    except Exception as e:
+        log.error("Failed parsing bot_state mute_until: %s", e)
+    if mute_until and datetime.now(TZ) >= mute_until:
+        STATE.mute_until = None
+        _save_bot_state()
+        return
+    STATE.mute_until = mute_until or mute_helpers.load_mute_state(mute_state_file, TZ, log)
 
 def _save_mute_state() -> None:
     mute_helpers.save_mute_state(STATE.mute_until, mute_state_file, log)
+    _save_bot_state()
 
 def _is_muted() -> bool:
     if not mute_helpers.is_muted(STATE.mute_until, TZ):
@@ -1599,11 +1634,13 @@ async def run_asana_sync(bot) -> dict:
         return {**stats, "action": "synced"}
     except AsanaSyncError as e:
         log.error("Asana sync config error: %s", e)
+        await send_system_log(bot, f"🚨 Asana sync config error\n{e}")
         sync_status["asana"]["ok"] = False
         sync_status["asana"]["error"] = str(e)
         return {"ok": False, "action": "error", "reason": str(e)}
     except Exception as e:
         log.exception("Asana sync failed: %s", e)
+        await send_system_log(bot, f"🚨 Asana sync failed\n{type(e).__name__}: {e}")
         sync_status["asana"]["ok"] = False
         sync_status["asana"]["error"] = str(e)
         return {"ok": False, "action": "error", "reason": str(e)}
@@ -2062,6 +2099,7 @@ async def post_init(app: Application) -> None:
     else:
         # Notion loaded successfully — sync back to local JSON cache
         wx.save_location_state(wx._loc.location)
+    _save_bot_state()
     cleanup_old_habit_selections()
     notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB); _refresh_habit_cache_refs()
     # Load steps config from Notion ENV DB
@@ -2389,6 +2427,7 @@ async def cmd_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             context.user_data["awaiting_location"] = False
             await update.message.reply_text(f"📍 Location updated to {wx._loc.location}.")
             wx.save_location_state(wx._loc.location)
+            _save_bot_state()
             await update.message.reply_text(await handle_weather(wx._loc.location), parse_mode="Markdown")
             return
         await update.message.reply_text(
