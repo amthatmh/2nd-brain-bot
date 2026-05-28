@@ -447,11 +447,12 @@ def _normalize_strength_movements(workout_result: dict | None, workout_data: dic
     shared_reps = workout_data.get("reps") or workout_result.get("reps") or 1
     shared_load = workout_data.get("weight_lbs") if workout_data.get("weight_lbs") is not None else workout_result.get("load_lbs")
     movement_loads = workout_data.get("movement_loads") or {}
+    movement_reps = workout_data.get("movement_reps") or {}
     return [
         {
             "movement": name,
             "sets": shared_sets,
-            "reps": shared_reps,
+            "reps": movement_reps.get(name) if movement_reps.get(name) is not None else shared_reps,
             "load_lbs": movement_loads.get(name) if movement_loads.get(name) is not None else shared_load,
         }
         for name in extracted_names
@@ -532,7 +533,7 @@ async def _prompt_bodyweight_confirm(message, key: str, state: dict, cf_pending:
 
 
 async def _prompt_track_or_notes(message, key: str, notion, config: dict, cf_pending: dict) -> bool:
-    """Select today's Workout Days relation before moving to notes/final prompts."""
+    """Select today's Workout Days relation before final prompts."""
     state = cf_pending.get(key, {})
     if "workout_day_id" in state:
         return False
@@ -571,6 +572,23 @@ async def _prompt_strength_notes_with_pr_context(message, key: str, notion, conf
         names = ", ".join(m.get("movement") or "Movement" for m in movements)
         body = f"📝 Any notes about this session?\nLogging {len(movements)} movements: {names}\n(Reply with text, or tap Skip)"
     await _send_notes_prompt(message, key, cf_pending, prefix=pr_context, body=body)
+
+
+async def _continue_strength_after_notes(message, key: str, notion, config: dict, cf_pending: dict, notes) -> None:
+    state = cf_pending.get(key, {})
+    state["notes"] = notes
+    cf_pending[key] = state
+    if await _prompt_track_or_notes(message, key, notion, config, cf_pending):
+        return
+    movement_id = state.get("movement_page_id")
+    movement_name = state.get("movement", "")
+    if (
+        movement_id
+        and len(state.get("movements") or []) == 1
+        and await handle_gymnastics_level_check(message, movement_id, movement_name, notion, config, cf_pending, key)
+    ):
+        return
+    await _finalize_flow(message, key, notion, config, cf_pending, notes)
 
 async def _prompt_session_feel(message, key: str, state: dict, cf_pending: dict) -> None:
     state["stage"] = "awaiting_feel"
@@ -636,11 +654,11 @@ async def _edit_stored_prompt_message(message, state: dict, message_id_key: str,
 async def _prompt_wod_result_notes(message, key: str, state: dict) -> None:
     result_type = _infer_result_type(state.get("format"))
     if result_type == "Time":
-        prompt = "⏱ What was your time? (mm:ss)\nExample: 12:34 for 12 minutes 34 seconds.\nAdd any notes too, or tap Skip."
+        prompt = "⏱ What was your time? (mm:ss)\nExample: 12:34 for 12 minutes 34 seconds."
     elif result_type == "Reps":
-        prompt = "💪 How many total reps did you complete?\nAdd any notes too, or tap Skip."
+        prompt = "💪 How many total reps did you complete?"
     else:
-        prompt = "🔄 How many rounds + reps did you complete?\nExamples: 5 rounds + 12 reps, or 5 for full rounds.\nAdd any notes too, or tap Skip."
+        prompt = "🔄 How many rounds + reps did you complete?\nExamples: 5 rounds + 12 reps, or 5 for full rounds."
     prompt_message = await message.reply_text(
         prompt,
         parse_mode="Markdown",
@@ -654,6 +672,25 @@ async def _prompt_wod_result_before_rx(message, key: str, state: dict) -> None:
     """Ask for the WOD result before presenting Rx/Scaled choices."""
     state["stage"] = "result"
     await _prompt_wod_result_notes(message, key, state)
+
+
+async def _prompt_wod_notes(message, key: str, state: dict) -> None:
+    state["stage"] = "wod_notes"
+    movement_names = ", ".join(state.get("movement_names") or state.get("movements") or [])
+    body = "📝 Any notes about this session?"
+    if movement_names:
+        body += f"\nMovements: {movement_names}"
+    body += "\n(Reply with text, or tap Skip)"
+    prompt_message = await message.reply_text(
+        body,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Skip", callback_data=f"cf:skip:{key}")],
+            [InlineKeyboardButton("❌ Cancel session", callback_data="cf:cancel")],
+        ]),
+    )
+    state["notes_prompt_message_id"] = getattr(prompt_message, "message_id", None)
+    state["_notes_prompt_message_id_message"] = prompt_message
 
 
 def _needs_time_cap_before_result(state: dict) -> bool:
@@ -989,15 +1026,6 @@ async def handle_cf_strength_flow(message, workout_result, claude, notion, confi
                 movement["bodyweight"] = True
                 await _prompt_bodyweight_confirm(message, key, cf_pending[key], cf_pending)
                 return
-    if await _prompt_track_or_notes(message, key, notion, config, cf_pending):
-        return
-    if movement_ids and len(cf_pending[key].get("movements") or []) == 1 and await handle_gymnastics_level_check(message, movement_ids[0], cf_pending[key]["movement"], notion, config, cf_pending, key):
-        return
-    all_movements = cf_pending[key].get("movements") or []
-    has_complete_extraction = bool(raw_text and sets is not None and reps is not None and (load_lbs is not None or len(all_movements) > 1))
-    if has_complete_extraction:
-        await _finalize_flow(message, key, notion, config, cf_pending, cf_pending[key].get("notes"))
-        return
     await _prompt_strength_notes_with_pr_context(message, key, notion, config, cf_pending)
 
 
@@ -1671,17 +1699,19 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         result_seconds = None
         result_rounds = None
         result_reps = None
-        if notes:
-            result_seconds = parse_time_to_seconds(notes)
-            rounds, reps = parse_rounds_reps(notes)
+        result_text = state.get("result_notes") or ""
+        scaling_notes = notes if notes is not None else state.get("wod_notes")
+        if result_text:
+            result_seconds = parse_time_to_seconds(result_text)
+            rounds, reps = parse_rounds_reps(result_text)
             if rounds is not None:
                 result_rounds = rounds
             if reps is not None:
                 result_reps = reps
             if result_rounds is None:
-                result_rounds = parse_rounds_only(notes) or parse_emom_rounds(notes)
+                result_rounds = parse_rounds_only(result_text) or parse_emom_rounds(result_text)
             if result_reps is None:
-                result_reps = parse_reps_only(notes)
+                result_reps = parse_reps_only(result_text)
             if result_seconds is not None:
                 if _infer_result_type(state.get("format")) == "Time":
                     result_type = "Time"
@@ -1700,8 +1730,10 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         weekly_program_id = await get_current_week_program_url(notion)
         time_cap_mins = state.get("time_cap_mins")
         raw_log = state.get("raw_log") or state.get("workout_structure") or ""
-        if notes and notes.strip() and notes.strip() not in raw_log:
-            raw_log = f"{raw_log}\nResult: {notes.strip()}" if raw_log else notes.strip()
+        if result_text and result_text.strip() and result_text.strip() not in raw_log:
+            raw_log = f"{raw_log}\nResult: {result_text.strip()}" if raw_log else result_text.strip()
+        if scaling_notes and scaling_notes.strip() and scaling_notes.strip() not in raw_log:
+            raw_log = f"{raw_log}\nNotes: {scaling_notes.strip()}" if raw_log else scaling_notes.strip()
         workout_structure = state.get("workout_structure") or ""
         workout_day_id = state.get("workout_day_id")
         wod_name = state.get("wod_name")
@@ -1757,7 +1789,7 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 result_rounds,
                 result_reps,
                 _rx_scaled_label(state.get("rx_scaled")),
-                notes,
+                scaling_notes,
                 False,
                 wod_name,
                 movement_ids,
@@ -1781,8 +1813,8 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         if result_value:
             confirmation_lines.append(f"{result_emoji} Result: {result_value}")
         confirmation_lines.append(f"⚖️ Scale: {_rx_scaled_label(state.get('rx_scaled'))}")
-        if notes and notes.strip():
-            confirmation_lines.append(f"📝 Notes: {notes.strip()}")
+        if scaling_notes and scaling_notes.strip():
+            confirmation_lines.append(f"📝 Notes: {scaling_notes.strip()}")
         confirmation_lines.append("_Saved to Notion_")
         confirmation_lines.append("\n💬 How did that session feel?")
         state["stage"] = "awaiting_feel"
@@ -1810,8 +1842,6 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
                 movement["load_lbs"] = weight_lbs
                 break
         cf_pending[cf_flow_key] = state
-        if await _prompt_track_or_notes(message, cf_flow_key, notion, config, cf_pending):
-            return
         await _prompt_strength_notes_with_pr_context(message, cf_flow_key, notion, config, cf_pending)
         return
     if state.get("mode") == "strength" and state.get("stage") == "movement":
@@ -1889,13 +1919,6 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
         if load_type == "Bodyweight" and not explicit_weight:
             await _prompt_bodyweight_confirm(message, key, state, cf_pending)
         else:
-            if await _prompt_track_or_notes(message, key, notion, config, cf_pending):
-                return
-            all_movements_txt = state.get("movements") or []
-            has_complete = bool(state.get("sets") is not None and state.get("reps") is not None and (state.get("weight_lbs") is not None or len(all_movements_txt) > 1))
-            if has_complete:
-                await _finalize_flow(message, key, notion, config, cf_pending, state.get("notes"))
-                return
             await _prompt_strength_notes_with_pr_context(message, key, notion, config, cf_pending)
         return
     if state.get("mode") == "wod" and state.get("stage") == "movement":
@@ -1964,6 +1987,17 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
             "result_prompt_message_id",
             f"{_wod_result_question_text(state)} {_markdown_bold_value(text.strip())}",
         )
+        cf_pending[cf_flow_key] = state
+        await _prompt_wod_notes(message, cf_flow_key, state)
+        return
+    if state.get("mode") == "wod" and state.get("stage") == "wod_notes":
+        state["wod_notes"] = text
+        await _edit_stored_prompt_message(
+            message,
+            state,
+            "notes_prompt_message_id",
+            f"📝 Any notes about this session? {_markdown_bold_value(text.strip())}",
+        )
         state["stage"] = "rx_scaled"
         cf_pending[cf_flow_key] = state
         await message.reply_text("Rx or Scaled?", parse_mode="Markdown", reply_markup=rx_scaled_keyboard(cf_flow_key))
@@ -1975,6 +2009,9 @@ async def handle_cf_text_reply(message, text, cf_flow_key, claude, notion, confi
         await handle_cf_prs_reply(message, text, notion, config, cf_pending)
         return
     if state.get("stage") == "notes":
+        if state.get("mode") == "strength":
+            await _continue_strength_after_notes(message, cf_flow_key, notion, config, cf_pending, text)
+            return
         await _finalize_flow(message, cf_flow_key, notion, config, cf_pending, text)
 
 
@@ -1991,8 +2028,6 @@ async def _cf_bw_no(q, parts, claude, notion, config, cf_pending) -> None:
     state["weight_lbs"] = None
     state["load_lbs"] = None
     cf_pending[key] = state
-    if await _prompt_track_or_notes(q.message, key, notion, config, cf_pending):
-        return
     await _prompt_strength_notes_with_pr_context(q.message, key, notion, config, cf_pending)
 
 
@@ -2014,19 +2049,18 @@ async def _cf_track(q, parts, claude, notion, config, cf_pending) -> None:
     tracks = state.get("available_tracks", [])
     match = next((t for t in tracks if t["track"] == track_name), None)
     state["workout_day_id"] = match["page_id"] if match else None
-    state["stage"] = "notes"
     cf_pending[key] = state
     movement_id = state.get("movement_page_id")
     movement_name = state.get("movement", "")
     if movement_id and state.get("mode") == "strength":
         if await handle_gymnastics_level_check(q.message, movement_id, movement_name, notion, config, cf_pending, key):
             return
-        await _prompt_strength_notes_with_pr_context(q.message, key, notion, config, cf_pending)
+        await _finalize_flow(q.message, key, notion, config, cf_pending, state.get("notes"))
         return
     if state.get("mode") == "wod":
         await q.message.reply_text("🏋️ What format was the WOD?", parse_mode="Markdown", reply_markup=wod_format_keyboard(key))
         return
-    await _send_notes_prompt(q.message, key, cf_pending)
+    await _finalize_flow(q.message, key, notion, config, cf_pending, state.get("notes"))
 
 
 async def _cf_log_strength(q, parts, claude, notion, config, cf_pending) -> None:
@@ -2397,7 +2431,7 @@ async def _cf_rx(q, parts, claude, notion, config, cf_pending) -> None:
     cf_pending[key] = state
     await q.edit_message_text(f"✅ {_rx_scaled_label(parts[3])}", parse_mode="Markdown")
     if state.get("result_notes") is not None:
-        await _finalize_flow(q.message, key, notion, config, cf_pending, state.get("result_notes"))
+        await _finalize_flow(q.message, key, notion, config, cf_pending, state.get("wod_notes"))
     else:
         state["stage"] = "result"
         cf_pending[key] = state
@@ -2490,6 +2524,15 @@ async def _cf_skip(q, parts, claude, notion, config, cf_pending) -> None:
             reply_markup=None,
         )
         await _finalize_flow(q.message, key, notion, config, cf_pending, None)
+    elif state.get("mode") == "wod" and state.get("stage") == "wod_notes":
+        await q.edit_message_text("📝 Notes Skipped", parse_mode="Markdown", reply_markup=None)
+        state["wod_notes"] = None
+        state["stage"] = "rx_scaled"
+        cf_pending[key] = state
+        await q.message.reply_text("Rx or Scaled?", parse_mode="Markdown", reply_markup=rx_scaled_keyboard(key))
+    elif state.get("stage") == "notes" and state.get("mode") == "strength":
+        await q.edit_message_text("📝 Notes Skipped", parse_mode="Markdown", reply_markup=None)
+        await _continue_strength_after_notes(q.message, key, notion, config, cf_pending, None)
     else:
         await _finalize_flow(q.message, key, notion, config, cf_pending, None)
 

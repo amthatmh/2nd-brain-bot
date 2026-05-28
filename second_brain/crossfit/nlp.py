@@ -78,6 +78,7 @@ def _empty_workout_data(movements: Optional[List[str]] = None) -> Dict:
         "raw_input": None,
         "wod_name": None,
         "movement_loads": None,
+        "movement_reps": None,
     }
 
 
@@ -142,6 +143,20 @@ def _normalise_workout_data(parsed, fallback_message: str) -> Dict:
         data["movement_loads"] = normalised_loads or None
     else:
         data["movement_loads"] = None
+    raw_reps = parsed.get("movement_reps") if isinstance(parsed, dict) else None
+    if isinstance(raw_reps, dict):
+        normalised_reps = {}
+        for k, v in raw_reps.items():
+            name = str(k).strip()
+            if not name:
+                continue
+            try:
+                normalised_reps[name] = int(float(v))
+            except (TypeError, ValueError):
+                pass
+        data["movement_reps"] = normalised_reps or None
+    else:
+        data["movement_reps"] = None
     return data
 
 
@@ -315,14 +330,17 @@ OUTPUT FORMAT: Valid JSON object only, no explanation:
   "workout_structure": "original user input with rep scheme preserved" or null,
   "raw_input": "original user input" or null,
   "wod_name": "benchmark WOD name such as Fran" or null,
-  "movement_loads": {{"Movement 1": load_lbs, "Movement 2": load_lbs}} or null
+  "movement_loads": {{"Movement 1": load_lbs, "Movement 2": load_lbs}} or null,
+  "movement_reps": {{"Movement 1": reps_int, "Movement 2": reps_int}} or null
 }}
 
 movement_loads: Only set when movements have DIFFERENT loads. Map each movement name (matching "movements" array) to its load in lbs. Null when all loads are the same or only one movement.
+movement_reps: Only set when movements have DIFFERENT rep counts. Map each movement name (matching the "movements" array) to its integer rep count. Null when all reps are the same or only one movement.
 
 WORKOUT STRUCTURE PRESERVATION:
 - Preserve the user's original movement/rep scheme exactly in workout_structure.
 - Do not strip rep counts from workout_structure; keep text such as "3x Wall walks, 6 hang cleans, 9 burpee over bar, 12 v-ups".
+- For patterns like "5 sets of 1x power clean, 2x hang squat clean" where movements have different rep counts, capture them in movement_reps. Use the first movement's rep count as the shared "reps" fallback.
 - Keep movements canonical and separate from workout_structure.
 - Only populate wod_name when the user mentions a benchmark WOD name (for example Fran, Grace, Cindy, Murph, DT, Fight Gone Bad). Otherwise use null.
 
@@ -338,6 +356,9 @@ Output: {{"movements":["Dumbbell Row","Chest Press"],"date":null,"sets":3,"reps"
 
 Input: "7 sets of 2x 115lb hang squat clean, 2x 115lb clean pull"
 Output: {{"movements":["Hang Squat Clean","Clean Pull"],"date":null,"sets":7,"reps":2,"weight_lbs":115.0,"weight_kg":52.2,"scheme":"7x2","notes":null,"workout_structure":"7 sets of 2x 115lb hang squat clean, 2x 115lb clean pull","raw_input":"7 sets of 2x 115lb hang squat clean, 2x 115lb clean pull","wod_name":null,"movement_loads":null}}
+
+Input: "5 sets of 1x 125lb power clean, 2x 125lb hang squat clean"
+Output: {{"movements":["Power Clean","Hang Squat Clean"],"sets":5,"reps":1,"weight_lbs":125.0,"weight_kg":56.7,"scheme":"5x1","notes":null,"workout_structure":"5 sets of 1x 125lb power clean, 2x 125lb hang squat clean","raw_input":"5 sets of 1x 125lb power clean, 2x 125lb hang squat clean","wod_name":null,"movement_loads":null,"movement_reps":{{"Power Clean":1,"Hang Squat Clean":2}}}}
 """
 
     try:

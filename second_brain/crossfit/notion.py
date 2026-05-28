@@ -154,14 +154,29 @@ def match_movement(name: str, movement_cache: dict[str, str], threshold: int = 8
         return lowered[key]
     simple_key = re.sub(r"[^a-z0-9 ]+", " ", key)
     simple_key = re.sub(r"\s+", " ", simple_key).strip()
+    simple_lowered = {
+        re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", candidate)).strip(): page_id
+        for candidate, page_id in lowered.items()
+    }
+    if simple_key in simple_lowered:
+        return simple_lowered[simple_key]
+    singular_key = re.sub(r"\b(\w+)s\b", r"\1", simple_key)
+    if singular_key in simple_lowered:
+        return simple_lowered[singular_key]
     key_word_count = len(simple_key.split())
+    if key_word_count <= 1:
+        log.debug("match_movement: refusing ambiguous single-token fallback for '%s'", name)
+        return None
+    key_words = set(simple_key.split())
     for candidate, page_id in lowered.items():
         simple_candidate = re.sub(r"[^a-z0-9 ]+", " ", candidate)
         simple_candidate = re.sub(r"\s+", " ", simple_candidate).strip()
         singular_candidate = re.sub(r"\b(\w+)s\b", r"\1", simple_candidate)
-        candidate_word_count = len(simple_candidate.split())
-        if simple_key and candidate_word_count <= key_word_count + 1 and (
-            simple_key in simple_candidate or simple_key in singular_candidate
+        candidate_words = set(singular_candidate.split())
+        if simple_key and (
+            simple_key in simple_candidate
+            or simple_key in singular_candidate
+            or key_words.issubset(candidate_words)
         ):
             return page_id
     result = process.extractOne(key, lowered.keys(), scorer=fuzz.token_sort_ratio, score_cutoff=threshold)

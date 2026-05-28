@@ -404,10 +404,17 @@ def test_wod_flow_prompts_result_before_rx_scaled():
     asyncio.run(handle_cf_text_reply(message, "5 rounds + 12 reps", str(message.chat_id), None, notion, {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"}, cf_pending))
 
     state = cf_pending[str(message.chat_id)]
-    assert state["stage"] == "rx_scaled"
+    assert state["stage"] == "wod_notes"
     assert state["result_notes"] == "5 rounds + 12 reps"
     assert message.bot.edits[-1]["text"] == "🔄 How many rounds + reps did you complete? *5 rounds + 12 reps*"
     assert message.bot.edits[-1]["reply_markup"] is None
+    assert "Any notes about this session" in message.replies[-1][0]
+
+    asyncio.run(handle_cf_text_reply(message, "Grip got spicy", str(message.chat_id), None, notion, {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"}, cf_pending))
+
+    state = cf_pending[str(message.chat_id)]
+    assert state["stage"] == "rx_scaled"
+    assert state["wod_notes"] == "Grip got spicy"
     assert "Rx or Scaled?" in message.replies[-1][0]
 
 
@@ -824,6 +831,8 @@ def test_extract_workout_data_parses_complete_claude_payload():
         "workout_structure": "Did 6 sets of 4x hang clean squat at 115lbs on 5/6",
         "raw_input": "Did 6 sets of 4x hang clean squat at 115lbs on 5/6",
         "wod_name": None,
+        "movement_loads": None,
+        "movement_reps": None,
     }
 
 
@@ -1032,11 +1041,27 @@ def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
         )
     )
 
+    assert pending[str(message.chat_id)]["stage"] == "notes"
+    assert "Any notes" in message.replies[-1][0]
+
+    asyncio.run(
+        handlers.handle_cf_text_reply(
+            message,
+            "Moved well",
+            str(message.chat_id),
+            _FakeClaude(payload),
+            SimpleNamespace(),
+            {"NOTION_WORKOUT_LOG_DB": "workout-log", "NOTION_MOVEMENTS_DB": "movements"},
+            pending,
+        )
+    )
+
     state = created.pop("pending_state")
     assert state["sets"] == 6
     assert state["reps"] == 4
     assert state["weight_lbs"] == 115.0
     assert state["workout_date"] == "2026-05-06"
+    assert state["notes"] == "Moved well"
     assert created == {
         "workout_log_db_id": "workout-log",
         "movement_ids": ["mov-hang-clean"],
@@ -1049,14 +1074,14 @@ def test_strength_flow_auto_logs_complete_extracted_metadata(monkeypatch):
         "effort_scheme": "6x4",
         "load_kg": 52.2,
     }
-    assert "Strength logged" in message.replies[-2][0]
-    assert "Date: 2026-05-06" in message.replies[-2][0]
-    assert "Scheme: 6x4" in message.replies[-2][0]
-    assert "Weight: 115lbs" in message.replies[-2][0]
+    assert "Strength logged" in message.replies[-1][0]
+    assert "Date: 2026-05-06" in message.replies[-1][0]
+    assert "Scheme: 6x4" in message.replies[-1][0]
+    assert "Weight: 115lbs" in message.replies[-1][0]
+    assert "Notes: Moved well" in message.replies[-1][0]
     assert pending[str(message.chat_id)]["stage"] == "awaiting_feel"
     assert pending[str(message.chat_id)]["last_workout_page_id"] == "log-1"
     assert "How did that session feel?" in message.replies[-1][0]
-    assert not any("Any notes" in reply[0] for reply in message.replies)
 
 
 
@@ -1228,9 +1253,9 @@ def test_finalize_flow_uses_nlp_pending_state_keys(monkeypatch):
     assert created["effort_reps"] == 4
     assert created["workout_date"] == "2026-05-06"
     assert created["effort_scheme"] == "6x4"
-    assert "Date: 2026-05-06" in message.replies[-2][0]
-    assert "Scheme: 6x4" in message.replies[-2][0]
-    assert "Weight: 115lbs" in message.replies[-2][0]
+    assert "Date: 2026-05-06" in message.replies[-1][0]
+    assert "Scheme: 6x4" in message.replies[-1][0]
+    assert "Weight: 115lbs" in message.replies[-1][0]
     assert pending[str(message.chat_id)]["stage"] == "awaiting_feel"
     assert pending[str(message.chat_id)]["last_workout_page_id"] == "log-1"
     assert "How did that session feel?" in message.replies[-1][0]
@@ -1289,6 +1314,9 @@ def test_wod_amrap_time_cap_and_workout_structure_logged(monkeypatch):
     assert "rounds + reps" in message.replies[-1][0]
 
     asyncio.run(handlers.handle_cf_text_reply(message, "6 rounds", key, None, notion, {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"}, cf_pending))
+    assert cf_pending[key]["stage"] == "wod_notes"
+
+    asyncio.run(handlers.handle_cf_text_reply(message, "No notes", key, None, notion, {"NOTION_WOD_LOG_DB": "wod", "NOTION_MOVEMENTS_DB": "movements"}, cf_pending))
     assert cf_pending[key]["stage"] == "rx_scaled"
 
     class _DummyQuery:
@@ -1428,8 +1456,14 @@ def test_wod_for_time_result_is_captured_before_rx_and_logged(monkeypatch):
 
     asyncio.run(handlers.handle_cf_text_reply(message, "12:34", key, None, SimpleNamespace(), {"NOTION_WOD_LOG_DB": "wod"}, cf_pending))
 
-    assert cf_pending[key]["stage"] == "rx_scaled"
+    assert cf_pending[key]["stage"] == "wod_notes"
     assert cf_pending[key]["result_notes"] == "12:34"
+    assert "Any notes about this session" in message.replies[-1][0]
+
+    asyncio.run(handlers.handle_cf_text_reply(message, "Fast singles", key, None, SimpleNamespace(), {"NOTION_WOD_LOG_DB": "wod"}, cf_pending))
+
+    assert cf_pending[key]["stage"] == "rx_scaled"
+    assert cf_pending[key]["wod_notes"] == "Fast singles"
     assert "Rx or Scaled?" in message.replies[-1][0]
 
     q = _DummyQuery(message)
@@ -1441,13 +1475,13 @@ def test_wod_for_time_result_is_captured_before_rx_and_logged(monkeypatch):
         "result_type": "Time",
         "result_seconds": 754,
         "rx_scaled": "Rx",
-        "scaling_notes": "12:34",
+        "scaling_notes": "Fast singles",
         "movement_page_ids": ["mov-wall-walks", "mov-hang-power-clean"],
         "weekly_program_id": "week-1",
     }
     assert cf_pending[key]["stage"] == "awaiting_feel"
     assert cf_pending[key]["last_wod_page_id"] == "wod-log"
-    assert "WOD logged" in message.replies[-2][0]
+    assert "WOD logged" in message.replies[-1][0]
     assert "How did that session feel?" in message.replies[-1][0]
 
     asyncio.run(handlers.handle_cf_callback(q, ["cf", "feel", "4", key], None, SimpleNamespace(), {"NOTION_WOD_LOG_DB": "wod"}, cf_pending))

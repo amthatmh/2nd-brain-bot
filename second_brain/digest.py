@@ -407,7 +407,6 @@ async def generate_daily_log(bot) -> dict:
         claude_model=CLAUDE_MODEL,
         tz=TZ,
         signoff_notes=_signoff_notes_fn() if _signoff_notes_fn else None,
-        claude_activity=_claude_activity_fn() if _claude_activity_fn else None,
     )
     return {"action": "generated", "has_url": bool(_last_daily_log_url)}
 
