@@ -363,10 +363,15 @@ STATE.signoff_notes_today = {"second_brain": "", "brian_ii": ""}
 STATE.claude_activity_today = []
 
 _habit_selections: dict[int, dict[str, object]] = {}
+_HABIT_SELECTION_TTL_SECONDS = 18 * 60 * 60
 
 def _store_habit_selection_session(message_id: int, habits: list[dict], selected: set[str] | None = None) -> None:
     """Cache habit button state for a rendered Telegram message."""
-    _habit_selections[message_id] = {"selected": selected or set(), "habits": habits}
+    _habit_selections[message_id] = {
+        "selected": selected or set(),
+        "habits": habits,
+        "created_at": time.time(),
+    }
 
 def _habit_selection_session(message_id: int) -> dict[str, object]:
     """Return a habit selection session, creating one if absent."""
@@ -374,8 +379,9 @@ def _habit_selection_session(message_id: int) -> dict[str, object]:
     if isinstance(session, dict):
         session.setdefault("selected", set())
         session.setdefault("habits", [])
+        session.setdefault("created_at", time.time())
         return session
-    session = {"selected": set(), "habits": []}
+    session = {"selected": set(), "habits": [], "created_at": time.time()}
     _habit_selections[message_id] = session
     return session
 
@@ -390,8 +396,12 @@ def _habit_selection_habits(message_id: int) -> list[dict]:
     return habits if isinstance(habits, list) else []
 
 def cleanup_old_habit_selections() -> None:
-    """Clear in-memory habit button selections to prevent stale message state."""
-    _habit_selections.clear()
+    """Purge expired habit button selections while keeping live digest snapshots."""
+    cutoff = time.time() - _HABIT_SELECTION_TTL_SECONDS
+    for message_id, session in list(_habit_selections.items()):
+        created_at = session.get("created_at") if isinstance(session, dict) else None
+        if not isinstance(created_at, (int, float)) or created_at < cutoff:
+            _habit_selections.pop(message_id, None)
 
 def cleanup_pending_task_interactions() -> None:
     """Trigger TTL purges for preview interactions."""

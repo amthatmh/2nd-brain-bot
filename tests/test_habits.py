@@ -327,18 +327,21 @@ class TestHabitToggleCache(unittest.IsolatedAsyncioTestCase):
         query.answer.assert_awaited_once()
         self.assertEqual(main._habit_selection_selected(message.message_id), {page_id})
 
-    async def test_toggle_missing_session_falls_back_to_cache_without_notion_dedupe(self):
+    async def test_toggle_missing_session_recovers_only_message_habits_without_notion_dedupe(self):
         main = load_main_module()
         import second_brain.routers as routers
 
         page_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        late_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
         main.habit_cache = {
             "Workout": {"page_id": page_id, "name": "Workout", "sort": 1},
+            "Late Habit": {"page_id": late_id, "name": "Late Habit", "sort": 2},
         }
         message = MagicMock()
         message.message_id = 456
         message.text = "🏃 *Which habit did you complete?*"
         message.caption = None
+        message.reply_markup = main.kb.habit_buttons([main.habit_cache["Workout"]], "morning", selected=set())
         main._habit_selections.pop(message.message_id, None)
 
         query = MagicMock()
@@ -353,7 +356,28 @@ class TestHabitToggleCache(unittest.IsolatedAsyncioTestCase):
         query.edit_message_reply_markup.assert_awaited_once()
         query.answer.assert_awaited_once()
         self.assertEqual(main._habit_selection_selected(message.message_id), {page_id})
-        self.assertEqual(main._habit_selection_habits(message.message_id), list(main.habit_cache.values()))
+        self.assertEqual(main._habit_selection_habits(message.message_id), [main.habit_cache["Workout"]])
+        button_labels = [
+            button.text
+            for row in query.edit_message_reply_markup.await_args.kwargs["reply_markup"].inline_keyboard
+            for button in row
+        ]
+        self.assertIn("✅ Workout", button_labels)
+        self.assertNotIn("Late Habit", button_labels)
+
+    def test_habit_selection_cleanup_preserves_recent_sessions(self):
+        main = load_main_module()
+        fresh_habit = {"page_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "name": "Workout", "sort": 1}
+        old_habit = {"page_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "name": "Read", "sort": 2}
+
+        main._store_habit_selection_session(101, [fresh_habit])
+        main._store_habit_selection_session(202, [old_habit])
+        main._habit_selections[202]["created_at"] = main.time.time() - main._HABIT_SELECTION_TTL_SECONDS - 1
+
+        main.cleanup_old_habit_selections()
+
+        self.assertIn(101, main._habit_selections)
+        self.assertNotIn(202, main._habit_selections)
 
 
 class TestSendDailyDigestHabitsIntegration(unittest.IsolatedAsyncioTestCase):

@@ -88,6 +88,34 @@ def _habit_cache() -> dict:
     return _main().habit_cache
 
 
+def _habits_from_message_markup(message) -> list[dict]:
+    """Recover the habit snapshot from the buttons currently on a message."""
+    reply_markup = getattr(message, "reply_markup", None)
+    inline_keyboard = getattr(reply_markup, "inline_keyboard", None)
+    if not isinstance(inline_keyboard, list):
+        return []
+
+    ordered_ids: list[str] = []
+    seen: set[str] = set()
+    for row in inline_keyboard:
+        if not isinstance(row, list):
+            continue
+        for button in row:
+            callback_data = getattr(button, "callback_data", "") or ""
+            if not callback_data.startswith("h:toggle:"):
+                continue
+            pid = _main()._restore_pid(callback_data.removeprefix("h:toggle:").strip())
+            if pid and pid not in seen:
+                ordered_ids.append(pid)
+                seen.add(pid)
+
+    if not ordered_ids:
+        return []
+
+    habits_by_id = {habit.get("page_id"): habit for habit in _habit_cache().values()}
+    return [habits_by_id[pid] for pid in ordered_ids if pid in habits_by_id]
+
+
 def _cf_pending() -> dict:
     return _main().cf_pending
 
@@ -1388,14 +1416,23 @@ async def _cb_h_toggle(q, parts, context) -> None:
         if "Evening check-in" in text
         else "manual" if "Which habit" in text else "morning"
     )
-    page_time = datetime.now(TZ).strftime("%H:%M") if check_type == "evening" else None
     habits = session.get("habits", [])
     if not isinstance(habits, list) or not habits:
         log.warning(
-            "Habit selection cache missing for message_id=%s; falling back to cache-only",
+            "Habit selection cache missing for message_id=%s; recovering from message markup",
             message_id,
         )
-        habits = sorted(_habit_cache().values(), key=lambda x: x["sort"])
+        habits = _habits_from_message_markup(q.message)
+        if not habits:
+            current_habit = next(
+                (
+                    h
+                    for h in _habit_cache().values()
+                    if h.get("page_id") == habit_page_id
+                ),
+                None,
+            )
+            habits = [current_habit] if current_habit else []
         session["habits"] = habits
     t3 = time.time()
     log.info("[PERF] Habits loaded in %.0fms", (t3 - t2) * 1000)
@@ -1425,9 +1462,9 @@ async def _cb_h_done(q, parts, context) -> None:
         await q.answer("No habits selected!", show_alert=True)
         return
 
-    selected_habits = [
-        h for h in _habit_cache().values() if h["page_id"] in selected_ids
-    ]
+    session_habits = _main()._habit_selection_habits(message_id)
+    habit_source = session_habits if session_habits else list(_habit_cache().values())
+    selected_habits = [h for h in habit_source if h["page_id"] in selected_ids]
     selected_habits.sort(key=lambda h: h.get("sort") or 0)
     logged_names: list[str] = []
     failed_names: list[str] = []
@@ -1520,15 +1557,14 @@ async def _cb_h_legacy(q, parts, context) -> None:
 
 async def _cb_hpag(q, parts, context) -> None:
     _, prefix, page_str = parts
-    page_time = datetime.now(TZ).strftime("%H:%M") if prefix == "evening" else None
     all_habits = _main()._habit_selection_habits(q.message.message_id)
     if not all_habits:
         log.warning(
-            "Habit pagination cache missing for message_id=%s; falling back to Notion refresh",
+            "Habit pagination cache missing for message_id=%s; refusing to expand habit list",
             q.message.message_id,
         )
-        all_habits = _main().pending_habits_for_digest(time_str=page_time)
-        _main()._habit_selection_session(q.message.message_id)["habits"] = all_habits
+        await q.answer("Habit buttons expired. Please open Habits again.", show_alert=True)
+        return
     try:
         await q.edit_message_reply_markup(
             reply_markup=kb.habit_buttons(
