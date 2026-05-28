@@ -28,6 +28,7 @@ State (in-memory, per date key "YYYY-MM-DD"):
     "threshold_notified": bool,
     "notion_page_id": str | None,  # set after first Notion write for that date
     "threshold_message_id": int | None,  # Telegram threshold message for edits
+    "write_lock": asyncio.Lock,  # guards same-date Notion upserts in this process
   }
 """
 
@@ -65,6 +66,8 @@ def _date_state(date_str: str) -> dict:
             "notion_page_id": None,
             "threshold_message_id": None,
         }
+    if "write_lock" not in _steps_state[date_str]:
+        _steps_state[date_str]["write_lock"] = asyncio.Lock()
     return _steps_state[date_str]
 
 
@@ -98,10 +101,9 @@ def _find_steps_habit_page_id(notion, habit_db_id: str, habit_name: str) -> str 
         return None
 
 
-def _find_existing_log_entry(notion, log_db_id: str, habit_page_id: str, date_str: str) -> str | None:
+def _find_existing_log_entry(notion, log_db_id: str, habit_page_id: str, date_str: str) -> list[str]:
     """
-    Return the Notion page_id of an existing Habit Log entry for this habit+date,
-    or None if no entry exists yet.
+    Return all Notion page_ids for existing Habit Log entries for this habit+date.
     """
     try:
         results = notion.databases.query(
@@ -114,10 +116,19 @@ def _find_existing_log_entry(notion, log_db_id: str, habit_page_id: str, date_st
             },
         )
         pages = results.get("results", [])
-        return pages[0]["id"] if pages else None
+        return [p["id"] for p in pages if p.get("id")]
     except Exception as e:
         log.error("steps: error querying existing log entry for %s: %s", date_str, e)
-        return None
+        return []
+
+
+def _normalise_existing_log_ids(value) -> list[str]:
+    """Accept legacy test mocks that still return a single page id."""
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [value]
+    return [str(v) for v in value if v]
 
 
 def _create_log_entry(
@@ -508,17 +519,33 @@ async def handle_steps_sync(
     if not habit_page_id:
         return _sync_result("error", reason="habit_not_found")
 
-    # Check for existing Notion entry (check memory cache first to save API calls)
-    existing_page_id = state.get("notion_page_id")
-    if not existing_page_id:
-        existing_page_id = _find_existing_log_entry(notion, log_db_id, habit_page_id, date_str)
+    async with state["write_lock"]:
+        existing_page_ids = _normalise_existing_log_ids(
+            _find_existing_log_entry(notion, log_db_id, habit_page_id, date_str)
+        )
+        if not existing_page_ids and state.get("notion_page_id"):
+            existing_page_ids = [state["notion_page_id"]]
 
-    if existing_page_id:
-        # UPDATE existing entry (preserve Completed if already True — don't downgrade)
-        _update_log_entry_steps(notion, existing_page_id, steps, completed)
-        state["notion_page_id"] = existing_page_id
-        return _sync_result("updated", page_id=existing_page_id)
-    else:
+        if existing_page_ids:
+            existing_page_id = existing_page_ids[0]
+            for dup_id in existing_page_ids[1:]:
+                try:
+                    notion.pages.update(page_id=dup_id, archived=True)
+                except Exception as e:
+                    log.warning("steps: failed to archive duplicate log entry %s for %s: %s", dup_id, date_str, e)
+            if len(existing_page_ids) > 1:
+                log.warning(
+                    "steps: found %d duplicate log entries for %s; kept %s and archived %s",
+                    len(existing_page_ids),
+                    date_str,
+                    existing_page_id,
+                    existing_page_ids[1:],
+                )
+            # UPDATE existing entry (preserve Completed if already True — don't downgrade)
+            _update_log_entry_steps(notion, existing_page_id, steps, completed)
+            state["notion_page_id"] = existing_page_id
+            return _sync_result("updated", page_id=existing_page_id)
+
         # CREATE new entry
         new_page_id = _create_log_entry(
             notion, log_db_id, habit_page_id, date_str, steps, completed, source_label
@@ -620,9 +647,10 @@ async def backfill_steps_state_from_notion(
     yesterday = _yesterday(tz)
     for date_str in (today, yesterday):
         try:
-            existing_id = _find_existing_log_entry(
-                notion, log_db_id, habit_page_id, date_str
+            existing_ids = _normalise_existing_log_ids(
+                _find_existing_log_entry(notion, log_db_id, habit_page_id, date_str)
             )
+            existing_id = existing_ids[0] if existing_ids else None
             if not existing_id:
                 continue
             page = notion.pages.retrieve(page_id=existing_id)

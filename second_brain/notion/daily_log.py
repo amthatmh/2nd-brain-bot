@@ -20,84 +20,6 @@ from utils.alert_handlers import alert_claude_auth_failure
 log = logging.getLogger(__name__)
 
 
-async def query_project_memory(
-    claude,
-    project_id: str | None,
-    project_name: str,
-    date_label: str,
-    model: str,
-) -> dict:
-    """
-    Query Claude's memory for work done on a specific date in a project or non-project scope.
-
-    Args:
-        claude: Anthropic client
-        project_id: Project UUID (None for non-project conversations)
-        project_name: Human-readable name (for logging and context)
-        date_label: Date string like "Saturday, May 9, 2026"
-        model: Claude model string
-
-    Returns:
-        Dict with keys: files_touched, functions_changed, architectural_decisions,
-        documents_created, professional_decisions, testing_notes, learnings, signoff_note
-    """
-    scope_description = f"the '{project_name}' project" if project_id else "non-project conversations"
-
-    prompt = f"""Review your conversation memory with Ambrose for {date_label} in {scope_description}.
-
-Project context:
-- Second Brain: Python Telegram bot, Notion API integration, system architecture
-- Brian II: Architectural/environmental acoustics consulting, LEED and WELL standards compliance
-- Non-project: Ad-hoc technical work, research, general coding
-
-Extract work completed on {date_label} in {scope_description}. Return ONLY valid JSON, no markdown fences:
-{{
-  "files_touched": ["file.py", "file2.py"],
-  "functions_changed": [
-    {{"name": "function_name", "action": "added|removed|refactored", "description": "brief description"}}
-  ],
-  "architectural_decisions": ["decision made"],
-  "documents_created": ["report.docx", "analysis.xlsx"],
-  "professional_decisions": ["acoustics/LEED/WELL decisions for Brian II work"],
-  "testing_notes": ["what was tested or validated"],
-  "learnings": ["concrete technical or professional insights"],
-  "signoff_note": "If Ambrose explicitly said 'signoff:' during the conversation, extract it here. Otherwise empty string."
-}}
-
-If no work happened on {date_label} in {scope_description}, return all fields as empty arrays or empty strings."""
-
-    try:
-        # Note: Anthropic API does not currently support project_id parameter in messages.create
-        # This will query across all conversations. Project-specific filtering may require
-        # conversation_search tool or future API support.
-        resp = claude.messages.create(
-            model=model,
-            max_tokens=800,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = re.sub(r"```(?:json)?|```", "", resp.content[0].text.strip()).strip()
-        result = json.loads(raw)
-        log.info(
-            "Memory query for %s: %d learnings, %d files",
-            project_name,
-            len(result.get("learnings", [])),
-            len(result.get("files_touched", [])),
-        )
-        return result
-    except Exception as e:
-        log.error("Memory query failed for %s: %s", project_name, e)
-        return {
-            "files_touched": [],
-            "functions_changed": [],
-            "architectural_decisions": [],
-            "documents_created": [],
-            "professional_decisions": [],
-            "testing_notes": [],
-            "learnings": [],
-            "signoff_note": "",
-        }
-
-
 def get_recent_carried_forward(notion, notion_daily_log_db: str, tz, days: int = 3) -> list[dict]:
     """
     Fetch Carried Forward content from the last N Daily Log entries.
@@ -214,7 +136,6 @@ async def generate_daily_log(
     claude_model: str,
     tz,
     signoff_notes: dict[str, str] | None = None,
-    claude_activity: list[str] | None = None,
 ) -> str | None:
     """
     Generates end-of-day narrative log and writes it to 📓 Daily Log Notion DB.
@@ -230,31 +151,6 @@ async def generate_daily_log(
     today_str = today.isoformat()
     date_label = today.strftime("%A, %B %-d, %Y")
     signoff_notes = signoff_notes or {"second_brain": "", "brian_ii": ""}
-
-    # Query Claude memory from three sources
-    memory_sb = await query_project_memory(
-        claude=claude,
-        project_id="019302e9-131d-8001-afee-fbafec663b4d",
-        project_name="Second Brain",
-        date_label=date_label,
-        model=claude_model,
-    )
-
-    memory_b2 = await query_project_memory(
-        claude=claude,
-        project_id="019deb16-b7d9-7181-a8f8-36ca090db279",
-        project_name="Brian II",
-        date_label=date_label,
-        model=claude_model,
-    )
-
-    memory_nonproj = await query_project_memory(
-        claude=claude,
-        project_id=None,
-        project_name="Non-Project",
-        date_label=date_label,
-        model=claude_model,
-    )
 
     log.info("generate_daily_log: starting for %s", today_str)
     completed_tasks: list[str] = []
@@ -330,36 +226,8 @@ async def generate_daily_log(
     else:
         cf_section = "CARRIED FORWARD FROM PREVIOUS DAYS:\nNone — this may be the first log entry.\n\n"
 
-    # Build memory data summaries for synthesis
-    def _format_memory_section(mem: dict, project_name: str) -> str:
-        if not any(mem.get(k) for k in ["files_touched", "functions_changed", "learnings"]):
-            return f"[{project_name}: No development work captured]"
-
-        lines = [f"### {project_name}"]
-        if mem.get("files_touched"):
-            lines.append(f"Files: {', '.join(mem['files_touched'])}")
-        if mem.get("functions_changed"):
-            for fn in mem["functions_changed"]:
-                lines.append(f"- {fn['name']} ({fn['action']}): {fn['description']}")
-        if mem.get("architectural_decisions"):
-            for dec in mem["architectural_decisions"]:
-                lines.append(f"- {dec}")
-        if mem.get("professional_decisions"):
-            for dec in mem["professional_decisions"]:
-                lines.append(f"- {dec}")
-        if mem.get("documents_created"):
-            lines.append(f"Documents: {', '.join(mem['documents_created'])}")
-        return "\n".join(lines)
-
-    memory_summary = "\n\n".join([
-        _format_memory_section(memory_sb, "Second Brain"),
-        _format_memory_section(memory_b2, "Brian II"),
-        _format_memory_section(memory_nonproj, "Non-Project"),
-    ])
-
-    # Merge signoff notes from memory and manual Telegram signoffs
-    signoff_sb = signoff_notes.get("second_brain", "") or memory_sb.get("signoff_note", "")
-    signoff_b2 = signoff_notes.get("brian_ii", "") or memory_b2.get("signoff_note", "")
+    signoff_sb = signoff_notes.get("second_brain", "")
+    signoff_b2 = signoff_notes.get("brian_ii", "")
 
     prompt = f"""You are writing a daily development log for a software developer and acoustics consultant.
 Today is {date_label}.
@@ -380,32 +248,29 @@ HABITS LOGGED ({habits_count}):
 NOTES CAPTURED ({len(notes_captured)}):
 {_bullet_list(notes_captured)}
 
-DATA FROM CLAUDE MEMORY (work done in Claude.ai conversations today):
-
-{memory_summary}
-
 MANUAL SIGNOFF NOTES:
 - Second Brain: {signoff_sb if signoff_sb else "None provided"}
 - Brian II: {signoff_b2 if signoff_b2 else "None provided"}
 
-Generate a daily log in 7 sections. Synthesize BOTH Telegram data AND Claude memory data.
+Generate a daily log in 7 sections. Use only the data provided above: Notion tasks, Notion habit logs, Notion notes, previous Daily Log carried-forward entries, and manual Telegram signoff notes.
 
 Return ONLY valid JSON, no markdown fences:
 {{
-  "summary": "2–4 sentence narrative covering both bot development and professional work. Honest, not padded.",
+  "summary": "2–4 sentence narrative covering the real work captured today. Honest, not padded.",
   "completed": "bullet list of completed tasks from Telegram, each starting with • on new line. Empty string if none.",
-  "code_logic_changes": "Multi-subsection field with ### Second Brain, ### Brian II, ### Non-Project headings. Under each heading, list files touched, functions changed, architectural/professional decisions from memory data. Omit subsections where memory returned no data. Empty string if no development work across all sources.",
-  "testing_validation": "bullet list from memory testing_notes + Telegram task completions related to testing. Empty string if nothing tested.",
+  "code_logic_changes": "Multi-subsection field with ### Second Brain and ### Brian II headings only when task/note/signoff data clearly supports them. Empty string if no development or professional changes are explicitly captured.",
+  "testing_validation": "bullet list from Telegram task completions, notes, or signoff text related to testing. Empty string if nothing tested.",
   "issues_bugs": "bullet list of bugs/issues from Telegram deferred tasks + notes. Empty string if none.",
-  "key_learnings": "Multi-subsection field with ### Second Brain and ### Brian II headings. Under each, list learnings from memory + patterns from task data. Max 5 bullets per subsection. Omit subsections where no learnings exist. Empty string if nothing notable.",
+  "key_learnings": "Multi-subsection field with ### Second Brain and ### Brian II headings. Use task/note/signoff patterns only. Max 5 bullets per subsection. Omit subsections where no learnings exist. Empty string if nothing notable.",
   "carried_forward": "bullet list of live unresolved threads. Max 5 bullets. Empty string if everything resolved."
 }}
 
 CRITICAL RULES:
-- code_logic_changes: Source from memory data (files_touched, functions_changed, decisions). Organize by project. If all memory queries returned empty, return empty string.
-- key_learnings: Source from memory learnings + task deferral patterns. Organize by project subsections.
-- testing_validation: Source from memory testing_notes.
-- If memory data is empty AND no Telegram notes/signoff provided, DO NOT pad sections with "Data not available" text. Return empty string for those sections.
+- Do not infer or invent Claude conversation memory. The Anthropic API is stateless; if a detail is not present in the provided Notion or signoff data, omit it.
+- code_logic_changes: Source only from task titles, note titles, and manual signoff notes. Organize by project when explicit.
+- key_learnings: Source from task deferral patterns, notes, and signoff text only.
+- testing_validation: Source from task completions, notes, and signoff text only.
+- If no Telegram notes/signoff or Notion data supports a section, DO NOT pad it with "Data not available" text. Return empty string for that section.
 - Subsection headers (### Second Brain, ### Brian II) only appear if that project has data."""
 
     try:
@@ -447,7 +312,7 @@ CRITICAL RULES:
     if issues:
         page_body_parts.append(f"## Issues / Bugs Found\n\n{issues}")
 
-    # Render signoff notes if provided (manual or from memory)
+    # Render signoff notes if provided.
     if signoff_sb or signoff_b2:
         signoff_parts = []
         if signoff_sb:

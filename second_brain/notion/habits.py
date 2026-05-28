@@ -396,13 +396,24 @@ async def record_weekly_streaks(
     last_monday = monday - timedelta(days=7)
     last_sunday = monday - timedelta(days=1)
     recorded = 0
+    streak_db_props: dict[str, Any] = {}
+    try:
+        schema = notion.databases.retrieve(database_id=streak_db_id)
+        if isinstance(schema, dict):
+            streak_db_props = schema.get("properties") or {}
+    except Exception as exc:  # noqa: BLE001
+        log.debug("record_weekly_streaks: could not inspect streak DB schema: %s", exc)
+    has_habit_relation = (
+        isinstance(streak_db_props.get("Habit"), dict)
+        and streak_db_props["Habit"].get("type") == "relation"
+    )
     for _name, habit in habit_cache.items():
         page_id = habit["page_id"]
         try:
             freq = get_habit_frequency_fn(page_id)
             if not freq:
                 continue
-            pages = query_all(notion, log_db_id, filter={
+            pages_this_week = query_all(notion, log_db_id, filter={
                 "and": [
                     {"property": "Habit", "relation": {"contains": page_id}},
                     {"property": "Completed", "checkbox": {"equals": True}},
@@ -410,17 +421,45 @@ async def record_weekly_streaks(
                     {"property": "Date", "date": {"on_or_before": last_sunday.isoformat()}},
                 ]
             })
-            goal_met = len(pages) >= freq
-            notion.pages.create(
-                parent={"database_id": streak_db_id},
-                properties={
-                    "Name": {"title": [{"text": {"content": habit.get("name", "Habit")}}]},
-                    "Week Of": {"date": {"start": last_monday.isoformat()}},
-                    "Goal Met": {"checkbox": goal_met},
+            goal_met = len(pages_this_week) >= freq
+            properties = {
+                "Name": {"title": [{"text": {"content": habit.get("name", "Habit")}}]},
+                "Week Of": {"date": {"start": last_monday.isoformat()}},
+                "Goal Met": {"checkbox": goal_met},
+                "Completed": {"number": len(pages_this_week)},
+                "Target": {"number": freq},
+            }
+            if has_habit_relation:
+                properties["Habit"] = {"relation": [{"id": page_id}]}
+            existing = notion.databases.query(
+                database_id=streak_db_id,
+                filter={
+                    "and": [
+                        {"property": "Name", "title": {"equals": habit.get("name", "")}},
+                        {"property": "Week Of", "date": {"equals": last_monday.isoformat()}},
+                    ]
                 },
             )
+            existing_pages = existing.get("results", [])
+            if existing_pages:
+                keep_id = existing_pages[0]["id"]
+                notion.pages.update(page_id=keep_id, properties=properties)
+                for dup in existing_pages[1:]:
+                    notion.pages.update(page_id=dup["id"], archived=True)
+                if len(existing_pages) > 1:
+                    log.warning(
+                        "record_weekly_streaks: archived %d duplicate streak rows for %s week of %s",
+                        len(existing_pages) - 1,
+                        habit.get("name"),
+                        last_monday,
+                    )
+            else:
+                notion.pages.create(
+                    parent={"database_id": streak_db_id},
+                    properties=properties,
+                )
             recorded += 1
-            log.debug("Streak: %s — %d/%d → goal_met=%s", habit.get("name"), len(pages), freq, goal_met)
+            log.debug("Streak: %s — %d/%d → goal_met=%s", habit.get("name"), len(pages_this_week), freq, goal_met)
         except Exception as exc:  # noqa: BLE001
             log.error("record_weekly_streaks: %s — %s", habit.get("name"), exc)
     log.info("record_weekly_streaks: recorded %d habit streaks for week of %s", recorded, last_monday)

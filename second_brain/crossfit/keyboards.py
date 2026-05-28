@@ -5,7 +5,7 @@ def _clean_pid(pid: str) -> str:
     return (pid or "").replace("-", "")
 
 
-def crossfit_submenu_keyboard(readiness_logged: bool = True) -> InlineKeyboardMarkup:
+def crossfit_submenu_keyboard(readiness_logged: bool = False) -> InlineKeyboardMarkup:
     if readiness_logged:
         return InlineKeyboardMarkup([
             [

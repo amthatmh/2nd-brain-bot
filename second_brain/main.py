@@ -167,7 +167,7 @@ from second_brain.digest import (
     rebuild_digest_schedule_job,
     refresh_digest_schedule_job,
     generate_daily_log,
-    send_daily_digest,
+    send_daily_digest as _digest_send_daily_digest,
 )
 from second_brain import palette as palette_helpers
 from second_brain import weather as wx
@@ -630,6 +630,31 @@ def logs_this_week(habit_page_id: str) -> int:
 
 def is_on_pace(habit: dict) -> bool:
     return _habit_is_on_pace(notion, NOTION_LOG_DB, habit, TZ)
+
+def pending_habits_for_digest(time_str: str | None) -> list[dict]:
+    return digest_helpers.pending_habits_for_digest(
+        habit_cache=habit_cache,
+        time_str=time_str,
+        already_logged_today=already_logged_today,
+        is_on_pace=is_on_pace,
+    )
+
+async def send_daily_digest(bot, include_habits: bool = True, config: dict | None = None) -> None:
+    old_cache = notion_habits.habit_cache
+    old_datetime = digest_helpers.datetime
+    old_already_logged_today = notion_habits.already_logged_today
+    old_is_on_pace = notion_habits.is_on_pace
+    try:
+        notion_habits.habit_cache = habit_cache
+        digest_helpers.datetime = datetime
+        notion_habits.already_logged_today = lambda _notion, _log_db, pid, _tz: already_logged_today(pid)
+        notion_habits.is_on_pace = lambda _notion, _log_db, habit, _tz: is_on_pace(habit)
+        await _digest_send_daily_digest(bot, include_habits=include_habits, config=config)
+    finally:
+        notion_habits.habit_cache = old_cache
+        digest_helpers.datetime = old_datetime
+        notion_habits.already_logged_today = old_already_logged_today
+        notion_habits.is_on_pace = old_is_on_pace
 
 async def check_and_notify_weekly_goals(
     bot,
@@ -1211,11 +1236,14 @@ async def open_done_picker(message) -> None:
     await message.reply_text("Which task should be marked done?", reply_markup=kb.done_picker_keyboard(key, done_picker_map, page=0))
 
 async def open_habit_picker(message) -> None:
+    now_str = datetime.now(TZ).strftime("%H:%M")
     logged_ids = get_logged_habit_ids_today()
-    pending_habits = [
-        h for h in sorted(habit_cache.values(), key=lambda x: x["sort"])
-        if h["page_id"] not in logged_ids
-    ]
+    pending_habits = digest_helpers.pending_habits_for_digest(
+        habit_cache=habit_cache,
+        time_str=now_str,
+        already_logged_today=lambda pid: pid in logged_ids,
+        is_on_pace=is_on_pace,
+    )
     if not pending_habits:
         await message.reply_text("✅ No habits left to log today.")
         return
