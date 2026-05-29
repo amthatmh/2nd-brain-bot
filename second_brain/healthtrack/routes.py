@@ -80,6 +80,7 @@ from second_brain.healthtrack.metrics import (
     MalformedHealthMetricsPayload,
     handle_health_metrics_sync,
 )
+from second_brain.healthtrack.sleep import handle_sleep_backfill_job
 from second_brain.healthtrack.steps import (
     handle_steps_sync,
     get_steps_state_summary,
@@ -964,6 +965,87 @@ def register_health_routes(
         # TEST: Completed flag: 9999 steps → False, 10000 steps → True
         # TEST: No Telegram notification sent for any historical date regardless of step count
 
+    async def sleep_backfill_handler(request: web.Request) -> web.Response:
+        if request.method == "OPTIONS":
+            return web.Response(status=204, headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"))
+
+        incoming_secret = request.headers.get("X-Health-Secret", "").strip()
+        if not incoming_secret:
+            log.warning("sleep_backfill: missing X-Health-Secret header")
+            return web.Response(
+                status=401,
+                text=json.dumps({"ok": False, "error": "Missing X-Health-Secret header"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+
+        if WEBHOOK_SECRET and incoming_secret != WEBHOOK_SECRET:
+            log.warning("sleep_backfill: invalid secret")
+            return web.Response(
+                status=401,
+                text=json.dumps({"ok": False, "error": "Invalid X-Health-Secret"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+
+        try:
+            body = await request.json()
+        except Exception as e:
+            log.warning("sleep_backfill: invalid JSON payload: %s", e)
+            return web.Response(
+                status=400,
+                text=json.dumps({"ok": False, "error": "invalid JSON"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+
+        try:
+            start_date = date.fromisoformat(str(body.get("start_date") or "")[:10])
+            end_date = date.fromisoformat(str(body.get("end_date") or "")[:10])
+        except ValueError:
+            return web.Response(
+                status=400,
+                text=json.dumps({"ok": False, "error": "start_date and end_date must be YYYY-MM-DD"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+
+        if end_date < start_date:
+            return web.Response(
+                status=400,
+                text=json.dumps({"ok": False, "error": "end_date must be on or after start_date"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+
+        try:
+            bot = bot_getter()
+        except Exception:
+            bot = None
+
+        dates_queued = (end_date - start_date).days + 1
+
+        async def _run_backfill() -> None:
+            try:
+                await handle_sleep_backfill_job(bot, start_date.isoformat(), end_date.isoformat())
+            except Exception as exc:
+                log.exception("sleep_backfill: background job failed: %s", exc)
+                if bot is not None:
+                    await send_system_log(bot, f"Sleep backfill failed: {type(exc).__name__}: {exc}")
+
+        asyncio.create_task(_run_backfill())
+        log.info(
+            "sleep_backfill: queued %d dates from %s to %s",
+            dates_queued,
+            start_date.isoformat(),
+            end_date.isoformat(),
+        )
+        return web.Response(
+            text=json.dumps({"ok": True, "dates_queued": dates_queued}),
+            content_type="application/json",
+            headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+        )
+
     app.router.add_get("/habits-data", _habits_data)
     app.router.add_post("/log-habit", _log_habit)
     app.router.add_options("/log-habit", _log_habit)
@@ -974,10 +1056,13 @@ def register_health_routes(
     app.router.add_options("/api/v1/health-sync", health_sync_handler)
     app.router.add_post("/api/v1/steps-backfill", steps_backfill_handler)
     app.router.add_options("/api/v1/steps-backfill", steps_backfill_handler)
+    app.router.add_post("/api/v1/sleep-sync/backfill", sleep_backfill_handler)
+    app.router.add_options("/api/v1/sleep-sync/backfill", sleep_backfill_handler)
 
     log.info(
         "Health routes registered: POST /api/v1/steps-sync, POST /api/v1/health-sync, "
-        "POST /api/v1/steps-backfill, GET /api/v1/steps-status (threshold=%d, habit='%s')",
+        "POST /api/v1/steps-backfill, POST /api/v1/sleep-sync/backfill, "
+        "GET /api/v1/steps-status (threshold=%d, habit='%s')",
         STEPS_THRESHOLD,
         health_config.STEPS_HABIT_NAME,
     )

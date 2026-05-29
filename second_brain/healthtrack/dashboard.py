@@ -42,6 +42,9 @@ METRIC_DEFS: dict[str, dict[str, str]] = {
     "resting_energy": {"property": "Resting Energy (kcal)", "unit": "kcal", "good": "flat"},
     "flights": {"property": "Flights Climbed", "unit": "", "good": "up"},
     "headphone_db": {"property": "Headphone Audio Exposure (dB)", "unit": "dB", "good": "down"},
+    "total_sleep": {"property": "Total Sleep (min)", "unit": "min", "good": "up"},
+    "deep_sleep": {"property": "Deep Sleep (min)", "unit": "min", "good": "up"},
+    "sleep_efficiency": {"property": "Sleep Efficiency (%)", "unit": "%", "good": "up"},
 }
 
 
@@ -233,6 +236,20 @@ def _score_from_signals(signals: list[float | None]) -> int | None:
     return round(sum(valid) / len(valid))
 
 
+def _target_trend_signal(points: list[dict[str, Any]], target: float) -> float | None:
+    if len(points) < 2:
+        return None
+    first = float(points[0]["value"])
+    latest = float(points[-1]["value"])
+    if latest >= target:
+        return 100.0
+    first_gap = max(target - first, 0.0)
+    latest_gap = target - latest
+    if abs(latest_gap - first_gap) <= 0.05:
+        return 50.0
+    return 100.0 if latest_gap < first_gap else 0.0
+
+
 def _trend_word(points: list[dict[str, Any]], positive_direction: str, label: str) -> str:
     if len(points) < 2:
         return f"{label} needs more data"
@@ -284,6 +301,27 @@ def _cardio_score(metrics: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
     }
 
 
+def _sleep_score(metrics: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    value = _score_from_signals([
+        _target_trend_signal(metrics["total_sleep"], 420),
+        _target_trend_signal(metrics["deep_sleep"], 90),
+        _target_trend_signal(metrics["sleep_efficiency"], 85),
+    ])
+    if value is None:
+        return {"value": None, "status": "no_data", "description": "Not enough sleep data yet"}
+    latest_total = metrics["total_sleep"][-1]["value"] if metrics["total_sleep"] else None
+    latest_deep = metrics["deep_sleep"][-1]["value"] if metrics["deep_sleep"] else None
+    latest_efficiency = metrics["sleep_efficiency"][-1]["value"] if metrics["sleep_efficiency"] else None
+    parts = []
+    if latest_total is not None:
+        parts.append(f"Total {latest_total:g} min")
+    if latest_deep is not None:
+        parts.append(f"Deep {latest_deep:g} min")
+    if latest_efficiency is not None:
+        parts.append(f"Efficiency {latest_efficiency:g}%")
+    return {"value": value, "description": " · ".join(parts)}
+
+
 def _weekly_activity(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     weeks: dict[date, dict[str, set[str]]] = defaultdict(lambda: {"workout": set(), "steps": set()})
     for row in rows:
@@ -327,13 +365,24 @@ def _activity_score(weekly: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _latest(metrics: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
-    keys = ["weight", "body_fat", "lean_mass", "resting_hr", "hrv", "vo2_max", "respiratory"]
+    keys = [
+        "weight",
+        "body_fat",
+        "lean_mass",
+        "resting_hr",
+        "hrv",
+        "vo2_max",
+        "respiratory",
+        "total_sleep",
+        "deep_sleep",
+        "sleep_efficiency",
+    ]
     return {key: points[-1]["value"] for key in keys if (points := metrics.get(key))}
 
 
 def _deltas(metrics: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    for key in ("weight", "body_fat", "lean_mass", "resting_hr", "hrv", "vo2_max"):
+    for key in ("weight", "body_fat", "lean_mass", "resting_hr", "hrv", "vo2_max", "total_sleep", "deep_sleep", "sleep_efficiency"):
         delta = _delta_for(metrics[key], METRIC_DEFS[key]["unit"])
         if delta:
             out[key] = delta
@@ -359,7 +408,7 @@ def build_dashboard_payload(
         "body": _body_score(metrics) if has_any_health_data else {"value": None, "status": "no_data", "description": "No body data in this range"},
         "cardio": _cardio_score(metrics) if has_any_health_data else {"value": None, "status": "no_data", "description": "No cardio data in this range"},
         "activity": _activity_score(weekly),
-        "sleep": {"value": None, "status": "coming_soon", "description": "Sleep tracking coming soon"},
+        "sleep": _sleep_score(metrics) if has_any_health_data else {"value": None, "status": "no_data", "description": "No sleep data in this range"},
     }
 
     return {
@@ -438,6 +487,6 @@ def create_health_dashboard_handler(*, notion, health_metrics_db_id: str, habit_
 # TEST: Steps completion uses Habit Log Completed flag — does NOT re-check raw step count
 # TEST: Activity score with 0 workouts, 7 steps days → score = 0*0.6 + 1.0*0.4 = 40
 # TEST: Activity score with 3 workouts, 0 steps days → score = 1.0*0.6 + 0*0.4 = 60
-# TEST: Sleep score always returns null + coming_soon regardless of range
+# TEST: Sleep score uses total sleep, deep sleep, and efficiency targets
 # TEST: Delta direction — weight decrease = "down" = green (improving)
 # TEST: Delta direction — HRV decrease = "down" = red (worsening)

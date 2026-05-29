@@ -101,6 +101,9 @@ class _FakeScheduler:
             fn = kwargs.pop("func")
         self.calls.append({"fn": fn, "trigger": trigger, "kwargs": kwargs})
 
+    def get_job(self, job_id):
+        return None
+
 
 def _manager_with_scheduler(scheduler: _FakeScheduler) -> UtilitySchedulerManager:
     return UtilitySchedulerManager(
@@ -184,6 +187,17 @@ def test_add_job_omits_next_run_time_when_run_on_start_disabled() -> None:
 
     assert len(scheduler.calls) == 1
     assert "next_run_time" not in scheduler.calls[0]["kwargs"]
+
+
+def test_add_job_uses_page_specific_ids_for_duplicate_job_keys() -> None:
+    scheduler = _FakeScheduler()
+    manager = _manager_with_scheduler(scheduler)
+
+    manager._add_job("sleep_sync", _interval_config(run_on_start=False), "page-one")
+    manager._add_job("sleep_sync", _interval_config(run_on_start=False), "page-two")
+
+    ids = [call["kwargs"]["id"] for call in scheduler.calls]
+    assert ids == ["utility_sleep_sync_pageone", "utility_sleep_sync_pagetwo"]
 
 
 def _reset_job_tracker_state() -> None:
