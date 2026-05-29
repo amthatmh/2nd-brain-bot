@@ -45,26 +45,59 @@ def refresh_access_token(client_id: str, client_secret: str, refresh_token: str)
 
 
 def fetch_sleep_data(access_token: str, query_date_str: str, tz) -> dict | None:
-    """Fetch the first sleep data point whose start time falls on query_date_str."""
-    del tz  # Unused here; local timezone applied during parsing.
+    """Fetch the first sleep data point ending on the wake day after query_date_str."""
+    del tz  # Unused here; Google filters by civil end date and parsing applies local tz.
     query_date = date.fromisoformat(query_date_str)
-    next_date = query_date + timedelta(days=1)
+    wake_date = query_date + timedelta(days=1)
+    wake_date_plus_1 = wake_date + timedelta(days=1)
+    filter_query = (
+        f'sleep.interval.civil_end_time >= "{wake_date.isoformat()}" '
+        f'AND sleep.interval.civil_end_time < "{wake_date_plus_1.isoformat()}"'
+    )
     response = httpx.get(
         GOOGLE_SLEEP_RECONCILE_URL,
         headers={"Authorization": f"Bearer {access_token}"},
-        params={
-            "startTime": f"{query_date.isoformat()}T00:00:00Z",
-            "endTime": f"{next_date.isoformat()}T00:00:00Z",
-        },
+        params={"filter": filter_query},
         timeout=30,
     )
     response.raise_for_status()
     payload = response.json()
-    points = payload.get("dataPoints") or payload.get("points") or payload.get("data") or []
+    points = payload.get("dataPoints") or []
     if not isinstance(points, list) or not points:
         return None
     first = points[0]
-    return first if isinstance(first, dict) else None
+    if not isinstance(first, dict):
+        return None
+
+    interval = first.get("interval") or {}
+    summary = first.get("summary") or {}
+    stages = {
+        "deepDurationMs": 0.0,
+        "remDurationMs": 0.0,
+        "lightDurationMs": 0.0,
+        "awakeDurationMs": 0.0,
+    }
+    stage_keys = {
+        "DEEP": "deepDurationMs",
+        "REM": "remDurationMs",
+        "LIGHT": "lightDurationMs",
+        "AWAKE": "awakeDurationMs",
+    }
+    stages_summary = summary.get("stagesSummary") or []
+    if isinstance(stages_summary, list):
+        for stage in stages_summary:
+            if not isinstance(stage, dict):
+                continue
+            key = stage_keys.get(str(stage.get("type") or "").strip().upper())
+            if key:
+                stages[key] = float(stage.get("minutes") or 0) * 60000
+
+    return {
+        "startTime": interval.get("startTime"),
+        "endTime": interval.get("endTime"),
+        "sleepSummary": {"totalDurationMs": float(summary.get("minutesAsleep") or 0) * 60000},
+        "stagesSummary": stages,
+    }
 
 
 def _parse_dt(value: Any) -> datetime:
