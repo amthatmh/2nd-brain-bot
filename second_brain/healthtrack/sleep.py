@@ -72,7 +72,40 @@ def fetch_sleep_data(access_token: str, query_date_str: str, tz) -> dict | None:
         return None
     log.info("sleep_sync: raw dataPoint keys=%s", list(first.keys()))
     log.info("sleep_sync: raw dataPoint=%s", first)
-    return first
+
+    # Normalise: extract start/end times from wherever the API places them.
+    # Google Health API v4 may put times inside an `interval` sub-object
+    # (with or without a separate utcOffset field) or at the top level.
+    interval = first.get("interval") or {}
+
+    def _pick_time(top_key: str, interval_key: str, interval_civil_key: str, top_civil_key: str) -> str:
+        return (
+            first.get(top_key)
+            or interval.get(interval_key)
+            or interval.get(interval_civil_key)
+            or first.get(top_civil_key)
+            or ""
+        )
+
+    def _attach_offset(time_str: str, offset_str: str | None) -> str:
+        if not time_str:
+            return ""
+        has_tz = time_str.endswith("Z") or "+" in time_str[10:] or (len(time_str) > 19 and time_str[19] == "-")
+        if not has_tz and offset_str:
+            return f"{time_str}{offset_str}"
+        return time_str
+
+    start_time = _pick_time("startTime", "startTime", "civilStartTime", "civilStartTime")
+    end_time   = _pick_time("endTime",   "endTime",   "civilEndTime",   "civilEndTime")
+
+    start_utc_offset = interval.get("startUtcOffset") or first.get("startUtcOffset") or ""
+    end_utc_offset   = interval.get("endUtcOffset")   or first.get("endUtcOffset")   or ""
+
+    return {
+        **first,
+        "startTime": _attach_offset(start_time, start_utc_offset),
+        "endTime":   _attach_offset(end_time,   end_utc_offset),
+    }
 
 
 def _parse_dt(value: Any) -> datetime:
