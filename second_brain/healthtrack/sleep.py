@@ -63,11 +63,16 @@ def fetch_sleep_data(access_token: str, query_date_str: str, tz) -> dict | None:
         timeout=30,
     )
     response.raise_for_status()
-    points = response.json().get("dataPoints") or []
+    payload = response.json()
+    points = payload.get("dataPoints") or []
     if not isinstance(points, list) or not points:
         return None
     first = points[0]
-    return first if isinstance(first, dict) else None
+    if not isinstance(first, dict):
+        return None
+    log.info("sleep_sync: raw dataPoint keys=%s", list(first.keys()))
+    log.info("sleep_sync: raw dataPoint=%s", first)
+    return first
 
 
 def _parse_dt(value: Any) -> datetime:
