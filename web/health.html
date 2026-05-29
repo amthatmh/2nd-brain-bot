@@ -57,13 +57,14 @@ const charts = {};
 let currentRange = '1m';
 const metricDefs = {
   weight:{label:'Weight',unit:'kg',good:'down'},body_fat:{label:'Body Fat',unit:'%',good:'down'},lean_mass:{label:'Lean Mass',unit:'kg',good:'up'},resting_hr:{label:'Resting HR',unit:'bpm',good:'down'},
-  hrv:{label:'HRV',unit:'ms',good:'up'},vo2_max:{label:'VO2 Max',unit:'',good:'up'},respiratory:{label:'Resp. Rate',unit:'brpm',good:'flat'},headphone_db:{label:'Headphone dB',unit:'dB',good:'down'}
+  hrv:{label:'HRV',unit:'ms',good:'up'},vo2_max:{label:'VO2 Max',unit:'',good:'up'},respiratory:{label:'Resp. Rate',unit:'brpm',good:'flat'},headphone_db:{label:'Headphone dB',unit:'dB',good:'down'},
+  total_sleep:{label:'Total Sleep',unit:'min',good:'up'},deep_sleep:{label:'Deep Sleep',unit:'min',good:'up'},sleep_efficiency:{label:'Sleep Eff.',unit:'%',good:'up'}
 };
 const scoreInfo = {
   body:'Combines weight trend, body fat %, and lean mass changes over the selected period. A score above 70 means all three are moving in a healthy direction.',
   cardio:'Combines resting heart rate trend, HRV trend, and VO2 Max direction. Lower resting HR and higher HRV are both positive signals.',
   activity:(steps)=>`Weighted: Workout days = 60%, Steps goal days = 40%. Target: 3 workout sessions/week and 7 days/week hitting ${steps} steps.`,
-  sleep:'Sleep tracking is coming soon via Fitbit integration. This score will include sleep duration and stage quality.'
+  sleep:'Averages progress toward 7 hours total sleep, 90 minutes deep sleep, and 85% sleep efficiency.'
 };
 function applyTheme(theme){document.documentElement.dataset.theme=theme;localStorage.setItem('health_theme',theme);document.getElementById('themeToggle').textContent=theme==='dark'?'☾':'☀';}
 applyTheme(localStorage.getItem('health_theme')||'dark');
@@ -142,7 +143,7 @@ function renderDashboard(data){
 }
 function renderScores(data){
   const cfg=[['body','🏋️ Body'],['cardio','❤️ Cardio'],['activity','🏃 Activity'],['sleep','😴 Sleep']];
-  document.getElementById('scores').innerHTML=cfg.map(([key,label])=>{const s=data.scores?.[key]||{};const muted=key==='sleep'?' muted':'';const badge=key==='sleep'?'<span class="badge">Coming soon</span>':'';const info=key==='activity'?scoreInfo.activity(data.steps_threshold||s.steps_threshold||10000):scoreInfo[key];return `<article class="card${muted}"><div class="card-top"><div class="score-name">${label}${badge}</div><button class="info" onclick="toggleInfo(this)">ⓘ</button></div><div class="score">${s.value ?? '—'}</div><div class="desc">${s.description || 'Not enough data yet'}</div><div class="explain">${info}</div></article>`}).join('');
+  document.getElementById('scores').innerHTML=cfg.map(([key,label])=>{const s=data.scores?.[key]||{};const coming=s.status==='coming_soon';const muted=coming?' muted':'';const badge=coming?'<span class="badge">Coming soon</span>':'';const info=key==='activity'?scoreInfo.activity(data.steps_threshold||s.steps_threshold||10000):scoreInfo[key];return `<article class="card${muted}"><div class="card-top"><div class="score-name">${label}${badge}</div><button class="info" onclick="toggleInfo(this)">ⓘ</button></div><div class="score">${s.value ?? '—'}</div><div class="desc">${s.description || 'Not enough data yet'}</div><div class="explain">${info}</div></article>`}).join('');
 }
 function toggleInfo(btn){btn.closest('.card').querySelector('.explain').classList.toggle('show');}
 function renderMetrics(data){
@@ -156,15 +157,17 @@ function renderCharts(data){
   destroyCharts(); const m=data.metrics||{}; let html='';
   if(has(m.weight)||has(m.body_fat)||has(m.lean_mass)) html += chartCard('bodyChart','Body Composition','Weight, body fat, and lean mass trends');
   if(has(m.resting_hr)||has(m.hrv)||has(m.vo2_max)) html += chartCard('cardioChart','Cardiovascular','Resting HR, HRV, and VO2 Max');
+  if(has(m.total_sleep)||has(m.deep_sleep)||has(m.sleep_efficiency)) html += chartCard('sleepChart','Sleep','Total sleep, deep sleep, and sleep efficiency');
   if(Array.isArray(data.weekly_activity)&&data.weekly_activity.length) html += chartCard('activityChart','Activity','Workout days and steps-goal days per week');
   document.getElementById('charts').innerHTML = html || '<div class="empty">Not enough data yet for charts.</div>';
-  if(document.getElementById('bodyChart')) makeBodyChart(m); if(document.getElementById('cardioChart')) makeCardioChart(m); if(document.getElementById('activityChart')) makeActivityChart(data.weekly_activity);
+  if(document.getElementById('bodyChart')) makeBodyChart(m); if(document.getElementById('cardioChart')) makeCardioChart(m); if(document.getElementById('sleepChart')) makeSleepChart(m); if(document.getElementById('activityChart')) makeActivityChart(data.weekly_activity);
 }
 function chartCard(id,title,sub){return `<article class="chart-card"><div class="chart-head"><div><div class="chart-title">${title}</div><div class="chart-sub">${sub}</div></div></div><div class="chart-wrap"><canvas id="${id}"></canvas></div></article>`;}
 function labelsFor(...series){return [...new Set(series.flatMap(s=>(s||[]).map(p=>p.date)))].sort();}
 function mapSeries(points,labels){const byDate=Object.fromEntries((points||[]).map(p=>[p.date,p.value]));return labels.map(d=>byDate[d]??null);}
 function makeBodyChart(m){const labels=labelsFor(m.weight,m.body_fat,m.lean_mass);charts.body=new Chart(document.getElementById('bodyChart'),{type:'line',data:{labels,datasets:[{label:'Weight kg',data:mapSeries(m.weight,labels),borderColor:cssVar('--accent-blue'),tension:.4,yAxisID:'y'},{label:'Body Fat %',data:mapSeries(m.body_fat,labels),borderColor:cssVar('--accent-yellow'),tension:.4,yAxisID:'y1'},{label:'Lean Mass kg',data:mapSeries(m.lean_mass,labels),borderColor:cssVar('--accent-green'),tension:.4,yAxisID:'y'}]},options:{...chartBase(),scales:{...chartBase().scales,y1:{position:'right',ticks:{color:cssVar('--text-secondary')},grid:{drawOnChartArea:false}}}}});}
 function makeCardioChart(m){const labels=labelsFor(m.resting_hr,m.hrv,m.vo2_max);charts.cardio=new Chart(document.getElementById('cardioChart'),{type:'line',data:{labels,datasets:[{label:'Resting HR',data:mapSeries(m.resting_hr,labels),borderColor:cssVar('--accent-red'),tension:.4,yAxisID:'y'},{label:'HRV',data:mapSeries(m.hrv,labels),borderColor:cssVar('--accent-green'),tension:.4,yAxisID:'y1'},{label:'VO2 Max',data:mapSeries(m.vo2_max,labels),borderColor:cssVar('--accent-blue'),tension:.4,yAxisID:'y1'}]},options:{...chartBase(),scales:{...chartBase().scales,y1:{position:'right',ticks:{color:cssVar('--text-secondary')},grid:{drawOnChartArea:false}}}}});}
+function makeSleepChart(m){const labels=labelsFor(m.total_sleep,m.deep_sleep,m.sleep_efficiency);charts.sleep=new Chart(document.getElementById('sleepChart'),{type:'line',data:{labels,datasets:[{label:'Total Sleep min',data:mapSeries(m.total_sleep,labels),borderColor:cssVar('--accent-blue'),tension:.4,yAxisID:'y'},{label:'Deep Sleep min',data:mapSeries(m.deep_sleep,labels),borderColor:cssVar('--accent-green'),tension:.4,yAxisID:'y'},{label:'Efficiency %',data:mapSeries(m.sleep_efficiency,labels),borderColor:cssVar('--accent-yellow'),tension:.4,yAxisID:'y1'}]},options:{...chartBase(),scales:{...chartBase().scales,y:{...chartBase().scales.y,suggestedMin:0},y1:{position:'right',ticks:{color:cssVar('--text-secondary')},grid:{drawOnChartArea:false},suggestedMin:0,suggestedMax:100}}}});}
 function makeActivityChart(weekly){const labels=weekly.map(w=>w.week);charts.activity=new Chart(document.getElementById('activityChart'),{type:'bar',data:{labels,datasets:[{label:'Workout days',data:weekly.map(w=>w.workout_days),backgroundColor:cssVar('--accent-blue')},{label:'Steps days',data:weekly.map(w=>w.steps_days),backgroundColor:cssVar('--accent-green')},{label:'Workout target',data:weekly.map(()=>3),type:'line',borderColor:cssVar('--accent-yellow'),pointRadius:0,borderDash:[5,5]},{label:'Steps target',data:weekly.map(()=>7),type:'line',borderColor:cssVar('--text-secondary'),pointRadius:0,borderDash:[3,5]}]},options:chartBase()});}
 function destroyCharts(){Object.values(charts).forEach(c=>c?.destroy());Object.keys(charts).forEach(k=>delete charts[k]);}
 document.addEventListener('DOMContentLoaded', () => {

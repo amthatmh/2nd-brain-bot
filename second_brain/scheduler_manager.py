@@ -108,7 +108,7 @@ class UtilitySchedulerManager:
             log.error("scheduler_manager: failed to query Notion: %s", exc)
             return
 
-        active_keys: set[str] = set()
+        active_scheduler_ids: set[str] = set()
         loaded_at = self._utc_iso()
 
         for row in rows:
@@ -120,15 +120,16 @@ class UtilitySchedulerManager:
                     continue
 
                 enabled = self._extract_checkbox(props.get("Enabled", {}), default=False)
+                scheduler_id = self._apscheduler_id(job_key, page_id)
                 if not enabled:
-                    self._remove_job_if_exists(job_key)
+                    self._remove_job_if_exists(job_key, page_id)
                     self._update_notion_loaded_at(page_id, loaded_at)
                     continue
 
-                active_keys.add(job_key)
+                active_scheduler_ids.add(scheduler_id)
                 if job_key not in self._handlers:
                     log.warning("scheduler_manager: no handler for job_key=%s", job_key)
-                    self._remove_job_if_exists(job_key)
+                    self._remove_job_if_exists(job_key, page_id)
                     self._update_notion_status(
                         page_id,
                         status="unknown_job",
@@ -142,11 +143,10 @@ class UtilitySchedulerManager:
                 load_alert_config(job_key, alert_config)
                 log.info("[SCHEDULER] Loaded alert config for %s: %s", job_key, alert_config)
                 signature = self._config_signature(config)
-                apscheduler_id = self._apscheduler_id(job_key)
-                existing_job = self._scheduler.get_job(apscheduler_id)
-                if existing_job and self._applied_configs.get(job_key) != signature:
-                    log.info("scheduler_manager: config changed for %s, re-registering", job_key)
-                    self._remove_job_if_exists(job_key)
+                existing_job = self._scheduler.get_job(scheduler_id)
+                if existing_job and self._applied_configs.get(scheduler_id) != signature:
+                    log.info("scheduler_manager: config changed for %s row=%s, re-registering", job_key, page_id)
+                    self._remove_job_if_exists(job_key, page_id)
                     existing_job = None
 
                 if not existing_job:
@@ -158,14 +158,14 @@ class UtilitySchedulerManager:
                 if page_id:
                     self._update_notion_status(page_id, status="error", error=str(exc), loaded_at=loaded_at)
 
-        for job_key in list(self._known_jobs):
-            if job_key not in active_keys:
-                log.info("scheduler_manager: removing job no longer active in Notion: %s", job_key)
-                self._remove_job_if_exists(job_key)
+        for scheduler_id in list(self._known_jobs):
+            if scheduler_id not in active_scheduler_ids:
+                log.info("scheduler_manager: removing job no longer active in Notion: %s", scheduler_id)
+                self._remove_scheduler_id_if_exists(scheduler_id)
 
         log.info(
             "scheduler_manager: reload complete — %d active jobs, %d handlers available",
-            len(active_keys),
+            len(active_scheduler_ids),
             len(self._handlers),
         )
 
@@ -204,7 +204,7 @@ class UtilitySchedulerManager:
                 self._send_failure_alert_if_needed(job_key, exc, consecutive, get_alert_config(job_key))
             log.exception("scheduler_manager: job_key=%s FAILED", job_key)
             self._update_notion_run_result(page_id=page_id, ran_at=ran_at, status="error", error=str(exc))
-            await self._send_failure_alert(job_key, exc)
+            await self._send_failure_alert(job_key, page_id, exc)
 
     @staticmethod
     def _send_success_alert_if_needed(job_key: str, duration: float, result: Any, alert_config: dict[str, Any]) -> None:
@@ -252,12 +252,12 @@ class UtilitySchedulerManager:
             alert_job_failure(job_key, str(error), consecutive)
             set_alert_cooldown(cooldown_key)
 
-    async def _send_failure_alert(self, job_key: str, error: Exception) -> None:
+    async def _send_failure_alert(self, job_key: str, page_id: str, error: Exception) -> None:
         """Send a Telegram alert when a managed Utility Scheduler job fails."""
         if not self._bot or not self._chat_id:
             return
         try:
-            job = self._scheduler.get_job(self._apscheduler_id(job_key))
+            job = self._scheduler.get_job(self._apscheduler_id(job_key, page_id))
             next_run = job.next_run_time.strftime("%Y-%m-%d %H:%M %Z") if job and job.next_run_time else "unknown"
             await send_system_log(
                 self._bot,
@@ -271,7 +271,7 @@ class UtilitySchedulerManager:
             log.error("scheduler_manager: failed to send Telegram alert: %s", alert_error)
 
     def _add_job(self, job_key: str, config: dict[str, Any], page_id: str) -> None:
-        apscheduler_id = self._apscheduler_id(job_key)
+        apscheduler_id = self._apscheduler_id(job_key, page_id)
         trigger_type = config["trigger_type"]
         add_kwargs: dict[str, Any] = {
             "id": apscheduler_id,
@@ -297,20 +297,28 @@ class UtilitySchedulerManager:
             raise ValueError(f"Trigger Type must be interval or cron, got: {trigger_type}")
 
         self._scheduler.add_job(self._execute_job, trigger_type, **add_kwargs)
-        self._known_jobs.add(job_key)
-        self._applied_configs[job_key] = self._config_signature(config)
-        log.info("scheduler_manager: registered job_key=%s trigger=%s config=%s", job_key, trigger_type, config)
+        self._known_jobs.add(apscheduler_id)
+        self._applied_configs[apscheduler_id] = self._config_signature(config)
+        log.info("scheduler_manager: registered job_key=%s row=%s trigger=%s config=%s", job_key, page_id, trigger_type, config)
 
-    def _remove_job_if_exists(self, job_key: str) -> None:
-        apscheduler_id = self._apscheduler_id(job_key)
+    def _remove_job_if_exists(self, job_key: str, page_id: str | None = None) -> None:
+        if page_id is not None:
+            self._remove_scheduler_id_if_exists(self._apscheduler_id(job_key, page_id))
+            return
+        prefix = f"{_JOB_PREFIX}{job_key}"
+        for scheduler_id in list(self._known_jobs):
+            if scheduler_id == prefix or scheduler_id.startswith(f"{prefix}_"):
+                self._remove_scheduler_id_if_exists(scheduler_id)
+
+    def _remove_scheduler_id_if_exists(self, apscheduler_id: str) -> None:
         try:
             if self._scheduler.get_job(apscheduler_id):
                 self._scheduler.remove_job(apscheduler_id)
-                log.info("scheduler_manager: removed job_key=%s", job_key)
+                log.info("scheduler_manager: removed scheduler_id=%s", apscheduler_id)
         except Exception as exc:
-            log.debug("scheduler_manager: remove skipped for %s: %s", job_key, exc)
-        self._known_jobs.discard(job_key)
-        self._applied_configs.pop(job_key, None)
+            log.debug("scheduler_manager: remove skipped for %s: %s", apscheduler_id, exc)
+        self._known_jobs.discard(apscheduler_id)
+        self._applied_configs.pop(apscheduler_id, None)
 
     def _extract_job_config(
         self,
@@ -521,5 +529,8 @@ class UtilitySchedulerManager:
         return datetime.now(dt_timezone.utc).isoformat()
 
     @staticmethod
-    def _apscheduler_id(job_key: str) -> str:
-        return f"{_JOB_PREFIX}{job_key}"
+    def _apscheduler_id(job_key: str, page_id: str | None = None) -> str:
+        if not page_id:
+            return f"{_JOB_PREFIX}{job_key}"
+        suffix = page_id.replace("-", "")[:12]
+        return f"{_JOB_PREFIX}{job_key}_{suffix}"
