@@ -66,31 +66,8 @@ def fetch_sleep_data(access_token: str, query_date_str: str, tz) -> dict | None:
     points = response.json().get("dataPoints") or []
     if not isinstance(points, list) or not points:
         return None
-
-    point = points[0]
-    interval = point.get("interval") or {}
-    summary = point.get("summary") or {}
-    stages_raw = summary.get("stagesSummary") or []
-
-    stage_ms: dict[str, float] = {}
-    for s in stages_raw:
-        stage_ms[str(s.get("type", "")).upper()] = float(s.get("minutes", 0)) * 60000
-
-    total_sleep_ms = float(summary.get("minutesAsleep", 0)) * 60000
-    if total_sleep_ms == 0:
-        total_sleep_ms = sum(v for k, v in stage_ms.items() if k != "AWAKE")
-
-    return {
-        "startTime": interval.get("startTime", ""),
-        "endTime": interval.get("endTime", ""),
-        "sleepSummary": {"totalDurationMs": total_sleep_ms},
-        "stagesSummary": {
-            "deepDurationMs": stage_ms.get("DEEP", 0.0),
-            "remDurationMs": stage_ms.get("REM", 0.0),
-            "lightDurationMs": stage_ms.get("LIGHT", 0.0),
-            "awakeDurationMs": stage_ms.get("AWAKE", 0.0),
-        },
-    }
+    first = points[0]
+    return first if isinstance(first, dict) else None
 
 
 def _parse_dt(value: Any) -> datetime:
