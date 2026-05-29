@@ -45,13 +45,16 @@ def refresh_access_token(client_id: str, client_secret: str, refresh_token: str)
 
 
 def fetch_sleep_data(access_token: str, query_date_str: str, tz) -> dict | None:
-    """Fetch the first sleep data point whose start time falls on query_date_str."""
-    del tz  # Query shape is date-based; parsing later handles local timezone.
+    """Fetch sleep data from Google Health API v4 for the wake date following query_date_str."""
+    del tz
     query_date = date.fromisoformat(query_date_str)
-    next_date = query_date + timedelta(days=1)
+    # query_date is the night sleep started; wake day is query_date + 1
+    wake_date = query_date + timedelta(days=1)
+    next_date = wake_date + timedelta(days=1)
+
     filter_expr = (
-        f'startTime >= "{query_date.isoformat()}T00:00:00Z" '
-        f'AND startTime < "{next_date.isoformat()}T00:00:00Z"'
+        f'sleep.interval.civil_end_time >= "{wake_date.isoformat()}" '
+        f'AND sleep.interval.civil_end_time < "{next_date.isoformat()}"'
     )
     response = httpx.get(
         GOOGLE_SLEEP_RECONCILE_URL,
@@ -60,12 +63,34 @@ def fetch_sleep_data(access_token: str, query_date_str: str, tz) -> dict | None:
         timeout=30,
     )
     response.raise_for_status()
-    payload = response.json()
-    points = payload.get("dataPoints") or payload.get("points") or payload.get("data") or []
+    points = response.json().get("dataPoints") or []
     if not isinstance(points, list) or not points:
         return None
-    first = points[0]
-    return first if isinstance(first, dict) else None
+
+    point = points[0]
+    interval = point.get("interval") or {}
+    summary = point.get("summary") or {}
+    stages_raw = summary.get("stagesSummary") or []
+
+    stage_ms: dict[str, float] = {}
+    for s in stages_raw:
+        stage_ms[str(s.get("type", "")).upper()] = float(s.get("minutes", 0)) * 60000
+
+    total_sleep_ms = float(summary.get("minutesAsleep", 0)) * 60000
+    if total_sleep_ms == 0:
+        total_sleep_ms = sum(v for k, v in stage_ms.items() if k != "AWAKE")
+
+    return {
+        "startTime": interval.get("startTime", ""),
+        "endTime": interval.get("endTime", ""),
+        "sleepSummary": {"totalDurationMs": total_sleep_ms},
+        "stagesSummary": {
+            "deepDurationMs": stage_ms.get("DEEP", 0.0),
+            "remDurationMs": stage_ms.get("REM", 0.0),
+            "lightDurationMs": stage_ms.get("LIGHT", 0.0),
+            "awakeDurationMs": stage_ms.get("AWAKE", 0.0),
+        },
+    }
 
 
 def _parse_dt(value: Any) -> datetime:
