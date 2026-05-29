@@ -46,17 +46,16 @@ def refresh_access_token(client_id: str, client_secret: str, refresh_token: str)
 
 def fetch_sleep_data(access_token: str, query_date_str: str, tz) -> dict | None:
     """Fetch the first sleep data point whose start time falls on query_date_str."""
-    del tz  # Query shape is date-based; parsing later handles local timezone.
+    del tz  # Unused here; local timezone applied during parsing.
     query_date = date.fromisoformat(query_date_str)
     next_date = query_date + timedelta(days=1)
-    filter_expr = (
-        f'startTime >= "{query_date.isoformat()}T00:00:00Z" '
-        f'AND startTime < "{next_date.isoformat()}T00:00:00Z"'
-    )
     response = httpx.get(
         GOOGLE_SLEEP_RECONCILE_URL,
         headers={"Authorization": f"Bearer {access_token}"},
-        params={"filter": filter_expr},
+        params={
+            "startTime": f"{query_date.isoformat()}T00:00:00Z",
+            "endTime": f"{next_date.isoformat()}T00:00:00Z",
+        },
         timeout=30,
     )
     response.raise_for_status()
@@ -254,26 +253,19 @@ async def handle_sleep_sync_job(bot=None) -> dict:
         GOOGLE_HEALTH_REFRESH_TOKEN,
     )
     from second_brain.main import NOTION_HEALTH_METRICS_DB, TZ, notion
-    from second_brain.error_reporting import send_system_log
 
     target_date = datetime.now(TZ).date()
-    try:
-        result = await handle_sleep_sync(
-            notion=notion,
-            metrics_db_id=NOTION_HEALTH_METRICS_DB,
-            client_id=GOOGLE_HEALTH_CLIENT_ID,
-            client_secret=GOOGLE_HEALTH_CLIENT_SECRET,
-            refresh_token=GOOGLE_HEALTH_REFRESH_TOKEN,
-            target_date=target_date,
-            tz=TZ,
-        )
-        log.info("sleep_sync: scheduler result=%s", result)
-        return result
-    except Exception as exc:
-        log.exception("sleep_sync: scheduler job failed")
-        if bot is not None:
-            await send_system_log(bot, f"Sleep sync failed: {type(exc).__name__}: {exc}")
-        raise
+    result = await handle_sleep_sync(
+        notion=notion,
+        metrics_db_id=NOTION_HEALTH_METRICS_DB,
+        client_id=GOOGLE_HEALTH_CLIENT_ID,
+        client_secret=GOOGLE_HEALTH_CLIENT_SECRET,
+        refresh_token=GOOGLE_HEALTH_REFRESH_TOKEN,
+        target_date=target_date,
+        tz=TZ,
+    )
+    log.info("sleep_sync: scheduler result=%s", result)
+    return result
 
 
 async def handle_sleep_backfill_job(bot, start_date_str: str, end_date_str: str) -> dict:
