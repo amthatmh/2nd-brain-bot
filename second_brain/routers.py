@@ -1434,6 +1434,19 @@ async def _cb_h_toggle(q, parts, context) -> None:
             )
             habits = [current_habit] if current_habit else []
         session["habits"] = habits
+
+    # Merge in any habits that became active (passed show_after) after the digest was sent
+    now_hhmm = datetime.now(TZ).strftime("%H:%M")
+    known_pids = {h.get("page_id") for h in habits}
+    for h in sorted(_habit_cache().values(), key=lambda h: h.get("sort", 0)):
+        pid = h.get("page_id")
+        if pid in known_pids:
+            continue
+        show_after = h.get("show_after") or ""
+        if not show_after or now_hhmm >= show_after:
+            habits.append(h)
+            known_pids.add(pid)
+    session["habits"] = habits
     t3 = time.time()
     log.info("[PERF] Habits loaded in %.0fms", (t3 - t2) * 1000)
 
@@ -1976,7 +1989,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await q.edit_message_reply_markup(reply_markup=None)
         except Exception:
             log.debug("Could not clear message markup after callback", exc_info=True)
-        await q.answer()
+        try:
+            await q.answer()
+        except Exception:
+            log.debug("Could not answer callback query", exc_info=True)
 
     log.debug("Callback received: %s", data)
     parts = data.split(":")
