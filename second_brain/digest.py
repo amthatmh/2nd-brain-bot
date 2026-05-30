@@ -328,8 +328,6 @@ def _queue_missed_slots_for_today(scheduler, bot, slots: list[dict]) -> None:
 
 def build_digest_schedule(scheduler, bot, queue_catchup: bool = False) -> int:
     global _digest_slots_last_load_succeeded
-    if _on_rebuild_fn:
-        _on_rebuild_fn()
     for job in _digest_jobs:
         try:
             job.remove()
