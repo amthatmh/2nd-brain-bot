@@ -1472,7 +1472,15 @@ async def _cb_h_done(q, parts, context) -> None:
     message_id = q.message.message_id
     selected_ids = set(_main()._habit_selection_selected(message_id))
     if not selected_ids:
-        await q.answer("No habits selected!", show_alert=True)
+        session_habits = _main()._habit_selection_habits(message_id)
+        if not session_habits:
+            # Session expired — remove the stale keyboard
+            _main()._habit_selections.pop(message_id, None)
+            await q.edit_message_reply_markup(reply_markup=None)
+            await q.answer("Session expired. Please open Habits again.", show_alert=True)
+        else:
+            # User tapped Done without selecting anything — keep keyboard
+            await q.answer("No habits selected!", show_alert=True)
         return
 
     selected_habits = [
