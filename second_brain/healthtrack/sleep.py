@@ -69,34 +69,64 @@ def fetch_sleep_data(access_token: str, query_date_str: str, tz) -> dict | None:
     if not isinstance(first, dict):
         return None
 
-    interval = first.get("interval") or {}
-    summary = first.get("summary") or {}
-    stages = {
-        "deepDurationMs": 0.0,
-        "remDurationMs": 0.0,
-        "lightDurationMs": 0.0,
-        "awakeDurationMs": 0.0,
-    }
-    stage_keys = {
-        "DEEP": "deepDurationMs",
-        "REM": "remDurationMs",
-        "LIGHT": "lightDurationMs",
-        "AWAKE": "awakeDurationMs",
-    }
-    stages_summary = summary.get("stagesSummary") or []
-    if isinstance(stages_summary, list):
-        for stage in stages_summary:
-            if not isinstance(stage, dict):
-                continue
-            key = stage_keys.get(str(stage.get("type") or "").strip().upper())
-            if key:
-                stages[key] = float(stage.get("minutes") or 0) * 60000
+    log.info("sleep_sync: raw dataPoint keys=%s", list(first.keys()))
+    sleep_summary_debug = first.get("sleepSummary") or {}
+    stages_debug = first.get("stagesSummary") or []
+    log.info(
+        "sleep_sync: sleepSummary keys=%s sleepSummary=%s",
+        list(sleep_summary_debug.keys())
+        if isinstance(sleep_summary_debug, dict)
+        else type(sleep_summary_debug).__name__,
+        sleep_summary_debug,
+    )
+    log.info(
+        "sleep_sync: stagesSummary type=%s first_item=%s",
+        type(stages_debug).__name__,
+        stages_debug[0] if stages_debug else "empty",
+    )
+    log.info("sleep_sync: raw dataPoint=%s", first)
+
+    sleep_raw = first.get("sleep") or {}
+    interval = first.get("interval") or sleep_raw.get("interval") or {}
+    sleep_summary_raw = (
+        first.get("sleepSummary")
+        or first.get("summary")
+        or sleep_raw.get("sleepSummary")
+        or {}
+    )
+    if not isinstance(sleep_summary_raw, dict):
+        sleep_summary_raw = {}
+    stages_summary = (
+        first.get("stagesSummary")
+        or sleep_summary_raw.get("stagesSummary")
+        or sleep_raw.get("stagesSummary")
+        or []
+    )
+
+    def _pick_time(
+        top_key: str,
+        interval_key: str,
+        interval_civil_key: str,
+        top_civil_key: str,
+    ) -> str:
+        summary_interval = sleep_summary_raw.get("interval") or {}
+        return (
+            first.get(top_key)
+            or interval.get(interval_key)
+            or interval.get(interval_civil_key)
+            or first.get(top_civil_key)
+            or sleep_summary_raw.get(top_key)
+            or sleep_summary_raw.get(top_civil_key)
+            or summary_interval.get(interval_key)
+            or summary_interval.get(interval_civil_key)
+            or ""
+        )
 
     return {
-        "startTime": interval.get("startTime"),
-        "endTime": interval.get("endTime"),
-        "sleepSummary": {"totalDurationMs": float(summary.get("minutesAsleep") or 0) * 60000},
-        "stagesSummary": stages,
+        "startTime": _pick_time("startTime", "startTime", "civil_start_time", "civilStartTime"),
+        "endTime": _pick_time("endTime", "endTime", "civil_end_time", "civilEndTime"),
+        "sleepSummary": sleep_summary_raw,
+        "stagesSummary": stages_summary,
     }
 
 
@@ -147,23 +177,47 @@ def _stage_minutes(stages_summary: Any, stage_names: set[str], direct_keys: tupl
         return round(total_ms / 60000, 2)
 
     if isinstance(stages_summary, list):
-        total_ms = 0.0
+        total_min = 0.0
         for item in stages_summary:
             if not isinstance(item, dict):
                 continue
             name = _normalise_stage_name(item.get("stage") or item.get("type") or item.get("name"))
             if name in stage_names:
-                total_ms += _duration_ms(item.get("durationMs") or item.get("duration") or item)
-        return round(total_ms / 60000, 2)
+                minutes_raw = item.get("minutes")
+                if minutes_raw is not None:
+                    try:
+                        total_min += float(minutes_raw)
+                    except (ValueError, TypeError):
+                        total_min += _duration_ms(item) / 60000
+                else:
+                    duration = item.get("durationMs") or item.get("duration") or item
+                    total_min += _duration_ms(duration) / 60000
+        return round(total_min, 2)
 
     return 0.0
 
 
 def parse_sleep_data_point(point: dict, tz) -> dict:
     """Convert a Google Health sleep data point into Notion-ready values."""
+    sleep_summary = point.get("sleepSummary") or {}
+    if not isinstance(sleep_summary, dict):
+        sleep_summary = {}
+    summary_interval = sleep_summary.get("interval") or {}
     try:
-        start_dt = _parse_dt(point.get("startTime"))
-        end_dt = _parse_dt(point.get("endTime"))
+        start_dt = _parse_dt(
+            point.get("startTime")
+            or sleep_summary.get("startTime")
+            or sleep_summary.get("civilStartTime")
+            or summary_interval.get("startTime")
+            or summary_interval.get("civil_start_time")
+        )
+        end_dt = _parse_dt(
+            point.get("endTime")
+            or sleep_summary.get("endTime")
+            or sleep_summary.get("civilEndTime")
+            or summary_interval.get("endTime")
+            or summary_interval.get("civil_end_time")
+        )
     except ValueError as exc:
         raise ValueError(
             f"sleep_sync: unparseable time fields - {exc} | point keys={list(point.keys())}"
@@ -171,10 +225,23 @@ def parse_sleep_data_point(point: dict, tz) -> dict:
     local_start = start_dt.astimezone(tz) if tz else start_dt
     local_end = end_dt.astimezone(tz) if tz else end_dt
 
-    sleep_summary = point.get("sleepSummary") or {}
     stages_summary = point.get("stagesSummary") or {}
 
-    total_sleep_min = round(_duration_ms(sleep_summary.get("totalDurationMs")) / 60000, 2)
+    def _minutes_from_summary(key: str) -> float:
+        val = sleep_summary.get(key)
+        if val is None:
+            return 0.0
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return _duration_ms(val) / 60000
+
+    total_sleep_min = round(
+        _minutes_from_summary("minutesAsleep")
+        or _minutes_from_summary("minutesInSleepPeriod")
+        or _duration_ms(sleep_summary.get("totalDurationMs")) / 60000,
+        2,
+    )
     deep_min = _stage_minutes(
         stages_summary,
         {"deep", "deep sleep"},

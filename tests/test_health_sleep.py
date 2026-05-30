@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 from second_brain.healthtrack.sleep import (
+    fetch_sleep_data,
     handle_sleep_backfill_job,
     handle_sleep_sync,
     parse_sleep_data_point,
@@ -65,6 +66,48 @@ class TestSleepParsing(unittest.TestCase):
         self.assertEqual(parsed["light_min"], 0)
         self.assertEqual(parsed["awake_min"], 0)
 
+    def test_parse_sleep_data_point_with_reconciled_summary_shape(self):
+        point = {
+            "startTime": "",
+            "endTime": "",
+            "sleepSummary": {
+                "startTime": "2026-05-28T23:10:00-05:00",
+                "endTime": "2026-05-29T07:00:00-05:00",
+                "minutesAsleep": "421",
+                "minutesInSleepPeriod": "470",
+            },
+            "stagesSummary": [
+                {"type": "DEEP", "minutes": "114", "count": "10"},
+                {"type": "REM", "minutes": "81", "count": "7"},
+                {"type": "LIGHT", "minutes": "226", "count": "22"},
+                {"type": "AWAKE", "minutes": "49", "count": "15"},
+            ],
+        }
+
+        parsed = parse_sleep_data_point(point, ZoneInfo("America/Chicago"))
+
+        self.assertEqual(parsed["date_str"], "2026-05-29")
+        self.assertEqual(parsed["total_sleep_min"], 421)
+        self.assertEqual(parsed["deep_min"], 114)
+        self.assertEqual(parsed["rem_min"], 81)
+        self.assertEqual(parsed["light_min"], 226)
+        self.assertEqual(parsed["awake_min"], 49)
+        self.assertEqual(parsed["time_in_bed_min"], 470)
+        self.assertEqual(parsed["sleep_efficiency"], 89.6)
+
+    def test_parse_sleep_data_point_uses_minutes_in_sleep_period_when_asleep_missing(self):
+        point = {
+            "startTime": "2026-05-28T23:00:00Z",
+            "endTime": "2026-05-29T07:00:00Z",
+            "sleepSummary": {"minutesInSleepPeriod": "480"},
+            "stagesSummary": [],
+        }
+
+        parsed = parse_sleep_data_point(point, ZoneInfo("UTC"))
+
+        self.assertEqual(parsed["total_sleep_min"], 480)
+        self.assertEqual(parsed["sleep_efficiency"], 100)
+
     def test_parse_sleep_data_point_with_null_stage_summary(self):
         point = {
             "startTime": "2026-05-28T23:00:00Z",
@@ -107,6 +150,32 @@ class TestSleepParsing(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "sleep_sync: unparseable time fields"):
             parse_sleep_data_point(point, ZoneInfo("UTC"))
+
+
+class TestFetchSleepData(unittest.TestCase):
+    @patch("second_brain.healthtrack.sleep.httpx.get")
+    def test_fetch_sleep_data_normalizes_reconciled_point(self, mock_get):
+        raw_point = {
+            "startTime": "",
+            "endTime": "",
+            "sleepSummary": {
+                "startTime": "2026-05-28T23:10:00-05:00",
+                "endTime": "2026-05-29T07:00:00-05:00",
+                "minutesAsleep": "421",
+            },
+            "stagesSummary": [{"type": "DEEP", "minutes": "114", "count": "10"}],
+        }
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"dataPoints": [raw_point]}
+        mock_get.return_value = mock_response
+
+        point = fetch_sleep_data("access-token", "2026-05-28", ZoneInfo("America/Chicago"))
+
+        self.assertEqual(point["startTime"], "2026-05-28T23:10:00-05:00")
+        self.assertEqual(point["endTime"], "2026-05-29T07:00:00-05:00")
+        self.assertEqual(point["sleepSummary"], raw_point["sleepSummary"])
+        self.assertEqual(point["stagesSummary"], raw_point["stagesSummary"])
+        mock_response.raise_for_status.assert_called_once()
 
 
 class TestSleepUpsert(unittest.IsolatedAsyncioTestCase):

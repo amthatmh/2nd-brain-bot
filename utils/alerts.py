@@ -37,7 +37,13 @@ def _response_preview(response: httpx.Response | None, token: str) -> str:
 
 def _alert_channel_id() -> str:
     """Return the configured alert destination without falling back to owner DMs."""
-    return os.getenv("ALERT_CHANNEL_ID", "").strip()
+    return (
+        os.getenv("error_channel_ID")
+        or os.getenv("ERROR_CHANNEL_ID")
+        or os.getenv("ALERT_CHANNEL_ID")
+        or os.getenv("SYSTEM_LOGS_CHAT_ID")
+        or ""
+    ).strip()
 
 
 def send_alert(message: str, level: str = "INFO", cooldown_key: Optional[str] = None) -> bool:
@@ -62,8 +68,8 @@ def send_alert(message: str, level: str = "INFO", cooldown_key: Optional[str] = 
 
     # DEBUG: Trace execution
     logger.info("[ALERT_DEBUG] send_alert() called")
-    logger.info("[ALERT_DEBUG] ALERT_CHANNEL_ID from env: %s", os.getenv("ALERT_CHANNEL_ID"))
-    logger.info("[ALERT_DEBUG] ALERT_CHANNEL_ID variable: %s", alert_channel_id)
+    logger.info("[ALERT_DEBUG] error_channel_ID from env: %s", os.getenv("error_channel_ID"))
+    logger.info("[ALERT_DEBUG] resolved alert channel ID: %s", alert_channel_id)
     logger.info("[ALERT_DEBUG] Level: %s, Cooldown key: %s", level, cooldown_key)
     logger.info("[ALERT_DEBUG] Message preview: %s...", message[:100])
 
@@ -76,7 +82,7 @@ def send_alert(message: str, level: str = "INFO", cooldown_key: Optional[str] = 
         logger.error("[ALERT_DEBUG] TELEGRAM_TOKEN is None/empty - SKIPPING")
         return False
     if not alert_channel_id:
-        logger.error("[ALERT_DEBUG] ALERT_CHANNEL_ID is None/empty - SKIPPING")
+        logger.error("[ALERT_DEBUG] error_channel_ID is None/empty - SKIPPING")
         return False
 
     if level == "DEPLOY":
