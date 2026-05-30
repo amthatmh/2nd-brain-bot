@@ -186,6 +186,81 @@ class TestHabitLogQueries(unittest.TestCase):
             )
 
 
+class _JsonRequest:
+    method = "POST"
+
+    def __init__(self, body):
+        self._body = body
+
+    async def json(self):
+        return self._body
+
+
+class TestHabitKitHttpLogging(unittest.IsolatedAsyncioTestCase):
+    async def asyncTearDown(self):
+        from second_brain.healthtrack import routes
+
+        routes.STATE.habits_data_cache.clear()
+        routes._habits_data_stale_cache.clear()
+
+    async def test_log_habit_updates_stale_cache_when_already_logged(self):
+        from second_brain.healthtrack import routes
+
+        page_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        routes.STATE.habits_data_cache["payload"] = {
+            "dates": ["2026-05-29"],
+            "todayDate": "2026-05-29",
+            "habits": [{"id": page_id, "days": [0], "todayDone": False, "dayStreak": 0}],
+        }
+
+        with patch.object(routes, "already_logged_today", return_value=True) as already_logged, \
+            patch.object(routes, "create_habit_log") as create_log, \
+            patch.object(routes, "_schedule_habits_data_refresh") as schedule_refresh, \
+            patch("second_brain.healthtrack.routes.datetime") as mock_datetime:
+            mock_datetime.now.return_value = real_datetime(2026, 5, 29, tzinfo=timezone.utc)
+            response = await routes.log_habit_http_handler(
+                _JsonRequest({"habitId": page_id}),
+                notion=MagicMock(),
+                habit_cache={"Read": {"page_id": page_id, "name": "Read"}},
+                log_db="log-db",
+                habit_db="habit-db",
+                streak_db="streak-db",
+                tz=timezone.utc,
+                weeks_history=24,
+            )
+
+        self.assertEqual(response.status, 200)
+        payload = routes.STATE.habits_data_cache.get("payload")
+        self.assertTrue(payload["habits"][0]["todayDone"])
+        self.assertEqual(payload["habits"][0]["days"], [1])
+        already_logged.assert_called_once()
+        create_log.assert_not_called()
+        schedule_refresh.assert_called_once()
+
+    async def test_log_habit_accepts_undashed_page_id_from_web(self):
+        from second_brain.healthtrack import routes
+
+        page_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
+        with patch.object(routes, "already_logged_today", return_value=False), \
+            patch.object(routes, "create_habit_log") as create_log, \
+            patch.object(routes, "_schedule_habits_data_refresh"):
+            response = await routes.log_habit_http_handler(
+                _JsonRequest({"habitId": page_id.replace("-", "")}),
+                notion=MagicMock(),
+                habit_cache={"Read": {"page_id": page_id, "name": "Read"}},
+                log_db="log-db",
+                habit_db="habit-db",
+                streak_db="streak-db",
+                tz=timezone.utc,
+                weeks_history=24,
+            )
+
+        self.assertEqual(response.status, 200)
+        create_log.assert_called_once()
+        self.assertEqual(create_log.call_args.args[2], page_id)
+
+
 class TestShowAfterGating(unittest.TestCase):
     def _load_single_habit(self, main, *, show_after):
         props = {

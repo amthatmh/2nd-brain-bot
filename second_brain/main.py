@@ -66,7 +66,11 @@ from second_brain.notes.flow import (
 )
 from second_brain.ai import classify as ai_classify
 from second_brain.ai.client import get_claude_client
-from second_brain.healthtrack.routes import register_health_routes
+from second_brain.healthtrack.routes import (
+    clear_habits_data_caches,
+    prewarm_habits_data_cache,
+    register_health_routes,
+)
 from second_brain.healthtrack import config as health_config
 from second_brain.healthtrack.steps import (
     _find_steps_habit_page_id,
@@ -196,7 +200,11 @@ from second_brain.rules.engine import RuleEngine
 from second_brain.state import STATE
 from second_brain.utils import ExpiringDict, local_today
 from second_brain.http_utils import cors_headers
-from second_brain.healthtrack.dashboard import create_health_dashboard_handler, load_steps_threshold_from_env_db as load_dashboard_steps_threshold
+from second_brain.healthtrack.dashboard import (
+    create_health_dashboard_handler,
+    load_steps_threshold_from_env_db as load_dashboard_steps_threshold,
+    prewarm_health_dashboard_cache,
+)
 from second_brain.services import task_parsing as task_parsing_service
 from second_brain.services import note_utils as note_utils_service
 from second_brain.handlers.commands import CommandHandlers
@@ -337,7 +345,7 @@ wx._loc.location = WEATHER_LOCATION
 # ── Cache TTLs ───────────────────────────────────────────────────────────────
 _PREVIEW_CACHE_TTL = 900    # 15 min — task preview confirmations
 _CF_PENDING_TTL = 3600      # 1 hr  — crossfit in-progress flow state
-_HABITS_DATA_TTL = 300      # 5 min — HTTP /habits-data endpoint cache
+_HABITS_DATA_TTL = 3600     # 1 hr — HTTP /habits-data endpoint cache
 
 # ── In-memory state ──────────────────────────────────────────────────────────
 digest_map: dict[int, list[dict]] = STATE.digest_map
@@ -358,6 +366,7 @@ STATE.done_picker_counter = 0
 STATE.todo_picker_counter = 0
 STATE.v10_counter = 0
 STATE.habits_data_cache = ExpiringDict(ttl_seconds=_HABITS_DATA_TTL)
+clear_habits_data_caches()
 STATE.mute_until = None
 STATE.signoff_notes_today = {"second_brain": "", "brian_ii": ""}
 STATE.claude_activity_today = []
@@ -1794,6 +1803,29 @@ async def start_http_server() -> None:
     await site.start()
     log.info("HTTP server started on port %s", HTTP_PORT)
 
+
+async def refresh_public_dashboard_caches() -> None:
+    await prewarm_habits_data_cache(
+        notion=notion,
+        habit_cache=habit_cache,
+        log_db=NOTION_LOG_DB,
+        habit_db=NOTION_HABIT_DB,
+        streak_db=NOTION_STREAK_DB,
+        tz=TZ,
+        weeks_history=WEEKS_HISTORY,
+        query_all_fn=notion_query_all,
+        extract_date_fn=extract_date_only,
+        datetime_cls=datetime,
+    )
+    if NOTION_HEALTH_METRICS_DB:
+        await prewarm_health_dashboard_cache(
+            notion=notion,
+            health_metrics_db_id=NOTION_HEALTH_METRICS_DB,
+            habit_log_db_id=NOTION_LOG_DB,
+            tz=TZ,
+            ranges=("1m", "3m", "6m", "all"),
+        )
+
 # ══════════════════════════════════════════════════════════════════════════════
 # STARTUP HELPERS — schema validation + alert
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2130,6 +2162,7 @@ async def post_init(app: Application) -> None:
     global _app_bot
     _app_bot = app.bot
     await start_http_server()
+    asyncio.create_task(refresh_public_dashboard_caches())
     scheduler = AsyncIOScheduler(timezone=TZ)
     scheduler.add_listener(_scheduler_event_listener, EVENT_JOB_ERROR | EVENT_JOB_MISSED)
     _scheduler = scheduler
@@ -2242,6 +2275,13 @@ async def post_init(app: Application) -> None:
             _tracked_utility_manager_handler(
                 "run_recurring_check",
                 lambda bot: run_recurring_check(bot),
+            ),
+        )
+        utility_manager.register_handler(
+            "refresh_public_dashboard_caches",
+            _tracked_utility_manager_handler(
+                "refresh_public_dashboard_caches",
+                lambda bot: refresh_public_dashboard_caches(),
             ),
         )
 
