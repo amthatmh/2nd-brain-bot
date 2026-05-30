@@ -61,11 +61,16 @@ When adding generic health metrics (/api/v1/health/export for UV, metrics, etc.)
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import json
 import logging
+import os
 import re
+from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
 
 from aiohttp import web
 
@@ -101,6 +106,34 @@ log = logging.getLogger(__name__)
 
 
 _last_steps_webhook: dict = {}
+_HABITS_DATA_STALE_SECONDS = 24 * 3600
+_habits_data_stale_cache: dict[str, Any] = {}
+_habits_data_refresh_task: asyncio.Task | None = None
+_HABITS_CACHE_FILENAME = "habitkit-habits-data.json"
+
+
+def clear_habits_data_caches(*, delete_disk: bool = False) -> None:
+    STATE.habits_data_cache.clear()
+    _habits_data_stale_cache.clear()
+    if delete_disk:
+        try:
+            _dashboard_cache_path(_HABITS_CACHE_FILENAME).unlink(missing_ok=True)
+        except Exception as exc:  # noqa: BLE001 - cache cleanup is best-effort.
+            log.debug("habits_data_cache: disk cleanup skipped: %s", exc)
+
+
+def _dashboard_cache_path(filename: str) -> Path:
+    cache_root = os.environ.get("SECOND_BRAIN_CACHE_DIR")
+    if not cache_root:
+        pytest_test = os.environ.get("PYTEST_CURRENT_TEST")
+        if pytest_test:
+            safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "-", pytest_test).strip("-")[:120]
+            cache_root = f"/tmp/second-brain-cache-pytest/{safe_name}"
+        else:
+            cache_root = "/tmp/second-brain-cache"
+    cache_dir = Path(cache_root)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / filename
 
 
 def _coerce_step_count(value) -> int | None:
@@ -299,6 +332,287 @@ def _parse_all_dates_from_payload(body: dict) -> list[tuple[int, str]]:
     return []
 
 
+def _build_habits_data_payload(
+    *,
+    habit_cache: dict[str, dict],
+    log_db: str,
+    habit_db: str,
+    streak_db: str,
+    tz,
+    weeks_history: int,
+    query_all_fn,
+    extract_date_fn,
+    datetime_cls,
+) -> dict[str, Any]:
+    now = datetime_cls.now(tz)
+    habits_sorted = sorted(habit_cache.values(), key=lambda h: h["sort"])
+    today = now.date()
+    num_days = weeks_history * 7
+    start_dt = today - timedelta(days=num_days - 1)
+
+    results = query_all_fn(
+        log_db,
+        filter={
+            "and": [
+                {"property": "Completed", "checkbox": {"equals": True}},
+                {"property": "Date", "date": {"on_or_after": start_dt.isoformat()}},
+                {"property": "Date", "date": {"on_or_before": today.isoformat()}},
+            ]
+        },
+    )
+
+    logged: set[tuple[str, str]] = set()
+    for page in results:
+        p = page["properties"]
+        d = p.get("Date", {}).get("date", {})
+        date_str = extract_date_fn(d.get("start") if d else None)
+        rels = p.get("Habit", {}).get("relation", [])
+        for rel in rels:
+            if date_str:
+                logged.add((rel["id"].replace("-", ""), date_str))
+
+    current_monday = today - timedelta(days=today.weekday())
+    start_monday = start_dt - timedelta(days=start_dt.weekday())
+    habit_ids = [habit["page_id"].replace("-", "") for habit in habits_sorted]
+    streaks_by_habit: dict[str, dict[date, bool]] = defaultdict(dict)
+    if streak_db:
+        streak_results = query_all_fn(
+            streak_db,
+            filter={
+                "and": [
+                    {"property": "Week Of", "date": {"on_or_after": start_monday.isoformat()}},
+                    {"property": "Week Of", "date": {"before": current_monday.isoformat()}},
+                ]
+            },
+        )
+        for streak_row in streak_results:
+            props = streak_row.get("properties", {})
+            week_date_raw = extract_date_fn(
+                props.get("Week Of", {}).get("date", {}).get("start"),
+            )
+            if not week_date_raw:
+                continue
+            try:
+                week_date = datetime_cls.fromisoformat(week_date_raw).date()
+            except ValueError:
+                continue
+            goal_met = bool(props.get("Goal Met", {}).get("checkbox"))
+            relation_ids = [
+                rel.get("id", "").replace("-", "")
+                for rel in props.get("Habit", {}).get("relation", [])
+                if rel.get("id")
+            ]
+            if not relation_ids and len(habit_ids) == 1:
+                relation_ids = habit_ids
+            for habit_id in relation_ids:
+                if habit_id:
+                    streaks_by_habit[habit_id][week_date] = (
+                        streaks_by_habit[habit_id].get(week_date, False) or goal_met
+                    )
+
+    all_dates = [(start_dt + timedelta(days=i)).isoformat() for i in range(num_days)]
+    habits_out = []
+    for habit in habits_sorted:
+        pid = habit["page_id"].replace("-", "")
+        days = [1 if (pid, d) in logged else 0 for d in all_dates]
+        day_streak = 0
+        for done in reversed(days):
+            if done != 1:
+                break
+            day_streak += 1
+
+        streak_weeks_by_date = dict(streaks_by_habit.get(pid, {}))
+        target = habit.get("freq_per_week")
+        if not isinstance(target, int) or target <= 0:
+            label = habit.get("frequency_label") or ""
+            match = re.search(r"\d+", label)
+            target = int(match.group(0)) if match else None
+
+        weekly_counts: dict[date, int] = {}
+        for date_str, done in zip(all_dates, days):
+            if done != 1:
+                continue
+            try:
+                day_date = datetime_cls.fromisoformat(date_str).date()
+            except ValueError:
+                continue
+            week_of = day_date - timedelta(days=day_date.weekday())
+            weekly_counts[week_of] = weekly_counts.get(week_of, 0) + 1
+
+        if target and target > 0:
+            week_cursor = start_monday
+            while week_cursor < current_monday:
+                completed = weekly_counts.get(week_cursor, 0)
+                streak_weeks_by_date[week_cursor] = completed >= target
+                week_cursor += timedelta(days=7)
+
+        streak_weeks = sorted(
+            (
+                (week_date, goal_met)
+                for week_date, goal_met in streak_weeks_by_date.items()
+                if week_date < current_monday
+            ),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        week_streak = 0
+        expected_week: date = current_monday - timedelta(days=7)
+        for week_date, goal_met in streak_weeks:
+            if week_date != expected_week:
+                break
+            if not goal_met:
+                break
+            week_streak += 1
+            expected_week = week_date - timedelta(days=7)
+        habits_out.append({
+            "id": habit["page_id"],
+            "name": habit["name"],
+            "icon": habit.get("icon"),
+            "color": habit.get("color") or "pink",
+            "description": habit.get("description") or "",
+            "frequency": habit.get("frequency_label") or "",
+            "sort": habit.get("sort"),
+            "days": days,
+            "todayDone": days[-1] == 1,
+            "dayStreak": day_streak,
+            "weekStreak": week_streak,
+        })
+
+    return {
+        "generated": now.isoformat(),
+        "habits": habits_out,
+        "dates": all_dates,
+        "todayDate": today.isoformat(),
+        "weeksHistory": weeks_history,
+    }
+
+
+def _store_habits_data_payload(payload: dict[str, Any], *, generated_at) -> None:
+    STATE.habits_data_cache["payload"] = payload
+    _habits_data_stale_cache["payload"] = payload
+    _habits_data_stale_cache["generated_at"] = generated_at
+    try:
+        _dashboard_cache_path(_HABITS_CACHE_FILENAME).write_text(
+            json.dumps({"payload": payload, "generated_at": generated_at.isoformat()}),
+            encoding="utf-8",
+        )
+    except Exception as exc:  # noqa: BLE001 - memory cache remains authoritative.
+        log.warning("habits_data_cache: disk write failed: %s", exc)
+
+
+def _load_habits_data_payload_from_disk(*, now, datetime_cls) -> dict[str, Any] | None:
+    try:
+        cache_path = _dashboard_cache_path(_HABITS_CACHE_FILENAME)
+        if not cache_path.exists():
+            return None
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        payload = cached.get("payload")
+        generated_at_raw = cached.get("generated_at")
+        if not isinstance(payload, dict) or not generated_at_raw:
+            return None
+        generated_at = datetime_cls.fromisoformat(generated_at_raw)
+        age = (now - generated_at).total_seconds()
+        if age >= _HABITS_DATA_STALE_SECONDS:
+            return None
+        _habits_data_stale_cache["payload"] = payload
+        _habits_data_stale_cache["generated_at"] = generated_at
+        if age < 3600:
+            STATE.habits_data_cache["payload"] = payload
+        return payload
+    except Exception as exc:  # noqa: BLE001 - disk cache fallback is best-effort.
+        log.warning("habits_data_cache: disk read failed: %s", exc)
+        return None
+
+
+async def _refresh_habits_data_cache(
+    *,
+    notion,
+    habit_cache: dict[str, dict],
+    log_db: str,
+    habit_db: str,
+    streak_db: str,
+    tz,
+    weeks_history: int,
+    query_all_fn,
+    extract_date_fn,
+    datetime_cls,
+) -> dict[str, Any]:
+    payload = await asyncio.to_thread(
+        _build_habits_data_payload,
+        habit_cache=habit_cache,
+        log_db=log_db,
+        habit_db=habit_db,
+        streak_db=streak_db,
+        tz=tz,
+        weeks_history=weeks_history,
+        query_all_fn=query_all_fn,
+        extract_date_fn=extract_date_fn,
+        datetime_cls=datetime_cls,
+    )
+    _store_habits_data_payload(payload, generated_at=datetime_cls.now(tz))
+    return payload
+
+
+def _schedule_habits_data_refresh(**kwargs: Any) -> None:
+    global _habits_data_refresh_task
+    if _habits_data_refresh_task and not _habits_data_refresh_task.done():
+        return
+
+    async def _run() -> None:
+        try:
+            await _refresh_habits_data_cache(**kwargs)
+            log.info("habits_data_cache: refreshed in background")
+        except Exception as exc:  # noqa: BLE001 - background refresh should not crash server.
+            log.warning("habits_data_cache: background refresh failed: %s", exc)
+
+    _habits_data_refresh_task = asyncio.create_task(_run())
+
+
+async def prewarm_habits_data_cache(**kwargs: Any) -> None:
+    """Warm HabitKit data after startup without blocking HTTP serving."""
+    try:
+        await _refresh_habits_data_cache(**kwargs)
+        log.info("habits_data_cache: prewarmed")
+    except Exception as exc:  # noqa: BLE001 - startup prewarm is best-effort.
+        log.warning("habits_data_cache: prewarm failed: %s", exc)
+
+
+def _mark_habit_logged_in_payload(payload: dict[str, Any], habit_id: str, today: str) -> dict[str, Any]:
+    normalized_habit_id = habit_id.replace("-", "")
+    updated = copy.deepcopy(payload)
+    dates = updated.get("dates") or []
+    try:
+        today_index = dates.index(today)
+    except ValueError:
+        return updated
+    for habit in updated.get("habits", []):
+        if str(habit.get("id", "")).replace("-", "") != normalized_habit_id:
+            continue
+        days = habit.get("days") or []
+        if today_index < len(days):
+            days[today_index] = 1
+        habit["todayDone"] = True
+        day_streak = 0
+        for done in reversed(days):
+            if done != 1:
+                break
+            day_streak += 1
+        habit["dayStreak"] = day_streak
+        break
+    return updated
+
+
+def _mark_habit_logged_in_caches(habit_id: str, *, tz) -> None:
+    today = datetime.now(tz).date().isoformat()
+    generated_at = datetime.now(tz)
+    payload = STATE.habits_data_cache.get("payload") or _habits_data_stale_cache.get("payload")
+    if not payload:
+        return
+    updated = _mark_habit_logged_in_payload(payload, habit_id, today)
+    updated["generated"] = generated_at.isoformat()
+    _store_habits_data_payload(updated, generated_at=generated_at)
+
+
 
 async def habits_data_handler(
     request: web.Request,
@@ -321,135 +635,57 @@ async def habits_data_handler(
         return web.Response(
             text=json.dumps(STATE.habits_data_cache["payload"]),
             content_type="application/json",
-            headers=cors_headers(),
+            headers={**cors_headers(), "X-Second-Brain-Cache": "fresh"},
         )
+
+    disk_payload = _load_habits_data_payload_from_disk(now=now, datetime_cls=datetime_cls)
+    if disk_payload and STATE.habits_data_cache.get("payload"):
+        return web.Response(
+            text=json.dumps(disk_payload),
+            content_type="application/json",
+            headers={**cors_headers(), "X-Second-Brain-Cache": "disk-fresh"},
+        )
+
+    stale_payload = _habits_data_stale_cache.get("payload")
+    stale_generated_at = _habits_data_stale_cache.get("generated_at")
+    if stale_payload and stale_generated_at:
+        age = (now - stale_generated_at).total_seconds()
+        if age < _HABITS_DATA_STALE_SECONDS:
+            _schedule_habits_data_refresh(
+                notion=notion,
+                habit_cache=habit_cache,
+                log_db=log_db,
+                habit_db=habit_db,
+                streak_db=streak_db,
+                tz=tz,
+                weeks_history=weeks_history,
+                query_all_fn=query_all_fn,
+                extract_date_fn=extract_date_fn,
+                datetime_cls=datetime_cls,
+            )
+            return web.Response(
+                text=json.dumps(stale_payload),
+                content_type="application/json",
+                headers={**cors_headers(), "X-Second-Brain-Cache": "stale-refreshing"},
+            )
 
     try:
-        habits_sorted = sorted(habit_cache.values(), key=lambda h: h["sort"])
-        today    = now.date()
-        num_days = weeks_history * 7
-        start_dt = today - timedelta(days=num_days - 1)
-
-        results = query_all_fn(
-            log_db,
-            filter={
-                "and": [
-                    {"property": "Completed", "checkbox": {"equals": True}},
-                    {"property": "Date", "date": {"on_or_after":  start_dt.isoformat()}},
-                    {"property": "Date", "date": {"on_or_before": today.isoformat()}},
-                ]
-            },
+        payload = await _refresh_habits_data_cache(
+            notion=notion,
+            habit_cache=habit_cache,
+            log_db=log_db,
+            habit_db=habit_db,
+            streak_db=streak_db,
+            tz=tz,
+            weeks_history=weeks_history,
+            query_all_fn=query_all_fn,
+            extract_date_fn=extract_date_fn,
+            datetime_cls=datetime_cls,
         )
-
-        # Build lookup set — strip dashes from relation IDs (Notion returns them without)
-        logged: set[tuple] = set()
-        for page in results:
-            p        = page["properties"]
-            d        = p.get("Date", {}).get("date", {})
-            date_str = extract_date_fn(d.get("start") if d else None)
-            rels     = p.get("Habit", {}).get("relation", [])
-            for rel in rels:
-                if date_str:
-                    logged.add((rel["id"].replace("-", ""), date_str))
-
-        all_dates  = [(start_dt + timedelta(days=i)).isoformat() for i in range(num_days)]
-        habits_out = []
-        for habit in habits_sorted:
-            pid  = habit["page_id"].replace("-", "")
-            days = [1 if (pid, d) in logged else 0 for d in all_dates]
-            day_streak = 0
-            for done in reversed(days):
-                if done != 1:
-                    break
-                day_streak += 1
-            streak_results = query_all_fn(
-                streak_db,
-                filter={"property": "Habit", "relation": {"contains": habit["page_id"]}},
-            )
-            streak_weeks_by_date: dict[date, bool] = {}
-            for streak_row in streak_results:
-                props = streak_row.get("properties", {})
-                week_date_raw = extract_date_fn(
-                    props.get("Week Of", {}).get("date", {}).get("start"),
-                )
-                if not week_date_raw:
-                    continue
-                try:
-                    week_date = datetime_cls.fromisoformat(week_date_raw).date()
-                except ValueError:
-                    continue
-                goal_met = bool(props.get("Goal Met", {}).get("checkbox"))
-                # Keep one status per week, favoring goal_met=True if duplicates exist.
-                streak_weeks_by_date[week_date] = streak_weeks_by_date.get(week_date, False) or goal_met
-
-            target = habit.get("freq_per_week")
-            if not isinstance(target, int) or target <= 0:
-                label = habit.get("frequency_label") or ""
-                match = re.search(r"\d+", label)
-                target = int(match.group(0)) if match else None
-
-            weekly_counts: dict[date, int] = {}
-            for date_str, done in zip(all_dates, days):
-                if done != 1:
-                    continue
-                try:
-                    day_date = datetime_cls.fromisoformat(date_str).date()
-                except ValueError:
-                    continue
-                week_of = day_date - timedelta(days=day_date.weekday())
-                weekly_counts[week_of] = weekly_counts.get(week_of, 0) + 1
-
-            current_monday = today - timedelta(days=today.weekday())
-            if target and target > 0:
-                # For UI display, compute weekly goal attainment directly from logs
-                # using the current target. This keeps streaks correct even when
-                # streak rows are stale/missing or created before target changes.
-                week_cursor = start_dt - timedelta(days=start_dt.weekday())
-                while week_cursor < current_monday:
-                    completed = weekly_counts.get(week_cursor, 0)
-                    streak_weeks_by_date[week_cursor] = completed >= target
-                    week_cursor += timedelta(days=7)
-
-            streak_weeks = sorted(
-                ((week_date, goal_met) for week_date, goal_met in streak_weeks_by_date.items() if week_date < current_monday),
-                key=lambda item: item[0],
-                reverse=True,
-            )
-            week_streak = 0
-            expected_week: date = current_monday - timedelta(days=7)
-            for week_date, goal_met in streak_weeks:
-                if week_date != expected_week:
-                    break
-                if not goal_met:
-                    break
-                week_streak += 1
-                expected_week = week_date - timedelta(days=7)
-            habits_out.append({
-                "id":          habit["page_id"],
-                "name":        habit["name"],
-                "icon":        habit.get("icon"),
-                "color":       habit.get("color") or "pink",
-                "description": habit.get("description") or "",
-                "frequency":   habit.get("frequency_label") or "",
-                "sort":        habit.get("sort"),
-                "days":        days,
-                "todayDone":   days[-1] == 1,
-                "dayStreak":   day_streak,
-                "weekStreak":  week_streak,
-            })
-
-        payload = {
-            "generated":    now.isoformat(),
-            "habits":       habits_out,
-            "dates":        all_dates,
-            "todayDate":    today.isoformat(),
-            "weeksHistory": weeks_history,
-        }
-        STATE.habits_data_cache["payload"] = payload
         return web.Response(
             text=json.dumps(payload),
             content_type="application/json",
-            headers=cors_headers(),
+            headers={**cors_headers(), "X-Second-Brain-Cache": "miss"},
         )
     except Exception as e:
         log.error("/habits-data error: %s", e)
@@ -481,7 +717,16 @@ async def log_habit_http_handler(
                 headers=cors_headers(),
             )
 
-        matched = next((h for h in habit_cache.values() if h["page_id"] == habit_id), None)
+        normalized_habit_id = habit_id.replace("-", "")
+        matched = next(
+            (
+                h
+                for h in habit_cache.values()
+                if h["page_id"] == habit_id
+                or h["page_id"].replace("-", "") == normalized_habit_id
+            ),
+            None,
+        )
         if not matched:
             return web.Response(
                 status=404,
@@ -490,16 +735,50 @@ async def log_habit_http_handler(
                 headers=cors_headers(),
             )
 
-        if already_logged_today(notion, log_db, matched["page_id"], tz):
+        if await asyncio.to_thread(already_logged_today, notion, log_db, matched["page_id"], tz):
+            _mark_habit_logged_in_caches(matched["page_id"], tz=tz)
+            _schedule_habits_data_refresh(
+                notion=notion,
+                habit_cache=habit_cache,
+                log_db=log_db,
+                habit_db=habit_db,
+                streak_db=streak_db,
+                tz=tz,
+                weeks_history=weeks_history,
+                query_all_fn=lambda database_id, **kwargs: query_all(notion, database_id, **kwargs),
+                extract_date_fn=extract_date_only,
+                datetime_cls=datetime,
+            )
+            log.info("habits_data_cache: marked already-logged HabitKit habit and refreshing")
             return web.Response(
                 text=json.dumps({"ok": True, "alreadyLogged": True, "habitName": matched["name"]}),
                 content_type="application/json",
                 headers=cors_headers(),
             )
 
-        create_habit_log(notion, log_db, matched["page_id"], matched["name"], source="🌐 HabitKit")
-        STATE.habits_data_cache.clear()
-        log.info("habits_data_cache: invalidated after HabitKit log")
+        await asyncio.to_thread(
+            create_habit_log,
+            notion,
+            log_db,
+            matched["page_id"],
+            matched["name"],
+            source="🌐 HabitKit",
+            tz=tz,
+        )
+        _mark_habit_logged_in_caches(matched["page_id"], tz=tz)
+        _schedule_habits_data_refresh(
+            notion=notion,
+            habit_cache=habit_cache,
+            log_db=log_db,
+            habit_db=habit_db,
+            streak_db=streak_db,
+            tz=tz,
+            weeks_history=weeks_history,
+            query_all_fn=lambda database_id, **kwargs: query_all(notion, database_id, **kwargs),
+            extract_date_fn=extract_date_only,
+            datetime_cls=datetime,
+        )
+        log.info("habits_data_cache: marked HabitKit log and refreshing")
         return web.Response(
             text=json.dumps({"ok": True, "alreadyLogged": False, "habitName": matched["name"]}),
             content_type="application/json",

@@ -10,9 +10,12 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
+import asyncio
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from aiohttp import web
@@ -26,6 +29,9 @@ VALID_RANGES = {"1m", "3m", "6m", "all"}
 RANGE_DAYS = {"1m": 30, "3m": 90, "6m": 180}
 _health_dashboard_cache: dict = {}  # key: range string → {payload, generated_at}
 _HEALTH_CACHE_TTL_SECONDS = 3600  # 1 hour
+_HEALTH_STALE_SECONDS = 24 * 3600
+_health_dashboard_refresh_tasks: dict[str, asyncio.Task] = {}
+_HEALTH_CACHE_PREFIX = "health-dashboard"
 DEFAULT_STEPS_THRESHOLD = 10000
 STEPS_THRESHOLD = DEFAULT_STEPS_THRESHOLD
 
@@ -423,6 +429,140 @@ def build_dashboard_payload(
     }
 
 
+def _cache_age_seconds(cached: dict[str, Any] | None, now: datetime) -> float | None:
+    if not cached or not cached.get("generated_at"):
+        return None
+    return (now - cached["generated_at"]).total_seconds()
+
+
+def _dashboard_cache_path(filename: str) -> Path:
+    cache_root = os.environ.get("SECOND_BRAIN_CACHE_DIR")
+    if not cache_root:
+        pytest_test = os.environ.get("PYTEST_CURRENT_TEST")
+        if pytest_test:
+            safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "-", pytest_test).strip("-")[:120]
+            cache_root = f"/tmp/second-brain-cache-pytest/{safe_name}"
+        else:
+            cache_root = "/tmp/second-brain-cache"
+    cache_dir = Path(cache_root)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / filename
+
+
+def _health_cache_filename(range_value: str) -> str:
+    return f"{_HEALTH_CACHE_PREFIX}-{range_value}.json"
+
+
+def _store_dashboard_cache(range_value: str, payload: dict[str, Any], *, generated_at: datetime) -> None:
+    _health_dashboard_cache[range_value] = {"payload": payload, "generated_at": generated_at}
+    try:
+        _dashboard_cache_path(_health_cache_filename(range_value)).write_text(
+            json.dumps({"payload": payload, "generated_at": generated_at.isoformat()}),
+            encoding="utf-8",
+        )
+    except Exception as exc:  # noqa: BLE001 - memory cache remains authoritative.
+        log.warning("health_dashboard: disk write failed for %s: %s", range_value, exc)
+
+
+def _load_dashboard_cache_from_disk(range_value: str, *, now: datetime) -> dict[str, Any] | None:
+    try:
+        cache_path = _dashboard_cache_path(_health_cache_filename(range_value))
+        if not cache_path.exists():
+            return None
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        payload = cached.get("payload")
+        generated_at_raw = cached.get("generated_at")
+        if not isinstance(payload, dict) or not generated_at_raw:
+            return None
+        generated_at = datetime.fromisoformat(generated_at_raw)
+        age = (now - generated_at).total_seconds()
+        if age >= _HEALTH_STALE_SECONDS:
+            return None
+        _health_dashboard_cache[range_value] = {"payload": payload, "generated_at": generated_at}
+        return payload
+    except Exception as exc:  # noqa: BLE001 - disk cache fallback is best-effort.
+        log.warning("health_dashboard: disk read failed for %s: %s", range_value, exc)
+        return None
+
+
+async def _refresh_dashboard_cache(
+    *,
+    notion,
+    health_metrics_db_id: str,
+    habit_log_db_id: str,
+    range_value: str,
+    tz,
+) -> dict[str, Any]:
+    payload = await asyncio.to_thread(
+        build_dashboard_payload,
+        notion=notion,
+        health_metrics_db_id=health_metrics_db_id,
+        habit_log_db_id=habit_log_db_id,
+        range_value=range_value,
+        tz=tz,
+    )
+    _store_dashboard_cache(range_value, payload, generated_at=datetime.now(tz))
+    return payload
+
+
+def _schedule_dashboard_refresh(
+    *,
+    notion,
+    health_metrics_db_id: str,
+    habit_log_db_id: str,
+    range_value: str,
+    tz,
+) -> None:
+    task = _health_dashboard_refresh_tasks.get(range_value)
+    if task and not task.done():
+        return
+
+    async def _run() -> None:
+        try:
+            await _refresh_dashboard_cache(
+                notion=notion,
+                health_metrics_db_id=health_metrics_db_id,
+                habit_log_db_id=habit_log_db_id,
+                range_value=range_value,
+                tz=tz,
+            )
+            log.info("health_dashboard: refreshed %s cache in background", range_value)
+        except Exception as exc:  # noqa: BLE001 - background refresh should not crash server.
+            log.warning("health_dashboard: background refresh failed for %s: %s", range_value, exc)
+
+    _health_dashboard_refresh_tasks[range_value] = asyncio.create_task(_run())
+
+
+async def prewarm_health_dashboard_cache(
+    *,
+    notion,
+    health_metrics_db_id: str,
+    habit_log_db_id: str,
+    tz,
+    ranges: tuple[str, ...] = ("1m", "3m", "6m", "all"),
+) -> None:
+    """Warm health dashboard responses after startup without blocking HTTP serving."""
+    results = await asyncio.gather(
+        *(
+            _refresh_dashboard_cache(
+                notion=notion,
+                health_metrics_db_id=health_metrics_db_id,
+                habit_log_db_id=habit_log_db_id,
+                range_value=range_value,
+                tz=tz,
+            )
+            for range_value in ranges
+            if range_value in VALID_RANGES
+        ),
+        return_exceptions=True,
+    )
+    errors = [result for result in results if isinstance(result, Exception)]
+    if errors:
+        log.warning("health_dashboard: prewarm completed with %d error(s)", len(errors))
+    else:
+        log.info("health_dashboard: prewarmed %d range(s)", len(results))
+
+
 def create_health_dashboard_handler(*, notion, health_metrics_db_id: str, habit_log_db_id: str, tz):
     if not health_metrics_db_id:
         raise RuntimeError("NOTION_HEALTH_METRICS_DB is required for /api/health-dashboard")
@@ -440,28 +580,43 @@ def create_health_dashboard_handler(*, notion, health_metrics_db_id: str, habit_
 
         now = datetime.now(tz)
         cached = _health_dashboard_cache.get(range_value)
-        if cached and cached.get("generated_at"):
-            age = (now - cached["generated_at"]).total_seconds()
-            if age < _HEALTH_CACHE_TTL_SECONDS:
-                return web.Response(
-                    text=json.dumps(cached["payload"]),
-                    content_type="application/json",
-                    headers=cors_headers(),
-                )
+        if not cached:
+            _load_dashboard_cache_from_disk(range_value, now=now)
+            cached = _health_dashboard_cache.get(range_value)
+        age = _cache_age_seconds(cached, now)
+        if cached and age is not None and age < _HEALTH_CACHE_TTL_SECONDS:
+            return web.Response(
+                text=json.dumps(cached["payload"]),
+                content_type="application/json",
+                headers={**cors_headers(), "X-Second-Brain-Cache": "fresh"},
+            )
 
-        try:
-            payload = build_dashboard_payload(
+        if cached and age is not None and age < _HEALTH_STALE_SECONDS:
+            _schedule_dashboard_refresh(
                 notion=notion,
                 health_metrics_db_id=health_metrics_db_id,
                 habit_log_db_id=habit_log_db_id,
                 range_value=range_value,
                 tz=tz,
             )
-            _health_dashboard_cache[range_value] = {"payload": payload, "generated_at": now}
+            return web.Response(
+                text=json.dumps(cached["payload"]),
+                content_type="application/json",
+                headers={**cors_headers(), "X-Second-Brain-Cache": "stale-refreshing"},
+            )
+
+        try:
+            payload = await _refresh_dashboard_cache(
+                notion=notion,
+                health_metrics_db_id=health_metrics_db_id,
+                habit_log_db_id=habit_log_db_id,
+                range_value=range_value,
+                tz=tz,
+            )
             return web.Response(
                 text=json.dumps(payload),
                 content_type="application/json",
-                headers=cors_headers(),
+                headers={**cors_headers(), "X-Second-Brain-Cache": "miss"},
             )
         except Exception as exc:  # noqa: BLE001 - HTTP handler returns JSON errors.
             log.exception("/api/health-dashboard error: %s", exc)

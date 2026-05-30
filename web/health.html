@@ -83,31 +83,41 @@ document.querySelectorAll('.range button').forEach(btn=>btn.addEventListener('cl
 async function prefetchAll(){
   document.getElementById('errorBanner').style.display='none';
   renderSkeleton();
-  await Promise.allSettled(
-    RANGES.map(range =>
-      fetch(`${API_BASE}/api/health-dashboard?range=${range}`)
-        .then(async res => {
-          const data = await res.json();
-          if(!res.ok) throw new Error(data.message || `HTTP ${res.status}`);
-          cache[range] = data;
-        })
-        .catch(err => console.warn(`Failed to fetch range ${range}:`, err))
-    )
-  );
-  if(cache['1m']){
-    renderDashboard(cache['1m']);
-  }else{
+  try{
+    const data = await fetchHealthRange('1m');
+    renderDashboard(data);
+  }catch(err){
+    console.error(err);
     showErrorState('Could not load health data. Try refreshing.');
   }
+  RANGES.filter(range => range !== '1m').forEach(range => {
+    fetchHealthRange(range).catch(err => console.warn(`Failed to fetch range ${range}:`, err));
+  });
+}
+async function fetchWithTimeout(url, options = {}, timeoutMs = 5000){
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try{
+    return await fetch(url, {...options, signal: controller.signal});
+  }catch(e){
+    if(e.name === 'AbortError') throw new Error('Request timed out');
+    throw e;
+  }finally{
+    clearTimeout(timeout);
+  }
+}
+async function fetchHealthRange(range){
+  const res = await fetchWithTimeout(`${API_BASE}/api/health-dashboard?range=${range}`, {}, 5000);
+  const data = await res.json();
+  if(!res.ok) throw new Error(data.message || `HTTP ${res.status}`);
+  cache[range] = data;
+  return data;
 }
 async function fetchDashboard(range='1m'){
   document.getElementById('errorBanner').style.display='none';
   renderSkeleton();
   try{
-    const res = await fetch(`${API_BASE}/api/health-dashboard?range=${range}`);
-    const data = await res.json();
-    if(!res.ok) throw new Error(data.message || `HTTP ${res.status}`);
-    cache[range] = data;
+    const data = await fetchHealthRange(range);
     renderDashboard(data);
   }catch(err){console.error(err);showErrorState('Could not load data for this range.');}
 }

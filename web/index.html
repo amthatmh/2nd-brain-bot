@@ -219,6 +219,19 @@ const API_URL     = `${API_BASE}/habits-data`;
 const LOG_API_URL = `${API_BASE}/log-habit`;
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = 20000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error('Request timed out');
+    throw e;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
   document.getElementById('theme-toggle').textContent = theme === 'dark' ? '☀️' : '🌙';
@@ -242,12 +255,13 @@ async function logHabitFromWeb(habit, triggerEl) {
   triggerEl.textContent = '…';
   triggerEl.disabled = true;
   try {
-    const res = await fetch(LOG_API_URL, {
+    const res = await fetchWithTimeout(LOG_API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ habitId: habit.id }),
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${res.status}`);
     triggerEl.textContent = '✅';
     await loadData();
   } catch (e) {
@@ -290,8 +304,9 @@ function renderSkeleton() {
 
 async function loadData() {
   try {
+    renderSkeleton();
     const url = `${API_URL}?t=${Date.now()}`;
-    const res  = await fetch(url, { cache: 'no-store' });
+    const res  = await fetchWithTimeout(url, { cache: 'no-store' }, 15000);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     render(data);
