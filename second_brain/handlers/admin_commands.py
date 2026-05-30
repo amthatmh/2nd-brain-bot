@@ -15,6 +15,16 @@ from utils.alerts import send_alert
 log = logging.getLogger(__name__)
 
 
+def _error_channel_id() -> str:
+    return (
+        os.getenv("error_channel_ID")
+        or os.getenv("ERROR_CHANNEL_ID")
+        or os.getenv("ALERT_CHANNEL_ID")
+        or os.getenv("SYSTEM_LOGS_CHAT_ID")
+        or ""
+    ).strip()
+
+
 def _admin_chat_id() -> int | None:
     telegram_chat_id_raw = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     if not telegram_chat_id_raw:
@@ -54,14 +64,14 @@ async def test_channel_send(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text("❌ Unauthorized")
         return
 
-    channel_id = os.getenv("ALERT_CHANNEL_ID")
+    channel_id = _error_channel_id()
     bot_token = os.getenv("TELEGRAM_TOKEN")
     token_preview = f"{bot_token[:10]}..." if bot_token else "missing"
 
     log.info("[TEST_CHANNEL] channel_id=%s, bot_token=%s", channel_id, token_preview)
 
     if not channel_id:
-        await update.message.reply_text("❌ ALERT_CHANNEL_ID is not configured.")
+        await update.message.reply_text("❌ error_channel_ID is not configured.")
         return
     if not bot_token:
         await update.message.reply_text("❌ TELEGRAM_TOKEN is not configured.")

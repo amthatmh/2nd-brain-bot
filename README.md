@@ -206,7 +206,7 @@ Telegram Update
 | `CLAUDE_MODEL` | `claude-sonnet-4-6` | Anthropic model for classification |
 | `CLAUDE_MAX_TOKENS` | `200` | Token cap for classification responses |
 | `CLAUDE_PARSE_MAX_TOKENS` | `4000` | Token cap for parsing responses |
-| `ALERT_CHANNEL_ID` | — | Telegram channel ID for operational alerts |
+| `error_channel_ID` | — | Telegram channel/group ID for warnings, errors, failures, and operational alerts |
 | `TELEGRAM_ALERT_THREAD_ID` | — | Thread ID within alert channel |
 | `NOTION_BOOT_LOG_DB` | — | Notion DB for boot log entries |
 | `ENV_DB_ID` | — | Notion DB for runtime environment config |

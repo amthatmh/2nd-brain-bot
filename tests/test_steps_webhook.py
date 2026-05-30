@@ -3,11 +3,24 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+
+os.environ.setdefault("TELEGRAM_TOKEN", "x")
+os.environ.setdefault("TELEGRAM_CHAT_ID", "1")
+os.environ.setdefault("ANTHROPIC_API_KEY", "x")
+os.environ.setdefault("NOTION_TOKEN", "x")
+os.environ.setdefault("NOTION_DB_ID", "x")
+os.environ.setdefault("NOTION_HABIT_DB", "x")
+os.environ.setdefault("NOTION_LOG_DB", "x")
+os.environ.setdefault("NOTION_NOTES_DB", "x")
+os.environ.setdefault("NOTION_DIGEST_SELECTOR_DB", "x")
+os.environ.setdefault("NOTION_STREAK_DB", "x")
 
 from second_brain.healthtrack.routes import register_health_routes
 
@@ -80,8 +93,10 @@ class TestStepsWebhook(unittest.IsolatedAsyncioTestCase):
         client = TestClient(TestServer(app))
         await client.start_server()
         try:
+            fake_config = SimpleNamespace(MY_CHAT_ID=123, ERROR_CHANNEL_ID=456)
             with patch("second_brain.healthtrack.routes.WEBHOOK_SECRET", "secret"), \
-                 patch("second_brain.healthtrack.routes.handle_steps_sync", new_callable=AsyncMock) as sync_mock:
+                 patch("second_brain.healthtrack.routes.handle_steps_sync", new_callable=AsyncMock) as sync_mock, \
+                 patch.dict("sys.modules", {"second_brain.config": fake_config}):
                 sync_mock.return_value = {
                     "action": "error",
                     "reason": "notion_create_failed",
@@ -103,7 +118,7 @@ class TestStepsWebhook(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 200, body)
         bot.send_message.assert_awaited_once()
         kwargs = bot.send_message.await_args.kwargs
-        self.assertEqual(kwargs["chat_id"], 1)
+        self.assertEqual(kwargs["chat_id"], 456)
         self.assertIn("Steps webhook Notion upsert failed", kwargs["text"])
         self.assertIn("notion_create_failed", kwargs["text"])
 

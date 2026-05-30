@@ -1807,7 +1807,7 @@ async def _try_send_telegram(bot, text: str) -> None:
             "parse_mode": "Markdown",
         }
         if ALERT_CHAT_ID is None:
-            log.error("Could not send operational alert via Telegram: ALERT_CHANNEL_ID is not configured")
+            log.error("Could not send operational alert via Telegram: error_channel_ID is not configured")
             return
         if ALERT_THREAD_ID is not None:
             kwargs["message_thread_id"] = ALERT_THREAD_ID
