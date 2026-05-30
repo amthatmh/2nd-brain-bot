@@ -520,10 +520,15 @@ async def handle_message_text(
     if context.user_data.get("awaiting_location"):
         if _main().wx.set_location_smart(text, _claude()):
             context.user_data["awaiting_location"] = False
-            await message.reply_text(
-                f"📍 Location updated to {_main().wx._loc.location}."
-            )
             _main().wx.save_location_state(_main().wx._loc.location)
+            from second_brain.notion.env_db import get_env_value as _get_env_value
+            tz_str = _get_env_value("TIMEZONE")
+            if tz_str:
+                _main()._apply_tz(tz_str)
+            reply = f"📍 Location updated to {_main().wx._loc.location}."
+            if tz_str:
+                reply += f" Timezone: {tz_str}."
+            await message.reply_text(reply)
             try:
                 await message.reply_text(
                     await _main().handle_weather(_main().wx._loc.location),
@@ -545,10 +550,15 @@ async def handle_message_text(
         if requested_location:
             if _main().wx.set_location_smart(requested_location, _claude()):
                 context.user_data["awaiting_location"] = False
-                await message.reply_text(
-                    f"📍 Location updated to {_main().wx._loc.location}."
-                )
                 _main().wx.save_location_state(_main().wx._loc.location)
+                from second_brain.notion.env_db import get_env_value as _get_env_value
+                tz_str = _get_env_value("TIMEZONE")
+                if tz_str:
+                    _main()._apply_tz(tz_str)
+                reply = f"📍 Location updated to {_main().wx._loc.location}."
+                if tz_str:
+                    reply += f" Timezone: {tz_str}."
+                await message.reply_text(reply)
                 try:
                     await message.reply_text(
                         await _main().handle_weather(_main().wx._loc.location),

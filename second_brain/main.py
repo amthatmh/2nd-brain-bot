@@ -302,6 +302,42 @@ _rc_h, _rc_m = config.parse_hhmm_env("RECURRING_CHECK_TIME", "7:00")
 def format_reminder_snapshot(mode: str = "priority", limit: int = 8) -> str:
     return fmt.format_reminder_snapshot(notion, NOTION_DB_ID, TZ, mode=mode, limit=limit)
 
+def _apply_tz(tz_str: str) -> "ZoneInfo | None":
+    """Update the active timezone across all module-level TZ bindings."""
+    from zoneinfo import ZoneInfo
+    try:
+        new_tz = ZoneInfo(tz_str)
+    except Exception:
+        log.warning("_apply_tz: invalid timezone %r", tz_str)
+        return None
+    global TZ
+    TZ = new_tz
+    import second_brain.config as _cfg
+    _cfg.TZ = new_tz
+    try:
+        import second_brain.formatters as _fmt
+        _fmt.TZ = new_tz
+    except Exception:
+        pass
+    try:
+        import second_brain.weather as _wx_mod
+        _wx_mod.TZ = new_tz
+    except Exception:
+        pass
+    try:
+        import second_brain.trips as _trips_mod
+        _trips_mod.TZ = new_tz
+    except Exception:
+        pass
+    try:
+        import second_brain.digest as _digest_mod
+        _digest_mod.TZ = new_tz
+    except Exception:
+        pass
+    log.info("TZ applied: %s", tz_str)
+    return new_tz
+
+
 def load_notion_env_config() -> dict[str, str]:
     """
     Read scalar config rows from Notion ENV DB.
@@ -2136,10 +2172,9 @@ async def post_init(app: Application) -> None:
             log.warning("Invalid WEEKS_HISTORY in Notion ENV: %s", env_config["WEEKS_HISTORY"])
 
     if "TIMEZONE" in env_config:
-        try:
-            TZ = ZoneInfo(env_config["TIMEZONE"])
+        if _apply_tz(env_config["TIMEZONE"]):
             log.info("TIMEZONE loaded from Notion ENV: %s", TZ)
-        except Exception:
+        else:
             log.warning("Invalid TIMEZONE in Notion ENV: %s", env_config["TIMEZONE"])
 
     _load_mute_state()
@@ -2487,9 +2522,16 @@ async def cmd_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if location_text:
         if wx.set_location_smart(location_text, claude):
             context.user_data["awaiting_location"] = False
-            await update.message.reply_text(f"📍 Location updated to {wx._loc.location}.")
             wx.save_location_state(wx._loc.location)
             _save_bot_state()
+            from second_brain.notion.env_db import get_env_value as _get_env_value
+            tz_str = _get_env_value("TIMEZONE")
+            if tz_str:
+                _apply_tz(tz_str)
+            reply = f"📍 Location updated to {wx._loc.location}."
+            if tz_str:
+                reply += f" Timezone: {tz_str}."
+            await update.message.reply_text(reply)
             await update.message.reply_text(await handle_weather(wx._loc.location), parse_mode="Markdown")
             return
         await update.message.reply_text(
