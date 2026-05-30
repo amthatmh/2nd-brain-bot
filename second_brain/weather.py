@@ -333,10 +333,49 @@ Return ONLY valid JSON:
         return _location_candidates(text)
 
 
+def _lookup_tz(location_name: str, claude) -> str | None:
+    """Ask Claude for the IANA timezone of a location; return None on any failure."""
+    from zoneinfo import ZoneInfo
+    if not claude:
+        return None
+    try:
+        resp = claude.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=30,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f'Reply with only the IANA timezone identifier for "{location_name}" '
+                    "(e.g. Asia/Hong_Kong, America/Chicago). No explanation, no quotes."
+                ),
+            }],
+        )
+        tz_str = resp.content[0].text.strip().strip("\"'")
+        ZoneInfo(tz_str)  # validate — raises ZoneInfoNotFoundError if bogus
+        return tz_str
+    except Exception as exc:
+        log.warning("Could not determine timezone for %s: %s", location_name, exc)
+        return None
+
+
+def _save_timezone_from_location(location_name: str, claude) -> None:
+    """Derive and persist the IANA timezone for the active location to the Notion ENV DB."""
+    tz_str = _lookup_tz(location_name, claude)
+    if not tz_str:
+        return
+    try:
+        from second_brain.notion.env_db import set_env_value
+        set_env_value("TIMEZONE", tz_str)
+        log.info("TIMEZONE saved to Notion ENV: %s → %s", location_name, tz_str)
+    except Exception as exc:
+        log.warning("Failed to save TIMEZONE to Notion ENV: %s", exc)
+
+
 def set_location_smart(user_text: str, claude) -> bool:
     for query in normalize_location_with_claude(user_text, claude):
         if set_location(query):
             save_location_history(user_text)
+            _save_timezone_from_location(_loc.location, claude)
             return True
     zip_match = re.search(r"\b\d{5}(?:-\d{4})?\b", user_text or "")
     openweather_key = _openweather_key()
@@ -351,6 +390,7 @@ def set_location_smart(user_text: str, claude) -> bool:
             if lat is not None and lon is not None:
                 if set_location(f"{payload.get('name') or zip_value}, {payload.get('country') or 'US'}"):
                     save_location_history(user_text)
+                    _save_timezone_from_location(_loc.location, claude)
                     return True
         except Exception as e:
             log.warning("ZIP location fallback failed for %s: %s", zip_value, e)
