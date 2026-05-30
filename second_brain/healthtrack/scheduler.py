@@ -143,6 +143,7 @@ async def check_and_create_steps_entry(
 
 def register_handlers(manager: "UtilitySchedulerManager") -> None:
     """Register health tracking jobs with the Utility Scheduler Manager."""
+    from second_brain.healthtrack.insights import handle_weekly_health_insight_job
     from second_brain.healthtrack.sleep import handle_sleep_sync_job
     from second_brain.healthtrack.steps import (
         handle_steps_final_stamp_job,
@@ -153,7 +154,9 @@ def register_handlers(manager: "UtilitySchedulerManager") -> None:
     manager.register_handler("steps_final_stamp", handle_steps_final_stamp_job)
     manager.register_handler("steps_morning_stamp", handle_steps_final_stamp_job)
     manager.register_handler("sleep_sync", handle_sleep_sync_job)
+    manager.register_handler("weekly_health_insight", handle_weekly_health_insight_job)
     log.info(
         "healthtrack: registered scheduler handlers "
-        "(steps_sync_check, steps_final_stamp, steps_morning_stamp, sleep_sync)"
+        "(steps_sync_check, steps_final_stamp, steps_morning_stamp, sleep_sync, "
+        "weekly_health_insight)"
     )
