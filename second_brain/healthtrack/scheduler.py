@@ -11,6 +11,7 @@ from second_brain.healthtrack.steps import (
     _find_existing_log_entry,
     _find_steps_habit_page_id,
 )
+from second_brain.error_reporting import send_system_log
 from second_brain.notion.properties import title_prop
 
 if TYPE_CHECKING:
@@ -64,6 +65,7 @@ async def check_and_create_steps_entry(
         if not habit_page_id:
             reason = f"Steps habit not found: {habit_name}"
             log.error("steps_sync_check: %s", reason)
+            await send_system_log(bot, f"🚨 Steps sync check failed\n{reason}")
             return {"ok": False, "action": "error", "reason": reason}
 
         existing_page_id = _find_existing_log_entry(
@@ -135,6 +137,7 @@ async def check_and_create_steps_entry(
         }
     except Exception as exc:
         log.error("steps_sync_check: unexpected error: %s", exc)
+        await send_system_log(bot, f"🚨 Steps sync check failed\n{type(exc).__name__}: {exc}")
         return {"ok": False, "action": "error", "reason": str(exc)}
 
 

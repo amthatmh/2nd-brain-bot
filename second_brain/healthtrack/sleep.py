@@ -153,7 +153,7 @@ def _stage_minutes(stages_summary: Any, stage_names: set[str], direct_keys: tupl
                 continue
             name = _normalise_stage_name(item.get("stage") or item.get("type") or item.get("name"))
             if name in stage_names:
-                total_ms += _duration_ms(item)
+                total_ms += _duration_ms(item.get("durationMs") or item.get("duration") or item)
         return round(total_ms / 60000, 2)
 
     return 0.0
@@ -161,8 +161,13 @@ def _stage_minutes(stages_summary: Any, stage_names: set[str], direct_keys: tupl
 
 def parse_sleep_data_point(point: dict, tz) -> dict:
     """Convert a Google Health sleep data point into Notion-ready values."""
-    start_dt = _parse_dt(point.get("startTime"))
-    end_dt = _parse_dt(point.get("endTime"))
+    try:
+        start_dt = _parse_dt(point.get("startTime"))
+        end_dt = _parse_dt(point.get("endTime"))
+    except ValueError as exc:
+        raise ValueError(
+            f"sleep_sync: unparseable time fields - {exc} | point keys={list(point.keys())}"
+        ) from exc
     local_start = start_dt.astimezone(tz) if tz else start_dt
     local_end = end_dt.astimezone(tz) if tz else end_dt
 
@@ -321,7 +326,7 @@ async def handle_sleep_backfill_job(bot, start_date_str: str, end_date_str: str)
     results: dict[str, dict] = {}
     cursor = start_day
     while cursor <= end_day:
-        results[cursor.isoformat()] = await handle_sleep_sync(
+        result = await handle_sleep_sync(
             notion=notion,
             metrics_db_id=NOTION_HEALTH_METRICS_DB,
             client_id=GOOGLE_HEALTH_CLIENT_ID,
@@ -330,6 +335,9 @@ async def handle_sleep_backfill_job(bot, start_date_str: str, end_date_str: str)
             target_date=cursor,
             tz=TZ,
         )
+        results[cursor.isoformat()] = result
+        if result.get("action") == "no_data":
+            log.warning("sleep_backfill: no data for wake date %s", cursor.isoformat())
         cursor += timedelta(days=1)
         if cursor <= end_day:
             await asyncio.sleep(0.35)

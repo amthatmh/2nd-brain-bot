@@ -17,6 +17,7 @@ from typing import Dict, Optional
 from second_brain.notion import notion_call
 
 from second_brain.crossfit.notion import parse_weekly_program_text, save_programme_from_notion_row
+from second_brain.error_reporting import send_system_log
 from second_brain.notion.properties import query_all, rich_text_prop
 from second_brain.utils import local_today
 
@@ -309,11 +310,4 @@ async def process_pending_programmes(notion, bot, *, workout_program_db: str, ch
                 )
             except Exception as inner:
                 log.error("process_pending_programmes: could not write error to Notion: %s", inner)
-            try:
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=f"⚠️ Couldn't parse *{week_name}*\n\n`{str(e)[:300]}`",
-                    parse_mode="Markdown",
-                )
-            except Exception:
-                log.debug("Could not send parse-error notification to user", exc_info=True)
+            await send_system_log(bot, f"🚨 Process pending programmes failed\n{week_name}: {type(e).__name__}: {e}")

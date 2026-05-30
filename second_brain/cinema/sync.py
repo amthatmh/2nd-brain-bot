@@ -10,6 +10,7 @@ import httpx
 import logging
 
 from second_brain.cinema.config import FAVE_DB_ID, TMDB_API_KEY
+from second_brain.error_reporting import send_system_log
 log = logging.getLogger(__name__)
 
 from second_brain.notion.properties import (
@@ -512,6 +513,7 @@ async def _sync_rows(
 
 async def run_cinema_sync(notion, bot, *, cinema_log_db: str, chat_id: int, force: bool = False) -> dict[str, int | str]:
     """Background sync for Cinema Log → Favourite Shows."""
+    del chat_id  # Sync errors route to the system log channel, not the main chat.
     if not cinema_log_db:
         return {
             "scanned": 0,
@@ -545,10 +547,7 @@ async def run_cinema_sync(notion, bot, *, cinema_log_db: str, chat_id: int, forc
         return {**stats, "action": "synced"}
     except Exception as e:
         log.exception("Cinema sync failed: %s", e)
-        try:
-            await bot.send_message(chat_id=chat_id, text="🚨 Cinema sync crashed.\n" f"Error: {e}")
-        except Exception:
-            log.debug("Could not send cinema sync crash notification to user", exc_info=True)
+        await send_system_log(bot, f"🚨 Cinema sync failed\n{type(e).__name__}: {e}")
         return {
             "scanned": 0,
             "updated": 0,
