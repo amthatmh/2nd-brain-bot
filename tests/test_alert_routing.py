@@ -11,10 +11,57 @@ class FakeResponse:
         return {"ok": True, "result": {"message_id": 123}}
 
 
-def test_send_alert_uses_alert_channel_id_not_owner_chat(monkeypatch):
+def test_send_alert_uses_log_channel_for_info_not_owner_chat(monkeypatch):
     calls = []
     monkeypatch.setenv("TELEGRAM_TOKEN", "token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "42582324")
+    monkeypatch.setenv("ALERT_CHANNEL_ID", "-1001111111111")
+    monkeypatch.setenv("error_channel_ID", "-1002222222222")
+
+    def fake_post(url, json, timeout):
+        calls.append({"url": url, "json": json, "timeout": timeout})
+        return FakeResponse()
+
+    monkeypatch.setattr(alerts.httpx, "post", fake_post)
+
+    assert alerts.send_alert("hello") is True
+    assert calls[0]["json"]["chat_id"] == "-1001111111111"
+
+
+def test_send_alert_uses_error_channel_for_warning(monkeypatch):
+    calls = []
+    monkeypatch.setenv("TELEGRAM_TOKEN", "token")
+    monkeypatch.setenv("ALERT_CHANNEL_ID", "-1001111111111")
+    monkeypatch.setenv("error_channel_ID", "-1002222222222")
+
+    def fake_post(url, json, timeout):
+        calls.append({"url": url, "json": json, "timeout": timeout})
+        return FakeResponse()
+
+    monkeypatch.setattr(alerts.httpx, "post", fake_post)
+
+    assert alerts.send_alert("warning", level="WARNING") is True
+    assert calls[0]["json"]["chat_id"] == "-1002222222222"
+
+
+def test_send_alert_does_not_fallback_to_owner_chat(monkeypatch):
+    calls = []
+    monkeypatch.setenv("TELEGRAM_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "42582324")
+    monkeypatch.delenv("error_channel_ID", raising=False)
+    monkeypatch.delenv("ERROR_CHANNEL_ID", raising=False)
+    monkeypatch.delenv("ALERT_CHANNEL_ID", raising=False)
+    monkeypatch.delenv("SYSTEM_LOGS_CHAT_ID", raising=False)
+    monkeypatch.setattr(alerts.httpx, "post", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    assert alerts.send_alert("hello") is False
+    assert calls == []
+
+
+def test_send_alert_falls_back_to_legacy_alert_channel_id(monkeypatch):
+    calls = []
+    monkeypatch.setenv("TELEGRAM_TOKEN", "token")
+    monkeypatch.delenv("error_channel_ID", raising=False)
     monkeypatch.setenv("ALERT_CHANNEL_ID", "-1003840996802")
 
     def fake_post(url, json, timeout):
@@ -27,21 +74,11 @@ def test_send_alert_uses_alert_channel_id_not_owner_chat(monkeypatch):
     assert calls[0]["json"]["chat_id"] == "-1003840996802"
 
 
-def test_send_alert_does_not_fallback_to_owner_chat(monkeypatch):
-    calls = []
-    monkeypatch.setenv("TELEGRAM_TOKEN", "token")
-    monkeypatch.setenv("TELEGRAM_CHAT_ID", "42582324")
-    monkeypatch.delenv("ALERT_CHANNEL_ID", raising=False)
-    monkeypatch.setattr(alerts.httpx, "post", lambda *args, **kwargs: calls.append((args, kwargs)))
-
-    assert alerts.send_alert("hello") is False
-    assert calls == []
-
-
 def test_send_alert_deploy_omits_legacy_header(monkeypatch):
     calls = []
     monkeypatch.setenv("TELEGRAM_TOKEN", "token")
     monkeypatch.setenv("ALERT_CHANNEL_ID", "-1003840996802")
+    monkeypatch.setenv("error_channel_ID", "-1002222222222")
 
     def fake_post(url, json, timeout):
         calls.append({"url": url, "json": json, "timeout": timeout})

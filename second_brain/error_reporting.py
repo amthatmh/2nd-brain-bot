@@ -3,19 +3,25 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 import traceback
+from importlib import import_module
 
 log = logging.getLogger(__name__)
 
 
 async def send_system_log(bot, text: str) -> None:
-    """Send an internal error report to the configured system logs channel."""
-    from second_brain.config import SYSTEM_LOGS_CHAT_ID
+    """Send an internal error report to the configured error alert channel."""
+    config = import_module("second_brain.config")
+    my_chat_id = getattr(config, "MY_CHAT_ID", None)
+    error_chat_id = getattr(config, "ERROR_CHANNEL_ID", None) or getattr(config, "SYSTEM_LOGS_CHAT_ID", None)
 
     if bot is None:
         log.error("System log bot unavailable: %s", text)
         return
+    if not error_chat_id or str(error_chat_id) == str(my_chat_id):
+        log.warning("system_log (error_channel_ID not set separately): %s", text)
+        return
     try:
-        await bot.send_message(chat_id=SYSTEM_LOGS_CHAT_ID, text=text)
+        await bot.send_message(chat_id=error_chat_id, text=text)
     except Exception as exc:
         log.error("Failed to send system log: %s", exc)
 
