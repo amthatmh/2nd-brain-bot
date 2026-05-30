@@ -37,13 +37,14 @@ MY_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
 ERROR_CHANNEL_ID_RAW = (
     os.getenv("error_channel_ID")
     or os.getenv("ERROR_CHANNEL_ID")
-    or os.getenv("ALERT_CHANNEL_ID")
-    or os.getenv("SYSTEM_LOGS_CHAT_ID")
     or ""
 ).strip()
 ERROR_CHANNEL_ID = int(ERROR_CHANNEL_ID_RAW) if ERROR_CHANNEL_ID_RAW else None
-SYSTEM_LOGS_CHAT_ID = ERROR_CHANNEL_ID
-ALERT_CHAT_ID = ERROR_CHANNEL_ID
+ALERT_CHAT_ID_RAW = (os.getenv("ALERT_CHANNEL_ID") or os.getenv("SYSTEM_LOGS_CHAT_ID") or "").strip()
+ALERT_CHAT_ID = int(ALERT_CHAT_ID_RAW) if ALERT_CHAT_ID_RAW else None
+SYSTEM_LOGS_CHAT_ID = ERROR_CHANNEL_ID or (
+    int(os.environ["SYSTEM_LOGS_CHAT_ID"]) if os.environ.get("SYSTEM_LOGS_CHAT_ID") else None
+)
 ALERT_THREAD_ID = int(os.environ["TELEGRAM_ALERT_THREAD_ID"]) if os.environ.get("TELEGRAM_ALERT_THREAD_ID") else None
 ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]
 NOTION_TOKEN = os.environ["NOTION_TOKEN"]
