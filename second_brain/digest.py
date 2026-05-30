@@ -174,6 +174,7 @@ from second_brain.notion import habits as notion_habits
 from second_brain.notion import tasks as notion_tasks
 from second_brain.notion import daily_log as notion_daily_log
 from second_brain.crossfit.readiness import check_readiness_logged_today
+from second_brain.error_reporting import send_system_log
 from second_brain.state import STATE
 from second_brain.utils import local_today
 from second_brain.ai.client import get_claude_client
@@ -380,10 +381,7 @@ async def rebuild_digest_schedule_job(bot, scheduler) -> dict:
     was_last_success = _digest_slots_last_load_succeeded
     result = build_digest_schedule(scheduler, bot)
     if result == 0 and was_last_success:
-        await bot.send_message(
-            chat_id=MY_CHAT_ID,
-            text="⚠️ Digest schedule rebuild returned 0 slots. Check Digest Selector.",
-        )
+        await send_system_log(bot, "Digest schedule rebuild returned 0 slots. Check Digest Selector.")
     return {"action": "rebuilt", "slots_registered": result}
 
 
@@ -411,7 +409,7 @@ async def generate_daily_log(bot) -> dict:
     return {"action": "generated", "has_url": bool(_last_daily_log_url)}
 
 
-async def send_daily_digest(bot, include_habits: bool = True, config: dict | None = None) -> None:
+async def send_daily_digest(bot, include_habits: bool | None = None, config: dict | None = None) -> None:
     global _last_daily_log_url
     if mute_helpers.is_muted(STATE.mute_until, TZ):
         log.info("Daily digest skipped (muted)")
@@ -448,12 +446,16 @@ async def send_daily_digest(bot, include_habits: bool = True, config: dict | Non
     n = 1
 
     habits: list[dict] = []
-    habits_enabled = include_habits
-    if config and config.get("include_habits") is not None:
-        habits_enabled = bool(config.get("include_habits"))
+    if include_habits is None:
+        habits_enabled = True if config is None else bool(config.get("include_habits", True))
+    else:
+        habits_enabled = bool(include_habits)
     log.info(
-        "Digest habits check: habits_enabled=%s include_habits_param=%s config_include_habits=%s",
-        habits_enabled, include_habits, config.get("include_habits") if config else None
+        "Digest habits check: habits_enabled=%s include_habits_param=%s "
+        "config_include_habits=%s habit_count=%d",
+        habits_enabled, include_habits,
+        config.get("include_habits") if config else None,
+        len(habits) if habits_enabled else -1,
     )
     if habits_enabled:
         now_str = datetime.now(TZ).strftime("%H:%M")

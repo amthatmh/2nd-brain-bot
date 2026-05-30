@@ -684,7 +684,7 @@ def pending_habits_for_digest(time_str: str | None) -> list[dict]:
         is_on_pace=is_on_pace,
     )
 
-async def send_daily_digest(bot, include_habits: bool = True, config: dict | None = None) -> None:
+async def send_daily_digest(bot, include_habits: bool | None = None, config: dict | None = None) -> None:
     old_cache = notion_habits.habit_cache
     old_datetime = digest_helpers.datetime
     old_already_logged_today = notion_habits.already_logged_today
@@ -2042,7 +2042,18 @@ def _update_utility_job_status(notion, page_id: str, status: str, loaded_at: str
 
 def _scheduler_event_listener(event) -> None:
     if getattr(event, "exception", None):
-        alert_scheduler_event(getattr(event, "job_id", "unknown"), "error", str(event.exception))
+        job_id = getattr(event, "job_id", "unknown")
+        alert_scheduler_event(job_id, "error", str(event.exception))
+        if _app_bot is not None:
+            try:
+                asyncio.get_running_loop().create_task(
+                    send_system_log(
+                        _app_bot,
+                        f"🚨 Scheduler job failed\n{job_id}: {type(event.exception).__name__}: {event.exception}",
+                    )
+                )
+            except RuntimeError:
+                log.debug("scheduler_event_listener: no running loop for system log", exc_info=True)
     else:
         alert_scheduler_event(getattr(event, "job_id", "unknown"), "missed")
 

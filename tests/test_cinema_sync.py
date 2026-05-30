@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from second_brain.cinema.sync import (
     _build_tmdb_movie_url,
@@ -10,6 +11,7 @@ from second_brain.cinema.sync import (
     _normalize_title,
     _plain_text,
     _preferred_media_type,
+    run_cinema_sync,
     _title_search_candidates,
 )
 
@@ -144,6 +146,28 @@ class TestCinemaSyncHelpers(unittest.TestCase):
         self.assertEqual(_preferred_media_type({"Type": {"select": {"name": "Film"}}}), "movie")
         self.assertEqual(_preferred_media_type({"Type": {"select": {"name": "Series"}}}), "tv")
         self.assertIsNone(_preferred_media_type({"Type": {"select": {"name": "Documentary"}}}))
+
+
+class TestCinemaSyncErrorRouting(unittest.IsolatedAsyncioTestCase):
+    async def test_run_cinema_sync_routes_errors_to_system_log(self):
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+
+        with patch(
+            "second_brain.cinema.sync.sync_cinema_log_to_notion",
+            side_effect=RuntimeError("bad token"),
+        ), patch("second_brain.cinema.sync.send_system_log", new=AsyncMock()) as mock_system_log:
+            result = await run_cinema_sync(
+                MagicMock(),
+                bot,
+                cinema_log_db="cinema-db",
+                chat_id=123,
+            )
+
+        self.assertEqual(result["action"], "error")
+        bot.send_message.assert_not_awaited()
+        mock_system_log.assert_awaited_once()
+        self.assertIn("Cinema sync failed", mock_system_log.await_args.args[1])
 
 
 if __name__ == "__main__":

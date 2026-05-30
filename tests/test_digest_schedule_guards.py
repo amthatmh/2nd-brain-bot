@@ -245,6 +245,47 @@ class TestDailyDigestHabits(unittest.IsolatedAsyncioTestCase):
         self.assertIn("*Habits:* tap to log:", kwargs["text"])
         self.assertIn("Test Digest Habit", button_labels)
 
+    async def test_send_daily_digest_explicit_habits_true_overrides_config_false(self):
+        main = load_main_module()
+        real_datetime = main.datetime
+        test_habit = {
+            "page_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "name": "Explicit Habit",
+            "show_after": "05:00",
+            "sort": 1,
+            "freq_per_week": None,
+        }
+        main.habit_cache = {"Explicit Habit": test_habit}
+        bot = MagicMock()
+        sent = MagicMock(message_id=43)
+        bot.send_message = AsyncMock(return_value=sent)
+
+        with patch.object(main.notion_tasks, "get_today_and_overdue_tasks", return_value=[]), \
+            patch.object(main, "already_logged_today", return_value=False), \
+            patch.object(main, "is_on_pace", return_value=False), \
+            patch("second_brain.main.datetime") as mock_dt:
+            mock_dt.now.return_value = real_datetime(2026, 5, 7, 8, 0, tzinfo=main.TZ)
+            await main.send_daily_digest(
+                bot,
+                include_habits=True,
+                config={
+                    "contexts": [],
+                    "max_items": None,
+                    "include_habits": False,
+                    "include_weather": False,
+                    "include_uvi": False,
+                },
+            )
+
+        kwargs = bot.send_message.await_args.kwargs
+        button_labels = [
+            button.text
+            for row in kwargs["reply_markup"].inline_keyboard
+            for button in row
+        ]
+        self.assertIn("*Habits:* tap to log:", kwargs["text"])
+        self.assertIn("Explicit Habit", button_labels)
+
     async def test_send_daily_digest_renders_conversational_readiness_button_when_feel_enabled(self):
         main = load_main_module()
         bot = MagicMock()

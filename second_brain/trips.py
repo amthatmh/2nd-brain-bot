@@ -14,6 +14,7 @@ from second_brain.config import (
     NOTION_PACKING_ITEMS_DB,
     NOTION_TRIPS_DB,
 )
+from second_brain.error_reporting import send_system_log
 from second_brain.notion import notion_call
 from second_brain.notion.properties import (
     extract_multi_select,
@@ -832,7 +833,6 @@ def append_trip_reminders_to_text(
 
 
 async def update_trip_weather_job(application) -> None:
-    _ = application
     import second_brain.main as _main  # transition import
 
     if not NOTION_TRIPS_DB:
@@ -848,6 +848,8 @@ async def update_trip_weather_job(application) -> None:
             logger.info("Trip weather refresh updated %d trip(s)", updated)
     except Exception as exc:
         logger.warning("Trip weather refresh failed: %s", exc)
+        bot = getattr(application, "bot", application)
+        await send_system_log(bot, f"🚨 Trip weather refresh failed\n{type(exc).__name__}: {exc}")
 
 
 async def refresh_trip_weather_job(bot) -> None:
@@ -855,11 +857,11 @@ async def refresh_trip_weather_job(bot) -> None:
 
 
 async def _run_trip_weather_refresh(bot) -> dict:
-    _ = bot
     import second_brain.main as _main  # transition import
 
     if not NOTION_TRIPS_DB:
         logger.info("trip_weather_refresh: NOTION_TRIPS_DB is not set")
+        await send_system_log(bot, "🚨 Trip weather refresh failed\nNOTION_TRIPS_DB is not set")
         return {"action": "error", "reason": "NOTION_TRIPS_DB is not set"}
 
     try:
@@ -871,6 +873,7 @@ async def _run_trip_weather_refresh(bot) -> dict:
         )
     except Exception as exc:
         logger.error("trip_weather_refresh: unexpected error: %s", exc)
+        await send_system_log(bot, f"🚨 Trip weather refresh failed\n{type(exc).__name__}: {exc}")
         return {"action": "error", "reason": str(exc)}
 
     if not updated:

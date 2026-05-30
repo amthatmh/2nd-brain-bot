@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 from second_brain.healthtrack.sleep import (
+    handle_sleep_backfill_job,
     handle_sleep_sync,
     parse_sleep_data_point,
 )
@@ -77,6 +79,34 @@ class TestSleepParsing(unittest.TestCase):
         self.assertEqual(parsed["rem_min"], 0)
         self.assertEqual(parsed["light_min"], 0)
         self.assertEqual(parsed["awake_min"], 0)
+
+    def test_parse_sleep_data_point_with_nested_stage_duration_ms(self):
+        point = {
+            "startTime": "2026-05-28T23:00:00Z",
+            "endTime": "2026-05-29T07:00:00Z",
+            "sleepSummary": {"totalDurationMs": _ms(400)},
+            "stagesSummary": {
+                "stages": [
+                    {"type": "DEEP", "durationMs": _ms(70)},
+                    {"type": "REM", "durationMs": _ms(90)},
+                ]
+            },
+        }
+
+        parsed = parse_sleep_data_point(point, ZoneInfo("UTC"))
+
+        self.assertEqual(parsed["deep_min"], 70)
+        self.assertEqual(parsed["rem_min"], 90)
+
+    def test_parse_sleep_data_point_wraps_missing_time_error(self):
+        point = {
+            "startTime": "",
+            "endTime": "2026-05-29T07:00:00Z",
+            "sleepSummary": {"totalDurationMs": _ms(400)},
+        }
+
+        with self.assertRaisesRegex(ValueError, "sleep_sync: unparseable time fields"):
+            parse_sleep_data_point(point, ZoneInfo("UTC"))
 
 
 class TestSleepUpsert(unittest.IsolatedAsyncioTestCase):
@@ -153,6 +183,28 @@ class TestSleepNoData(unittest.IsolatedAsyncioTestCase):
         notion.databases.query.assert_not_called()
         notion.pages.create.assert_not_called()
         notion.pages.update.assert_not_called()
+
+    async def test_handle_sleep_backfill_logs_no_data_days(self):
+        fake_config = SimpleNamespace(
+            GOOGLE_HEALTH_CLIENT_ID="client",
+            GOOGLE_HEALTH_CLIENT_SECRET="secret",
+            GOOGLE_HEALTH_REFRESH_TOKEN="refresh",
+            NOTION_HEALTH_METRICS_DB="metrics-db",
+            TZ=ZoneInfo("UTC"),
+        )
+        fake_main = SimpleNamespace(notion=MagicMock())
+
+        with patch.dict(
+            "sys.modules",
+            {"second_brain.config": fake_config, "second_brain.main": fake_main},
+        ), patch(
+            "second_brain.healthtrack.sleep.handle_sleep_sync",
+            new=AsyncMock(return_value={"action": "no_data", "date": "2026-05-29", "page_id": None}),
+        ), self.assertLogs("second_brain.healthtrack.sleep", level="WARNING") as logs:
+            result = await handle_sleep_backfill_job(MagicMock(), "2026-05-29", "2026-05-29")
+
+        self.assertTrue(result["ok"])
+        self.assertIn("sleep_backfill: no data for wake date 2026-05-29", "\n".join(logs.output))
 
 
 class TestSleepDashboard(unittest.TestCase):
