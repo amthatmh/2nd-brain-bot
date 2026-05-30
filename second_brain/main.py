@@ -2213,6 +2213,7 @@ async def post_init(app: Application) -> None:
             id="recurring_batch_generator",
             max_instances=1,
             coalesce=True,
+            misfire_grace_time=30,
         )
     # Register digest cron jobs only. Do not queue missed digest slots on startup;
     # restarting the bot should not send an immediate digest.
