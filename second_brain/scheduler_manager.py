@@ -6,6 +6,7 @@ keeps load/run status columns in Notion up to date.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import time
@@ -103,7 +104,7 @@ class UtilitySchedulerManager:
 
         log.info("scheduler_manager: reloading from Notion...")
         try:
-            rows = self._query_all_rows()
+            rows = await asyncio.to_thread(self._query_all_rows)
         except Exception as exc:
             log.error("scheduler_manager: failed to query Notion: %s", exc)
             return
@@ -123,14 +124,15 @@ class UtilitySchedulerManager:
                 scheduler_id = self._apscheduler_id(job_key, page_id)
                 if not enabled:
                     self._remove_job_if_exists(job_key, page_id)
-                    self._update_notion_loaded_at(page_id, loaded_at)
+                    await asyncio.to_thread(self._update_notion_loaded_at, page_id, loaded_at)
                     continue
 
                 active_scheduler_ids.add(scheduler_id)
                 if job_key not in self._handlers:
                     log.warning("scheduler_manager: no handler for job_key=%s", job_key)
                     self._remove_job_if_exists(job_key, page_id)
-                    self._update_notion_status(
+                    await asyncio.to_thread(
+                        self._update_notion_status,
                         page_id,
                         status="unknown_job",
                         error=f"Unknown Job Key: {job_key}",
@@ -152,11 +154,23 @@ class UtilitySchedulerManager:
                 if not existing_job:
                     self._add_job(job_key, config, page_id)
 
-                self._update_notion_status(page_id, status="ok", error="", loaded_at=loaded_at)
+                await asyncio.to_thread(
+                    self._update_notion_status,
+                    page_id,
+                    status="ok",
+                    error="",
+                    loaded_at=loaded_at,
+                )
             except Exception as exc:
                 log.error("scheduler_manager: error processing row %s: %s", page_id, exc)
                 if page_id:
-                    self._update_notion_status(page_id, status="error", error=str(exc), loaded_at=loaded_at)
+                    await asyncio.to_thread(
+                        self._update_notion_status,
+                        page_id,
+                        status="error",
+                        error=str(exc),
+                        loaded_at=loaded_at,
+                    )
 
         for scheduler_id in list(self._known_jobs):
             if scheduler_id not in active_scheduler_ids:
@@ -176,7 +190,13 @@ class UtilitySchedulerManager:
         ran_at = self._utc_iso()
         if not handler:
             error = f"Unknown Job Key at execution time: {job_key}"
-            self._update_notion_run_result(page_id=page_id, ran_at=ran_at, status="unknown_job", error=error)
+            await asyncio.to_thread(
+                self._update_notion_run_result,
+                page_id=page_id,
+                ran_at=ran_at,
+                status="unknown_job",
+                error=error,
+            )
             log.error("scheduler_manager: %s", error)
             return
 
@@ -195,7 +215,13 @@ class UtilitySchedulerManager:
                 update_job_metrics(job_key, duration, "success")
                 self._send_success_alert_if_needed(job_key, duration, result, alert_config)
             log.info("scheduler_manager: job_key=%s completed: %s", job_key, result)
-            self._update_notion_run_result(page_id=page_id, ran_at=ran_at, status="ok", error=None)
+            await asyncio.to_thread(
+                self._update_notion_run_result,
+                page_id=page_id,
+                ran_at=ran_at,
+                status="ok",
+                error=None,
+            )
         except Exception as exc:
             duration = time.time() - start
             if not handler_tracks_itself:
@@ -203,7 +229,13 @@ class UtilitySchedulerManager:
                 consecutive = get_consecutive_failures(job_key)
                 self._send_failure_alert_if_needed(job_key, exc, consecutive, get_alert_config(job_key))
             log.exception("scheduler_manager: job_key=%s FAILED", job_key)
-            self._update_notion_run_result(page_id=page_id, ran_at=ran_at, status="error", error=str(exc))
+            await asyncio.to_thread(
+                self._update_notion_run_result,
+                page_id=page_id,
+                ran_at=ran_at,
+                status="error",
+                error=str(exc),
+            )
             await self._send_failure_alert(job_key, page_id, exc)
 
     @staticmethod
