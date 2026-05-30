@@ -17,6 +17,7 @@ ALERT_EMOJIS = {
     "ERROR": "🚨",
     "CRITICAL": "🔥",
 }
+ERROR_ALERT_LEVELS = {"WARN", "WARNING", "ERROR", "CRITICAL"}
 
 
 def _redact_token(value: str, token: str) -> str:
@@ -35,15 +36,28 @@ def _response_preview(response: httpx.Response | None, token: str) -> str:
     return _redact_token(body, token)
 
 
-def _alert_channel_id() -> str:
-    """Return the configured alert destination without falling back to owner DMs."""
+def _error_channel_id() -> str:
     return (
         os.getenv("error_channel_ID")
         or os.getenv("ERROR_CHANNEL_ID")
-        or os.getenv("ALERT_CHANNEL_ID")
+        or ""
+    ).strip()
+
+
+def _log_channel_id() -> str:
+    return (
+        os.getenv("ALERT_CHANNEL_ID")
         or os.getenv("SYSTEM_LOGS_CHAT_ID")
         or ""
     ).strip()
+
+
+def _alert_channel_id(level: str) -> str:
+    """Return the alert destination without falling back to owner DMs."""
+    normalized = str(level or "").strip().upper()
+    if normalized in ERROR_ALERT_LEVELS:
+        return _error_channel_id() or _log_channel_id()
+    return _log_channel_id()
 
 
 def send_alert(message: str, level: str = "INFO", cooldown_key: Optional[str] = None) -> bool:
@@ -62,13 +76,14 @@ def send_alert(message: str, level: str = "INFO", cooldown_key: Optional[str] = 
 
     logger = logging.getLogger(__name__)
     token = os.environ.get("TELEGRAM_TOKEN", "").strip()
-    alert_channel_id = _alert_channel_id()
+    alert_channel_id = _alert_channel_id(level)
     thread_id = os.environ.get("TELEGRAM_ALERT_THREAD_ID", "").strip()
     cooldown_hours = 6
 
     # DEBUG: Trace execution
     logger.info("[ALERT_DEBUG] send_alert() called")
     logger.info("[ALERT_DEBUG] error_channel_ID from env: %s", os.getenv("error_channel_ID"))
+    logger.info("[ALERT_DEBUG] ALERT_CHANNEL_ID from env: %s", os.getenv("ALERT_CHANNEL_ID"))
     logger.info("[ALERT_DEBUG] resolved alert channel ID: %s", alert_channel_id)
     logger.info("[ALERT_DEBUG] Level: %s, Cooldown key: %s", level, cooldown_key)
     logger.info("[ALERT_DEBUG] Message preview: %s...", message[:100])
@@ -82,7 +97,7 @@ def send_alert(message: str, level: str = "INFO", cooldown_key: Optional[str] = 
         logger.error("[ALERT_DEBUG] TELEGRAM_TOKEN is None/empty - SKIPPING")
         return False
     if not alert_channel_id:
-        logger.error("[ALERT_DEBUG] error_channel_ID is None/empty - SKIPPING")
+        logger.error("[ALERT_DEBUG] alert/error channel ID is None/empty - SKIPPING")
         return False
 
     if level == "DEPLOY":
