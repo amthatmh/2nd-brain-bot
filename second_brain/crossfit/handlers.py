@@ -2484,17 +2484,23 @@ async def _cf_feel(q, parts, claude, notion, config, cf_pending) -> None:
     except Exception as e:
         logger.exception("Session feel logging failed")
         cf_pending.pop(key, None)
-        await q.edit_message_text(f"❌ Error logging session feel: {e}", parse_mode="Markdown")
+        try:
+            await q.edit_message_text(f"❌ Error logging session feel: {e}")
+        except Exception:
+            logger.debug("Could not send feel error message", exc_info=True)
         return
-    chain = list(state.get("session_chain") or [])
-    origin = state.get("session_origin")
-    cf_pending.pop(key, None)
-    await q.edit_message_text(f"✅ Session feel logged: {rating}/5", parse_mode="Markdown")
-    if mode == "strength" and "c" in chain:
-        cf_pending[key] = {"session_chain": chain, "session_origin": origin}
-        await q.message.reply_text("🏆 Did you do Section C (WOD) today?", reply_markup=_chain_keyboard("c"))
-    elif mode == "wod":
+    try:
+        chain = list(state.get("session_chain") or [])
+        origin = state.get("session_origin")
         cf_pending.pop(key, None)
+        await q.edit_message_text(f"✅ Session feel logged: {rating}/5")
+        if mode == "strength" and "c" in chain:
+            cf_pending[key] = {"session_chain": chain, "session_origin": origin}
+            await q.message.reply_text("🏆 Did you do Section C (WOD) today?", reply_markup=_chain_keyboard("c"))
+        elif mode == "wod":
+            cf_pending.pop(key, None)
+    except Exception:
+        logger.exception("Session feel post-logging step failed")
 
 
 async def _cf_skip(q, parts, claude, notion, config, cf_pending) -> None:
