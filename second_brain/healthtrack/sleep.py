@@ -123,6 +123,7 @@ def fetch_sleep_data(access_token: str, query_date_str: str, tz) -> dict | None:
         first.get("sleepSummary")
         or first.get("summary")
         or sleep_raw.get("sleepSummary")
+        or sleep_raw.get("summary")
         or {}
     )
     if not isinstance(sleep_summary_raw, dict):
@@ -130,10 +131,10 @@ def fetch_sleep_data(access_token: str, query_date_str: str, tz) -> dict | None:
     stages_summary = (
         first.get("stagesSummary")
         or first.get("stages")
+        or sleep_raw.get("stages")
+        or sleep_raw.get("stagesSummary")
         or sleep_summary_raw.get("stagesSummary")
         or sleep_summary_raw.get("stages")
-        or sleep_raw.get("stagesSummary")
-        or sleep_raw.get("stages")
         or []
     )
 
@@ -233,11 +234,12 @@ def _stage_minutes(stages_summary: Any, stage_names: set[str], direct_keys: tupl
 
 def _parse_google_stages(stages: list) -> dict[str, float]:
     """
-    Convert Google Health Connect v4 stage items into {stage_name: minutes}.
+    Parse Google Health Connect stage data into {stage_name: minutes}.
 
-    Returns an empty dict when the input is not the integer-stage format.
+    Handles raw stage segments with start/end timestamps and compact summaries
+    with precomputed minutes. Returns empty dict for unrecognised input.
     """
-    stage_map = {
+    int_stage_map = {
         0: "sleeping",
         1: "awake",
         2: "sleeping",
@@ -246,27 +248,45 @@ def _parse_google_stages(stages: list) -> dict[str, float]:
         5: "deep",
         6: "rem",
     }
+    str_stage_map = {
+        "AWAKE": "awake",
+        "LIGHT": "light",
+        "DEEP": "deep",
+        "REM": "rem",
+        "SLEEPING": "sleeping",
+        "UNKNOWN": "sleeping",
+    }
     totals: dict[str, float] = {}
     for item in stages:
         if not isinstance(item, dict):
             continue
-        stage_int = item.get("stage")
-        if not isinstance(stage_int, int):
-            return {}
-        name = stage_map.get(stage_int)
+        stage_raw = item.get("stage") if "stage" in item else item.get("type")
+        if stage_raw is None:
+            continue
+        if isinstance(stage_raw, int):
+            name = int_stage_map.get(stage_raw)
+        else:
+            name = str_stage_map.get(str(stage_raw).upper().strip())
         if name is None:
             continue
-        interval = item.get("interval") or {}
-        start_str = interval.get("startTime") or ""
-        end_str = interval.get("endTime") or ""
-        if not start_str or not end_str:
-            continue
-        try:
-            start = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
-            end = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
-            minutes = max((end - start).total_seconds() / 60, 0.0)
-        except Exception:
-            continue
+        minutes_raw = item.get("minutes")
+        if minutes_raw is not None:
+            try:
+                minutes = float(minutes_raw)
+            except (ValueError, TypeError):
+                continue
+        else:
+            interval = item.get("interval") or {}
+            start_str = interval.get("startTime") or item.get("startTime") or ""
+            end_str = interval.get("endTime") or item.get("endTime") or ""
+            if not start_str or not end_str:
+                continue
+            try:
+                start = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+                end = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+                minutes = max((end - start).total_seconds() / 60, 0.0)
+            except Exception:
+                continue
         totals[name] = totals.get(name, 0.0) + minutes
     return totals
 
@@ -276,7 +296,7 @@ def parse_sleep_data_point(point: dict, tz) -> dict:
     sleep_raw = point.get("sleep") or {}
     if not isinstance(sleep_raw, dict):
         sleep_raw = {}
-    sleep_summary = point.get("sleepSummary") or sleep_raw.get("sleepSummary") or {}
+    sleep_summary = point.get("sleepSummary") or sleep_raw.get("sleepSummary") or sleep_raw.get("summary") or {}
     if not isinstance(sleep_summary, dict):
         sleep_summary = {}
     summary_interval = sleep_summary.get("interval") or {}
@@ -305,10 +325,10 @@ def parse_sleep_data_point(point: dict, tz) -> dict:
     stages_summary = (
         point.get("stagesSummary")
         or point.get("stages")
+        or sleep_raw.get("stages")
+        or sleep_raw.get("stagesSummary")
         or sleep_summary.get("stagesSummary")
         or sleep_summary.get("stages")
-        or sleep_raw.get("stagesSummary")
-        or sleep_raw.get("stages")
         or {}
     )
 
