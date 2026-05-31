@@ -90,7 +90,19 @@ def fetch_sleep_data(access_token: str, query_date_str: str, tz) -> dict | None:
 
     log.info("sleep_sync: %d dataPoint(s), selected longest — keys=%s", len(points), list(first.keys()))
     sleep_summary_debug = first.get("sleepSummary") or {}
-    stages_debug = first.get("stagesSummary") or first.get("stages") or []
+    sleep_raw_debug = first.get("sleep") or {}
+    stages_debug = (
+        first.get("stagesSummary")
+        or first.get("stages")
+        or sleep_raw_debug.get("stagesSummary")
+        or sleep_raw_debug.get("stages")
+        or []
+    )
+    log.info(
+        "sleep_sync: top-level keys=%s sleep keys=%s",
+        list(first.keys()),
+        list(sleep_raw_debug.keys()) if sleep_raw_debug else "absent",
+    )
     log.info(
         "sleep_sync: sleepSummary keys=%s sleepSummary=%s",
         list(sleep_summary_debug.keys())
