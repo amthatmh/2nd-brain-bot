@@ -91,7 +91,8 @@ def load_digest_slots(*, rows: list[dict], logger) -> list[dict]:
         include_habits = bool(props.get("Habits", {}).get("checkbox", False))
         max_items_raw = props.get("Max Items", {}).get("number")
         max_items = int(max_items_raw) if isinstance(max_items_raw, (int, float)) else None
-        contexts = [context_label for prop_name, context_label in context_map.items() if bool(props.get(prop_name, {}).get("checkbox", False))]
+        contexts_raw = [context_label for prop_name, context_label in context_map.items() if bool(props.get(prop_name, {}).get("checkbox", False))]
+        contexts = contexts_raw if contexts_raw else None
         include_weather = bool(props.get("Weather", {}).get("checkbox", False))
         include_uvi = bool(props.get("UVI", {}).get("checkbox", False))
         include_feel = bool(props.get("Feel", {}).get("checkbox", False))

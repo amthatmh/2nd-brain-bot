@@ -17,6 +17,7 @@ REQUIRED_ENV = {
     "NOTION_NOTES_DB": "x",
     "NOTION_DIGEST_SELECTOR_DB": "x",
     "NOTION_STREAK_DB": "x",
+    "NOTION_TRIPS_DB": "x",
 }
 
 
@@ -50,11 +51,11 @@ class TestDigestScheduleGuards(unittest.IsolatedAsyncioTestCase):
         slot = {"time": "08:15", "is_weekday": weekday, "include_habits": True}
         slot_key = f"{now.date().isoformat()}|{'wd' if weekday else 'we'}|08:15"
 
-        main._digest_slot_sent_today.clear()
-        main._digest_slot_sent_today.add(slot_key)
+        main.digest_helpers._digest_slot_sent_today.clear()
+        main.digest_helpers._digest_slot_sent_today.add(slot_key)
 
-        with patch.object(main, "get_digest_config", AsyncMock()) as mock_cfg, \
-            patch.object(main, "send_daily_digest", AsyncMock()) as mock_send:
+        with patch.object(main.digest_helpers, "get_digest_config", AsyncMock()) as mock_cfg, \
+            patch.object(main.digest_helpers, "send_daily_digest", AsyncMock()) as mock_send:
             await main.send_digest_for_slot(MagicMock(), slot)
 
         mock_cfg.assert_not_called()
@@ -78,16 +79,19 @@ class TestDigestSelectorDedupe(unittest.TestCase):
             }
 
         rows = [row("08:15", "Weekday"), row("08:15", "Weekday")]
-        with patch.object(main, "notion_query_all", return_value=rows):
-            slots = main.load_digest_slots()
+        slots = main.digest_helpers.load_digest_slots(rows=rows, logger=MagicMock())
 
         self.assertEqual(len(slots), 1)
         self.assertEqual(slots[0]["time"], "08:15")
         self.assertTrue(slots[0]["is_weekday"])
         self.assertTrue(slots[0]["include_feel"])
 
-    def test_load_digest_slots_keeps_empty_contexts_for_habits_only_rows(self):
+    def test_load_digest_slots_uses_none_when_no_contexts_are_checked(self):
         main = load_main_module()
+        tasks = [
+            {"name": "Work task", "context": "💼 Work"},
+            {"name": "Personal task", "context": "🏠 Personal"},
+        ]
         rows = [
             {
                 "properties": {
@@ -102,25 +106,25 @@ class TestDigestSelectorDedupe(unittest.TestCase):
                 }
             }
         ]
-        with patch.object(main, "notion_query_all", return_value=rows):
-            slots = main.load_digest_slots()
+        slots = main.digest_helpers.load_digest_slots(rows=rows, logger=MagicMock())
 
         self.assertEqual(len(slots), 1)
-        self.assertEqual(slots[0]["contexts"], [])
+        self.assertIsNone(slots[0]["contexts"])
         self.assertFalse(slots[0]["include_feel"])
+        self.assertEqual(main._filter_digest_tasks(tasks, config=slots[0]), tasks)
 
 
 class TestDigestTaskFiltering(unittest.TestCase):
-    def test_filter_digest_tasks_returns_no_tasks_for_empty_context_selection(self):
+    def test_filter_digest_tasks_returns_all_tasks_when_contexts_are_none(self):
         main = load_main_module()
         tasks = [
             {"name": "Work task", "context": "💼 Work"},
             {"name": "Personal task", "context": "🏠 Personal"},
         ]
 
-        filtered = main._filter_digest_tasks(tasks, config={"contexts": [], "max_items": 10, "include_habits": True})
+        filtered = main._filter_digest_tasks(tasks, config={"contexts": None, "max_items": 10, "include_habits": True})
 
-        self.assertEqual(filtered, [])
+        self.assertEqual(filtered, tasks)
 
 
 class TestDigestCatchupFlag(unittest.TestCase):
@@ -129,8 +133,9 @@ class TestDigestCatchupFlag(unittest.TestCase):
         scheduler = _FakeScheduler()
         slot = {"time": "08:15", "is_weekday": True, "include_habits": True, "max_items": 10, "contexts": ["💼 Work"]}
 
-        with patch.object(main, "load_digest_slots", return_value=[slot]), \
-            patch.object(main, "_queue_missed_slots_for_today") as mock_queue:
+        with patch.object(main.digest_helpers, "query_all", return_value=[]), \
+            patch.object(main.digest_helpers, "load_digest_slots", return_value=[slot]), \
+            patch.object(main.digest_helpers, "_queue_missed_slots_for_today") as mock_queue:
             main.build_digest_schedule(scheduler, MagicMock())
 
         mock_queue.assert_not_called()
@@ -140,8 +145,9 @@ class TestDigestCatchupFlag(unittest.TestCase):
         scheduler = _FakeScheduler()
         slot = {"time": "08:15", "is_weekday": True, "include_habits": True, "max_items": 10, "contexts": ["💼 Work"]}
 
-        with patch.object(main, "load_digest_slots", return_value=[slot]), \
-            patch.object(main, "_queue_missed_slots_for_today") as mock_queue:
+        with patch.object(main.digest_helpers, "query_all", return_value=[]), \
+            patch.object(main.digest_helpers, "load_digest_slots", return_value=[slot]), \
+            patch.object(main.digest_helpers, "_queue_missed_slots_for_today") as mock_queue:
             main.build_digest_schedule(scheduler, MagicMock(), queue_catchup=True)
 
         mock_queue.assert_called_once()
@@ -155,10 +161,11 @@ class TestManualDigestConfig(unittest.TestCase):
     def test_manual_digest_config_uses_latest_slot_not_after_now(self):
         main = load_main_module()
         now = main.datetime.now(main.TZ).replace(hour=18, minute=45)
+        is_weekday = now.weekday() < 5
         slots = [
-            {"time": "08:15", "is_weekday": True, "include_habits": False, "include_weather": False, "include_uvi": False, "contexts": ["💼 Work"], "max_items": 10},
-            {"time": "16:30", "is_weekday": True, "include_habits": True, "include_weather": True, "include_uvi": True, "include_feel": True, "contexts": ["🏠 Personal"], "max_items": 5},
-            {"time": "23:59", "is_weekday": True, "include_habits": False, "include_weather": False, "include_uvi": False, "contexts": [], "max_items": None},
+            {"time": "08:15", "is_weekday": is_weekday, "include_habits": False, "include_weather": False, "include_uvi": False, "contexts": ["💼 Work"], "max_items": 10},
+            {"time": "16:30", "is_weekday": is_weekday, "include_habits": True, "include_weather": True, "include_uvi": True, "include_feel": True, "contexts": ["🏠 Personal"], "max_items": 5},
+            {"time": "23:59", "is_weekday": is_weekday, "include_habits": False, "include_weather": False, "include_uvi": False, "contexts": [], "max_items": None},
         ]
 
         config = main._manual_digest_config_now(slots, now_dt=now)
@@ -175,8 +182,9 @@ class TestManualDigestConfig(unittest.TestCase):
     def test_manual_digest_config_forces_weather_for_digest_button(self):
         main = load_main_module()
         now = main.datetime.now(main.TZ).replace(hour=9, minute=0)
+        is_weekday = now.weekday() < 5
         slots = [
-            {"time": "08:15", "is_weekday": True, "include_habits": False, "include_weather": False, "include_uvi": False, "contexts": ["💼 Work"], "max_items": 10},
+            {"time": "08:15", "is_weekday": is_weekday, "include_habits": False, "include_weather": False, "include_uvi": False, "contexts": ["💼 Work"], "max_items": 10},
         ]
 
         config = main._manual_digest_config_now(slots, now_dt=now)
@@ -189,8 +197,9 @@ class TestManualDigestConfig(unittest.TestCase):
     def test_manual_digest_config_uses_late_digest_slot(self):
         main = load_main_module()
         now = main.datetime.now(main.TZ).replace(hour=23, minute=59)
+        is_weekday = now.weekday() < 5
         slots = [
-            {"time": "23:59", "is_weekday": True, "include_habits": False, "contexts": [], "max_items": None},
+            {"time": "23:59", "is_weekday": is_weekday, "include_habits": False, "contexts": [], "max_items": None},
         ]
 
         config = main._manual_digest_config_now(slots, now_dt=now)
@@ -406,7 +415,7 @@ class TestTripReminderIntegration(unittest.IsolatedAsyncioTestCase):
 
         main.notion = type("Notion", (), {"pages": _Pages()})()
         with patch.object(
-            main,
+            main.trips_mod,
             "get_upcoming_trips_needing_reminder",
             return_value=[
                 {
@@ -422,7 +431,7 @@ class TestTripReminderIntegration(unittest.IsolatedAsyncioTestCase):
                 }
             ],
         ):
-            text = main.append_trip_reminders_to_text("Weather body", within_days=2)
+            text = main.append_trip_reminders_to_text("Weather body", within_days=2, notion=main.notion, notion_trips_db="trips-db")
 
         self.assertIn("Weather body", text)
         self.assertIn("──────────────────────────────", text)
@@ -443,5 +452,5 @@ class TestTripReminderIntegration(unittest.IsolatedAsyncioTestCase):
             patch.object(main, "append_trip_reminders_to_text", return_value="🌤️ Forecast\n\n🧳 *Trip*") as mock_append:
             await main.cmd_weather(update, MagicMock())
 
-        mock_append.assert_called_once_with("🌤️ Forecast", within_days=2)
+        mock_append.assert_called_once_with("🌤️ Forecast", within_days=2, notion=main.notion, notion_trips_db=main.NOTION_TRIPS_DB)
         message.reply_text.assert_awaited_once_with("🌤️ Forecast\n\n🧳 *Trip*", parse_mode="Markdown")
