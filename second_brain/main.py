@@ -245,6 +245,7 @@ from second_brain.routers import (
     handle_message_text,
     handle_callback,
     route_classified_message_v10,
+    _prompt_entertainment_notes_or_rating,
 )
 handle_entertainment_log = _ent_handle_log
 
@@ -940,6 +941,11 @@ async def send_quick_reminder(message, mode: str = "priority") -> None:
 # NAMING CONVENTIONS:
 # ─ Use colons (:) as separators, never underscores
 # ─ PIDs (page IDs) are always restored from clean format: _restore_pid(parts[n])
+def _stash_pid(pid: str) -> str:
+    """Compact Notion page IDs so they fit comfortably in callback data."""
+    return (pid or "").replace("-", "")
+
+
 def _restore_pid(pid: str) -> str:
     """Restore compact Notion page IDs to canonical dashed form.
 
@@ -2599,7 +2605,12 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         prompted = await ent_log._maybe_prompt_explicit_venue(notion, update.message, parsed, f"/log {raw}")
         if prompted:
             return
-        await _ent_handle_log(notion, update.message, parsed, rule_engine=rule_engine)
+        entry_id, log_type = await _ent_handle_log(
+            notion, update.message, parsed, rule_engine=rule_engine
+        )
+        await _prompt_entertainment_notes_or_rating(
+            update.message, parsed, entry_id, log_type
+        )
     except Exception as e:
         log.error("Explicit /log save error: %s", e)
         await update.message.reply_text(ent_log._entertainment_save_error_text(e, parsed))

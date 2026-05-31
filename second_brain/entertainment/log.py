@@ -25,6 +25,8 @@ log = logging.getLogger(__name__)
 
 entertainment_schemas: dict[str, dict] = {}
 pending_sport_competition_map: dict[int, dict] = {}
+pending_entertainment_rating_map: dict[int, dict] = {}
+pending_entertainment_notes_map: dict[int, dict] = {}
 
 
 def _cleanup_extracted_text(text: str | None) -> str:
@@ -157,6 +159,14 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
         rest_without_favourite, favourite = _extract_favourite_marker(rest)
         rest = rest_without_favourite or rest
 
+    rating_match = re.search(r"\b(?:rating|rate|r)\s*:?\s*([-+]?[0-3])\b", rest, re.IGNORECASE)
+    if rating_match:
+        inline_rating = int(rating_match.group(1))
+        rest = rest[: rating_match.start()] + " " + rest[rating_match.end():]
+        rest = _cleanup_extracted_text(rest)
+    else:
+        inline_rating = None
+
     # Pull structured ISO dates with trailing notes first to preserve existing
     # "on YYYY/MM/DD at HH:MM Seat ..." behavior.
     match_on_datetime = re.search(
@@ -279,6 +289,8 @@ def parse_explicit_entertainment_log(text: str) -> dict | None:
         payload["notes"] = extracted_notes
     if favourite:
         payload["favourite"] = True
+    if inline_rating is not None:
+        payload["rating"] = inline_rating
     if parsed_date and parsed_time:
         payload["date"] = f"{parsed_date}T{parsed_time}:00"
     elif parsed_date:
@@ -429,12 +441,64 @@ def _build_sport_competition_props(schema: dict, competition: str) -> dict:
         return {competition_rich_text_prop: rich_text_prop(competition)}
     return {}
 
-def _remember_pending_sport_competition(message, page_id: str) -> None:
+def _build_entertainment_rating_props(schema: dict, rating: int) -> dict:
+    rating_select_prop = _pick_exact_prop(schema, "select", ["Rating"])
+    rating_number_prop = _pick_exact_prop(schema, "number", ["Rating"])
+    if rating_select_prop:
+        return {rating_select_prop: {"select": {"name": str(rating)}}}
+    if rating_number_prop:
+        return {rating_number_prop: {"number": rating}}
+    return {}
+
+def _build_entertainment_notes_props(schema: dict, notes: str) -> dict:
+    notes_prop = _pick_prop(schema, "rich_text", ["Notes", "Comment", "Details"])
+    if notes_prop:
+        return {notes_prop: rich_text_prop(notes)}
+    return {}
+
+def _remember_pending_sport_competition(
+    message,
+    page_id: str,
+    *,
+    has_rating: bool = False,
+    has_notes: bool = False,
+) -> None:
     chat = getattr(message, "chat", None)
     chat_id = getattr(chat, "id", None)
     if chat_id is None:
         return
-    pending_sport_competition_map[chat_id] = {"page_id": page_id}
+    pending_sport_competition_map[chat_id] = {
+        "page_id": page_id,
+        "has_rating": has_rating,
+        "has_notes": has_notes,
+    }
+
+def _remember_pending_entertainment_rating(message, page_id: str, log_type: str) -> None:
+    chat = getattr(message, "chat", None)
+    chat_id = getattr(chat, "id", None)
+    if chat_id is None:
+        return
+    pending_entertainment_rating_map[chat_id] = {
+        "page_id": page_id,
+        "log_type": log_type,
+    }
+
+def _remember_pending_entertainment_notes(
+    message,
+    page_id: str,
+    log_type: str,
+    *,
+    has_rating: bool = False,
+) -> None:
+    chat = getattr(message, "chat", None)
+    chat_id = getattr(chat, "id", None)
+    if chat_id is None:
+        return
+    pending_entertainment_notes_map[chat_id] = {
+        "page_id": page_id,
+        "log_type": log_type,
+        "has_rating": has_rating,
+    }
 
 _CINEMA_STRUCTURED_DETAIL_RE = re.compile(
     r"\b(?:seat\s*:?\s*[A-Za-z0-9-]+|auditorium\s*:?\s*[A-Za-z0-9-]+)\b",
@@ -690,6 +754,8 @@ def create_entertainment_log_entry(notion, payload: dict) -> tuple[str, bool]:
         favourite_prop = _pick_exact_prop(schema, "checkbox", ["Favourite", "Favorite"])
         if favourite_prop:
             props[favourite_prop] = {"checkbox": favourite}
+        if payload.get("rating") is not None:
+            props.update(_build_entertainment_rating_props(schema, int(payload["rating"])))
         page = _safe_create_entertainment_page(notion, schema, NOTION_CINEMA_LOG_DB, props)
 
         if favourite and NOTION_FAVE_DB and entertainment_schemas.get("favourite_films"):
@@ -720,6 +786,8 @@ def create_entertainment_log_entry(notion, payload: dict) -> tuple[str, bool]:
         when_iso = _normalize_entertainment_datetime(when_iso, datetime_hint)
         notes = _strip_datetime_from_notes(notes)
         props = _build_common_entertainment_props(schema, title=title, when_iso=when_iso, venue=venue, notes=notes)
+        if payload.get("rating") is not None:
+            props.update(_build_entertainment_rating_props(schema, int(payload["rating"])))
         page = _safe_create_entertainment_page(notion, schema, NOTION_PERFORMANCE_LOG_DB, props)
         return page["id"], False
 
@@ -749,12 +817,14 @@ def create_entertainment_log_entry(notion, payload: dict) -> tuple[str, bool]:
                 props[seat_status_prop] = {"status": {"name": seat}}
             elif seat_rich_text_prop:
                 props[seat_rich_text_prop] = rich_text_prop(seat)
+        if payload.get("rating") is not None:
+            props.update(_build_entertainment_rating_props(schema, int(payload["rating"])))
         page = _safe_create_entertainment_page(notion, schema, NOTION_SPORTS_LOG_DB, props)
         return page["id"], False
 
     raise ValueError(f"Unknown entertainment log type: {log_type}")
 
-async def handle_entertainment_log(notion, message, payload: dict) -> None:
+async def handle_entertainment_log(notion, message, payload: dict) -> tuple[str, str]:
     entry_id, fav_saved = create_entertainment_log_entry(notion, payload)
     title = payload.get("title", "Untitled")
     log_type = payload.get("log_type", "cinema")
@@ -778,9 +848,15 @@ async def handle_entertainment_log(notion, message, payload: dict) -> None:
     summary_lines.append("_Saved to Notion_")
     await message.reply_text("\n".join(summary_lines), parse_mode="Markdown")
     if log_type == "sport":
-        _remember_pending_sport_competition(message, entry_id)
+        _remember_pending_sport_competition(
+            message,
+            entry_id,
+            has_rating=payload.get("rating") is not None,
+            has_notes=bool(payload.get("notes")),
+        )
         await message.reply_text("🏆 Logged to Sports Log. Which competition should I set for this one?")
     log.info("Entertainment logged type=%s title=%s page_id=%s", log_type, title, entry_id)
+    return entry_id, log_type
 
 def _entertainment_save_error_text(err: Exception, payload: dict | None = None) -> str:
     text = str(err or "")
