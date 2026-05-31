@@ -36,6 +36,7 @@ def _health_row(day: str, **overrides):
         "Total Sleep (min)": _number(420),
         "Deep Sleep (min)": _number(84),
         "REM Sleep (min)": _number(105),
+        "Awake in Bed (min)": _number(35),
         "Sleep Efficiency (%)": _number(90),
         "Bedtime": _date_prop(f"{day}T23:00:00-05:00"),
         "HRV (ms)": _number(42),
@@ -65,6 +66,9 @@ class TestHealthInsightAggregation(unittest.TestCase):
 
         self.assertEqual(stats.days_with_data, 7)
         self.assertEqual(stats.avg_sleep_min, 420)
+        self.assertEqual(stats.avg_deep_min, 84)
+        self.assertEqual(stats.avg_rem_min, 105)
+        self.assertEqual(stats.avg_awake_min, 35)
         self.assertEqual(stats.avg_sleep_efficiency, 90)
         self.assertAlmostEqual(stats.avg_deep_pct, 20)
         self.assertAlmostEqual(stats.avg_rem_pct, 25)
@@ -92,6 +96,9 @@ class TestHealthInsightAggregation(unittest.TestCase):
 
         self.assertEqual(stats.days_with_data, 0)
         self.assertIsNone(stats.avg_sleep_min)
+        self.assertIsNone(stats.avg_deep_min)
+        self.assertIsNone(stats.avg_rem_min)
+        self.assertIsNone(stats.avg_awake_min)
         self.assertIsNone(stats.avg_hrv)
         self.assertIsNone(stats.last_vo2)
         self.assertEqual(stats.exercise_days, 0)
@@ -160,17 +167,28 @@ class TestHealthInsightPrompt(unittest.TestCase):
     def test_build_health_insight_prompt_without_travel(self):
         stats = compute_week_stats([_health_row("2026-05-01")])
 
-        prompt = build_health_insight_prompt(stats, stats, "May 1-May 7", None, "2026-05-08")
+        prompt = build_health_insight_prompt(
+            stats,
+            stats,
+            stats,
+            "May 1-May 7",
+            None,
+            "2026-05-08",
+            best_night_str="May 1 (7.0h)",
+            worst_night_str="May 1 (7.0h, 35 min awake)",
+        )
 
         self.assertNotIn("TRAVEL CONTEXT", prompt)
         self.assertIn("WEEKLY DATA", prompt)
-        self.assertIn("Readiness trend (daily scores Mon→Sun): no data", prompt)
-        self.assertIn("Workout duration trend (days with exercise): 2026-05-01 30m", prompt)
+        self.assertIn("REM 105 min", prompt)
+        self.assertIn("Sleep nights: best May 1 (7.0h), worst May 1 (7.0h, 35 min awake)", prompt)
+        self.assertIn("Write exactly 7 sections", prompt)
 
     def test_build_health_insight_prompt_with_travel(self):
         stats = compute_week_stats([_health_row("2026-05-01")])
 
         prompt = build_health_insight_prompt(
+            stats,
             stats,
             stats,
             "May 1-May 7",

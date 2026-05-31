@@ -80,6 +80,55 @@ def _yesterday(tz) -> str:
 
 # ── Notion helpers ────────────────────────────────────────────────────────────
 
+def _threshold_state_key(date_str: str) -> str:
+    return f"steps_threshold_{date_str}"
+
+
+def _persist_threshold_state(notion, env_db_id: str, date_str: str, message_id: int) -> None:
+    """Persist today's threshold Telegram message id in the ENV database."""
+    if not env_db_id:
+        return
+    key = _threshold_state_key(date_str)
+    props = {
+        "Name": title_prop(key),
+        "Value": rich_text_prop(str(message_id)),
+    }
+    try:
+        results = notion.databases.query(
+            database_id=env_db_id,
+            filter={"property": "Name", "title": {"equals": key}},
+        )
+        pages = results.get("results", [])
+        if pages:
+            notion.pages.update(page_id=pages[0]["id"], properties={"Value": props["Value"]})
+        else:
+            notion.pages.create(parent={"database_id": env_db_id}, properties=props)
+    except Exception as e:
+        log.warning("steps: failed to persist threshold message id for %s: %s", date_str, e)
+
+
+def _load_threshold_state(notion, env_db_id: str, date_str: str) -> int | None:
+    """Load a persisted threshold Telegram message id from the ENV database."""
+    if not env_db_id:
+        return None
+    key = _threshold_state_key(date_str)
+    try:
+        results = notion.databases.query(
+            database_id=env_db_id,
+            filter={"property": "Name", "title": {"equals": key}},
+        )
+        pages = results.get("results", [])
+        if not pages:
+            return None
+        chunks = pages[0].get("properties", {}).get("Value", {}).get("rich_text", [])
+        if not chunks:
+            return None
+        raw = chunks[0].get("plain_text") or chunks[0].get("text", {}).get("content")
+        return int(raw) if raw else None
+    except Exception as e:
+        log.warning("steps: failed to load threshold message id for %s: %s", date_str, e)
+        return None
+
 def _find_steps_habit_page_id(notion, habit_db_id: str, habit_name: str) -> str | None:
     """Look up the Steps habit page_id from the Habits DB. Cached via habit_cache upstream."""
     try:
@@ -335,6 +384,11 @@ async def handle_steps_sync(
     # ── Threshold notification (send once, then edit with updated count) ──
     if is_today and completed and bot and chat_id:
         notification_text = f"🎉 10,000 steps hit! 🚶 {steps:,} steps today"
+        if not state["threshold_notified"] and not state.get("threshold_message_id") and env_db_id:
+            message_id = _load_threshold_state(notion, env_db_id, date_str)
+            if message_id:
+                state["threshold_notified"] = True
+                state["threshold_message_id"] = message_id
 
         if not state["threshold_notified"]:
             try:
@@ -344,6 +398,7 @@ async def handle_steps_sync(
                 )
                 state["threshold_notified"] = True
                 state["threshold_message_id"] = sent.message_id
+                _persist_threshold_state(notion, env_db_id, date_str, sent.message_id)
                 log.info(
                     "steps: threshold notification sent (msg_id=%s, %d steps)",
                     sent.message_id,
@@ -375,6 +430,8 @@ async def handle_steps_sync(
                     try:
                         sent = await bot.send_message(chat_id=chat_id, text=notification_text)
                         state["threshold_message_id"] = sent.message_id
+                        state["threshold_notified"] = True
+                        _persist_threshold_state(notion, env_db_id, date_str, sent.message_id)
                         log.info("steps: replacement message sent (msg_id=%s)", sent.message_id)
                     except Exception as e2:
                         log.error("steps: replacement send also failed: %s", e2)
@@ -557,6 +614,11 @@ async def backfill_steps_state_from_notion(
             if steps > state["last_steps"]:
                 state["last_steps"] = steps
             state["notion_page_id"] = existing_id
+            if date_str == today and env_db_id:
+                message_id = _load_threshold_state(notion, env_db_id, date_str)
+                if message_id:
+                    state["threshold_notified"] = True
+                    state["threshold_message_id"] = message_id
 
             log.info("steps backfill: %s → %d steps", date_str, state["last_steps"])
         except Exception as e:
