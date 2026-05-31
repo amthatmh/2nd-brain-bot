@@ -304,6 +304,36 @@ class TestSleepParsing(unittest.TestCase):
 
                 self.assertEqual(parsed["sleep_score"], expected_score)
 
+    def test_parse_sleep_data_point_extra_summary_fields(self):
+        point = {
+            "startTime": "2026-05-28T23:00:00Z",
+            "endTime": "2026-05-29T07:00:00Z",
+            "sleepSummary": {
+                "minutesToFallAsleep": "12",
+                "minutesAfterWakeUp": "5",
+            },
+            "sleepType": "STAGES",
+        }
+
+        parsed = parse_sleep_data_point(point, ZoneInfo("UTC"))
+
+        self.assertEqual(parsed["sleep_latency_min"], 12.0)
+        self.assertEqual(parsed["post_wake_min"], 5.0)
+        self.assertEqual(parsed["sleep_type"], "STAGES")
+
+    def test_parse_sleep_data_point_missing_extra_fields(self):
+        point = {
+            "startTime": "2026-05-28T23:00:00Z",
+            "endTime": "2026-05-29T07:00:00Z",
+            "sleepSummary": {},
+        }
+
+        parsed = parse_sleep_data_point(point, ZoneInfo("UTC"))
+
+        self.assertIsNone(parsed["sleep_latency_min"])
+        self.assertIsNone(parsed["post_wake_min"])
+        self.assertIsNone(parsed["sleep_type"])
+
 
 class TestFetchSleepData(unittest.TestCase):
     @patch("second_brain.healthtrack.sleep.httpx.get")
