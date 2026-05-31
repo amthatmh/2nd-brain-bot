@@ -44,8 +44,24 @@ def refresh_access_token(client_id: str, client_secret: str, refresh_token: str)
     return access_token
 
 
+def _sleep_session_duration_s(point: dict) -> float:
+    """Return duration in seconds of a sleep data point, used to pick the longest session."""
+    sleep_raw = point.get("sleep") or {}
+    iv = point.get("interval") or sleep_raw.get("interval") or {}
+    start_str = iv.get("startTime") or iv.get("civil_start_time") or point.get("startTime") or ""
+    end_str = iv.get("endTime") or iv.get("civil_end_time") or point.get("endTime") or ""
+    if not start_str or not end_str:
+        return 0.0
+    try:
+        s = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+        e = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+        return max((e - s).total_seconds(), 0.0)
+    except Exception:
+        return 0.0
+
+
 def fetch_sleep_data(access_token: str, query_date_str: str, tz) -> dict | None:
-    """Fetch the first sleep data point ending on the wake day after query_date_str."""
+    """Fetch the longest sleep data point ending on the wake day after query_date_str."""
     del tz  # Unused here; Google filters by civil end date and parsing applies local tz.
     query_date = date.fromisoformat(query_date_str)
     wake_date = query_date + timedelta(days=1)
@@ -65,13 +81,16 @@ def fetch_sleep_data(access_token: str, query_date_str: str, tz) -> dict | None:
     points = payload.get("dataPoints") or []
     if not isinstance(points, list) or not points:
         return None
-    first = points[0]
-    if not isinstance(first, dict):
+    points = [p for p in points if isinstance(p, dict)]
+    if not points:
         return None
 
-    log.info("sleep_sync: raw dataPoint keys=%s", list(first.keys()))
+    # Pick the longest session — avoids naps being selected over main sleep
+    first = max(points, key=_sleep_session_duration_s)
+
+    log.info("sleep_sync: %d dataPoint(s), selected longest — keys=%s", len(points), list(first.keys()))
     sleep_summary_debug = first.get("sleepSummary") or {}
-    stages_debug = first.get("stagesSummary") or []
+    stages_debug = first.get("stagesSummary") or first.get("stages") or []
     log.info(
         "sleep_sync: sleepSummary keys=%s sleepSummary=%s",
         list(sleep_summary_debug.keys())
@@ -80,7 +99,7 @@ def fetch_sleep_data(access_token: str, query_date_str: str, tz) -> dict | None:
         sleep_summary_debug,
     )
     log.info(
-        "sleep_sync: stagesSummary type=%s first_item=%s",
+        "sleep_sync: stagesSummary/stages type=%s first_item=%s",
         type(stages_debug).__name__,
         stages_debug[0] if stages_debug else "empty",
     )
@@ -98,8 +117,11 @@ def fetch_sleep_data(access_token: str, query_date_str: str, tz) -> dict | None:
         sleep_summary_raw = {}
     stages_summary = (
         first.get("stagesSummary")
+        or first.get("stages")
         or sleep_summary_raw.get("stagesSummary")
+        or sleep_summary_raw.get("stages")
         or sleep_raw.get("stagesSummary")
+        or sleep_raw.get("stages")
         or []
     )
 
@@ -225,7 +247,13 @@ def parse_sleep_data_point(point: dict, tz) -> dict:
     local_start = start_dt.astimezone(tz) if tz else start_dt
     local_end = end_dt.astimezone(tz) if tz else end_dt
 
-    stages_summary = point.get("stagesSummary") or {}
+    stages_summary = (
+        point.get("stagesSummary")
+        or point.get("stages")
+        or sleep_summary.get("stagesSummary")
+        or sleep_summary.get("stages")
+        or {}
+    )
 
     def _minutes_from_summary(key: str) -> float:
         val = sleep_summary.get(key)
@@ -236,10 +264,13 @@ def parse_sleep_data_point(point: dict, tz) -> dict:
         except (ValueError, TypeError):
             return _duration_ms(val) / 60000
 
+    time_in_bed_min = round((end_dt - start_dt).total_seconds() / 60, 2)
+
     total_sleep_min = round(
         _minutes_from_summary("minutesAsleep")
         or _minutes_from_summary("minutesInSleepPeriod")
-        or _duration_ms(sleep_summary.get("totalDurationMs")) / 60000,
+        or _duration_ms(sleep_summary.get("totalDurationMs")) / 60000
+        or time_in_bed_min,  # fallback: use time-in-bed when no sleep analysis is available
         2,
     )
     deep_min = _stage_minutes(
@@ -262,7 +293,17 @@ def parse_sleep_data_point(point: dict, tz) -> dict:
         {"awake", "wake", "awake in bed"},
         ("awakeDurationMs", "awakeInBedDurationMs", "wakeDurationMs", "wakeMs"),
     )
-    time_in_bed_min = round((end_dt - start_dt).total_seconds() / 60, 2)
+    sleep_score = (
+        sleep_summary.get("sleepScore")
+        or sleep_summary.get("overallScore")
+        or sleep_summary.get("score")
+        or None
+    )
+    try:
+        sleep_score = int(sleep_score) if sleep_score is not None else None
+    except (ValueError, TypeError):
+        sleep_score = None
+
     sleep_efficiency = round((total_sleep_min / time_in_bed_min) * 100, 1) if time_in_bed_min > 0 else 0.0
 
     return {
@@ -276,11 +317,12 @@ def parse_sleep_data_point(point: dict, tz) -> dict:
         "awake_min": awake_min,
         "time_in_bed_min": time_in_bed_min,
         "sleep_efficiency": sleep_efficiency,
+        "sleep_score": sleep_score,
     }
 
 
 def _sleep_properties(parsed: dict) -> dict[str, dict]:
-    return {
+    props = {
         "Bedtime": {"date": {"start": parsed["bedtime_iso"]}},
         "Wake Time": {"date": {"start": parsed["wake_time_iso"]}},
         "Total Sleep (min)": {"number": parsed["total_sleep_min"]},
@@ -291,6 +333,9 @@ def _sleep_properties(parsed: dict) -> dict[str, dict]:
         "Time in Bed (min)": {"number": parsed["time_in_bed_min"]},
         "Sleep Efficiency (%)": {"number": parsed["sleep_efficiency"]},
     }
+    if parsed.get("sleep_score") is not None:
+        props["Sleep Score"] = {"number": parsed["sleep_score"]}
+    return props
 
 
 async def handle_sleep_sync(
@@ -370,6 +415,30 @@ async def handle_sleep_sync_job(bot=None) -> dict:
         tz=TZ,
     )
     log.info("sleep_sync: scheduler result=%s", result)
+    return result
+
+
+@track_job_execution("sleep_resync")
+async def handle_sleep_resync_job(bot=None) -> dict:
+    """Late-evening retry for yesterday's sleep — catches late Fitbit-to-Google syncs."""
+    from second_brain.config import (
+        GOOGLE_HEALTH_CLIENT_ID,
+        GOOGLE_HEALTH_CLIENT_SECRET,
+        GOOGLE_HEALTH_REFRESH_TOKEN,
+    )
+    from second_brain.main import NOTION_HEALTH_METRICS_DB, TZ, notion
+
+    yesterday = (datetime.now(TZ) - timedelta(days=1)).date()
+    result = await handle_sleep_sync(
+        notion=notion,
+        metrics_db_id=NOTION_HEALTH_METRICS_DB,
+        client_id=GOOGLE_HEALTH_CLIENT_ID,
+        client_secret=GOOGLE_HEALTH_CLIENT_SECRET,
+        refresh_token=GOOGLE_HEALTH_REFRESH_TOKEN,
+        target_date=yesterday,
+        tz=TZ,
+    )
+    log.info("sleep_resync: result=%s", result)
     return result
 
 
