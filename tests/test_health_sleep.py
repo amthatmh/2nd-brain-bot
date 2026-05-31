@@ -175,8 +175,72 @@ class TestSleepParsing(unittest.TestCase):
         self.assertEqual(parsed["total_sleep_min"], 360)
         self.assertEqual(parsed["sleep_efficiency"], 0.8571)
 
-    def test_parse_google_stages_helper_returns_empty_for_non_integer_format(self):
-        self.assertEqual(_parse_google_stages([{"stage": "DEEP", "minutes": 90}]), {})
+    def test_parse_google_stages_helper_returns_empty_for_unrecognised_format(self):
+        self.assertEqual(_parse_google_stages([{"stage": "NAPPING", "minutes": 90}]), {})
+
+    def test_parse_google_stages_string_types_with_timestamps(self):
+        point = {
+            "startTime": "2026-05-31T09:00:00Z",
+            "endTime": "2026-05-31T10:53:00Z",
+            "sleep": {
+                "summary": {
+                    "minutesAsleep": "105",
+                    "minutesInSleepPeriod": "113",
+                },
+                "stages": [
+                    {
+                        "type": "DEEP",
+                        "startTime": "2026-05-31T09:00:00Z",
+                        "endTime": "2026-05-31T09:30:00Z",
+                    },
+                    {
+                        "type": "REM",
+                        "startTime": "2026-05-31T09:30:00Z",
+                        "endTime": "2026-05-31T10:00:00Z",
+                    },
+                    {
+                        "type": "LIGHT",
+                        "startTime": "2026-05-31T10:00:00Z",
+                        "endTime": "2026-05-31T10:45:00Z",
+                    },
+                    {
+                        "type": "AWAKE",
+                        "startTime": "2026-05-31T10:45:00Z",
+                        "endTime": "2026-05-31T10:53:00Z",
+                    },
+                ],
+            },
+        }
+
+        parsed = parse_sleep_data_point(point, ZoneInfo("UTC"))
+
+        self.assertEqual(parsed["deep_min"], 30.0)
+        self.assertEqual(parsed["rem_min"], 30.0)
+        self.assertEqual(parsed["light_min"], 45.0)
+        self.assertEqual(parsed["awake_min"], 8.0)
+        self.assertEqual(parsed["total_sleep_min"], 105)
+        self.assertEqual(parsed["sleep_efficiency"], 0.9292)
+
+    def test_parse_google_stages_compact_string_format(self):
+        point = {
+            "startTime": "2026-05-31T01:00:00Z",
+            "endTime": "2026-05-31T08:33:00Z",
+            "stagesSummary": [
+                {"type": "LIGHT", "minutes": "310"},
+                {"type": "DEEP", "minutes": "54"},
+                {"type": "REM", "minutes": "80"},
+                {"type": "AWAKE", "minutes": "7"},
+            ],
+        }
+
+        parsed = parse_sleep_data_point(point, ZoneInfo("UTC"))
+
+        self.assertEqual(parsed["light_min"], 310.0)
+        self.assertEqual(parsed["deep_min"], 54.0)
+        self.assertEqual(parsed["rem_min"], 80.0)
+        self.assertEqual(parsed["awake_min"], 7.0)
+        self.assertEqual(parsed["total_sleep_min"], 444.0)
+        self.assertEqual(parsed["sleep_efficiency"], 0.9801)
 
     def test_parse_sleep_data_point_with_null_stage_summary(self):
         point = {
