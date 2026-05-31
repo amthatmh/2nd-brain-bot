@@ -380,6 +380,7 @@ def format_digest_weather_card() -> str:
     condition = today.get("description", today.get("condition", "Unknown"))
     high_c = int(today.get("temp_high", 0))
     low_c = int(today.get("temp_low", 0))
+    wx.save_today_weather_snapshot(high_c, low_c, condition)
     high_f = int(round((high_c * 9 / 5) + 32))
     low_f = int(round((low_c * 9 / 5) + 32))
     rain = int(today.get("precip_chance", 0))

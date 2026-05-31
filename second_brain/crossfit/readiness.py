@@ -8,6 +8,8 @@ import os
 from datetime import datetime
 from typing import Optional
 
+from second_brain.ai.client import get_claude_client
+from second_brain.config import CLAUDE_MODEL
 from second_brain.notion import notion_call
 from second_brain.notion.properties import rich_text_prop, title_prop
 
@@ -95,6 +97,30 @@ def extract_readiness_score(page: dict) -> Optional[float]:
     except Exception:
         pass
     return None
+
+
+def low_readiness_recovery_suggestion(sleep: str, energy: str, soreness: str) -> str:
+    try:
+        sleep_score = int(sleep)
+        energy_score = int(energy)
+        soreness_score = int(soreness)
+    except Exception:
+        return ""
+    if sleep_score > 2 and energy_score > 2:
+        return ""
+    try:
+        claude = get_claude_client()
+        resp = claude.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=50,
+            messages=[{"role": "user", "content": (
+                f"Sleep: {sleep_score}/5, Energy: {energy_score}/5, Soreness: {soreness_score}/5.\n"
+                "One sentence: recommend full rest, active recovery, or scaled training today. Be direct."
+            )}],
+        )
+        return resp.content[0].text.strip().strip('"')
+    except Exception:
+        return ""
 
 
 # TESTING CHECKLIST — Phase 1 Daily Readiness

@@ -138,6 +138,10 @@ from second_brain.config import (
 )
 from second_brain.notion import notion_call
 from second_brain.notion.properties import (
+    extract_date,
+    extract_multi_select,
+    extract_rich_text,
+    extract_title,
     query_all,
     rich_text_prop,
     title_prop,
@@ -757,13 +761,15 @@ async def check_and_notify_weekly_goals(
     notified_set=None,
     week_count_fn=None,
     frequency_fn=None,
-) -> None:
+    send_notifications: bool = True,
+) -> list[str]:
     """Check each habit's weekly completion count; notify once per week when goal is hit."""
     chat_id = chat_id or MY_CHAT_ID
     cache = cache if cache is not None else habit_cache
     notified_set = notified_set if notified_set is not None else notified_goals_this_week
     week_count_fn = week_count_fn or get_week_completion_count
     frequency_fn = frequency_fn or get_habit_frequency
+    hit_names: list[str] = []
     try:
         for name, habit in list(cache.items()):
             pid = habit.get("page_id")
@@ -775,13 +781,16 @@ async def check_and_notify_weekly_goals(
             count = week_count_fn(pid)
             if count >= freq:
                 notified_set.add(pid)
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=f"🎯 Weekly goal hit: *{name}* ({count}/{freq})",
-                    parse_mode="Markdown",
-                )
+                hit_names.append(name)
+                if send_notifications:
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=f"🎯 Weekly goal hit: *{name}* ({count}/{freq})",
+                        parse_mode="Markdown",
+                    )
     except Exception as e:
         log.warning("check_and_notify_weekly_goals failed: %s", e)
+    return hit_names
 
 # ══════════════════════════════════════════════════════════════════════════════
 # NOTION — TO-DO
@@ -1665,6 +1674,225 @@ async def send_daily_habits_list(bot) -> None:
     _store_habit_selection_session(sent.message_id, habits)
     log.info("Habits list sent — %s available habits", len(habits))
 
+
+async def send_friday_reflection(bot):
+    habit_parts = []
+    for name, habit in list(habit_cache.items()):
+        page_id = habit.get("page_id")
+        if not page_id:
+            continue
+        try:
+            habit_parts.append(f"{name}: {get_week_completion_count(page_id)}/{get_habit_frequency(page_id)}")
+        except Exception as e:
+            log.debug("Friday reflection habit summary skipped for %s: %s", name, e)
+    habit_summary = ", ".join(habit_parts) or "unavailable"
+
+    completed = 0
+    deferred = 0
+    today = local_today()
+    since = today - timedelta(days=7)
+    try:
+        completed = len(query_all(
+            notion,
+            NOTION_DB_ID,
+            filter={
+                "and": [
+                    {"property": "Done", "checkbox": {"equals": True}},
+                    {"timestamp": "last_edited_time", "last_edited_time": {"on_or_after": since.isoformat()}},
+                ]
+            },
+        ))
+    except Exception as e:
+        log.debug("Friday reflection completed task count skipped: %s", e)
+    try:
+        deferred = len(query_all(
+            notion,
+            NOTION_DB_ID,
+            filter={
+                "and": [
+                    {"property": "Done", "checkbox": {"equals": False}},
+                    {"property": "Deadline", "date": {"on_or_after": since.isoformat()}},
+                    {"property": "Deadline", "date": {"on_or_before": today.isoformat()}},
+                ]
+            },
+        ))
+    except Exception as e:
+        log.debug("Friday reflection deferred task count skipped: %s", e)
+
+    try:
+        claude = get_claude_client()
+        resp = claude.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=120,
+            messages=[{"role": "user", "content": (
+                "You are a life coach giving a Friday wrap-up in 2 sentences.\n"
+                f"Habits this week: {habit_summary}. Tasks: {completed} done, {deferred} deferred.\n"
+                "Acknowledge what went well and give one specific nudge for next week. No emojis."
+            )}],
+        )
+        text = resp.content[0].text.strip()
+    except Exception as e:
+        log.debug("Friday reflection skipped: %s", e)
+        return
+    if text:
+        await bot.send_message(chat_id=MY_CHAT_ID, text=text)
+
+
+async def send_sunday_digest(bot):
+    habit_parts = []
+    for name, habit in list(habit_cache.items()):
+        page_id = habit.get("page_id")
+        if not page_id:
+            continue
+        try:
+            habit_parts.append(f"{name}: {get_week_completion_count(page_id)}/{get_habit_frequency(page_id)}")
+        except Exception as e:
+            log.debug("Sunday digest habit summary skipped for %s: %s", name, e)
+    habit_summary = ", ".join(habit_parts) or "unavailable"
+
+    week_summary = ""
+    try:
+        claude = get_claude_client()
+        resp = claude.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=100,
+            messages=[{"role": "user", "content": (
+                "Give a 2-sentence week summary from these habit completions. "
+                f"Habits this week: {habit_summary}. "
+                "Say what was consistent and what was not. No emojis."
+            )}],
+        )
+        week_summary = resp.content[0].text.strip()
+    except Exception as e:
+        log.debug("Sunday week summary skipped: %s", e)
+
+    today = local_today()
+    upper = today + timedelta(days=14)
+    trip_sections: list[str] = []
+    if NOTION_TRIPS_DB:
+        try:
+            trips = query_all(
+                notion,
+                NOTION_TRIPS_DB,
+                filter={
+                    "and": [
+                        {"property": "Departure Date", "date": {"on_or_after": today.isoformat()}},
+                        {"property": "Departure Date", "date": {"on_or_before": upper.isoformat()}},
+                    ]
+                },
+                page_size=50,
+            )
+        except Exception as e:
+            log.debug("Sunday digest trip query skipped: %s", e)
+            trips = []
+        for trip in trips:
+            props = trip.get("properties", {})
+            start_date = extract_date(props.get("Departure Date"))
+            end_date = extract_date(props.get("Return Date")) or start_date
+            destination = extract_rich_text(props.get("Destination(s)")) or extract_title(props.get("Trip")) or "Trip"
+            purpose = ", ".join(extract_multi_select(props.get("Purpose"))) or "unspecified"
+            if not start_date or not end_date or not destination:
+                continue
+            try:
+                start = date.fromisoformat(start_date[:10])
+                days_until = (start - today).days
+            except Exception:
+                days_until = 0
+            forecast_rows = wx.fetch_trip_weather_range(start_date, end_date, destination)
+            forecast = "; ".join(
+                f"{row.get('date')}: {row.get('description') or row.get('condition')} "
+                f"{row.get('temp_low')}–{row.get('temp_high')}°C, rain {row.get('precip_chance', 0)}%"
+                for row in forecast_rows
+            ) or "unavailable"
+            try:
+                claude = get_claude_client()
+                resp = claude.messages.create(
+                    model=CLAUDE_MODEL,
+                    max_tokens=150,
+                    messages=[{"role": "user", "content": (
+                        f"Trip to {destination} in {days_until} days ({start_date} – {end_date}).\n"
+                        f"Weather forecast: {forecast}.\n"
+                        f"Give 4-5 bullet prep items specific to this destination, purpose ({purpose}), "
+                        "and weather. Be practical."
+                    )}],
+                )
+                prep_bullets = resp.content[0].text.strip()
+            except Exception as e:
+                log.debug("Sunday trip prep skipped for %s: %s", destination, e)
+                prep_bullets = ""
+            if prep_bullets:
+                trip_sections.append(f"*Upcoming: {destination} in {days_until} days*\n{prep_bullets}")
+
+    sections = []
+    if week_summary:
+        sections.append(f"*Week wrap*\n{week_summary}")
+    sections.extend(trip_sections)
+    if sections:
+        await bot.send_message(chat_id=MY_CHAT_ID, text="\n\n".join(sections))
+
+
+async def send_monthly_habit_insight(bot):
+    today = local_today()
+    since = today - timedelta(days=30)
+    try:
+        pages = query_all(
+            notion,
+            NOTION_LOG_DB,
+            filter={
+                "and": [
+                    {"property": "Date", "date": {"on_or_after": since.isoformat()}},
+                    {"property": "Completed", "checkbox": {"equals": True}},
+                ]
+            },
+        )
+    except Exception as e:
+        log.debug("Monthly habit insight log query skipped: %s", e)
+        return
+
+    name_by_id = {habit.get("page_id"): name for name, habit in habit_cache.items() if habit.get("page_id")}
+    counts = defaultdict(int)
+    for page in pages:
+        props = page.get("properties", {})
+        relations = props.get("Habit", {}).get("relation") or []
+        if relations:
+            habit_name = name_by_id.get(relations[0].get("id"))
+        else:
+            habit_name = extract_title(props.get("Entry"))
+        if habit_name:
+            counts[habit_name] += 1
+
+    rates = {}
+    for name, habit in list(habit_cache.items()):
+        page_id = habit.get("page_id")
+        try:
+            freq = get_habit_frequency(page_id)
+        except Exception:
+            freq = habit.get("freq_per_week") or 0
+        if not freq:
+            continue
+        rates[name] = round((counts.get(name, 0) / (freq * 4.3)) * 100)
+    if not rates:
+        return
+
+    try:
+        claude = get_claude_client()
+        resp = claude.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=120,
+            messages=[{"role": "user", "content": (
+                f"Here are 30-day habit completion rates: {rates}.\n"
+                "Identify the single most meaningful pattern — either a consistent strength or a "
+                "consistent gap. Give 2 sentences: the pattern and one concrete suggestion. "
+                "Be specific, not generic."
+            )}],
+        )
+        text = resp.content[0].text.strip()
+    except Exception as e:
+        log.debug("Monthly habit insight skipped: %s", e)
+        return
+    if text:
+        await bot.send_message(chat_id=MY_CHAT_ID, text=text)
+
 async def run_asana_sync(bot) -> dict:
     """
     Bi-directional Asana <-> Notion reconcile.
@@ -2259,6 +2487,12 @@ async def post_init(app: Application) -> None:
     # Register digest cron jobs only. Do not queue missed digest slots on startup;
     # restarting the bot should not send an immediate digest.
     build_digest_schedule(scheduler, app.bot)
+    scheduler.add_job(send_friday_reflection, "cron", day_of_week="fri",
+                      hour=18, minute=0, args=[app.bot])
+    scheduler.add_job(send_sunday_digest, "cron", day_of_week="sun",
+                      hour=9, minute=0, args=[app.bot])
+    scheduler.add_job(send_monthly_habit_insight, "cron", day="last",
+                      hour=20, minute=0, args=[app.bot])
     # ── Cinema sync — validate config before Utility Scheduler can enable it ──
     cinema_ok, cinema_problems = validate_cinema_config()
     if not cinema_ok:
