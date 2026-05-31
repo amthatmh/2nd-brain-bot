@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -41,6 +41,8 @@ class WeekStats:
     exercise_days: int
     latest_weight: float | None
     days_with_data: int
+    daily_readiness: list[tuple[str, float]] = field(default_factory=list)
+    daily_exercise_min: list[tuple[str, float]] = field(default_factory=list)
 
 
 def fetch_health_range(notion, db_id: str, start: date, end: date) -> list[dict]:
@@ -137,6 +139,24 @@ def _bedtime_stddev(rows: list[dict]) -> float | None:
 def compute_week_stats(rows: list[dict]) -> WeekStats:
     """Aggregate daily health rows into coach-friendly weekly metrics."""
     exercise_values = [_num(row, "Exercise Time (min)") for row in rows]
+    daily_readiness: list[tuple[str, float]] = []
+    daily_exercise_min: list[tuple[str, float]] = []
+    for row in rows:
+        row_day = _row_date(row)
+        if row_day is None:
+            continue
+
+        readiness = _num(row, "Readiness Score")
+        if readiness is not None and readiness > 0:
+            daily_readiness.append((row_day.isoformat(), readiness))
+
+        exercise_min = _num(row, "Exercise Time (min)")
+        if exercise_min is not None and exercise_min > 0:
+            daily_exercise_min.append((row_day.isoformat(), exercise_min))
+
+    daily_readiness.sort(key=lambda item: item[0])
+    daily_exercise_min.sort(key=lambda item: item[0])
+
     return WeekStats(
         avg_sleep_min=_safe_avg([_num(row, "Total Sleep (min)") for row in rows]),
         avg_sleep_efficiency=_safe_avg([_num(row, "Sleep Efficiency (%)") for row in rows]),
@@ -151,6 +171,8 @@ def compute_week_stats(rows: list[dict]) -> WeekStats:
         exercise_days=sum(1 for value in exercise_values if value is not None and value > 0),
         latest_weight=_latest_number(rows, "Weight (kg)"),
         days_with_data=len(rows),
+        daily_readiness=daily_readiness,
+        daily_exercise_min=daily_exercise_min,
     )
 
 
@@ -229,6 +251,12 @@ def build_health_insight_prompt(
     as_of_date: str,
 ) -> str:
     """Build the Claude prompt for the weekly Telegram insight."""
+    daily_readiness_str = ", ".join(
+        f"{day} {value:.1f}" for day, value in week_stats.daily_readiness
+    ) or "no data"
+    daily_exercise_str = ", ".join(
+        f"{day} {value:.0f}m" for day, value in week_stats.daily_exercise_min
+    ) or "no data"
     travel_block = ""
     if travel_context:
         destinations = travel_context.get("destinations") or "Travel"
@@ -247,11 +275,13 @@ WEEKLY DATA (7-day):
 - Sleep: avg {_fmt_hours(week_stats.avg_sleep_min)}, efficiency {_fmt_num(week_stats.avg_sleep_efficiency, "%", 1)}, deep {_fmt_num(week_stats.avg_deep_pct, "%", 1)}, REM {_fmt_num(week_stats.avg_rem_pct, "%", 1)}, bedtime variability {_fmt_num(week_stats.bedtime_stddev_min, " min", 0)} stddev
 - Recovery: HRV avg {_fmt_num(week_stats.avg_hrv, " ms", 0)} (28-day baseline: {_fmt_num(baseline_stats.avg_hrv, " ms", 0)}), RHR avg {_fmt_num(week_stats.avg_rhr, " bpm", 0)} (baseline: {_fmt_num(baseline_stats.avg_rhr, " bpm", 0)})
 - Training: {week_stats.exercise_days}/7 days active, avg {_fmt_num(week_stats.avg_active_energy, " kcal", 0)} active energy, avg {_fmt_num(week_stats.avg_exercise_min, " min/day", 0)} exercise
+- Readiness trend (daily scores Mon→Sun): {daily_readiness_str}
+- Workout duration trend (days with exercise): {daily_exercise_str}
 - VO2 Max: {_fmt_num(week_stats.last_vo2, "", 1)} (28-day baseline: {_fmt_num(baseline_stats.last_vo2, "", 1)})
 
 28-DAY BASELINE: HRV {_fmt_num(baseline_stats.avg_hrv, " ms", 0)}, RHR {_fmt_num(baseline_stats.avg_rhr, " bpm", 0)}, sleep {_fmt_hours(baseline_stats.avg_sleep_min)} / {_fmt_num(baseline_stats.avg_sleep_efficiency, "%", 1)} efficiency
 {travel_block}
-Write exactly 7 sections in Markdown. *Bold* key numbers. 200-300 words total:
+Write exactly 8 sections in Markdown. *Bold* key numbers. 250-350 words total:
 1. One opening vibe sentence (no header)
 2. 💚/🟡/🔴 *Recovery & Readiness* - HRV vs baseline, RHR trend
 3. 😴 *Sleep* - duration, efficiency, deep/REM, bedtime consistency
@@ -259,6 +289,7 @@ Write exactly 7 sections in Markdown. *Bold* key numbers. 200-300 words total:
 5. 📈 *Trending* - 1-2 positive observations vs 28-day baseline
 6. ⚠️ *Watch This Week* - 0-2 items (omit section if nothing notable)
 7. 🎯 *This Week's Focus* - one concrete actionable recommendation
+8. 📊 *Week in Review* - Show readiness score trend across the week (high/low/direction). Note any correlation with workout load or sleep. Skip if fewer than 3 readiness scores.
 
 RULES: Compare only to personal baseline, never population norms. Skip metrics with no data.
 If travel present, acknowledge in opening and soften recovery/sleep expectations.

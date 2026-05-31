@@ -95,6 +95,33 @@ class TestHealthInsightAggregation(unittest.TestCase):
         self.assertIsNone(stats.avg_hrv)
         self.assertIsNone(stats.last_vo2)
         self.assertEqual(stats.exercise_days, 0)
+        self.assertEqual(stats.daily_readiness, [])
+        self.assertEqual(stats.daily_exercise_min, [])
+
+    def test_compute_week_stats_includes_daily_trends(self):
+        rows = [
+            _health_row(
+                "2026-05-03",
+                **{"Readiness Score": _number(80), "Exercise Time (min)": _number(0)},
+            ),
+            _health_row(
+                "2026-05-01",
+                **{"Readiness Score": _number(70), "Exercise Time (min)": _number(45)},
+            ),
+            _health_row(
+                "2026-05-02",
+                **{"Readiness Score": _number(None), "Exercise Time (min)": _number(20)},
+            ),
+            _health_row(
+                "2026-05-04",
+                **{"Readiness Score": _number(0), "Exercise Time (min)": _number(None)},
+            ),
+        ]
+
+        stats = compute_week_stats(rows)
+
+        self.assertEqual(stats.daily_readiness, [("2026-05-01", 70), ("2026-05-03", 80)])
+        self.assertEqual(stats.daily_exercise_min, [("2026-05-01", 45), ("2026-05-02", 20)])
 
 
 class TestTravelContext(unittest.TestCase):
@@ -137,6 +164,8 @@ class TestHealthInsightPrompt(unittest.TestCase):
 
         self.assertNotIn("TRAVEL CONTEXT", prompt)
         self.assertIn("WEEKLY DATA", prompt)
+        self.assertIn("Readiness trend (daily scores Mon→Sun): no data", prompt)
+        self.assertIn("Workout duration trend (days with exercise): 2026-05-01 30m", prompt)
 
     def test_build_health_insight_prompt_with_travel(self):
         stats = compute_week_stats([_health_row("2026-05-01")])
