@@ -161,6 +161,53 @@ async def _maybe_prompt_explicit_venue_in_executor(
     )
 
 
+def _rating_keyboard(stashed_page_id: str) -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(str(v), callback_data=f"rate:{stashed_page_id}:{v}")
+        for v in range(-3, 4)
+    ]
+    return InlineKeyboardMarkup([buttons])
+
+
+async def _maybe_prompt_entertainment_rating(
+    message,
+    payload: dict,
+    entry_id: str,
+    log_type: str,
+) -> None:
+    if payload.get("rating") is not None:
+        return
+    stashed = _main()._stash_pid(entry_id)
+    ent_log._remember_pending_entertainment_rating(message, entry_id, log_type)
+    await message.reply_text(
+        "⭐ How was it? Rate -3 to 3:",
+        reply_markup=_rating_keyboard(stashed),
+    )
+
+
+async def _prompt_entertainment_notes_or_rating(
+    message,
+    payload: dict,
+    entry_id: str,
+    log_type: str,
+) -> None:
+    if log_type == "sport":
+        return
+    if payload.get("notes"):
+        await _maybe_prompt_entertainment_rating(message, payload, entry_id, log_type)
+        return
+    ent_log._remember_pending_entertainment_notes(
+        message,
+        entry_id,
+        log_type,
+        has_rating=payload.get("rating") is not None,
+    )
+    await message.reply_text(
+        "📝 Any notes? (or reply _skip_)",
+        parse_mode="Markdown",
+    )
+
+
 async def route_classified_message_v10(message, text: str) -> None:
     thinking = await message.reply_text("🧠 Got it...")
     loop = asyncio.get_running_loop()
@@ -353,7 +400,12 @@ async def route_classified_message_v10(message, text: str) -> None:
         if confidence == "high" and title:
             try:
                 await _safe_delete_message(thinking)
-                await ent_handle_log(_notion(), message, result, rule_engine=_rule_engine())
+                entry_id, log_type = await ent_handle_log(
+                    _notion(), message, result, rule_engine=_rule_engine()
+                )
+                await _prompt_entertainment_notes_or_rating(
+                    message, result, entry_id, log_type
+                )
             except Exception as e:
                 log.error("Entertainment save error: %s", e)
                 await message.reply_text(
@@ -630,6 +682,25 @@ async def handle_message_text(
                         f"🏆 Competition set: *{competition}*\n_Saved to Notion_",
                         parse_mode="Markdown",
                     )
+                    if pending_sport_competition.get("has_notes"):
+                        if not pending_sport_competition.get("has_rating"):
+                            await _maybe_prompt_entertainment_rating(
+                                message,
+                                {},
+                                page_id,
+                                "sport",
+                            )
+                    else:
+                        ent_log._remember_pending_entertainment_notes(
+                            message,
+                            page_id,
+                            "sport",
+                            has_rating=bool(pending_sport_competition.get("has_rating")),
+                        )
+                        await message.reply_text(
+                            "📝 Any notes? (or reply _skip_)",
+                            parse_mode="Markdown",
+                        )
                     return
                 except Exception as e:
                     log.error("Sports competition update error: %s", e)
@@ -646,7 +717,48 @@ async def handle_message_text(
                 )
                 return
 
-                # ── Weekly programme parsing is Notion-driven (15-minute poller) ──
+    pending_notes = ent_log.pending_entertainment_notes_map.get(
+        update.effective_chat.id
+    )
+    if pending_notes:
+        notes_text = text.strip()
+        page_id = pending_notes.get("page_id")
+        log_type = pending_notes.get("log_type", "cinema")
+        ent_log.pending_entertainment_notes_map.pop(update.effective_chat.id, None)
+
+        skip_tokens = {"skip", "s", "-", "n", "no", "none", "nope"}
+        is_skip = notes_text.lower() in skip_tokens or not notes_text
+
+        if not is_skip and page_id:
+            schema_key = {
+                "cinema": "cinema",
+                "performance": "performances",
+                "sport": "sports",
+            }.get(log_type, "cinema")
+            schema = ent_log.entertainment_schemas.get(schema_key) or {}
+            props = ent_log._build_entertainment_notes_props(schema, notes_text)
+            if props:
+                try:
+                    _main().notion_call(
+                        _notion().pages.update,
+                        page_id=page_id,
+                        properties=props,
+                    )
+                    await message.reply_text("📝 Notes saved.")
+                except Exception as e:
+                    log.error("Notes update error: %s", e)
+                    await message.reply_text("⚠️ Couldn't save notes to Notion.")
+
+        if not pending_notes.get("has_rating") and page_id:
+            await _maybe_prompt_entertainment_rating(
+                message,
+                {},
+                page_id,
+                log_type,
+            )
+        return
+
+    # ── Weekly programme parsing is Notion-driven (15-minute poller) ──
     upload_programme_aliases = {
         "📤 upload programme",
         "📤 upload program",
@@ -819,7 +931,12 @@ async def handle_message_text(
                 prompted = venue_result
             if prompted:
                 return
-            await ent_handle_log(_notion(), message, explicit_entertainment, rule_engine=_rule_engine())
+            entry_id, log_type = await ent_handle_log(
+                _notion(), message, explicit_entertainment, rule_engine=_rule_engine()
+            )
+            await _prompt_entertainment_notes_or_rating(
+                message, explicit_entertainment, entry_id, log_type
+            )
         except Exception as e:
             log.error("Explicit entertainment text save error: %s", e)
             await message.reply_text(
@@ -1099,8 +1216,13 @@ async def _cb_date_pick(q, parts, context) -> None:
     payload.pop("raw_date_a", None)
     payload.pop("raw_date_b", None)
     try:
-        await ent_handle_log(_notion(), q.message, payload, rule_engine=_rule_engine())
+        entry_id, log_type = await ent_handle_log(
+            _notion(), q.message, payload, rule_engine=_rule_engine()
+        )
         await q.edit_message_text(f"✅ Date: {payload.get('date')}")
+        await _prompt_entertainment_notes_or_rating(
+            q.message, payload, entry_id, log_type
+        )
     except Exception as e:
         log.error("Entertainment date-pick save error: %s", e)
         await q.edit_message_text(_main()._entertainment_save_error_text(e, payload))
@@ -1630,6 +1752,54 @@ async def _cb_hpag(q, parts, context) -> None:
     return
 
 
+async def _cb_rate(q, parts, context) -> None:
+    try:
+        rating = int(parts[2])
+        if not (-3 <= rating <= 3):
+            raise ValueError
+    except (ValueError, IndexError):
+        await q.edit_message_text("⚠️ Invalid rating.")
+        return
+
+    page_id = _main()._restore_pid(parts[1])
+    chat = getattr(q.message, "chat", None)
+    chat_id = getattr(chat, "id", getattr(q.message, "chat_id", None))
+    pending = (
+        ent_log.pending_entertainment_rating_map.pop(chat_id, {})
+        if chat_id is not None
+        else {}
+    )
+    log_type = pending.get("log_type", "cinema")
+
+    schema_key = {
+        "cinema": "cinema",
+        "performance": "performances",
+        "sport": "sports",
+    }.get(log_type, "cinema")
+    schema = ent_log.entertainment_schemas.get(schema_key) or {}
+    props = ent_log._build_entertainment_rating_props(schema, rating)
+
+    if page_id and props:
+        try:
+            _main().notion_call(
+                _notion().pages.update,
+                page_id=page_id,
+                properties=props,
+            )
+            await q.edit_message_text(
+                f"⭐ Rating: *{rating:+d}* - saved to Notion",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            log.error("Rating update error: %s", e)
+            await q.edit_message_text("⚠️ Couldn't save rating to Notion.")
+    else:
+        await q.edit_message_text(
+            f"⭐ Rating noted ({rating:+d}) - no Rating column found in Notion schema"
+        )
+    return
+
+
 async def _cb_el(q, parts, context) -> None:
     _, key, action = parts
     entry = STATE.pending_map.pop(key, None)
@@ -1667,9 +1837,18 @@ async def _cb_el(q, parts, context) -> None:
             parse_mode="Markdown",
         )
         if payload.get("log_type") == "sport":
-            _main()._remember_pending_sport_competition(q.message, entry_id)
+            ent_log._remember_pending_sport_competition(
+                q.message,
+                entry_id,
+                has_rating=payload.get("rating") is not None,
+                has_notes=bool(payload.get("notes")),
+            )
             await q.message.reply_text(
                 "🏆 Logged to Sports Log. Which competition should I set for this one?"
+            )
+        else:
+            await _prompt_entertainment_notes_or_rating(
+                q.message, payload, entry_id, payload.get("log_type", "cinema")
             )
         log.info("Entertainment confirmed and saved page_id=%s", entry_id)
     except Exception as e:
@@ -1973,6 +2152,7 @@ _CB_PREFIX: dict[str, CallbackHandler] = {
     "note_topic": _cb_note_topic,
     "notes_start": _cb_notes_start,
     "hpag": _cb_hpag,
+    "rate": _cb_rate,
     "el": _cb_el,
     "d": _cb_d,
     "h": _cb_h_horizon,

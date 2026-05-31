@@ -49,7 +49,13 @@ async def _execute_entertainment_rules(notion, rule_engine, payload: dict) -> bo
     return fav_rule_success
 
 
-async def handle_entertainment_log(notion, message, payload: dict, *, rule_engine=None) -> None:
+async def handle_entertainment_log(
+    notion,
+    message,
+    payload: dict,
+    *,
+    rule_engine=None,
+) -> tuple[str, str]:
     entry_id, fav_saved = ent_log.create_entertainment_log_entry(notion, payload)
     rule_fav_saved = await _execute_entertainment_rules(notion, rule_engine, payload)
     title = payload.get("title", "Untitled")
@@ -74,9 +80,15 @@ async def handle_entertainment_log(notion, message, payload: dict, *, rule_engin
     summary_lines.append("_Saved to Notion_")
     await message.reply_text("\n".join(summary_lines), parse_mode="Markdown")
     if log_type == "sport":
-        ent_log._remember_pending_sport_competition(message, entry_id)
+        ent_log._remember_pending_sport_competition(
+            message,
+            entry_id,
+            has_rating=payload.get("rating") is not None,
+            has_notes=bool(payload.get("notes")),
+        )
         await message.reply_text("🏆 Logged to Sports Log. Which competition should I set for this one?")
     log.info("Entertainment logged type=%s title=%s page_id=%s", log_type, title, entry_id)
+    return entry_id, log_type
 
 
 async def _maybe_prompt_explicit_venue(notion, message, payload: dict, raw_text: str) -> bool:
@@ -85,6 +97,3 @@ async def _maybe_prompt_explicit_venue(notion, message, payload: dict, raw_text:
 
 def load_entertainment_schemas(notion) -> None:
     ent_log.load_entertainment_schemas(notion)
-
-
-

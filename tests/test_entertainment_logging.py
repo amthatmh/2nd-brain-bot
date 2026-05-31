@@ -204,6 +204,26 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(parsed["date"], "2026-05-09")
         self.assertEqual(parsed["venue"], "AMC Newcity")
 
+    def test_parse_explicit_log_extracts_inline_rating(self):
+        parsed = self.ent_log.parse_explicit_entertainment_log(
+            "/log movie Oppenheimer at AMC rating: -1"
+        )
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["title"], "Oppenheimer")
+        self.assertEqual(parsed["venue"], "AMC")
+        self.assertEqual(parsed["rating"], -1)
+
+    def test_parse_explicit_log_allows_zero_rating(self):
+        parsed = self.ent_log.parse_explicit_entertainment_log(
+            "/log performance Hamilton at Nederlander rate 0"
+        )
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["title"], "Hamilton")
+        self.assertEqual(parsed["venue"], "Nederlander")
+        self.assertEqual(parsed["rating"], 0)
+
 
     def test_parse_explicit_log_keeps_year_like_title_numbers_without_time_marker(self):
         with patch("second_brain.entertainment.log.local_today", return_value=date(2026, 5, 9)):
@@ -291,6 +311,30 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
             notes=None,
         )
         self.assertEqual(props["Place"]["status"]["name"], "AMC Roosevelt Collection 16")
+
+    def test_rating_property_prefers_select_with_number_fallback(self):
+        props = self.ent_log._build_entertainment_rating_props(
+            {"Rating": "select"},
+            -2,
+        )
+        self.assertEqual(props["Rating"]["select"]["name"], "-2")
+
+        props = self.ent_log._build_entertainment_rating_props(
+            {"Rating": "number"},
+            3,
+        )
+        self.assertEqual(props["Rating"]["number"], 3)
+
+    def test_notes_property_uses_rich_text_notes_column(self):
+        props = self.ent_log._build_entertainment_notes_props(
+            {"Notes": "rich_text"},
+            "stunning visuals",
+        )
+
+        self.assertEqual(
+            props["Notes"]["rich_text"][0]["text"]["content"],
+            "stunning visuals",
+        )
 
     def test_normalize_entertainment_datetime_extracts_time_from_notes(self):
         normalized = self.ent_log._normalize_entertainment_datetime(
@@ -479,6 +523,34 @@ class TestEntertainmentLoggingHelpers(unittest.TestCase):
         self.assertEqual(page_id, "perf-2")
         self.assertFalse(fav_saved)
         self.assertEqual(calls["create"], 2)
+
+    def test_create_performance_entry_saves_rating_select(self):
+        self.ent_log.NOTION_PERFORMANCE_LOG_DB = "performances_db"
+        self.ent_log.entertainment_schemas["performances"] = {
+            "Name": "title",
+            "Date": "date",
+            "Venue": "select",
+            "Rating": "select",
+        }
+
+        def fake_notion_call(fn, **kwargs):
+            if fn == self.main.notion.pages.create:
+                props = kwargs["properties"]
+                self.assertEqual(props["Rating"]["select"]["name"], "2")
+                return {"id": "perf-rating"}
+            return {}
+
+        self.ent_log.notion_call = fake_notion_call
+        page_id, fav_saved = self.ent_log.create_entertainment_log_entry(self.main.notion, {
+            "log_type": "performance",
+            "title": "Hamilton",
+            "date": "2026-04-29",
+            "venue": "Nederlander",
+            "notes": None,
+            "rating": 2,
+        })
+        self.assertEqual(page_id, "perf-rating")
+        self.assertFalse(fav_saved)
 
     def test_suggest_known_venue_returns_best_cinema_match(self):
         self.ent_log.NOTION_CINEMA_LOG_DB = "cinema_db"
@@ -690,6 +762,7 @@ class TestEntertainmentLogFollowups(unittest.IsolatedAsyncioTestCase):
     def setUpClass(cls):
         cls.main = load_main_module()
         cls.ent_log = importlib.import_module("second_brain.entertainment.log")
+        cls.routers = importlib.import_module("second_brain.routers")
 
     async def test_handle_entertainment_log_prompts_competition_for_sports(self):
         message = MagicMock()
@@ -710,6 +783,7 @@ class TestEntertainmentLogFollowups(unittest.IsolatedAsyncioTestCase):
 
     async def test_handle_message_text_sets_sport_competition_followup(self):
         self.ent_log.pending_sport_competition_map.clear()
+        self.ent_log.pending_entertainment_notes_map.clear()
         self.ent_log.pending_sport_competition_map[1] = {"page_id": "sport-page"}
         self.ent_log.entertainment_schemas["sports"] = {"Competition": "select"}
         self.main.notion_call = MagicMock()
@@ -718,6 +792,7 @@ class TestEntertainmentLogFollowups(unittest.IsolatedAsyncioTestCase):
         update = MagicMock()
         update.effective_chat.id = 1
         update.message = MagicMock()
+        update.message.chat = MagicMock(id=1)
         update.message.text = "Major League Baseball"
         update.message.reply_text = AsyncMock()
         context = MagicMock()
@@ -731,7 +806,234 @@ class TestEntertainmentLogFollowups(unittest.IsolatedAsyncioTestCase):
             properties={"Competition": {"select": {"name": "Major League Baseball"}}},
         )
         self.assertNotIn(1, self.ent_log.pending_sport_competition_map)
+        self.assertEqual(
+            self.ent_log.pending_entertainment_notes_map[1]["page_id"],
+            "sport-page",
+        )
         self.main.route_classified_message_v10.assert_not_called()
+
+    async def test_handle_message_text_skips_sport_rating_prompt_when_inline_rating_saved(self):
+        self.ent_log.pending_sport_competition_map.clear()
+        self.ent_log.pending_entertainment_notes_map.clear()
+        self.ent_log.pending_sport_competition_map[1] = {
+            "page_id": "sport-page",
+            "has_rating": True,
+            "has_notes": True,
+        }
+        self.ent_log.entertainment_schemas["sports"] = {"Competition": "select"}
+        self.main.notion_call = MagicMock()
+        self.main.route_classified_message_v10 = AsyncMock()
+
+        update = MagicMock()
+        update.effective_chat.id = 1
+        update.message = MagicMock()
+        update.message.chat = MagicMock(id=1)
+        update.message.text = "Major League Baseball"
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        context.user_data = {}
+
+        await self.main.handle_message_text(update, context)
+
+        update.message.reply_text.assert_awaited_once()
+        reply_text = update.message.reply_text.await_args.args[0]
+        self.assertIn("Competition set", reply_text)
+
+    async def test_prompt_entertainment_notes_then_rating_asks_for_notes_first(self):
+        self.ent_log.pending_entertainment_notes_map.clear()
+        message = MagicMock()
+        message.chat = MagicMock(id=1)
+        message.reply_text = AsyncMock()
+
+        await self.routers._prompt_entertainment_notes_or_rating(
+            message,
+            {"log_type": "cinema", "title": "Oppenheimer"},
+            "12345678-1234-1234-1234-123456789abc",
+            "cinema",
+        )
+
+        message.reply_text.assert_awaited_once_with(
+            "📝 Any notes? (or reply _skip_)",
+            parse_mode="Markdown",
+        )
+        self.assertEqual(
+            self.ent_log.pending_entertainment_notes_map[1],
+            {
+                "page_id": "12345678-1234-1234-1234-123456789abc",
+                "log_type": "cinema",
+                "has_rating": False,
+            },
+        )
+
+    async def test_prompt_entertainment_notes_then_rating_skips_notes_when_inline(self):
+        self.ent_log.pending_entertainment_rating_map.clear()
+        message = MagicMock()
+        message.chat = MagicMock(id=1)
+        message.reply_text = AsyncMock()
+
+        await self.routers._prompt_entertainment_notes_or_rating(
+            message,
+            {"log_type": "cinema", "notes": "great film"},
+            "12345678-1234-1234-1234-123456789abc",
+            "cinema",
+        )
+
+        message.reply_text.assert_awaited_once()
+        self.assertIn("reply_markup", message.reply_text.await_args.kwargs)
+        self.assertEqual(
+            self.ent_log.pending_entertainment_rating_map[1]["page_id"],
+            "12345678-1234-1234-1234-123456789abc",
+        )
+
+    async def test_handle_message_text_saves_pending_notes_then_prompts_rating(self):
+        self.ent_log.pending_sport_competition_map.clear()
+        self.ent_log.pending_entertainment_notes_map.clear()
+        self.ent_log.pending_entertainment_rating_map.clear()
+        self.ent_log.pending_entertainment_notes_map[1] = {
+            "page_id": "movie-page",
+            "log_type": "cinema",
+            "has_rating": False,
+        }
+        self.ent_log.entertainment_schemas["cinema"] = {
+            "Notes": "rich_text",
+            "Rating": "select",
+        }
+        self.main.notion_call = MagicMock()
+        self.main.route_classified_message_v10 = AsyncMock()
+
+        update = MagicMock()
+        update.effective_chat.id = 1
+        update.message = MagicMock()
+        update.message.chat = MagicMock(id=1)
+        update.message.text = "stunning visuals"
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        context.user_data = {}
+
+        await self.main.handle_message_text(update, context)
+
+        self.main.notion_call.assert_called_once_with(
+            self.main.notion.pages.update,
+            page_id="movie-page",
+            properties={
+                "Notes": {
+                    "rich_text": [
+                        {"text": {"content": "stunning visuals"}}
+                    ]
+                }
+            },
+        )
+        self.assertEqual(update.message.reply_text.await_count, 2)
+        self.assertEqual(update.message.reply_text.await_args_list[0].args[0], "📝 Notes saved.")
+        rating_markup = update.message.reply_text.await_args_list[1].kwargs["reply_markup"]
+        self.assertEqual([button.text for button in rating_markup.inline_keyboard[0]], [str(v) for v in range(-3, 4)])
+        self.assertNotIn(1, self.ent_log.pending_entertainment_notes_map)
+        self.assertEqual(
+            self.ent_log.pending_entertainment_rating_map[1]["page_id"],
+            "movie-page",
+        )
+
+    async def test_handle_message_text_skip_pending_notes_prompts_rating_without_update(self):
+        self.ent_log.pending_sport_competition_map.clear()
+        self.ent_log.pending_entertainment_notes_map.clear()
+        self.ent_log.pending_entertainment_rating_map.clear()
+        self.ent_log.pending_entertainment_notes_map[1] = {
+            "page_id": "movie-page",
+            "log_type": "cinema",
+            "has_rating": False,
+        }
+        self.main.notion_call = MagicMock()
+        self.main.route_classified_message_v10 = AsyncMock()
+
+        update = MagicMock()
+        update.effective_chat.id = 1
+        update.message = MagicMock()
+        update.message.chat = MagicMock(id=1)
+        update.message.text = "skip"
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        context.user_data = {}
+
+        await self.main.handle_message_text(update, context)
+
+        self.main.notion_call.assert_not_called()
+        update.message.reply_text.assert_awaited_once()
+        self.assertIn("reply_markup", update.message.reply_text.await_args.kwargs)
+        self.assertEqual(
+            self.ent_log.pending_entertainment_rating_map[1]["page_id"],
+            "movie-page",
+        )
+
+    async def test_prompt_entertainment_rating_builds_keyboard_and_pending_state(self):
+        self.ent_log.pending_entertainment_rating_map.clear()
+        message = MagicMock()
+        message.chat = MagicMock(id=1)
+        message.reply_text = AsyncMock()
+
+        await self.routers._maybe_prompt_entertainment_rating(
+            message,
+            {"log_type": "cinema", "title": "Oppenheimer"},
+            "12345678-1234-1234-1234-123456789abc",
+            "cinema",
+        )
+
+        message.reply_text.assert_awaited_once()
+        markup = message.reply_text.await_args.kwargs["reply_markup"]
+        buttons = markup.inline_keyboard[0]
+        self.assertEqual([button.text for button in buttons], [str(v) for v in range(-3, 4)])
+        self.assertEqual(buttons[0].callback_data, "rate:12345678123412341234123456789abc:-3")
+        self.assertEqual(
+            self.ent_log.pending_entertainment_rating_map[1],
+            {
+                "page_id": "12345678-1234-1234-1234-123456789abc",
+                "log_type": "cinema",
+            },
+        )
+
+    async def test_prompt_entertainment_rating_does_not_prompt_for_inline_zero(self):
+        message = MagicMock()
+        message.chat = MagicMock(id=1)
+        message.reply_text = AsyncMock()
+
+        await self.routers._maybe_prompt_entertainment_rating(
+            message,
+            {"log_type": "cinema", "rating": 0},
+            "page-id",
+            "cinema",
+        )
+
+        message.reply_text.assert_not_awaited()
+
+    async def test_rate_callback_updates_notion_rating(self):
+        self.ent_log.pending_entertainment_rating_map.clear()
+        self.ent_log.pending_entertainment_rating_map[1] = {
+            "page_id": "12345678-1234-1234-1234-123456789abc",
+            "log_type": "performance",
+        }
+        self.ent_log.entertainment_schemas["performances"] = {"Rating": "select"}
+        self.main.notion_call = MagicMock()
+
+        q = MagicMock()
+        q.message = MagicMock()
+        q.message.chat = MagicMock(id=1)
+        q.edit_message_text = AsyncMock()
+
+        await self.routers._cb_rate(
+            q,
+            ["rate", "12345678123412341234123456789abc", "2"],
+            MagicMock(),
+        )
+
+        self.main.notion_call.assert_called_once_with(
+            self.main.notion.pages.update,
+            page_id="12345678-1234-1234-1234-123456789abc",
+            properties={"Rating": {"select": {"name": "2"}}},
+        )
+        q.edit_message_text.assert_awaited_once_with(
+            "⭐ Rating: *+2* - saved to Notion",
+            parse_mode="Markdown",
+        )
+        self.assertNotIn(1, self.ent_log.pending_entertainment_rating_map)
 
 
 if __name__ == "__main__":
