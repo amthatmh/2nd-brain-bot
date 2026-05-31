@@ -149,6 +149,7 @@ def fetch_sleep_data(access_token: str, query_date_str: str, tz) -> dict | None:
         "endTime": _pick_time("endTime", "endTime", "civil_end_time", "civilEndTime"),
         "sleepSummary": sleep_summary_raw,
         "stagesSummary": stages_summary,
+        "sleepType": sleep_raw.get("type") or None,
     }
 
 
@@ -304,6 +305,10 @@ def parse_sleep_data_point(point: dict, tz) -> dict:
     except (ValueError, TypeError):
         sleep_score = None
 
+    sleep_latency_min = float(sleep_summary.get("minutesToFallAsleep") or 0) or None
+    post_wake_min = float(sleep_summary.get("minutesAfterWakeUp") or 0) or None
+    sleep_type = point.get("sleepType") or None
+
     sleep_efficiency = round((total_sleep_min / time_in_bed_min) * 100, 1) if time_in_bed_min > 0 else 0.0
 
     return {
@@ -318,6 +323,9 @@ def parse_sleep_data_point(point: dict, tz) -> dict:
         "time_in_bed_min": time_in_bed_min,
         "sleep_efficiency": sleep_efficiency,
         "sleep_score": sleep_score,
+        "sleep_latency_min": sleep_latency_min,
+        "post_wake_min": post_wake_min,
+        "sleep_type": sleep_type,
     }
 
 
@@ -335,6 +343,12 @@ def _sleep_properties(parsed: dict) -> dict[str, dict]:
     }
     if parsed.get("sleep_score") is not None:
         props["Sleep Score"] = {"number": parsed["sleep_score"]}
+    if parsed.get("sleep_latency_min") is not None:
+        props["Sleep Latency (min)"] = {"number": parsed["sleep_latency_min"]}
+    if parsed.get("post_wake_min") is not None:
+        props["Post-Wake Time (min)"] = {"number": parsed["post_wake_min"]}
+    if parsed.get("sleep_type") is not None:
+        props["Sleep Type"] = {"select": {"name": parsed["sleep_type"]}}
     return props
 
 
