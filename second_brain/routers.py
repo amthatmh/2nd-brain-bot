@@ -1621,6 +1621,7 @@ async def _cb_h_done(q, parts, context) -> None:
     selected_habits.sort(key=lambda h: h.get("sort") or 0)
     logged_names: list[str] = []
     failed_names: list[str] = []
+    logged_habits: list[dict] = []
     logged_page_ids: set[str] = set()
     for habit in selected_habits:
         habit_name = habit.get("name", "Unknown")
@@ -1631,6 +1632,7 @@ async def _cb_h_done(q, parts, context) -> None:
             _main().log_habit(habit["page_id"], habit_name)
             logged_page_ids.add(habit["page_id"])
             logged_names.append(habit_name)
+            logged_habits.append(habit)
         except Exception as notion_error:
             failed_names.append(habit_name)
             log.error("Habit log Notion error for %s: %s", habit_name, notion_error)
@@ -1654,24 +1656,39 @@ async def _cb_h_done(q, parts, context) -> None:
         await q.edit_message_reply_markup(reply_markup=None)
 
     if logged_names:
-        await q.message.reply_text(f"✅ Logged: {', '.join(logged_names)}")
-        asyncio.create_task(
-            _main().check_and_notify_weekly_goals(
+        just_hit = set(
+            await _main().check_and_notify_weekly_goals(
                 context.bot,
                 MY_CHAT_ID,
                 _notion(),
                 NOTION_LOG_DB,
                 NOTION_HABIT_DB,
-                _habit_cache(),
+                {habit.get("name", "Unknown"): habit for habit in logged_habits},
                 _main().notified_goals_this_week,
                 _main().get_week_completion_count,
                 _main().get_habit_frequency,
+                send_notifications=False,
             )
         )
-    if failed_names:
+        lines = [f"✅ Logged: {', '.join(logged_names)}"]
+        for habit in logged_habits:
+            page_id = habit.get("page_id")
+            name = habit.get("name", "Unknown")
+            icon = habit.get("icon") or "💪"
+            try:
+                count = _main().get_week_completion_count(page_id)
+                freq = _main().get_habit_frequency(page_id)
+                goal = " 🎯" if name in just_hit else ""
+                lines.append(f"{icon} {name} — {count}/{freq} this week{goal}")
+            except Exception as progress_error:
+                log.debug("Habit progress unavailable for %s: %s", name, progress_error)
+        if failed_names:
+            lines.append(f"⚠️ Couldn't log: {', '.join(failed_names)}")
+        await q.message.reply_text("\n".join(lines))
+    elif failed_names:
         await q.message.reply_text(f"⚠️ Couldn't log: {', '.join(failed_names)}")
-    if not logged_names and not failed_names:
-        await q.message.reply_text("✅ Selected habits were already logged today.")
+    else:
+        await q.message.reply_text("✅ Already logged today.")
     await q.answer()
     return
 

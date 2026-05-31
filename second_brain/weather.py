@@ -48,6 +48,7 @@ location_state_file = STATE_DIR / "location_state.json"
 location_state_fallback_file = Path(__file__).resolve().parents[1] / ".second_brain_location_state.json"
 location_history_file = STATE_DIR / "location_history.json"
 location_history_fallback_file = Path(__file__).resolve().parents[1] / ".second_brain_location_history.json"
+_yesterday_weather_file = STATE_DIR / "yesterday_weather.json"
 
 @dataclass
 class _LocationState:
@@ -58,6 +59,32 @@ class _LocationState:
 
 _loc = _LocationState()
 weather_cache: ExpiringDict = ExpiringDict(ttl_seconds=3600)
+
+
+def save_today_weather_snapshot(high_c: int, low_c: int, condition: str) -> None:
+    try:
+        _yesterday_weather_file.write_text(
+            json.dumps(
+                {
+                    "high_c": high_c,
+                    "low_c": low_c,
+                    "condition": condition,
+                    "date": date.today().isoformat(),
+                }
+            )
+        )
+    except Exception:
+        pass
+
+
+def load_yesterday_weather() -> dict | None:
+    try:
+        data = json.loads(_yesterday_weather_file.read_text())
+        if data.get("date") == (date.today() - timedelta(days=1)).isoformat():
+            return data
+    except Exception:
+        pass
+    return None
 
 
 def _location_state_files() -> list[Path]:

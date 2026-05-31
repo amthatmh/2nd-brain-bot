@@ -408,6 +408,37 @@ async def generate_daily_log(bot) -> dict:
     return {"action": "generated", "has_url": bool(_last_daily_log_url)}
 
 
+def _generate_digest_brief(weather_block, overdue_count, today_count, habit_count, day_str) -> str:
+    try:
+        from second_brain.weather import load_yesterday_weather
+
+        yesterday = load_yesterday_weather()
+        yesterday_line = (
+            f"Yesterday: {yesterday['high_c']}°C / {yesterday['low_c']}°C ({yesterday['condition']})"
+            if yesterday else "Yesterday: unavailable"
+        )
+        claude = get_claude_client()
+        resp = claude.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=80,
+            messages=[{"role": "user", "content": (
+                f"You are a personal secretary giving a morning brief in one sentence (max 25 words).\n\n"
+                f"Today: {day_str}\n"
+                f"Weather: {weather_block or 'unavailable'}\n"
+                f"{yesterday_line}\n"
+                f"Tasks: {overdue_count} overdue, {today_count} due today\n"
+                f"Habits pending: {habit_count}\n\n"
+                "Write one warm direct sentence weaving weather (and how it compares to yesterday) "
+                "into the day — help the user know what to wear and what to prioritise. "
+                "No greeting. No emojis. No padding."
+            )}],
+        )
+        return resp.content[0].text.strip().strip('"')
+    except Exception as e:
+        log.debug("Digest AI brief skipped: %s", e)
+        return ""
+
+
 async def send_daily_digest(bot, include_habits: bool | None = None, config: dict | None = None) -> None:
     global _last_daily_log_url
     if mute_helpers.is_muted(STATE.mute_until, TZ):
@@ -428,6 +459,7 @@ async def send_daily_digest(bot, include_habits: bool | None = None, config: dic
 
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
     lines = [f"☀️ *{date_str}*", ""]
+    weather_block = ""
 
     include_log = config.get("include_log", False) if config is not None else False
     if _last_daily_log_url and include_log:
@@ -470,6 +502,19 @@ async def send_daily_digest(bot, include_habits: bool | None = None, config: dic
             != health_config.STEPS_HABIT_NAME.strip().lower()
         ]
         log.info("Digest habits final: count=%d habit_names=%s", len(habits), [h.get("name") for h in habits[:5]])
+
+    include_ai_brief = True if config is None else bool(config.get("include_ai_brief", True))
+    ai_brief = ""
+    if include_ai_brief:
+        ai_brief = _generate_digest_brief(
+            weather_block=weather_block if include_weather else "",
+            overdue_count=len(overdue),
+            today_count=len(today_tasks),
+            habit_count=len(habits),
+            day_str=date_str,
+        )
+    if ai_brief:
+        lines[2:2] = [f"_{ai_brief}_", ""]
 
     if overdue:
         lines.append("🚨 *Overdue*")

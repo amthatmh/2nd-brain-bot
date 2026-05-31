@@ -14,7 +14,7 @@ from .classify import parse_programme
 from .keyboards import level_confirm_keyboard, my_level_keyboard, rx_scaled_keyboard, session_feel_keyboard, strength_post_keyboard, wod_format_keyboard
 from .notion import create_strength_log, create_wod_log, get_available_tracks_today, get_movement_category, get_movement_details, get_movement_load_type, get_progressions_for_movement, get_today_workout_structure, match_movement, normalise_movement_name, notion_query_wod_log_by_date, save_programme, set_current_level, this_monday
 from .nlp import extract_movements_from_log, extract_workout_data, load_movements_cache
-from .readiness import check_readiness_logged_today, extract_readiness_score, log_daily_readiness
+from .readiness import check_readiness_logged_today, extract_readiness_score, log_daily_readiness, low_readiness_recovery_suggestion
 from second_brain.notion import notion_call
 from second_brain.utils import local_today
 from .weekly_program import get_current_week_program_url, get_todays_workout_day
@@ -119,7 +119,15 @@ def _readiness_final_text(values: dict[str, str], readiness_score: float | None 
         if field in values
     )
     score_line = f"\n\n📈 Readiness score: *{readiness_score:.2f}*" if readiness_score is not None else ""
-    return f"✅ *Readiness logged!*\n\n{summary}{score_line}"
+    text = f"✅ *Readiness logged!*\n\n{summary}{score_line}"
+    suggestion = low_readiness_recovery_suggestion(
+        values.get("sleep_quality", ""),
+        values.get("energy", ""),
+        values.get("soreness", ""),
+    )
+    if suggestion:
+        text = f"{text}\n\n_{suggestion}_"
+    return text
 
 
 async def _maybe_await(value):
