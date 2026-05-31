@@ -319,6 +319,18 @@ def test_resolve_section_movements_skips_uncached_candidates(monkeypatch):
     assert resolved == ["rope-id"]
 
 
+def test_resolve_section_movements_push_power_jerk_yields_both():
+    from second_brain.crossfit import notion as notion_mod
+
+    section = {"description": "4 Sets of 3 Touch N Go Push/Power Jerk", "movements": []}
+    movement_cache = {"Push Jerk": "pj-id", "Power Jerk": "pwj-id"}
+
+    resolved = notion_mod._resolve_section_movements(section, movement_cache)
+
+    assert "pj-id" in resolved
+    assert "pwj-id" in resolved
+
+
 def test_match_movement_farmer_carry_does_not_prefer_single_arm():
     from second_brain.crossfit.notion import match_movement
 
@@ -2675,6 +2687,44 @@ def _day(tracks_index, track, day_name):
     return next(d for d in tracks_index[track]["days"] if d["day"] == day_name)
 
 
+def test_real_program_2026_06_01_monday_performance_quoted_section_c():
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = _load_fixture("crossfit_program_2026_06_01.txt")
+    parsed = parse_weekly_program_text(text, "Week of 2026-06-01")
+    monday = _day(_tracks_index(parsed), "Performance", "Monday")
+
+    b_desc = (monday.get("section_b") or {}).get("description") or ""
+    c_desc = (monday.get("section_c") or {}).get("description") or ""
+    assert "Rope Climb" in b_desc
+    assert "400 Meter Run" in c_desc
+
+
+def test_real_program_2026_06_01_monday_fitness_quoted_section_c():
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = _load_fixture("crossfit_program_2026_06_01.txt")
+    parsed = parse_weekly_program_text(text, "Week of 2026-06-01")
+    monday = _day(_tracks_index(parsed), "Fitness", "Monday")
+
+    b_desc = (monday.get("section_b") or {}).get("description") or ""
+    c_desc = (monday.get("section_c") or {}).get("description") or ""
+    assert "Rope Climb" in b_desc
+    assert "300 Meter Run" in c_desc
+
+
+def test_real_program_2026_06_01_saturday_fitness_only_b_swaps_to_c():
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = _load_fixture("crossfit_program_2026_06_01.txt")
+    parsed = parse_weekly_program_text(text, "Week of 2026-06-01")
+    saturday = _day(_tracks_index(parsed), "Fitness", "Saturday")
+
+    c_desc = (saturday.get("section_c") or {}).get("description") or ""
+    assert not saturday.get("section_b")
+    assert "Sand Bag Carry" in c_desc
+
+
 def test_real_program_2026_05_18_top_level_routing():
     """Every weekday lands in the correct track, Thursday/Sunday are Hyrox, Saturday Fitness is preserved."""
     from second_brain.crossfit.notion import parse_weekly_program_text
@@ -2832,8 +2882,8 @@ def test_real_program_2026_04_27_saturday_fitness_period_does_not_leak_into_perf
 
     assert "Fitness" in tracks
     sat_fit = _day(tracks, "Fitness", "Saturday")
-    fit_b = (sat_fit.get("section_b") or {}).get("description") or ""
-    assert "Ab Mat Sit Ups" in fit_b
+    fit_c = (sat_fit.get("section_c") or {}).get("description") or ""
+    assert "Ab Mat Sit Ups" in fit_c
 
 
 def test_real_program_2026_04_27_friday_fitness_b_dot_take_preserves_section_b():
@@ -3000,9 +3050,9 @@ def test_real_program_2026_03_09_saturday_b_is_open_benchmark_reference():
     movements = sat_perf["section_b"]["movements"]
     assert movements == [], movements
 
-    # Fitness with `FITNESS.` and `B. 26.3` should also parse.
+    # Fitness with `FITNESS.` and `B. 26.3` should also parse, then swap into Section C.
     sat_fit = _day(tracks, "Fitness", "Saturday")
-    assert "26.3" in ((sat_fit.get("section_b") or {}).get("description") or "")
+    assert "26.3" in ((sat_fit.get("section_c") or {}).get("description") or "")
 
     # Hyrox Saturday should still hold the actual partner WOD content.
     assert "Hyrox" in tracks

@@ -2493,7 +2493,7 @@ async def _cf_feel(q, parts, claude, notion, config, cf_pending) -> None:
         chain = list(state.get("session_chain") or [])
         origin = state.get("session_origin")
         cf_pending.pop(key, None)
-        await q.edit_message_text(f"✅ Session feel logged: {rating}/5")
+        await q.edit_message_text(f"✅ Session feel logged: {rating}/5", parse_mode="Markdown")
         if mode == "strength" and "c" in chain:
             cf_pending[key] = {"session_chain": chain, "session_origin": origin}
             await q.message.reply_text("🏆 Did you do Section C (WOD) today?", reply_markup=_chain_keyboard("c"))
