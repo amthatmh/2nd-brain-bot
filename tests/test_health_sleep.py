@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 from second_brain.healthtrack.sleep import (
+    _parse_google_stages,
     fetch_sleep_data,
     handle_sleep_backfill_job,
     handle_sleep_sync,
@@ -46,7 +47,7 @@ class TestSleepParsing(unittest.TestCase):
         self.assertEqual(parsed["light_min"], 230)
         self.assertEqual(parsed["awake_min"], 60)
         self.assertEqual(parsed["time_in_bed_min"], 480)
-        self.assertEqual(parsed["sleep_efficiency"], 87.5)
+        self.assertEqual(parsed["sleep_efficiency"], 0.875)
 
     def test_parse_sleep_data_point_with_partial_list_stage_summary(self):
         point = {
@@ -93,7 +94,7 @@ class TestSleepParsing(unittest.TestCase):
         self.assertEqual(parsed["light_min"], 226)
         self.assertEqual(parsed["awake_min"], 49)
         self.assertEqual(parsed["time_in_bed_min"], 470)
-        self.assertEqual(parsed["sleep_efficiency"], 89.6)
+        self.assertEqual(parsed["sleep_efficiency"], 0.8957)
 
     def test_parse_sleep_data_point_uses_minutes_in_sleep_period_when_asleep_missing(self):
         point = {
@@ -106,7 +107,7 @@ class TestSleepParsing(unittest.TestCase):
         parsed = parse_sleep_data_point(point, ZoneInfo("UTC"))
 
         self.assertEqual(parsed["total_sleep_min"], 480)
-        self.assertEqual(parsed["sleep_efficiency"], 100)
+        self.assertEqual(parsed["sleep_efficiency"], 1.0)
 
     def test_parse_sleep_data_point_no_summary_falls_back_to_time_in_bed(self):
         point = {
@@ -118,7 +119,64 @@ class TestSleepParsing(unittest.TestCase):
 
         self.assertEqual(parsed["time_in_bed_min"], 480)
         self.assertEqual(parsed["total_sleep_min"], parsed["time_in_bed_min"])
-        self.assertEqual(parsed["sleep_efficiency"], 100.0)
+        self.assertEqual(parsed["sleep_efficiency"], 1.0)
+
+    def test_parse_google_health_connect_stages(self):
+        point = {
+            "startTime": "2026-05-30T01:00:00Z",
+            "endTime": "2026-05-30T08:00:00Z",
+            "sleep": {
+                "stages": [
+                    {
+                        "interval": {
+                            "startTime": "2026-05-30T01:00:00Z",
+                            "endTime": "2026-05-30T01:20:00Z",
+                        },
+                        "stage": 1,
+                    },
+                    {
+                        "interval": {
+                            "startTime": "2026-05-30T01:20:00Z",
+                            "endTime": "2026-05-30T04:20:00Z",
+                        },
+                        "stage": 4,
+                    },
+                    {
+                        "interval": {
+                            "startTime": "2026-05-30T04:20:00Z",
+                            "endTime": "2026-05-30T05:50:00Z",
+                        },
+                        "stage": 5,
+                    },
+                    {
+                        "interval": {
+                            "startTime": "2026-05-30T05:50:00Z",
+                            "endTime": "2026-05-30T07:20:00Z",
+                        },
+                        "stage": 6,
+                    },
+                    {
+                        "interval": {
+                            "startTime": "2026-05-30T07:20:00Z",
+                            "endTime": "2026-05-30T08:00:00Z",
+                        },
+                        "stage": 3,
+                    },
+                ],
+            },
+        }
+
+        parsed = parse_sleep_data_point(point, ZoneInfo("UTC"))
+
+        self.assertEqual(parsed["deep_min"], 90)
+        self.assertEqual(parsed["rem_min"], 90)
+        self.assertEqual(parsed["light_min"], 180)
+        self.assertEqual(parsed["awake_min"], 20)
+        self.assertEqual(parsed["total_sleep_min"], 360)
+        self.assertEqual(parsed["sleep_efficiency"], 0.8571)
+
+    def test_parse_google_stages_helper_returns_empty_for_non_integer_format(self):
+        self.assertEqual(_parse_google_stages([{"stage": "DEEP", "minutes": 90}]), {})
 
     def test_parse_sleep_data_point_with_null_stage_summary(self):
         point = {
@@ -258,7 +316,7 @@ class TestSleepUpsert(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(props["Bedtime"]["date"]["start"], "2026-05-28T23:00:00-05:00")
         self.assertEqual(props["Wake Time"]["date"]["start"], "2026-05-29T07:00:00-05:00")
         self.assertEqual(props["Total Sleep (min)"], {"number": 420})
-        self.assertEqual(props["Sleep Efficiency (%)"], {"number": 87.5})
+        self.assertEqual(props["Sleep Efficiency (%)"], {"number": 0.875})
 
     async def test_handle_sleep_sync_updates_existing_row(self):
         notion = MagicMock()

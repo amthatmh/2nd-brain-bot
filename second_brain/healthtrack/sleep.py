@@ -219,9 +219,52 @@ def _stage_minutes(stages_summary: Any, stage_names: set[str], direct_keys: tupl
     return 0.0
 
 
+def _parse_google_stages(stages: list) -> dict[str, float]:
+    """
+    Convert Google Health Connect v4 stage items into {stage_name: minutes}.
+
+    Returns an empty dict when the input is not the integer-stage format.
+    """
+    stage_map = {
+        0: "sleeping",
+        1: "awake",
+        2: "sleeping",
+        3: None,
+        4: "light",
+        5: "deep",
+        6: "rem",
+    }
+    totals: dict[str, float] = {}
+    for item in stages:
+        if not isinstance(item, dict):
+            continue
+        stage_int = item.get("stage")
+        if not isinstance(stage_int, int):
+            return {}
+        name = stage_map.get(stage_int)
+        if name is None:
+            continue
+        interval = item.get("interval") or {}
+        start_str = interval.get("startTime") or ""
+        end_str = interval.get("endTime") or ""
+        if not start_str or not end_str:
+            continue
+        try:
+            start = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+            end = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+            minutes = max((end - start).total_seconds() / 60, 0.0)
+        except Exception:
+            continue
+        totals[name] = totals.get(name, 0.0) + minutes
+    return totals
+
+
 def parse_sleep_data_point(point: dict, tz) -> dict:
     """Convert a Google Health sleep data point into Notion-ready values."""
-    sleep_summary = point.get("sleepSummary") or {}
+    sleep_raw = point.get("sleep") or {}
+    if not isinstance(sleep_raw, dict):
+        sleep_raw = {}
+    sleep_summary = point.get("sleepSummary") or sleep_raw.get("sleepSummary") or {}
     if not isinstance(sleep_summary, dict):
         sleep_summary = {}
     summary_interval = sleep_summary.get("interval") or {}
@@ -252,6 +295,8 @@ def parse_sleep_data_point(point: dict, tz) -> dict:
         or point.get("stages")
         or sleep_summary.get("stagesSummary")
         or sleep_summary.get("stages")
+        or sleep_raw.get("stagesSummary")
+        or sleep_raw.get("stages")
         or {}
     )
 
@@ -265,33 +310,49 @@ def parse_sleep_data_point(point: dict, tz) -> dict:
             return _duration_ms(val) / 60000
 
     time_in_bed_min = round((end_dt - start_dt).total_seconds() / 60, 2)
+    google_stages = _parse_google_stages(stages_summary) if isinstance(stages_summary, list) else {}
+    total_from_stages = 0.0
+    if google_stages:
+        deep_min = round(google_stages.get("deep", 0.0), 2)
+        rem_min = round(google_stages.get("rem", 0.0), 2)
+        light_min = round(google_stages.get("light", 0.0), 2)
+        awake_min = round(google_stages.get("awake", 0.0), 2)
+        total_from_stages = round(
+            google_stages.get("deep", 0.0)
+            + google_stages.get("rem", 0.0)
+            + google_stages.get("light", 0.0)
+            + google_stages.get("sleeping", 0.0),
+            2,
+        )
+    else:
+        deep_min = _stage_minutes(
+            stages_summary,
+            {"deep", "deep sleep"},
+            ("deepDurationMs", "deepSleepDurationMs", "deepMs"),
+        )
+        rem_min = _stage_minutes(
+            stages_summary,
+            {"rem", "rem sleep"},
+            ("remDurationMs", "remSleepDurationMs", "remMs"),
+        )
+        light_min = _stage_minutes(
+            stages_summary,
+            {"light", "light sleep"},
+            ("lightDurationMs", "lightSleepDurationMs", "lightMs"),
+        )
+        awake_min = _stage_minutes(
+            stages_summary,
+            {"awake", "wake", "awake in bed"},
+            ("awakeDurationMs", "awakeInBedDurationMs", "wakeDurationMs", "wakeMs"),
+        )
 
     total_sleep_min = round(
         _minutes_from_summary("minutesAsleep")
         or _minutes_from_summary("minutesInSleepPeriod")
         or _duration_ms(sleep_summary.get("totalDurationMs")) / 60000
+        or (total_from_stages if google_stages else 0)
         or time_in_bed_min,  # fallback: use time-in-bed when no sleep analysis is available
         2,
-    )
-    deep_min = _stage_minutes(
-        stages_summary,
-        {"deep", "deep sleep"},
-        ("deepDurationMs", "deepSleepDurationMs", "deepMs"),
-    )
-    rem_min = _stage_minutes(
-        stages_summary,
-        {"rem", "rem sleep"},
-        ("remDurationMs", "remSleepDurationMs", "remMs"),
-    )
-    light_min = _stage_minutes(
-        stages_summary,
-        {"light", "light sleep"},
-        ("lightDurationMs", "lightSleepDurationMs", "lightMs"),
-    )
-    awake_min = _stage_minutes(
-        stages_summary,
-        {"awake", "wake", "awake in bed"},
-        ("awakeDurationMs", "awakeInBedDurationMs", "wakeDurationMs", "wakeMs"),
     )
     sleep_score = (
         sleep_summary.get("sleepScore")
@@ -304,7 +365,7 @@ def parse_sleep_data_point(point: dict, tz) -> dict:
     except (ValueError, TypeError):
         sleep_score = None
 
-    sleep_efficiency = round((total_sleep_min / time_in_bed_min) * 100, 1) if time_in_bed_min > 0 else 0.0
+    sleep_efficiency = round(total_sleep_min / time_in_bed_min, 4) if time_in_bed_min > 0 else 0.0
 
     return {
         "date_str": local_end.date().isoformat(),
