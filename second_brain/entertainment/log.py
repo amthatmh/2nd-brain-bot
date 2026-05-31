@@ -16,6 +16,7 @@ from second_brain.config import (
     NOTION_SPORTS_LOG_DB,
 )
 from second_brain.notion import notion_call, notion_call_async
+from second_brain.notion import tasks as notion_tasks
 from second_brain.utils import local_today, reply_notion_error
 from utils.date_parser import parse_date
 from second_brain.notion.properties import rich_text_prop, title_prop
