@@ -1412,7 +1412,14 @@ async def _cb_h_done(q, parts, context) -> None:
     message_id = q.message.message_id
     selected_ids = set(_main()._habit_selection_selected(message_id))
     if not selected_ids:
-        await q.answer("No habits selected!", show_alert=True)
+        session_habits = _main()._habit_selection_habits(message_id)
+        if not session_habits:
+            # Session expired — remove the stale keyboard
+            _main()._habit_selections.pop(message_id, None)
+            await q.edit_message_reply_markup(reply_markup=None)
+            await q.answer("Session expired. Please open Habits again.", show_alert=True)
+        else:
+            await q.answer("No habits selected!", show_alert=True)
         return
 
     selected_habits = [
@@ -1421,19 +1428,38 @@ async def _cb_h_done(q, parts, context) -> None:
     selected_habits.sort(key=lambda h: h.get("sort") or 0)
     logged_names: list[str] = []
     failed_names: list[str] = []
+    logged_page_ids: set[str] = set()
     for habit in selected_habits:
         habit_name = habit.get("name", "Unknown")
         try:
             if _main().already_logged_today(habit["page_id"]):
+                logged_page_ids.add(habit["page_id"])
                 continue
             _main().log_habit(habit["page_id"], habit_name)
+            logged_page_ids.add(habit["page_id"])
             logged_names.append(habit_name)
         except Exception as notion_error:
             failed_names.append(habit_name)
             log.error("Habit log Notion error for %s: %s", habit_name, notion_error)
 
+    session_habits = _main()._habit_selection_habits(message_id)
+    remaining_habits = [h for h in session_habits if h["page_id"] not in logged_page_ids]
+
     _main()._habit_selections.pop(message_id, None)
-    await q.edit_message_reply_markup(reply_markup=None)
+
+    if remaining_habits:
+        text = q.message.text or q.message.caption or ""
+        check_type = (
+            "evening" if "Evening check-in" in text
+            else "manual" if "Which habit" in text
+            else "morning"
+        )
+        new_markup = kb.habit_buttons(remaining_habits, check_type, selected=set())
+        _main()._store_habit_selection_session(message_id, remaining_habits)
+        await q.edit_message_reply_markup(reply_markup=new_markup)
+    else:
+        await q.edit_message_reply_markup(reply_markup=None)
+
     if logged_names:
         await q.message.reply_text(f"✅ Logged: {', '.join(logged_names)}")
         asyncio.create_task(
