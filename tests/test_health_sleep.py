@@ -108,6 +108,18 @@ class TestSleepParsing(unittest.TestCase):
         self.assertEqual(parsed["total_sleep_min"], 480)
         self.assertEqual(parsed["sleep_efficiency"], 100)
 
+    def test_parse_sleep_data_point_no_summary_falls_back_to_time_in_bed(self):
+        point = {
+            "startTime": "2026-05-28T23:00:00Z",
+            "endTime": "2026-05-29T07:00:00Z",
+        }
+
+        parsed = parse_sleep_data_point(point, ZoneInfo("UTC"))
+
+        self.assertEqual(parsed["time_in_bed_min"], 480)
+        self.assertEqual(parsed["total_sleep_min"], parsed["time_in_bed_min"])
+        self.assertEqual(parsed["sleep_efficiency"], 100.0)
+
     def test_parse_sleep_data_point_with_null_stage_summary(self):
         point = {
             "startTime": "2026-05-28T23:00:00Z",
@@ -151,6 +163,25 @@ class TestSleepParsing(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "sleep_sync: unparseable time fields"):
             parse_sleep_data_point(point, ZoneInfo("UTC"))
 
+    def test_parse_sleep_data_point_sleep_score(self):
+        base_point = {
+            "startTime": "2026-05-28T23:00:00Z",
+            "endTime": "2026-05-29T07:00:00Z",
+        }
+        cases = [
+            ({}, None),
+            ({"sleepScore": "82"}, 82),
+        ]
+
+        for sleep_summary, expected_score in cases:
+            with self.subTest(sleep_summary=sleep_summary):
+                parsed = parse_sleep_data_point(
+                    {**base_point, "sleepSummary": sleep_summary},
+                    ZoneInfo("UTC"),
+                )
+
+                self.assertEqual(parsed["sleep_score"], expected_score)
+
 
 class TestFetchSleepData(unittest.TestCase):
     @patch("second_brain.healthtrack.sleep.httpx.get")
@@ -176,6 +207,28 @@ class TestFetchSleepData(unittest.TestCase):
         self.assertEqual(point["sleepSummary"], raw_point["sleepSummary"])
         self.assertEqual(point["stagesSummary"], raw_point["stagesSummary"])
         mock_response.raise_for_status.assert_called_once()
+
+    @patch("second_brain.healthtrack.sleep.httpx.get")
+    def test_fetch_sleep_data_selects_longest_session(self, mock_get):
+        nap_point = {
+            "startTime": "2026-05-28T15:00:00-05:00",
+            "endTime": "2026-05-28T16:00:00-05:00",
+            "sleepSummary": {"totalDurationMs": _ms(60)},
+        }
+        main_sleep_point = {
+            "startTime": "2026-05-28T23:30:00-05:00",
+            "endTime": "2026-05-29T07:00:00-05:00",
+            "sleepSummary": {"totalDurationMs": _ms(450)},
+        }
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"dataPoints": [nap_point, main_sleep_point]}
+        mock_get.return_value = mock_response
+
+        point = fetch_sleep_data("access-token", "2026-05-28", ZoneInfo("America/Chicago"))
+
+        self.assertEqual(point["startTime"], main_sleep_point["startTime"])
+        self.assertEqual(point["endTime"], main_sleep_point["endTime"])
+        self.assertEqual(point["sleepSummary"], main_sleep_point["sleepSummary"])
 
 
 class TestSleepUpsert(unittest.IsolatedAsyncioTestCase):
