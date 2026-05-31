@@ -524,7 +524,13 @@ def _resolve_section_movements(section: dict, movement_cache: dict[str, str], no
         for canonical in normalise_movement_name(name):
             if canonical and canonical not in candidates:
                 candidates.append(canonical)
-    for name in _movement_names_from_text(section.get("description") or "", movement_cache):
+    desc = section.get("description") or ""
+    desc = re.sub(
+        r"\b([A-Za-z]+)/([A-Za-z]+(?:\s+[A-Za-z]+)+)",
+        lambda m: f"{m.group(1)} {' '.join(m.group(2).split()[1:])}\n{m.group(2)}",
+        desc,
+    )
+    for name in _movement_names_from_text(desc, movement_cache):
         for canonical in normalise_movement_name(name):
             if canonical and canonical not in candidates:
                 candidates.append(canonical)
@@ -720,10 +726,9 @@ def _extract_sections(block: str) -> tuple[str, str, str]:
         lines.append(line)
     body = "\n".join(lines)
     # `[\.)]\s*` accepts both "B. Take 15 Minutes..." and "B.Take 15 Minutes..."
-    # (the latter appears in Friday Fitness week-of-04.27). The trailing `[A-Z]`
-    # ensures we still anchor to the start of a section header, not random
-    # mid-sentence "B." references.
-    marker = re.compile(r"(?im)^\s*[*_`]*(?:section\s*)?(?P<section>[BC])[*_`]*[\.)]\s*(?=[A-Z\d])")
+    # (the latter appears in Friday Fitness week-of-04.27). The multiline anchor
+    # keeps this to section headers instead of random mid-sentence "B." references.
+    marker = re.compile(r"(?im)^\s*[*_`]*(?:section\s*)?(?P<section>[BC])[*_`]*[\.)]\s*")
     matches = list(marker.finditer(body))
     section_text: dict[str, str] = {"B": "", "C": ""}
     for idx, match in enumerate(matches):
@@ -778,7 +783,7 @@ def parse_weekly_program_text(full_text: str, week_label: str | None = None) -> 
             continue
         for track, track_block in track_blocks:
             section_b, section_c, training_notes = _extract_sections(track_block)
-            if track == "Hyrox" and section_b and not section_c:
+            if track in ("Hyrox", "Fitness") and section_b and not section_c:
                 section_b, section_c = "", section_b
             tracks_by_name[track].append(_day_entry(day, section_b, section_c, training_notes))
     tracks = [{"track": track, "days": days} for track, days in tracks_by_name.items() if days]
