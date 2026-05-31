@@ -41,6 +41,9 @@ class WeekStats:
     exercise_days: int
     latest_weight: float | None
     days_with_data: int
+    avg_deep_min: float | None = None
+    avg_rem_min: float | None = None
+    avg_awake_min: float | None = None
     daily_readiness: list[tuple[str, float]] = field(default_factory=list)
     daily_exercise_min: list[tuple[str, float]] = field(default_factory=list)
 
@@ -159,6 +162,9 @@ def compute_week_stats(rows: list[dict]) -> WeekStats:
 
     return WeekStats(
         avg_sleep_min=_safe_avg([_num(row, "Total Sleep (min)") for row in rows]),
+        avg_deep_min=_safe_avg([_num(row, "Deep Sleep (min)") for row in rows]),
+        avg_rem_min=_safe_avg([_num(row, "REM Sleep (min)") for row in rows]),
+        avg_awake_min=_safe_avg([_num(row, "Awake in Bed (min)") for row in rows]),
         avg_sleep_efficiency=_safe_avg([_num(row, "Sleep Efficiency (%)") for row in rows]),
         avg_deep_pct=_safe_avg(_daily_pct(rows, "Deep Sleep (min)")),
         avg_rem_pct=_safe_avg(_daily_pct(rows, "REM Sleep (min)")),
@@ -243,21 +249,64 @@ def _fmt_hours(minutes: float | None) -> str:
     return f"{minutes / 60:.1f}h"
 
 
+def _delta_str(curr, prev, suffix: str = "", digits: int = 0, higher_is_better: bool = True) -> str:
+    if curr is None or prev is None:
+        return "no prior data"
+    d = curr - prev
+    sign = "+" if d >= 0 else ""
+    arrow = ("↑" if d > 0 else "↓") if abs(d) > 0.05 else "→"
+    return f"{sign}{d:.{digits}f}{suffix} {arrow} vs last week"
+
+
+def _format_sleep_night(night: tuple[str, float | None, float | None] | None, *, include_awake: bool) -> str:
+    if not night:
+        return "no data"
+    day_raw, sleep_min, awake_min = night
+    try:
+        parsed_day = date.fromisoformat(day_raw)
+        label = f"{parsed_day.strftime('%b')} {parsed_day.day}"
+    except ValueError:
+        label = day_raw
+    sleep_text = _fmt_hours(sleep_min)
+    awake_text = ""
+    if include_awake and awake_min is not None:
+        awake_text = f", {awake_min:.0f} min awake"
+    return f"{label} ({sleep_text}{awake_text})"
+
+
 def build_health_insight_prompt(
     week_stats: WeekStats,
     baseline_stats: WeekStats,
-    week_label: str,
-    travel_context: dict | None,
-    as_of_date: str,
+    prev_week_stats: WeekStats | str | None,
+    week_label: str | dict | None = None,
+    travel_context: dict | str | None = None,
+    as_of_date: str | None = None,
+    *,
+    best_night_str: str = "no data",
+    worst_night_str: str = "no data",
 ) -> str:
     """Build the Claude prompt for the weekly Telegram insight."""
+    if isinstance(prev_week_stats, str):
+        old_week_label = prev_week_stats
+        old_travel_context = week_label if isinstance(week_label, dict) or week_label is None else None
+        old_as_of_date = travel_context if isinstance(travel_context, str) else None
+        prev_week_stats = baseline_stats
+        week_label = old_week_label
+        travel_context = old_travel_context
+        as_of_date = old_as_of_date
+    if prev_week_stats is None:
+        prev_week_stats = compute_week_stats([])
+    week_label = str(week_label or "this week")
+    as_of_date = as_of_date or date.today().isoformat()
     daily_readiness_str = ", ".join(
         f"{day} {value:.1f}" for day, value in week_stats.daily_readiness
     ) or "no data"
-    daily_exercise_str = ", ".join(
-        f"{day} {value:.0f}m" for day, value in week_stats.daily_exercise_min
-    ) or "no data"
+    hrv_delta = _delta_str(week_stats.avg_hrv, prev_week_stats.avg_hrv, " ms", 0)
+    sleep_delta = _delta_str(week_stats.avg_sleep_min, prev_week_stats.avg_sleep_min, " min", 0)
+    deep_sleep_delta = _delta_str(week_stats.avg_deep_min, prev_week_stats.avg_deep_min, " min", 0)
+    exercise_delta = _delta_str(week_stats.exercise_days, prev_week_stats.exercise_days, " days", 0)
     travel_block = ""
+    travel_note = ""
     if travel_context:
         destinations = travel_context.get("destinations") or "Travel"
         purpose = travel_context.get("purpose") or "general travel"
@@ -267,40 +316,42 @@ def build_health_insight_prompt(
             f'\nTRAVEL CONTEXT: "{destinations} trip ({dep}-{ret}), {purpose}. '
             'Account for travel fatigue."\n'
         )
+        travel_note = "- If travel present, acknowledge in opening and soften recovery/sleep expectations."
 
-    return f"""You are a warm, encouraging personal health coach writing a weekly check-in for Telegram.
-Today is {as_of_date}. You are reviewing {week_label}.
+    return f"""You are a direct, warm personal health coach writing a weekly Telegram check-in. Be specific — name dates, cite numbers, connect cause and effect. Max 3 lines per section. Use *bold* on key numbers only.
+Today: {as_of_date}. Reviewing: {week_label}.
 
-WEEKLY DATA (7-day):
-- Sleep: avg {_fmt_hours(week_stats.avg_sleep_min)}, efficiency {_fmt_num(week_stats.avg_sleep_efficiency, "%", 1)}, deep {_fmt_num(week_stats.avg_deep_pct, "%", 1)}, REM {_fmt_num(week_stats.avg_rem_pct, "%", 1)}, bedtime variability {_fmt_num(week_stats.bedtime_stddev_min, " min", 0)} stddev
-- Recovery: HRV avg {_fmt_num(week_stats.avg_hrv, " ms", 0)} (28-day baseline: {_fmt_num(baseline_stats.avg_hrv, " ms", 0)}), RHR avg {_fmt_num(week_stats.avg_rhr, " bpm", 0)} (baseline: {_fmt_num(baseline_stats.avg_rhr, " bpm", 0)})
-- Training: {week_stats.exercise_days}/7 days active, avg {_fmt_num(week_stats.avg_active_energy, " kcal", 0)} active energy, avg {_fmt_num(week_stats.avg_exercise_min, " min/day", 0)} exercise
-- Readiness trend (daily scores Mon→Sun): {daily_readiness_str}
-- Workout duration trend (days with exercise): {daily_exercise_str}
-- VO2 Max: {_fmt_num(week_stats.last_vo2, "", 1)} (28-day baseline: {_fmt_num(baseline_stats.last_vo2, "", 1)})
-
-28-DAY BASELINE: HRV {_fmt_num(baseline_stats.avg_hrv, " ms", 0)}, RHR {_fmt_num(baseline_stats.avg_rhr, " bpm", 0)}, sleep {_fmt_hours(baseline_stats.avg_sleep_min)} / {_fmt_num(baseline_stats.avg_sleep_efficiency, "%", 1)} efficiency
+WEEKLY DATA:
+- Sleep: avg {_fmt_hours(week_stats.avg_sleep_min)} ({sleep_delta}) | deep {_fmt_num(week_stats.avg_deep_min, " min", 0)} ({deep_sleep_delta}) | REM {_fmt_num(week_stats.avg_rem_min, " min", 0)} | awake in bed {_fmt_num(week_stats.avg_awake_min, " min", 0)} | efficiency {_fmt_num(week_stats.avg_sleep_efficiency, "%", 1)} | bedtime variability {_fmt_num(week_stats.bedtime_stddev_min, " min", 0)} stddev
+- Sleep nights: best {best_night_str}, worst {worst_night_str}
+- Recovery: HRV *{_fmt_num(week_stats.avg_hrv, " ms", 0)}* ({hrv_delta}; baseline {_fmt_num(baseline_stats.avg_hrv, " ms", 0)}) | RHR {_fmt_num(week_stats.avg_rhr, " bpm", 0)} (baseline {_fmt_num(baseline_stats.avg_rhr, " bpm", 0)})
+- Training: {week_stats.exercise_days}/7 days ({exercise_delta}) | avg {_fmt_num(week_stats.avg_exercise_min, " min", 0)}/day | {_fmt_num(week_stats.avg_active_energy, " kcal", 0)} active energy
+- VO2 Max: {_fmt_num(week_stats.last_vo2, "", 1)} (baseline {_fmt_num(baseline_stats.last_vo2, "", 1)})
+- Readiness trend: {daily_readiness_str}
 {travel_block}
-Write exactly 8 sections in Markdown. *Bold* key numbers. 250-350 words total:
-1. One opening vibe sentence (no header)
-2. 💚/🟡/🔴 *Recovery & Readiness* - HRV vs baseline, RHR trend
-3. 😴 *Sleep* - duration, efficiency, deep/REM, bedtime consistency
-4. 🏃 *Training Load* - active days, energy; VO2 Max only if changed >0.5
-5. 📈 *Trending* - 1-2 positive observations vs 28-day baseline
-6. ⚠️ *Watch This Week* - 0-2 items (omit section if nothing notable)
-7. 🎯 *This Week's Focus* - one concrete actionable recommendation
-8. 📊 *Week in Review* - Show readiness score trend across the week (high/low/direction). Note any correlation with workout load or sleep. Skip if fewer than 3 readiness scores.
+Write exactly 7 sections. Max 3 lines each. 300-420 words total:
+1. Opening: one punchy sentence on the week's defining theme — no header
+2. 💚/🟡/🔴 *Recovery & Readiness* — HRV vs last week and baseline, RHR, name a specific high/low day if relevant
+3. 😴 *Sleep* — duration, deep/REM minutes, call out the worst or best night specifically, bedtime consistency if notable
+4. 🏃 *Training Load* — days active vs last week, intensity, VO2 Max only if changed >0.3
+5. 📈 *Momentum* — 1-2 things genuinely improving over the past 2-4 weeks; be specific, not generic
+6. ⚠️ *Watch This Week* — 0-2 concrete risk items; omit section entirely if nothing notable
+7. 🎯 *Focus* — one actionable target for the coming week, specific enough to track
 
-RULES: Compare only to personal baseline, never population norms. Skip metrics with no data.
-If travel present, acknowledge in opening and soften recovery/sleep expectations.
-Use plain Markdown (*bold*), not MarkdownV2."""
+RULES:
+- Compare to personal baseline and last week, never population norms
+- If a number is unchanged say "holding steady at X" not "stable"
+- Push when trending is good ("you're building something real here")
+- Soften when HRV is down or sleep is poor ("your body is asking for recovery")
+- Skip any metric with "no data"
+{travel_note}"""
 
 
 def call_claude_for_insight(prompt: str, model: str) -> str:
     """Call Claude and return the text response."""
     resp = get_claude_client().messages.create(
         model=model,
-        max_tokens=600,
+        max_tokens=900,
         messages=[{"role": "user", "content": prompt}],
     )
     return resp.content[0].text.strip()
@@ -419,6 +470,13 @@ async def generate_weekly_health_insight(
     )
     week_stats = compute_week_stats(week_rows)
     baseline_stats = compute_week_stats(baseline_rows)
+    prev_week_end = week_start - timedelta(days=1)
+    prev_week_start = prev_week_end - timedelta(days=6)
+    prev_week_rows = [
+        row for row in rows
+        if (d := _row_date(row)) is not None and prev_week_start <= d <= prev_week_end
+    ]
+    prev_week_stats = compute_week_stats(prev_week_rows)
 
     if week_stats.days_with_data < 3:
         text = (
@@ -434,12 +492,25 @@ async def generate_weekly_health_insight(
         }
 
     travel = await asyncio.to_thread(get_travel_context, notion, trips_db_id or "", week_start, week_end)
+    sleep_by_day = sorted(
+        [
+            (d.isoformat(), _num(row, "Total Sleep (min)"), _num(row, "Awake in Bed (min)"))
+            for row in week_rows
+            if (d := _row_date(row))
+        ],
+        key=lambda x: x[1] or 0,
+    )
+    worst_night = sleep_by_day[0] if sleep_by_day else None
+    best_night = sleep_by_day[-1] if sleep_by_day else None
     prompt = build_health_insight_prompt(
         week_stats,
         baseline_stats,
+        prev_week_stats,
         week_label,
         travel,
         local_today.isoformat(),
+        best_night_str=_format_sleep_night(best_night, include_awake=False),
+        worst_night_str=_format_sleep_night(worst_night, include_awake=True),
     )
     insight_text = await asyncio.to_thread(call_claude_for_insight, prompt, claude_model)
     message = f"🏥 *Weekly Health Insight — {week_label}*\n\n{insight_text}"

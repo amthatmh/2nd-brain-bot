@@ -51,6 +51,9 @@ METRIC_DEFS: dict[str, dict[str, str]] = {
     "total_sleep": {"property": "Total Sleep (min)", "unit": "min", "good": "up"},
     "deep_sleep": {"property": "Deep Sleep (min)", "unit": "min", "good": "up"},
     "sleep_efficiency": {"property": "Sleep Efficiency (%)", "unit": "%", "good": "up"},
+    "rem_sleep": {"property": "REM Sleep (min)", "unit": "min", "good": "up"},
+    "light_sleep": {"property": "Light Sleep (min)", "unit": "min", "good": "up"},
+    "awake_sleep": {"property": "Awake in Bed (min)", "unit": "min", "good": "down"},
 }
 
 
@@ -199,6 +202,7 @@ def _habit_matches(props: dict[str, Any], expected: str) -> bool:
 
 def _build_metrics(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     metrics = {key: [] for key in METRIC_DEFS}
+    metrics["bedtime"] = []
     for row in rows:
         props = row.get("properties", {})
         date_str = _extract_date(props.get("Date", {}))
@@ -208,6 +212,17 @@ def _build_metrics(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]
             value = _extract_number(props.get(meta["property"], {}))
             if value is not None and math.isfinite(value):
                 metrics[key].append({"date": date_str, "value": round(value, 2)})
+        bedtime_prop = props.get("Bedtime", {})
+        bedtime_start = (bedtime_prop.get("date") or {}).get("start")
+        if bedtime_start:
+            try:
+                dt = datetime.fromisoformat(bedtime_start.replace("Z", "+00:00"))
+                hour = dt.hour + dt.minute / 60
+                if hour < 12:
+                    hour += 24
+                metrics["bedtime"].append({"date": date_str, "value": round(hour, 2)})
+            except Exception:
+                pass
     return metrics
 
 
@@ -311,18 +326,22 @@ def _sleep_score(metrics: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
     value = _score_from_signals([
         _target_trend_signal(metrics["total_sleep"], 420),
         _target_trend_signal(metrics["deep_sleep"], 90),
+        _target_trend_signal(metrics.get("rem_sleep", []), 80),
         _target_trend_signal(metrics["sleep_efficiency"], 85),
     ])
     if value is None:
         return {"value": None, "status": "no_data", "description": "Not enough sleep data yet"}
     latest_total = metrics["total_sleep"][-1]["value"] if metrics["total_sleep"] else None
     latest_deep = metrics["deep_sleep"][-1]["value"] if metrics["deep_sleep"] else None
+    latest_rem = metrics["rem_sleep"][-1]["value"] if metrics.get("rem_sleep") else None
     latest_efficiency = metrics["sleep_efficiency"][-1]["value"] if metrics["sleep_efficiency"] else None
     parts = []
     if latest_total is not None:
         parts.append(f"Total {latest_total:g} min")
     if latest_deep is not None:
         parts.append(f"Deep {latest_deep:g} min")
+    if latest_rem is not None:
+        parts.append(f"REM {latest_rem:g} min")
     if latest_efficiency is not None:
         parts.append(f"Efficiency {latest_efficiency:g}%")
     return {"value": value, "description": " · ".join(parts)}
@@ -382,13 +401,29 @@ def _latest(metrics: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
         "total_sleep",
         "deep_sleep",
         "sleep_efficiency",
+        "rem_sleep",
+        "light_sleep",
+        "awake_sleep",
     ]
     return {key: points[-1]["value"] for key in keys if (points := metrics.get(key))}
 
 
 def _deltas(metrics: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    for key in ("weight", "body_fat", "lean_mass", "resting_hr", "hrv", "vo2_max", "total_sleep", "deep_sleep", "sleep_efficiency"):
+    for key in (
+        "weight",
+        "body_fat",
+        "lean_mass",
+        "resting_hr",
+        "hrv",
+        "vo2_max",
+        "total_sleep",
+        "deep_sleep",
+        "sleep_efficiency",
+        "rem_sleep",
+        "light_sleep",
+        "awake_sleep",
+    ):
         delta = _delta_for(metrics[key], METRIC_DEFS[key]["unit"])
         if delta:
             out[key] = delta
