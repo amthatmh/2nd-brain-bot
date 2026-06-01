@@ -9,12 +9,15 @@ from typing import Any
 
 import httpx
 
+from second_brain.healthtrack import config as health_config
 from second_brain.healthtrack.metrics import (
     _find_page_by_date,
     _find_page_by_name_and_date,
     _title_property,
 )
 from second_brain.monitoring import track_job_execution
+from second_brain.notion.habits import already_logged_today, log_habit
+from second_brain.notion.properties import query_all
 
 log = logging.getLogger(__name__)
 
@@ -445,6 +448,73 @@ def _sleep_properties(parsed: dict) -> dict[str, dict]:
     return props
 
 
+def _sleep_hours_from_metrics_row(row: dict) -> float | None:
+    props = row.get("properties", {})
+    hours = props.get("Time in Bed hrs", {}).get("number")
+    if isinstance(hours, (int, float)):
+        return float(hours)
+
+    for minutes_prop in ("Time in Bed (min)", "Total Sleep (min)"):
+        minutes = props.get(minutes_prop, {}).get("number")
+        if isinstance(minutes, (int, float)):
+            return float(minutes) / 60
+    return None
+
+
+async def sync_sleep_habit_log_from_metrics(
+    *,
+    notion,
+    log_db_id: str,
+    health_metrics_db_id: str,
+    habit_cache: dict[str, dict],
+    tz,
+) -> dict:
+    """Auto-log the Sleep habit when today's health metrics meet the sleep goal."""
+    sleep_habit = next(
+        (
+            habit
+            for habit in habit_cache.values()
+            if "sleep" in (habit.get("name") or "").lower()
+            and habit.get("auto_only", False)
+        ),
+        None,
+    )
+    if not sleep_habit:
+        return {"status": "skipped", "reason": "Sleep habit not found in cache"}
+
+    if await asyncio.to_thread(already_logged_today, notion, log_db_id, sleep_habit["page_id"], tz):
+        return {"status": "skipped", "reason": "already logged"}
+
+    today = datetime.now(tz).date().isoformat()
+    rows = await asyncio.to_thread(
+        query_all,
+        notion,
+        health_metrics_db_id,
+        filter={"property": "Date", "date": {"equals": today}},
+    )
+    if not rows:
+        return {"status": "skipped", "reason": "no health metrics row for today"}
+
+    time_in_bed = _sleep_hours_from_metrics_row(rows[0])
+    if time_in_bed is None:
+        return {"status": "skipped", "reason": "Time in Bed not populated"}
+
+    goal = health_config.SLEEP_GOAL_HOURS
+    if time_in_bed < goal:
+        return {"status": "skipped", "reason": f"{time_in_bed:.2f}h < goal {goal:.2f}h"}
+
+    await asyncio.to_thread(
+        log_habit,
+        notion,
+        log_db_id,
+        sleep_habit["page_id"],
+        sleep_habit["name"],
+        source="🛌 Auto",
+        tz=tz,
+    )
+    return {"status": "logged", "time_in_bed": round(time_in_bed, 2), "goal": goal}
+
+
 async def handle_sleep_sync(
     *,
     notion,
@@ -509,7 +579,7 @@ async def handle_sleep_sync_job(bot=None) -> dict:
         GOOGLE_HEALTH_CLIENT_SECRET,
         GOOGLE_HEALTH_REFRESH_TOKEN,
     )
-    from second_brain.main import NOTION_HEALTH_METRICS_DB, TZ, notion
+    from second_brain.main import NOTION_HEALTH_METRICS_DB, NOTION_LOG_DB, TZ, habit_cache, notion
 
     target_date = datetime.now(TZ).date()
     result = await handle_sleep_sync(
@@ -521,8 +591,16 @@ async def handle_sleep_sync_job(bot=None) -> dict:
         target_date=target_date,
         tz=TZ,
     )
-    log.info("sleep_sync: scheduler result=%s", result)
-    return result
+    habit_result = await sync_sleep_habit_log_from_metrics(
+        notion=notion,
+        log_db_id=NOTION_LOG_DB,
+        health_metrics_db_id=NOTION_HEALTH_METRICS_DB,
+        habit_cache=habit_cache,
+        tz=TZ,
+    )
+    combined = {"sleep_sync": result, "habit_log": habit_result}
+    log.info("sleep_sync: scheduler result=%s", combined)
+    return combined
 
 
 @track_job_execution("sleep_resync")

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from second_brain.ai.client import get_claude_client
+from second_brain.ai.client import VOICE_INSTRUCTION, get_claude_client
 from second_brain.monitoring import track_job_execution
 from second_brain.notion.env_db import set_env_value
 from second_brain.notion.properties import (
@@ -318,7 +318,9 @@ def build_health_insight_prompt(
         )
         travel_note = "- If travel present, acknowledge in opening and soften recovery/sleep expectations."
 
-    return f"""You are a direct, warm personal health coach writing a weekly Telegram check-in. Be specific — name dates, cite numbers, connect cause and effect. Max 3 lines per section. Use *bold* on key numbers only.
+    return f"""{VOICE_INSTRUCTION}
+
+You are a direct, warm personal health coach writing a weekly Telegram check-in. Be specific — name dates, cite numbers, connect cause and effect. Max 3 lines per section. Use *bold* on key numbers only.
 Today: {as_of_date}. Reviewing: {week_label}.
 
 WEEKLY DATA:

@@ -126,7 +126,7 @@ def pending_habits_for_digest(*, habit_cache: dict[str, dict], time_str: str | N
         except (AttributeError, ValueError):
             return 0
 
-    habits = list(habit_cache.values())
+    habits = [habit for habit in habit_cache.values() if not habit.get("auto_only", False)]
 
     if time_str is not None:
         current_minutes = _to_minutes(time_str)
@@ -178,7 +178,7 @@ from second_brain.crossfit.readiness import check_readiness_logged_today
 from second_brain.error_reporting import send_system_log
 from second_brain.state import STATE
 from second_brain.utils import local_today
-from second_brain.ai.client import get_claude_client
+from second_brain.ai.client import VOICE_INSTRUCTION, get_claude_client
 from second_brain.healthtrack import config as health_config
 from utils.alert_handlers import alert_digest_sent
 
@@ -422,6 +422,7 @@ def _generate_digest_brief(weather_block, overdue_count, today_count, habit_coun
             model=CLAUDE_MODEL,
             max_tokens=80,
             messages=[{"role": "user", "content": (
+                f"{VOICE_INSTRUCTION}\n\n"
                 f"You are a personal secretary giving a morning brief in one sentence (max 25 words).\n\n"
                 f"Today: {day_str}\n"
                 f"Weather: {weather_block or 'unavailable'}\n"
@@ -430,7 +431,7 @@ def _generate_digest_brief(weather_block, overdue_count, today_count, habit_coun
                 f"Habits pending: {habit_count}\n\n"
                 "Write one warm direct sentence weaving weather (and how it compares to yesterday) "
                 "into the day — help the user know what to wear and what to prioritise. "
-                "No greeting. No emojis. No padding."
+                "No greeting. No padding."
             )}],
         )
         return resp.content[0].text.strip().strip('"')

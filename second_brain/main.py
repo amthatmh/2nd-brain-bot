@@ -65,7 +65,7 @@ from second_brain.notes.flow import (
     note_topics_keyboard,
 )
 from second_brain.ai import classify as ai_classify
-from second_brain.ai.client import get_claude_client
+from second_brain.ai.client import VOICE_INSTRUCTION, get_claude_client
 from second_brain.healthtrack.routes import (
     clear_habits_data_caches,
     prewarm_habits_data_cache,
@@ -1725,9 +1725,10 @@ async def send_friday_reflection(bot):
             model=CLAUDE_MODEL,
             max_tokens=120,
             messages=[{"role": "user", "content": (
+                f"{VOICE_INSTRUCTION}\n\n"
                 "You are a life coach giving a Friday wrap-up in 2 sentences.\n"
                 f"Habits this week: {habit_summary}. Tasks: {completed} done, {deferred} deferred.\n"
-                "Acknowledge what went well and give one specific nudge for next week. No emojis."
+                "Acknowledge what went well and give one specific nudge for next week."
             )}],
         )
         text = resp.content[0].text.strip()
@@ -1757,9 +1758,10 @@ async def send_sunday_digest(bot):
             model=CLAUDE_MODEL,
             max_tokens=100,
             messages=[{"role": "user", "content": (
+                f"{VOICE_INSTRUCTION}\n\n"
                 "Give a 2-sentence week summary from these habit completions. "
                 f"Habits this week: {habit_summary}. "
-                "Say what was consistent and what was not. No emojis."
+                "Say what was consistent and what needs a curious, practical reset."
             )}],
         )
         week_summary = resp.content[0].text.strip()
@@ -1810,6 +1812,7 @@ async def send_sunday_digest(bot):
                     model=CLAUDE_MODEL,
                     max_tokens=150,
                     messages=[{"role": "user", "content": (
+                        f"{VOICE_INSTRUCTION}\n\n"
                         f"Trip to {destination} in {days_until} days ({start_date} – {end_date}).\n"
                         f"Weather forecast: {forecast}.\n"
                         f"Give 4-5 bullet prep items specific to this destination, purpose ({purpose}), "
@@ -1861,7 +1864,7 @@ async def send_monthly_habit_insight(bot):
         if habit_name:
             counts[habit_name] += 1
 
-    rates = {}
+    habit_lines = []
     for name, habit in list(habit_cache.items()):
         page_id = habit.get("page_id")
         try:
@@ -1870,8 +1873,11 @@ async def send_monthly_habit_insight(bot):
             freq = habit.get("freq_per_week") or 0
         if not freq:
             continue
-        rates[name] = round((counts.get(name, 0) / (freq * 4.3)) * 100)
-    if not rates:
+        expected = freq * (30 / 7)
+        habit_lines.append(
+            f"- {name}: logged {counts.get(name, 0)} times, weekly goal {freq}x (~{expected:.1f} expected)"
+        )
+    if not habit_lines:
         return
 
     try:
@@ -1880,10 +1886,14 @@ async def send_monthly_habit_insight(bot):
             model=CLAUDE_MODEL,
             max_tokens=120,
             messages=[{"role": "user", "content": (
-                f"Here are 30-day habit completion rates: {rates}.\n"
-                "Identify the single most meaningful pattern — either a consistent strength or a "
-                "consistent gap. Give 2 sentences: the pattern and one concrete suggestion. "
-                "Be specific, not generic."
+                f"{VOICE_INSTRUCTION}\n\n"
+                "Habit data (last 30 days):\n"
+                f"{chr(10).join(habit_lines)}\n\n"
+                "IMPORTANT: Frequency is a weekly GOAL, not a ceiling. Logging MORE than the goal "
+                "means the user exceeded their target - this is always positive. Never suggest "
+                "double-logging or anomalous behavior for over-goal habits.\n"
+                "Identify one genuine strength (consistent or over-goal habit) and one gap "
+                "(significantly under-goal). Give 2 sentences, warm tone, emojis, and be specific."
             )}],
         )
         text = resp.content[0].text.strip()
@@ -2225,6 +2235,8 @@ def _build_utility_job_dispatch(bot) -> dict[str, Callable]:
     Each value must be an async callable that accepts no arguments (bot is
     captured via closure).
     """
+    from second_brain.healthtrack.sleep import handle_sleep_sync_job
+
     dispatch = {
         "digest_schedule_rebuild": _utility_async_handler("digest_schedule_rebuild", lambda: rebuild_digest_schedule_job(bot, digest_helpers._scheduler)),
         "digest_schedule_refresh": _utility_async_handler("digest_schedule_refresh", lambda: refresh_digest_schedule_job(bot, digest_helpers._scheduler)),
@@ -2235,6 +2247,7 @@ def _build_utility_job_dispatch(bot) -> dict[str, Callable]:
         "asana_sync": _utility_async_handler("asana_sync", lambda: run_asana_sync(bot)),
         "steps_final_stamp": _utility_async_handler("steps_final_stamp", lambda: _run_steps_final_stamp_dispatch(bot)),
         "steps_sync_check": _utility_async_handler("steps_sync_check", lambda: _run_steps_sync_check_dispatch(bot)),
+        "sleep_sync": _utility_async_handler("sleep_sync", lambda: handle_sleep_sync_job(bot)),
         "daily_log_generate": _utility_async_handler("daily_log_generate", lambda: generate_daily_log(bot)),
         "run_recurring_check": _utility_async_handler("run_recurring_check", lambda: run_recurring_check(bot)),
     }
@@ -2426,6 +2439,7 @@ async def post_init(app: Application) -> None:
     notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB); _refresh_habit_cache_refs()
     # Load steps config from Notion ENV DB
     health_config.load_steps_threshold_from_notion_env(notion=notion, notion_env_db=NOTION_ENV_DB)
+    health_config.load_sleep_goal_from_notion_env(notion=notion, notion_env_db=NOTION_ENV_DB)
     load_dashboard_steps_threshold(notion=notion, env_db_id=NOTION_ENV_DB)
     health_config.load_steps_config_from_notion_env(notion=notion, notion_env_db=NOTION_ENV_DB)
     global _app_bot
@@ -2697,7 +2711,14 @@ async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await refresh_quick_actions_keyboard(update.message)
         return
     raw     = args[0][4:].replace("_", " ").strip()
-    matched = next((h for h in habit_cache.values() if raw.lower() in h["name"].lower()), None)
+    matched = next(
+        (
+            h
+            for h in habit_cache.values()
+            if raw.lower() in h["name"].lower() and not h.get("auto_only", False)
+        ),
+        None,
+    )
     if not matched:
         await update.message.reply_text(f"Couldn't find a habit matching *{raw}*.", parse_mode="Markdown")
         return

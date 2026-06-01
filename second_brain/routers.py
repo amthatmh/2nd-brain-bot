@@ -112,7 +112,11 @@ def _habits_from_message_markup(message) -> list[dict]:
     if not ordered_ids:
         return []
 
-    habits_by_id = {habit.get("page_id"): habit for habit in _habit_cache().values()}
+    habits_by_id = {
+        habit.get("page_id"): habit
+        for habit in _habit_cache().values()
+        if not habit.get("auto_only", False)
+    }
     return [habits_by_id[pid] for pid in ordered_ids if pid in habits_by_id]
 
 
@@ -370,6 +374,7 @@ async def route_classified_message_v10(message, text: str) -> None:
             all_habits = [
                 {"page_id": h["page_id"], "name": name}
                 for name, h in _habit_cache().items()
+                if not h.get("auto_only", False)
             ]
             all_habits.sort(key=lambda h: h["name"].lower())
             await thinking.edit_text(
@@ -1548,12 +1553,14 @@ async def _cb_h_toggle(q, parts, context) -> None:
         if "Evening check-in" in text
         else "manual" if "Which habit" in text else "morning"
     )
+    recovered_from_markup = False
     habits = session.get("habits", [])
     if not isinstance(habits, list) or not habits:
         log.warning(
             "Habit selection cache missing for message_id=%s; recovering from message markup",
             message_id,
         )
+        recovered_from_markup = True
         habits = _habits_from_message_markup(q.message)
         if not habits:
             current_habit = next(
@@ -1561,6 +1568,7 @@ async def _cb_h_toggle(q, parts, context) -> None:
                     h
                     for h in _habit_cache().values()
                     if h.get("page_id") == habit_page_id
+                    and not h.get("auto_only", False)
                 ),
                 None,
             )
@@ -1570,14 +1578,15 @@ async def _cb_h_toggle(q, parts, context) -> None:
     # Merge in any habits that became active (passed show_after) after the digest was sent
     now_hhmm = datetime.now(TZ).strftime("%H:%M")
     known_pids = {h.get("page_id") for h in habits}
-    for h in sorted(_habit_cache().values(), key=lambda h: h.get("sort", 0)):
-        pid = h.get("page_id")
-        if pid in known_pids:
-            continue
-        show_after = h.get("show_after") or ""
-        if not show_after or now_hhmm >= show_after:
-            habits.append(h)
-            known_pids.add(pid)
+    if not recovered_from_markup:
+        for h in sorted(_habit_cache().values(), key=lambda h: h.get("sort", 0)):
+            pid = h.get("page_id")
+            if pid in known_pids or h.get("auto_only", False):
+                continue
+            show_after = h.get("show_after") or ""
+            if not show_after or now_hhmm >= show_after:
+                habits.append(h)
+                known_pids.add(pid)
     session["habits"] = habits
     t3 = time.time()
     log.info("[PERF] Habits loaded in %.0fms", (t3 - t2) * 1000)
@@ -1616,7 +1625,9 @@ async def _cb_h_done(q, parts, context) -> None:
         return
 
     selected_habits = [
-        h for h in _habit_cache().values() if h["page_id"] in selected_ids
+        h
+        for h in _habit_cache().values()
+        if h["page_id"] in selected_ids and not h.get("auto_only", False)
     ]
     selected_habits.sort(key=lambda h: h.get("sort") or 0)
     logged_names: list[str] = []

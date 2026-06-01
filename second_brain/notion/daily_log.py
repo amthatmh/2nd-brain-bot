@@ -15,6 +15,7 @@ from second_brain.notion.properties import (
     rich_text_prop,
     title_prop,
 )
+from second_brain.ai.client import VOICE_INSTRUCTION
 from utils.alert_handlers import alert_claude_auth_failure
 
 log = logging.getLogger(__name__)
@@ -229,7 +230,9 @@ async def generate_daily_log(
     signoff_sb = signoff_notes.get("second_brain", "")
     signoff_b2 = signoff_notes.get("brian_ii", "")
 
-    prompt = f"""You are writing a daily development log for a software developer and acoustics consultant.
+    prompt = f"""{VOICE_INSTRUCTION}
+
+You are writing a daily development log for a software developer and acoustics consultant.
 Today is {date_label}.
 
 {cf_section}

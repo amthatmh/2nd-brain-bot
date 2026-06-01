@@ -28,6 +28,7 @@ STEPS_THRESHOLD: int = _steps_threshold_default
 _steps_habit_name_default = os.environ.get("HEALTH_HABIT_NAME", "👟 Steps")
 STEPS_HABIT_NAME: str = _steps_habit_name_default
 STEPS_SOURCE_LABEL: str = "📱 Apple Watch"
+SLEEP_GOAL_HOURS: float = 7.0
 
 
 def _extract_first_plain_text(prop: dict) -> str:
@@ -148,6 +149,44 @@ def load_steps_threshold_from_notion_env(notion: "Client", notion_env_db: str) -
                 )
     except Exception as e:
         log.warning("config: failed to load HEALTH_STEPS_THRESHOLD from Notion ENV DB: %s", e)
+
+
+def load_sleep_goal_from_notion_env(notion: "Client", notion_env_db: str) -> None:
+    """
+    Load SLEEP_GOAL_HOURS from Notion ENV DB.
+    Call this during startup after notion client is initialized.
+    Updates the module-level SLEEP_GOAL_HOURS variable.
+    """
+    global SLEEP_GOAL_HOURS
+
+    if not notion_env_db:
+        return
+
+    try:
+        results = notion.databases.query(
+            database_id=notion_env_db,
+            filter={"property": "Name", "title": {"equals": "SLEEP_GOAL_HOURS"}},
+        )
+        rows = results.get("results", [])
+        if not rows:
+            log.info("config: SLEEP_GOAL_HOURS not found in Notion ENV DB, using default: %.1f", SLEEP_GOAL_HOURS)
+            return
+
+        props = rows[0]["properties"]
+        value_str = _extract_first_plain_text(props.get("Value", {}))
+
+        if value_str:
+            try:
+                SLEEP_GOAL_HOURS = float(value_str)
+                log.info("SLEEP_GOAL_HOURS loaded from Notion ENV: %.2f", SLEEP_GOAL_HOURS)
+            except ValueError:
+                log.warning(
+                    "config: invalid SLEEP_GOAL_HOURS value '%s' in Notion ENV, using default: %.1f",
+                    value_str,
+                    SLEEP_GOAL_HOURS,
+                )
+    except Exception as e:
+        log.warning("config: failed to load SLEEP_GOAL_HOURS from Notion ENV DB: %s", e)
 
 
 async def load_config_from_env_db(notion: "Client", env_db_id: str) -> None:

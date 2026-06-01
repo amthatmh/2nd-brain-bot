@@ -9,6 +9,11 @@ import anthropic
 
 _client: anthropic.Anthropic | None = None
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?|```$", re.MULTILINE)
+VOICE_INSTRUCTION = (
+    "Voice: warm, encouraging, uplifting. Use relevant emojis. When a goal is exceeded, "
+    "celebrate it as a strength - more than planned means commitment, not double-logging. "
+    "When something was missed, frame it with curiosity and a forward nudge, not judgment."
+)
 
 
 def get_claude_client() -> anthropic.Anthropic:
