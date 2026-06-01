@@ -12,6 +12,7 @@ from second_brain.healthtrack.sleep import (
     fetch_sleep_data,
     handle_sleep_backfill_job,
     handle_sleep_sync,
+    sync_sleep_habit_log_from_metrics,
     parse_sleep_data_point,
 )
 from second_brain.healthtrack.dashboard import _sleep_score
@@ -479,6 +480,72 @@ class TestSleepNoData(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["ok"])
         self.assertIn("sleep_backfill: no data for wake date 2026-05-29", "\n".join(logs.output))
+
+
+class TestSleepHabitAutoLog(unittest.IsolatedAsyncioTestCase):
+    async def test_logs_auto_only_sleep_habit_when_goal_is_met_from_minutes(self):
+        notion = MagicMock()
+        habit_cache = {
+            "Sleep": {
+                "page_id": "sleep-page",
+                "name": "Sleep",
+                "auto_only": True,
+            }
+        }
+        rows = [{
+            "properties": {
+                "Date": {"date": {"start": "2026-05-29"}},
+                "Time in Bed (min)": {"number": 480},
+            }
+        }]
+
+        with patch("second_brain.healthtrack.sleep.datetime") as mock_dt, \
+             patch("second_brain.healthtrack.sleep.already_logged_today", return_value=False), \
+             patch("second_brain.healthtrack.sleep.query_all", return_value=rows), \
+             patch("second_brain.healthtrack.sleep.log_habit") as log_habit, \
+             patch("second_brain.healthtrack.config.SLEEP_GOAL_HOURS", 7.0):
+            mock_dt.now.return_value.date.return_value.isoformat.return_value = "2026-05-29"
+            result = await sync_sleep_habit_log_from_metrics(
+                notion=notion,
+                log_db_id="log-db",
+                health_metrics_db_id="metrics-db",
+                habit_cache=habit_cache,
+                tz=ZoneInfo("America/Chicago"),
+            )
+
+        self.assertEqual(result["status"], "logged")
+        log_habit.assert_called_once()
+        self.assertEqual(log_habit.call_args.args[:4], (notion, "log-db", "sleep-page", "Sleep"))
+        self.assertEqual(log_habit.call_args.kwargs["source"], "🛌 Auto")
+
+    async def test_skips_sleep_habit_when_goal_is_not_met(self):
+        notion = MagicMock()
+        habit_cache = {
+            "Sleep": {
+                "page_id": "sleep-page",
+                "name": "Sleep",
+                "auto_only": True,
+            }
+        }
+        rows = [{"properties": {"Time in Bed hrs": {"number": 6.5}}}]
+
+        with patch("second_brain.healthtrack.sleep.datetime") as mock_dt, \
+             patch("second_brain.healthtrack.sleep.already_logged_today", return_value=False), \
+             patch("second_brain.healthtrack.sleep.query_all", return_value=rows), \
+             patch("second_brain.healthtrack.sleep.log_habit") as log_habit, \
+             patch("second_brain.healthtrack.config.SLEEP_GOAL_HOURS", 7.0):
+            mock_dt.now.return_value.date.return_value.isoformat.return_value = "2026-05-29"
+            result = await sync_sleep_habit_log_from_metrics(
+                notion=notion,
+                log_db_id="log-db",
+                health_metrics_db_id="metrics-db",
+                habit_cache=habit_cache,
+                tz=ZoneInfo("America/Chicago"),
+            )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertIn("goal", result["reason"])
+        log_habit.assert_not_called()
 
 
 class TestSleepDashboard(unittest.TestCase):
