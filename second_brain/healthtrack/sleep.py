@@ -16,8 +16,6 @@ from second_brain.healthtrack.metrics import (
     _title_property,
 )
 from second_brain.monitoring import track_job_execution
-from second_brain.notion.habits import already_logged_today, log_habit
-from second_brain.notion.properties import query_all
 
 log = logging.getLogger(__name__)
 
@@ -470,6 +468,9 @@ async def sync_sleep_habit_log_from_metrics(
     tz,
 ) -> dict:
     """Auto-log the Sleep habit when today's health metrics meet the sleep goal."""
+    from second_brain.notion.habits import already_logged_today, log_habit
+    from second_brain.notion.properties import query_all
+
     sleep_habit = next(
         (
             habit
@@ -515,6 +516,24 @@ async def sync_sleep_habit_log_from_metrics(
     return {"status": "logged", "time_in_bed": round(time_in_bed, 2), "goal": goal}
 
 
+def _find_habit_page_id(notion, habit_db_id: str, habit_name: str) -> str | None:
+    try:
+        results = notion.databases.query(
+            database_id=habit_db_id,
+            filter={
+                "and": [
+                    {"property": "Habit", "title": {"equals": habit_name}},
+                    {"property": "Active", "checkbox": {"equals": True}},
+                ]
+            },
+        )
+        pages = results.get("results", [])
+        return pages[0]["id"] if pages else None
+    except Exception as e:
+        log.warning("sleep: habit lookup failed for '%s': %s", habit_name, e)
+        return None
+
+
 async def handle_sleep_sync(
     *,
     notion,
@@ -524,6 +543,10 @@ async def handle_sleep_sync(
     refresh_token: str,
     target_date: date | datetime | str,
     tz,
+    habit_db_id: str = "",
+    log_db_id: str = "",
+    habit_name: str = "",
+    sleep_goal_min: int = 420,
 ) -> dict:
     """Refresh Fitbit sleep data and upsert the matching wake-date Notion row."""
     if isinstance(target_date, datetime):
@@ -568,6 +591,22 @@ async def handle_sleep_sync(
             action = "created"
 
     log.info("sleep_sync: %s sleep row for %s page_id=%s", action, date_str, page_id)
+
+    if habit_db_id and log_db_id and habit_name:
+        total_sleep_min = parsed.get("total_sleep_min", 0) or 0
+        goal_met = total_sleep_min >= sleep_goal_min
+        log.info("sleep_sync: sleep_goal check date=%s total=%.0f goal=%d met=%s", date_str, total_sleep_min, sleep_goal_min, goal_met)
+        if goal_met:
+            from second_brain.notion.habits import already_logged_today, log_habit
+            habit_page_id = await asyncio.to_thread(_find_habit_page_id, notion, habit_db_id, habit_name)
+            if habit_page_id:
+                logged = await asyncio.to_thread(already_logged_today, notion, log_db_id, habit_page_id, tz)
+                if not logged:
+                    await asyncio.to_thread(log_habit, notion, log_db_id, habit_page_id, habit_name, "📱 Sleep Auto", tz)
+                    log.info("sleep_sync: logged Sleep habit for %s (%.0f min)", date_str, total_sleep_min)
+                else:
+                    log.info("sleep_sync: Sleep habit already logged for %s", date_str)
+
     return {"action": action, "date": date_str, "page_id": page_id}
 
 
@@ -579,7 +618,8 @@ async def handle_sleep_sync_job(bot=None) -> dict:
         GOOGLE_HEALTH_CLIENT_SECRET,
         GOOGLE_HEALTH_REFRESH_TOKEN,
     )
-    from second_brain.main import NOTION_HEALTH_METRICS_DB, NOTION_LOG_DB, TZ, habit_cache, notion
+    from second_brain.main import NOTION_HABIT_DB, NOTION_HEALTH_METRICS_DB, NOTION_LOG_DB, TZ, habit_cache, notion
+    from second_brain.healthtrack.config import SLEEP_GOAL_HOURS, SLEEP_HABIT_NAME
 
     target_date = datetime.now(TZ).date()
     result = await handle_sleep_sync(
@@ -590,6 +630,10 @@ async def handle_sleep_sync_job(bot=None) -> dict:
         refresh_token=GOOGLE_HEALTH_REFRESH_TOKEN,
         target_date=target_date,
         tz=TZ,
+        habit_db_id=NOTION_HABIT_DB,
+        log_db_id=NOTION_LOG_DB,
+        habit_name=SLEEP_HABIT_NAME,
+        sleep_goal_min=int(SLEEP_GOAL_HOURS * 60),
     )
     habit_result = await sync_sleep_habit_log_from_metrics(
         notion=notion,
@@ -611,7 +655,8 @@ async def handle_sleep_resync_job(bot=None) -> dict:
         GOOGLE_HEALTH_CLIENT_SECRET,
         GOOGLE_HEALTH_REFRESH_TOKEN,
     )
-    from second_brain.main import NOTION_HEALTH_METRICS_DB, TZ, notion
+    from second_brain.main import NOTION_HABIT_DB, NOTION_HEALTH_METRICS_DB, NOTION_LOG_DB, TZ, notion
+    from second_brain.healthtrack.config import SLEEP_GOAL_HOURS, SLEEP_HABIT_NAME
 
     yesterday = (datetime.now(TZ) - timedelta(days=1)).date()
     result = await handle_sleep_sync(
@@ -622,6 +667,10 @@ async def handle_sleep_resync_job(bot=None) -> dict:
         refresh_token=GOOGLE_HEALTH_REFRESH_TOKEN,
         target_date=yesterday,
         tz=TZ,
+        habit_db_id=NOTION_HABIT_DB,
+        log_db_id=NOTION_LOG_DB,
+        habit_name=SLEEP_HABIT_NAME,
+        sleep_goal_min=int(SLEEP_GOAL_HOURS * 60),
     )
     log.info("sleep_resync: result=%s", result)
     return result
@@ -637,7 +686,8 @@ async def handle_sleep_backfill_job(bot, start_date_str: str, end_date_str: str)
         NOTION_HEALTH_METRICS_DB,
         TZ,
     )
-    from second_brain.main import notion
+    from second_brain.main import NOTION_HABIT_DB, NOTION_LOG_DB, notion
+    from second_brain.healthtrack.config import SLEEP_GOAL_HOURS, SLEEP_HABIT_NAME
 
     start_day = date.fromisoformat(start_date_str)
     end_day = date.fromisoformat(end_date_str)
@@ -655,6 +705,10 @@ async def handle_sleep_backfill_job(bot, start_date_str: str, end_date_str: str)
             refresh_token=GOOGLE_HEALTH_REFRESH_TOKEN,
             target_date=cursor,
             tz=TZ,
+            habit_db_id=NOTION_HABIT_DB,
+            log_db_id=NOTION_LOG_DB,
+            habit_name=SLEEP_HABIT_NAME,
+            sleep_goal_min=int(SLEEP_GOAL_HOURS * 60),
         )
         results[cursor.isoformat()] = result
         if result.get("action") == "no_data":

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,7 +10,15 @@ from second_brain.healthtrack.scheduler import (
     check_and_create_steps_entry,
     register_handlers,
     sleep_backfill_job,
+    weigh_sync_job,
 )
+
+
+def _fake_steps_mod(habit_page_id, existing_log_id):
+    return SimpleNamespace(
+        _find_steps_habit_page_id=MagicMock(return_value=habit_page_id),
+        _find_existing_log_entry=MagicMock(return_value=existing_log_id),
+    )
 
 
 class TestCheckAndCreateStepsEntry(IsolatedAsyncioTestCase):
@@ -20,8 +29,7 @@ class TestCheckAndCreateStepsEntry(IsolatedAsyncioTestCase):
         }
 
         with patch("second_brain.healthtrack.scheduler._today_str", return_value="2026-05-07"), \
-             patch("second_brain.healthtrack.scheduler._find_steps_habit_page_id", return_value="habit-page"), \
-             patch("second_brain.healthtrack.scheduler._find_existing_log_entry", return_value="log-page"):
+             patch.dict("sys.modules", {"second_brain.healthtrack.steps": _fake_steps_mod("habit-page", "log-page")}):
             result = await check_and_create_steps_entry(
                 notion=notion,
                 habit_db_id="habits-db",
@@ -42,8 +50,7 @@ class TestCheckAndCreateStepsEntry(IsolatedAsyncioTestCase):
         bot = AsyncMock()
 
         with patch("second_brain.healthtrack.scheduler._today_str", return_value="2026-05-07"), \
-             patch("second_brain.healthtrack.scheduler._find_steps_habit_page_id", return_value="habit-page"), \
-             patch("second_brain.healthtrack.scheduler._find_existing_log_entry", return_value=None):
+             patch.dict("sys.modules", {"second_brain.healthtrack.steps": _fake_steps_mod("habit-page", None)}):
             result = await check_and_create_steps_entry(
                 notion=notion,
                 habit_db_id="habits-db",
@@ -71,7 +78,7 @@ class TestCheckAndCreateStepsEntry(IsolatedAsyncioTestCase):
         notion = MagicMock()
 
         with patch("second_brain.healthtrack.scheduler._today_str", return_value="2026-05-07"), \
-             patch("second_brain.healthtrack.scheduler._find_steps_habit_page_id", return_value=None):
+             patch.dict("sys.modules", {"second_brain.healthtrack.steps": _fake_steps_mod(None, None)}):
             result = await check_and_create_steps_entry(
                 notion=notion,
                 habit_db_id="habits-db",
@@ -98,9 +105,10 @@ class TestWeighJobs(IsolatedAsyncioTestCase):
             }
         }
 
+        fake_habits = SimpleNamespace(get_week_completion_count=MagicMock(return_value=0))
         with patch("second_brain.healthtrack.scheduler._current_monday_str", return_value="2026-05-25"), \
              patch("second_brain.healthtrack.scheduler.query_all", return_value=[health_row]) as query_all, \
-             patch("second_brain.notion.habits.get_week_completion_count", return_value=0):
+             patch.dict("sys.modules", {"second_brain.notion.habits": fake_habits}):
             result = await weigh_sync_job(
                 notion=notion,
                 log_db_id="log-db",
@@ -135,8 +143,9 @@ class TestWeighJobs(IsolatedAsyncioTestCase):
             "Weigh": {"page_id": "habit-page", "name": "Weigh", "auto_only": True}
         }
 
+        fake_habits = SimpleNamespace(get_week_completion_count=MagicMock(return_value=1))
         with patch("second_brain.healthtrack.scheduler.query_all") as query_all, \
-             patch("second_brain.notion.habits.get_week_completion_count", return_value=1):
+             patch.dict("sys.modules", {"second_brain.notion.habits": fake_habits}):
             result = await weigh_sync_job(
                 notion=notion,
                 log_db_id="log-db",
@@ -152,8 +161,22 @@ class TestWeighJobs(IsolatedAsyncioTestCase):
 
     async def test_register_handlers_exposes_sleep_backfill(self):
         manager = MagicMock()
+        fake_steps = SimpleNamespace(
+            handle_steps_final_stamp_job=MagicMock(),
+            handle_steps_sync_check=MagicMock(),
+        )
+        fake_sleep = SimpleNamespace(
+            handle_sleep_resync_job=MagicMock(),
+            handle_sleep_sync_job=MagicMock(),
+        )
+        fake_insights = SimpleNamespace(handle_weekly_health_insight_job=MagicMock())
 
-        register_handlers(manager)
+        with patch.dict("sys.modules", {
+            "second_brain.healthtrack.steps": fake_steps,
+            "second_brain.healthtrack.sleep": fake_sleep,
+            "second_brain.healthtrack.insights": fake_insights,
+        }):
+            register_handlers(manager)
 
         registered = {
             call.args[0]: call.args[1]

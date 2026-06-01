@@ -206,14 +206,36 @@ def _find_page_by_date(notion, db_id: str, date_str: str) -> str | None:
     return pages[0]["id"] if pages else None
 
 
+def _find_habit_page_id(notion, habit_db_id: str, habit_name: str) -> str | None:
+    try:
+        results = notion.databases.query(
+            database_id=habit_db_id,
+            filter={
+                "and": [
+                    {"property": "Habit", "title": {"equals": habit_name}},
+                    {"property": "Active", "checkbox": {"equals": True}},
+                ]
+            },
+        )
+        pages = results.get("results", [])
+        return pages[0]["id"] if pages else None
+    except Exception as e:
+        log.warning("health_metrics: habit lookup failed for '%s': %s", habit_name, e)
+        return None
+
+
 async def handle_health_metrics_sync(
     *,
     body: dict,
     notion,
     metrics_db_id: str,
     tz,
+    habit_db_id: str = "",
+    log_db_id: str = "",
+    weigh_habit_name: str = "",
 ) -> dict:
     """Upsert daily body/cardio metrics into the Notion health metrics database."""
+    import asyncio
     date_str, values, skipped = parse_health_metrics_payload(body, tz)
     title = f"{date_str} Log"
     metric_props = _number_properties(values)
@@ -259,6 +281,20 @@ async def handle_health_metrics_sync(
 
     for prop_name, value in values.items():
         log.info("health_metrics: wrote %s=%s for %s", prop_name, value, date_str)
+
+    if habit_db_id and log_db_id and weigh_habit_name and "Weight (kg)" in values:
+        try:
+            from second_brain.notion.habits import already_logged_today, log_habit
+            habit_page_id = await asyncio.to_thread(_find_habit_page_id, notion, habit_db_id, weigh_habit_name)
+            if habit_page_id:
+                logged = await asyncio.to_thread(already_logged_today, notion, log_db_id, habit_page_id, tz)
+                if not logged:
+                    await asyncio.to_thread(log_habit, notion, log_db_id, habit_page_id, weigh_habit_name, "📱 Health Auto", tz)
+                    log.info("health_metrics: logged Weigh habit for %s", date_str)
+                else:
+                    log.info("health_metrics: Weigh habit already logged for %s", date_str)
+        except Exception as e:
+            log.warning("health_metrics: failed to log Weigh habit for %s: %s", date_str, e)
 
     return {
         "action": action,

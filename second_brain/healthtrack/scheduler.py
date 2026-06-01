@@ -7,10 +7,6 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
-from second_brain.healthtrack.steps import (
-    _find_existing_log_entry,
-    _find_steps_habit_page_id,
-)
 from second_brain.error_reporting import send_system_log
 from second_brain.notion.properties import query_all, title_prop
 
@@ -114,6 +110,7 @@ async def check_and_create_steps_entry(
         dict: {"ok": bool, "action": "exists"|"created"|"error", "reason": str}
     """
     try:
+        from second_brain.healthtrack.steps import _find_existing_log_entry, _find_steps_habit_page_id
         today_str = _today_str(tz)
         target_log_db_id = log_db_id or habit_db_id
 
@@ -293,6 +290,53 @@ async def weigh_backfill_job(notion, log_db_id, health_metrics_db_id, habit_cach
             skipped += 1
 
     log.info("weigh_backfill_job complete: logged=%d skipped=%d", logged, skipped)
+    return {"status": "done", "logged": logged, "skipped": skipped}
+
+
+async def sleep_backfill_job(notion, log_db_id, health_metrics_db_id, habit_cache, tz) -> dict:
+    """One-time backfill: one Habits Log entry per date where Total Sleep met the goal."""
+    from second_brain.healthtrack.config import SLEEP_GOAL_HOURS
+
+    sleep_habit = next(
+        (h for h in habit_cache.values() if "sleep" in h.get("name", "").lower() and h.get("auto_only")),
+        None,
+    )
+    if not sleep_habit:
+        return {"status": "skipped", "reason": "Sleep habit not found in cache"}
+
+    goal_min = SLEEP_GOAL_HOURS * 60
+
+    try:
+        rows = query_all(notion, health_metrics_db_id, filter={
+            "property": "Total Sleep (min)", "number": {"is_not_empty": True}
+        })
+    except Exception as exc:
+        return {"status": "error", "reason": str(exc)}
+
+    logged = 0
+    skipped = 0
+    for row in rows:
+        try:
+            props = row["properties"]
+            date_val = (props.get("Date") or {}).get("date") or {}
+            date_str = (date_val.get("start") or "")[:10]
+            if not date_str:
+                skipped += 1
+                continue
+            total_sleep = (props.get("Total Sleep (min)") or {}).get("number")
+            if total_sleep is None or total_sleep < goal_min:
+                skipped += 1
+                continue
+            if _already_logged_on_date(notion, log_db_id, sleep_habit["page_id"], date_str):
+                skipped += 1
+                continue
+            _log_habit_on_date(notion, log_db_id, sleep_habit["page_id"], sleep_habit["name"], date_str)
+            logged += 1
+        except Exception as exc:
+            log.warning("sleep_backfill_job row error: %s", exc)
+            skipped += 1
+
+    log.info("sleep_backfill_job complete: logged=%d skipped=%d", logged, skipped)
     return {"status": "done", "logged": logged, "skipped": skipped}
 
 

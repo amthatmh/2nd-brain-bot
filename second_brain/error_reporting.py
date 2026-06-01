@@ -10,13 +10,12 @@ log = logging.getLogger(__name__)
 
 async def send_system_log(bot, text: str) -> None:
     """Send an internal error report to the configured error alert channel."""
-    config = import_module("second_brain.config")
-    my_chat_id = getattr(config, "MY_CHAT_ID", None)
-    error_chat_id = getattr(config, "ERROR_CHANNEL_ID", None) or getattr(config, "SYSTEM_LOGS_CHAT_ID", None)
-
     if bot is None:
         log.error("System log bot unavailable: %s", text)
         return
+    config = import_module("second_brain.config")
+    my_chat_id = getattr(config, "MY_CHAT_ID", None)
+    error_chat_id = getattr(config, "ERROR_CHANNEL_ID", None) or getattr(config, "SYSTEM_LOGS_CHAT_ID", None)
     if not error_chat_id or str(error_chat_id) == str(my_chat_id):
         log.warning("system_log (error_channel_ID not set separately): %s", text)
         return

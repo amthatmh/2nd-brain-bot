@@ -204,6 +204,9 @@ STEPS_FINAL_MIN: int = int(_final_m)
 
 WEBHOOK_SECRET: str = os.environ.get("STEPS_WEBHOOK_SECRET", "")
 
+SLEEP_HABIT_NAME: str = os.environ.get("SLEEP_HABIT_NAME", "Sleep")
+WEIGH_HABIT_NAME: str = os.environ.get("WEIGH_HABIT_NAME", "Weigh")
+
 STEPS_WRITE_INTRADAY_BELOW_THRESHOLD: bool = (
     os.environ.get("HEALTH_STEPS_WRITE_INTRADAY", "1").strip().lower()
     in {"1", "true", "yes", "on"}

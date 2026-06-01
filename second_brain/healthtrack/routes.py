@@ -1039,6 +1039,9 @@ def register_health_routes(
                 notion=notion,
                 metrics_db_id=health_metrics_db_id,
                 tz=tz,
+                habit_db_id=habit_db_id,
+                log_db_id=log_db_id,
+                weigh_habit_name=health_config.WEIGH_HABIT_NAME,
             )
         except MalformedHealthMetricsPayload as e:
             received_keys = list(body.keys()) if isinstance(body, dict) else []

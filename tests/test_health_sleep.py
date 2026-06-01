@@ -467,7 +467,7 @@ class TestSleepNoData(unittest.IsolatedAsyncioTestCase):
             NOTION_HEALTH_METRICS_DB="metrics-db",
             TZ=ZoneInfo("UTC"),
         )
-        fake_main = SimpleNamespace(notion=MagicMock())
+        fake_main = SimpleNamespace(notion=MagicMock(), NOTION_HABIT_DB="habit-db", NOTION_LOG_DB="log-db")
 
         with patch.dict(
             "sys.modules",
@@ -483,6 +483,14 @@ class TestSleepNoData(unittest.IsolatedAsyncioTestCase):
 
 
 class TestSleepHabitAutoLog(unittest.IsolatedAsyncioTestCase):
+    def _make_habit_sys_modules(self, already_logged_retval, log_habit_mock, query_all_retval):
+        fake_habits = SimpleNamespace(
+            already_logged_today=MagicMock(return_value=already_logged_retval),
+            log_habit=log_habit_mock,
+        )
+        fake_props = SimpleNamespace(query_all=MagicMock(return_value=query_all_retval))
+        return {"second_brain.notion.habits": fake_habits, "second_brain.notion.properties": fake_props}
+
     async def test_logs_auto_only_sleep_habit_when_goal_is_met_from_minutes(self):
         notion = MagicMock()
         habit_cache = {
@@ -498,11 +506,10 @@ class TestSleepHabitAutoLog(unittest.IsolatedAsyncioTestCase):
                 "Time in Bed (min)": {"number": 480},
             }
         }]
+        log_habit = MagicMock()
 
         with patch("second_brain.healthtrack.sleep.datetime") as mock_dt, \
-             patch("second_brain.healthtrack.sleep.already_logged_today", return_value=False), \
-             patch("second_brain.healthtrack.sleep.query_all", return_value=rows), \
-             patch("second_brain.healthtrack.sleep.log_habit") as log_habit, \
+             patch.dict("sys.modules", self._make_habit_sys_modules(False, log_habit, rows)), \
              patch("second_brain.healthtrack.config.SLEEP_GOAL_HOURS", 7.0):
             mock_dt.now.return_value.date.return_value.isoformat.return_value = "2026-05-29"
             result = await sync_sleep_habit_log_from_metrics(
@@ -528,11 +535,10 @@ class TestSleepHabitAutoLog(unittest.IsolatedAsyncioTestCase):
             }
         }
         rows = [{"properties": {"Time in Bed hrs": {"number": 6.5}}}]
+        log_habit = MagicMock()
 
         with patch("second_brain.healthtrack.sleep.datetime") as mock_dt, \
-             patch("second_brain.healthtrack.sleep.already_logged_today", return_value=False), \
-             patch("second_brain.healthtrack.sleep.query_all", return_value=rows), \
-             patch("second_brain.healthtrack.sleep.log_habit") as log_habit, \
+             patch.dict("sys.modules", self._make_habit_sys_modules(False, log_habit, rows)), \
              patch("second_brain.healthtrack.config.SLEEP_GOAL_HOURS", 7.0):
             mock_dt.now.return_value.date.return_value.isoformat.return_value = "2026-05-29"
             result = await sync_sleep_habit_log_from_metrics(
