@@ -1328,6 +1328,127 @@ def register_health_routes(
             headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
         )
 
+    async def weigh_backfill_handler(request: web.Request) -> web.Response:
+        if request.method == "OPTIONS":
+            return web.Response(status=204, headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"))
+
+        incoming_secret = request.headers.get("X-Health-Secret", "").strip()
+        if not incoming_secret:
+            return web.Response(
+                status=401,
+                text=json.dumps({"ok": False, "error": "Missing X-Health-Secret header"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+        if WEBHOOK_SECRET and incoming_secret != WEBHOOK_SECRET:
+            return web.Response(
+                status=401,
+                text=json.dumps({"ok": False, "error": "Invalid X-Health-Secret"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+
+        if not health_metrics_db_id:
+            return web.Response(
+                status=500,
+                text=json.dumps({"ok": False, "error": "NOTION_HEALTH_METRICS_DB not configured"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+
+        from datetime import date as date_cls
+        from second_brain.healthtrack.metrics import _find_habit_page_id as _find_weigh_habit
+
+        weigh_habit_name = health_config.WEIGH_HABIT_NAME
+        habit_page_id = await asyncio.to_thread(_find_weigh_habit, notion, habit_db_id, weigh_habit_name)
+        if not habit_page_id:
+            return web.Response(
+                status=404,
+                text=json.dumps({"ok": False, "error": f"Habit '{weigh_habit_name}' not found"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+
+        try:
+            rows = await asyncio.to_thread(
+                query_all,
+                notion,
+                health_metrics_db_id,
+                filter={"property": "Weight (kg)", "number": {"is_not_empty": True}},
+            )
+        except Exception as exc:
+            log.exception("weigh_backfill: failed to query health metrics: %s", exc)
+            return web.Response(
+                status=500,
+                text=json.dumps({"ok": False, "error": str(exc)}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+
+        weeks: dict[str, str] = {}
+        for row in rows:
+            try:
+                props = row["properties"]
+                date_val = (props.get("Date") or {}).get("date") or {}
+                date_str = (date_val.get("start") or "")[:10]
+                if not date_str:
+                    continue
+                d = date_cls.fromisoformat(date_str)
+                iso = d.isocalendar()
+                week_key = f"{iso.year}-W{iso.week:02d}"
+                if week_key not in weeks or date_str < weeks[week_key]:
+                    weeks[week_key] = date_str
+            except Exception as exc:
+                log.warning("weigh_backfill: row parse error: %s", exc)
+
+        def _log_on_date(date_str: str) -> None:
+            props = {
+                "Entry": {"title": [{"text": {"content": weigh_habit_name}}]},
+                "Habit": {"relation": [{"id": habit_page_id}]},
+                "Completed": {"checkbox": True},
+                "Date": {"date": {"start": date_str}},
+                "Source": {"select": {"name": "📱 Health Auto"}},
+            }
+            try:
+                notion.pages.create(parent={"database_id": log_db_id}, properties=props)
+            except Exception:
+                minimal = {k: v for k, v in props.items() if k != "Source"}
+                notion.pages.create(parent={"database_id": log_db_id}, properties=minimal)
+
+        logged = 0
+        skipped = 0
+        for date_str in sorted(weeks.values()):
+            try:
+                existing = await asyncio.to_thread(
+                    query_all,
+                    notion,
+                    log_db_id,
+                    filter={
+                        "and": [
+                            {"property": "Habit", "relation": {"contains": habit_page_id}},
+                            {"property": "Completed", "checkbox": {"equals": True}},
+                            {"property": "Date", "date": {"equals": date_str}},
+                        ]
+                    },
+                )
+                if existing:
+                    skipped += 1
+                    continue
+                await asyncio.to_thread(_log_on_date, date_str)
+                log.info("weigh_backfill: logged for %s", date_str)
+                logged += 1
+            except Exception as exc:
+                log.warning("weigh_backfill: error for %s: %s", date_str, exc)
+                skipped += 1
+            await asyncio.sleep(0.35)
+
+        log.info("weigh_backfill: complete logged=%d skipped=%d", logged, skipped)
+        return web.Response(
+            text=json.dumps({"ok": True, "logged": logged, "skipped": skipped, "weeks": list(weeks.keys())}),
+            content_type="application/json",
+            headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+        )
+
     app.router.add_get("/habits-data", _habits_data)
     app.router.add_post("/log-habit", _log_habit)
     app.router.add_options("/log-habit", _log_habit)
@@ -1340,10 +1461,13 @@ def register_health_routes(
     app.router.add_options("/api/v1/steps-backfill", steps_backfill_handler)
     app.router.add_post("/api/v1/sleep-sync/backfill", sleep_backfill_handler)
     app.router.add_options("/api/v1/sleep-sync/backfill", sleep_backfill_handler)
+    app.router.add_post("/api/v1/weigh-backfill", weigh_backfill_handler)
+    app.router.add_options("/api/v1/weigh-backfill", weigh_backfill_handler)
 
     log.info(
         "Health routes registered: POST /api/v1/steps-sync, POST /api/v1/health-sync, "
         "POST /api/v1/steps-backfill, POST /api/v1/sleep-sync/backfill, "
+        "POST /api/v1/weigh-backfill, "
         "GET /api/v1/steps-status (threshold=%d, habit='%s')",
         STEPS_THRESHOLD,
         health_config.STEPS_HABIT_NAME,
