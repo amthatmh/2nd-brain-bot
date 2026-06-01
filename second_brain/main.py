@@ -2742,14 +2742,38 @@ async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     """/sync — manual catch-up trigger for core sync pipelines."""
     if update.effective_chat.id != MY_CHAT_ID:
         return
-    status = await update.message.reply_text("🔄 Running cinema sync…")
+    status = await update.message.reply_text("🔄 Running sync…")
     try:
-        cinema_stats = await run_cinema_sync(context.bot)
-        await status.edit_text(
-            "✅ Sync finished.\n"
-            f"Cinema: scanned={cinema_stats['scanned']} updated={cinema_stats['updated']} "
-            f"missing={cinema_stats['tmdb_missing']} skipped={cinema_stats['skipped']} failed={cinema_stats['failed']}"
+        cinema_stats, asana_stats, _ = await asyncio.gather(
+            run_cinema_sync(context.bot),
+            run_asana_sync(context.bot),
+            wx.fetch_weather_cache(context.bot),
+            return_exceptions=True,
         )
+        notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB)
+
+        lines = ["✅ Sync finished."]
+
+        if isinstance(cinema_stats, Exception):
+            lines.append(f"Cinema: ❌ {cinema_stats}")
+        elif cinema_stats.get("action") != "disabled":
+            lines.append(
+                f"Cinema: scanned={cinema_stats.get('scanned', 0)} updated={cinema_stats.get('updated', 0)} "
+                f"missing={cinema_stats.get('tmdb_missing', 0)} failed={cinema_stats.get('failed', 0)}"
+            )
+
+        if isinstance(asana_stats, Exception):
+            lines.append(f"Asana: ❌ {asana_stats}")
+        elif asana_stats.get("action") == "disabled":
+            lines.append("Asana: disabled")
+        else:
+            lines.append(
+                f"Asana: created={asana_stats.get('created', 0)} updated={asana_stats.get('updated', 0)} "
+                f"archived={asana_stats.get('archived', 0)}"
+            )
+
+        lines.append("Weather: refreshed  |  Habits: reloaded")
+        await status.edit_text("\n".join(lines))
     except Exception as e:
         log.exception("Manual /sync failed: %s", e)
         await status.edit_text(_safe_user_error(e))
