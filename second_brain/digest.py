@@ -245,7 +245,7 @@ def _filter_digest_tasks(tasks: list[dict], config: dict | None = None) -> list[
 
 
 async def send_digest_for_slot(bot, slot: dict) -> None:
-    global _digest_slot_sent_today
+    global _digest_slot_sent_today, _last_daily_log_url
     now = datetime.now(TZ)
     day_key = now.date().isoformat()
     for key in list(_digest_slot_sent_today):
@@ -273,7 +273,12 @@ async def send_digest_for_slot(bot, slot: dict) -> None:
         )
         return
     if config.get("include_log") and not _last_daily_log_url:
-        await generate_daily_log(bot)
+        yesterday_label = (datetime.now(TZ) - timedelta(days=1)).strftime("%A, %B %-d, %Y")
+        page_id = notion_daily_log.get_existing_daily_log(_notion, NOTION_DAILY_LOG_DB, yesterday_label)
+        if page_id:
+            _last_daily_log_url = f"https://www.notion.so/{page_id.replace('-', '')}"
+        else:
+            await generate_daily_log(bot)
     await send_daily_digest(
         bot,
         include_habits=bool(config.get("include_habits")),
@@ -394,6 +399,7 @@ async def refresh_digest_schedule_job(bot, scheduler) -> dict:
 
 async def generate_daily_log(bot) -> dict:
     global _last_daily_log_url
+    claude_activity = _claude_activity_fn() if _claude_activity_fn else None
     _last_daily_log_url = await notion_daily_log.generate_daily_log(
         notion=_notion,
         notion_daily_log_db=NOTION_DAILY_LOG_DB,
@@ -404,6 +410,7 @@ async def generate_daily_log(bot) -> dict:
         claude_model=CLAUDE_MODEL,
         tz=TZ,
         signoff_notes=_signoff_notes_fn() if _signoff_notes_fn else None,
+        claude_activity=claude_activity,
     )
     return {"action": "generated", "has_url": bool(_last_daily_log_url)}
 
@@ -464,7 +471,9 @@ async def send_daily_digest(bot, include_habits: bool | None = None, config: dic
 
     include_log = config.get("include_log", False) if config is not None else False
     if _last_daily_log_url and include_log:
-        log_date_label = (today - timedelta(days=1)).isoformat()
+        now_local = datetime.now(TZ)
+        label_date = (now_local - timedelta(days=1)).date() if now_local.hour >= 2 else (now_local - timedelta(days=2)).date()
+        log_date_label = label_date.isoformat()
         lines.append(f"📓 [{log_date_label} Log]({_last_daily_log_url})")
         lines.append("")
     include_weather = True if config is None else bool(config.get("include_weather"))

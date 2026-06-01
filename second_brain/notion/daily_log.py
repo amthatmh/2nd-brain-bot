@@ -137,6 +137,7 @@ async def generate_daily_log(
     claude_model: str,
     tz,
     signoff_notes: dict[str, str] | None = None,
+    claude_activity: list[str] | None = None,
 ) -> str | None:
     """
     Generates end-of-day narrative log and writes it to 📓 Daily Log Notion DB.
@@ -148,7 +149,8 @@ async def generate_daily_log(
         log.warning("generate_daily_log: NOTION_DAILY_LOG_DB not configured, skipping")
         return None
 
-    today = datetime.now(tz).date()
+    now = datetime.now(tz)
+    today = now.date() if now.hour >= 2 else (now.date() - timedelta(days=1))
     today_str = today.isoformat()
     date_label = today.strftime("%A, %B %-d, %Y")
     signoff_notes = signoff_notes or {"second_brain": "", "brian_ii": ""}
@@ -210,6 +212,11 @@ async def generate_daily_log(
     except Exception as e:
         log.error("generate_daily_log: error fetching notes: %s", e)
 
+    activity_section = ""
+    if claude_activity:
+        activity_lines = "\n".join(f"- {a}" for a in claude_activity)
+        activity_section = f"CLAUDE SESSION ACTIVITY (timestamped dev session snippets):\n{activity_lines}\n\n"
+
     recent_carried_forward = get_recent_carried_forward(notion, notion_daily_log_db, tz, days=3)
 
     def _bullet_list(items: list[str]) -> str:
@@ -255,25 +262,27 @@ MANUAL SIGNOFF NOTES:
 - Second Brain: {signoff_sb if signoff_sb else "None provided"}
 - Brian II: {signoff_b2 if signoff_b2 else "None provided"}
 
-Generate a daily log in 7 sections. Use only the data provided above: Notion tasks, Notion habit logs, Notion notes, previous Daily Log carried-forward entries, and manual Telegram signoff notes.
+{activity_section}Generate a daily log in 7 sections. Use only the data provided above: Notion tasks, Notion habit logs, Notion notes, previous Daily Log carried-forward entries, manual Telegram signoff notes, and Claude session activity.
 
 Return ONLY valid JSON, no markdown fences:
 {{
   "summary": "2–4 sentence narrative covering the real work captured today. Honest, not padded.",
   "completed": "bullet list of completed tasks from Telegram, each starting with • on new line. Empty string if none.",
-  "code_logic_changes": "Multi-subsection field with ### Second Brain and ### Brian II headings only when task/note/signoff data clearly supports them. Empty string if no development or professional changes are explicitly captured.",
+  "code_logic_changes": "Multi-subsection field with ### Second Brain and ### Brian II headings only when task/note/signoff/session activity data clearly supports them. Empty string if no development or professional changes are explicitly captured.",
   "testing_validation": "bullet list from Telegram task completions, notes, or signoff text related to testing. Empty string if nothing tested.",
   "issues_bugs": "bullet list of bugs/issues from Telegram deferred tasks + notes. Empty string if none.",
-  "key_learnings": "Multi-subsection field with ### Second Brain and ### Brian II headings. Use task/note/signoff patterns only. Max 5 bullets per subsection. Omit subsections where no learnings exist. Empty string if nothing notable.",
-  "carried_forward": "bullet list of live unresolved threads. Max 5 bullets. Empty string if everything resolved."
+  "key_learnings": "Multi-subsection field with ### Second Brain and ### Brian II headings. Use task/note/signoff/session activity patterns only. Max 5 bullets per subsection. Omit subsections where no learnings exist. Empty string if nothing notable.",
+  "carried_forward": "Unresolved threads only. EXCLUDE any item whose task name appears in TASKS COMPLETED above — those are resolved. Max 5 bullets. Empty string if everything resolved."
 }}
 
 CRITICAL RULES:
-- Do not infer or invent Claude conversation memory. The Anthropic API is stateless; if a detail is not present in the provided Notion or signoff data, omit it.
-- code_logic_changes: Source only from task titles, note titles, and manual signoff notes. Organize by project when explicit.
-- key_learnings: Source from task deferral patterns, notes, and signoff text only.
+- Do not infer or invent Claude conversation memory. The Anthropic API is stateless; if a detail is not present in the provided Notion, signoff, or session activity data, omit it.
+- code_logic_changes: Source only from task titles, note titles, manual signoff notes, and Claude session activity snippets. Organize by project when explicit.
+- key_learnings: Source from task deferral patterns, notes, signoff text, and Claude session activity snippets only.
 - testing_validation: Source from task completions, notes, and signoff text only.
-- If no Telegram notes/signoff or Notion data supports a section, DO NOT pad it with "Data not available" text. Return empty string for that section.
+- carried_forward: Cross-reference each previous carried item against TASKS COMPLETED. Any item matching (exactly or closely) a completed task name is resolved — do NOT include it in carried_forward.
+- code_logic_changes and key_learnings may draw from CLAUDE SESSION ACTIVITY snippets when they describe technical work.
+- If no Telegram notes/signoff, Notion data, or Claude session activity supports a section, DO NOT pad it with "Data not available" text. Return empty string for that section.
 - Subsection headers (### Second Brain, ### Brian II) only appear if that project has data."""
 
     try:
