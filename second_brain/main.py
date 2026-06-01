@@ -78,7 +78,7 @@ from second_brain.healthtrack.steps import (
     handle_steps_final_stamp,
     migrate_steps_entry_titles,
 )
-from second_brain.healthtrack.scheduler import check_and_create_steps_entry
+from second_brain.healthtrack.scheduler import check_and_create_steps_entry, sleep_backfill_job
 import second_brain.config as _config_module
 _config_module = importlib.reload(_config_module)
 import second_brain.config as config
@@ -2248,6 +2248,7 @@ def _build_utility_job_dispatch(bot) -> dict[str, Callable]:
         "steps_final_stamp": _utility_async_handler("steps_final_stamp", lambda: _run_steps_final_stamp_dispatch(bot)),
         "steps_sync_check": _utility_async_handler("steps_sync_check", lambda: _run_steps_sync_check_dispatch(bot)),
         "sleep_sync": _utility_async_handler("sleep_sync", lambda: handle_sleep_sync_job(bot)),
+        "sleep_backfill": _utility_async_handler("sleep_backfill", lambda: sleep_backfill_job(notion, NOTION_LOG_DB, NOTION_HEALTH_METRICS_DB, habit_cache, TZ)),
         "daily_log_generate": _utility_async_handler("daily_log_generate", lambda: generate_daily_log(bot)),
         "run_recurring_check": _utility_async_handler("run_recurring_check", lambda: run_recurring_check(bot)),
     }
