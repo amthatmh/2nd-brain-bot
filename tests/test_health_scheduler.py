@@ -5,7 +5,11 @@ from __future__ import annotations
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from second_brain.healthtrack.scheduler import check_and_create_steps_entry, sleep_backfill_job
+from second_brain.healthtrack.scheduler import (
+    check_and_create_steps_entry,
+    register_handlers,
+    sleep_backfill_job,
+)
 
 
 class TestCheckAndCreateStepsEntry(IsolatedAsyncioTestCase):
@@ -148,3 +152,15 @@ class TestSleepBackfillJob(IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "skipped")
         notion.pages.create.assert_not_called()
+
+    async def test_register_handlers_exposes_sleep_backfill(self):
+        manager = MagicMock()
+
+        register_handlers(manager)
+
+        registered = {
+            call.args[0]: call.args[1]
+            for call in manager.register_handler.call_args_list
+        }
+        self.assertIn("sleep_backfill", registered)
+        self.assertTrue(callable(registered["sleep_backfill"]))
