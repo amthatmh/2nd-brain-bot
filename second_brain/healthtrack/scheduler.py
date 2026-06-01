@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -24,6 +24,64 @@ def _today_str(tz: str | Any) -> str:
     """Return today's local date as YYYY-MM-DD for a timezone name/object."""
     tz_obj = ZoneInfo(tz) if isinstance(tz, str) else tz
     return datetime.now(tz_obj).date().isoformat()
+
+
+def _current_monday_str(tz) -> str:
+    """Return the Monday of the current ISO week as YYYY-MM-DD."""
+    tz_obj = ZoneInfo(tz) if isinstance(tz, str) else tz
+    today = datetime.now(tz_obj).date()
+    monday = today - timedelta(days=today.weekday())
+    return monday.isoformat()
+
+
+def _already_logged_on_date(notion, log_db_id: str, habit_page_id: str, date_str: str) -> bool:
+    """Return whether a completed habit log already exists on a specific date."""
+    try:
+        pages = query_all(notion, log_db_id, filter={
+            "and": [
+                {"property": "Habit", "relation": {"contains": habit_page_id}},
+                {"property": "Completed", "checkbox": {"equals": True}},
+                {"property": "Date", "date": {"equals": date_str[:10]}},
+            ]
+        })
+        return len(pages) > 0
+    except Exception as exc:
+        log.warning(
+            "already_logged_on_date query failed for %s on %s: %s",
+            habit_page_id,
+            date_str,
+            exc,
+        )
+        return True
+
+
+def _log_habit_on_date(notion, log_db_id: str, habit_page_id: str, habit_name: str, date_str: str) -> None:
+    """Create a completed habit log entry on a specific date."""
+    props = {
+        "Entry": title_prop(habit_name),
+        "Habit": {"relation": [{"id": habit_page_id}]},
+        "Completed": {"checkbox": True},
+        "Date": {"date": {"start": date_str[:10]}},
+        "Source": {"select": {"name": "Scheduler"}},
+    }
+    try:
+        notion.pages.create(
+            parent={"database_id": log_db_id},
+            properties=props,
+        )
+    except Exception as exc:
+        log.warning(
+            "Habit log create retrying without Source for %s on %s: %s",
+            habit_name,
+            date_str,
+            exc,
+        )
+        minimal = {key: value for key, value in props.items() if key != "Source"}
+        notion.pages.create(
+            parent={"database_id": log_db_id},
+            properties=minimal,
+        )
+    log.info("Habit logged: %s on %s via Scheduler", habit_name, date_str[:10])
 
 
 async def check_and_create_steps_entry(
@@ -141,89 +199,101 @@ async def check_and_create_steps_entry(
         return {"ok": False, "action": "error", "reason": str(exc)}
 
 
-def _already_logged_on_date(notion, log_db_id: str, habit_page_id: str, date_str: str) -> bool:
-    """Like already_logged_today but for an explicit date string."""
+async def weigh_sync_job(notion, log_db_id, health_metrics_db_id, habit_cache, tz) -> dict:
+    """Check if Weight (kg) was recorded this ISO week; log Weigh habit if not yet logged."""
+    from second_brain.notion.habits import get_week_completion_count
+
+    weigh_habit = next(
+        (h for h in habit_cache.values() if "weigh" in h.get("name", "").lower() and h.get("auto_only")),
+        None,
+    )
+    if not weigh_habit:
+        return {"status": "skipped", "reason": "Weigh habit not found in cache"}
+
+    if get_week_completion_count(notion, log_db_id, weigh_habit["page_id"], tz) > 0:
+        return {"status": "skipped", "reason": "already logged this week"}
+
+    monday = _current_monday_str(tz)
     try:
-        pages = query_all(notion, log_db_id, filter={
+        rows = query_all(notion, health_metrics_db_id, filter={
             "and": [
-                {"property": "Habit", "relation": {"contains": habit_page_id}},
-                {"property": "Completed", "checkbox": {"equals": True}},
-                {"property": "Date", "date": {"equals": date_str}},
+                {"property": "Date", "date": {"on_or_after": monday}},
+                {"property": "Weight (kg)", "number": {"is_not_empty": True}},
             ]
         })
-        return len(pages) > 0
-    except Exception as e:
-        log.warning("_already_logged_on_date failed for %s on %s: %s", habit_page_id, date_str, e)
-        return False
+    except Exception as exc:
+        return {"status": "error", "reason": str(exc)}
 
+    if not rows:
+        return {"status": "skipped", "reason": "no weight measurement this week"}
 
-def _log_habit_on_date(notion, log_db_id: str, habit_page_id: str, habit_name: str, date_str: str) -> None:
-    """Like log_habit but writes a specific historical date instead of today."""
-    props = {
-        "Entry": title_prop(habit_name),
-        "Habit": {"relation": [{"id": habit_page_id}]},
-        "Completed": {"checkbox": True},
-        "Date": {"date": {"start": date_str}},
-        "Source": {"select": {"name": "🛌 Auto"}},
-    }
+    props = rows[0]["properties"]
+    date_val = (props.get("Date") or {}).get("date") or {}
+    date_str = date_val.get("start")
+    weight = (props.get("Weight (kg)") or {}).get("number")
+
+    if not date_str:
+        return {"status": "skipped", "reason": "date missing from health metrics row"}
+
     try:
-        notion.pages.create(parent={"database_id": log_db_id}, properties=props)
-    except Exception as e:
-        log.warning("_log_habit_on_date retrying without Source for %s: %s", date_str, e)
-        minimal = {k: v for k, v in props.items() if k != "Source"}
-        notion.pages.create(parent={"database_id": log_db_id}, properties=minimal)
-    log.info("Backfilled Sleep habit for %s", date_str)
+        _log_habit_on_date(notion, log_db_id, weigh_habit["page_id"], weigh_habit["name"], date_str)
+    except Exception as exc:
+        return {"status": "error", "reason": str(exc)}
+
+    log.info("weigh_sync_job: logged for %s (%.1f kg)", date_str[:10], weight or 0)
+    return {"status": "logged", "date": date_str[:10], "weight_kg": weight}
 
 
-async def sleep_backfill_job(notion, log_db_id, health_metrics_db_id, habit_cache, tz) -> dict:
-    """One-time backfill: create Habits Log entries for all past dates where Time in Bed >= goal."""
-    del tz
+async def weigh_backfill_job(notion, log_db_id, health_metrics_db_id, habit_cache, tz) -> dict:
+    """One-time backfill: one Habits Log entry per ISO week where Weight (kg) was recorded."""
+    from datetime import date as date_cls
+
+    weigh_habit = next(
+        (h for h in habit_cache.values() if "weigh" in h.get("name", "").lower() and h.get("auto_only")),
+        None,
+    )
+    if not weigh_habit:
+        return {"status": "skipped", "reason": "Weigh habit not found in cache"}
+
     try:
-        from second_brain.healthtrack.config import SLEEP_GOAL_HOURS
+        rows = query_all(notion, health_metrics_db_id, filter={
+            "property": "Weight (kg)", "number": {"is_not_empty": True}
+        })
+    except Exception as exc:
+        return {"status": "error", "reason": str(exc)}
 
-        sleep_habit = next(
-            (
-                h for h in habit_cache.values()
-                if "sleep" in h.get("name", "").lower() and h.get("auto_only")
-            ),
-            None,
-        )
-        if not sleep_habit:
-            return {"status": "skipped", "reason": "Sleep habit not found in cache"}
-
+    weeks: dict[str, str] = {}
+    for row in rows:
         try:
-            rows = query_all(notion, health_metrics_db_id)
-        except Exception as e:
-            return {"status": "error", "reason": str(e)}
+            props = row["properties"]
+            date_val = (props.get("Date") or {}).get("date") or {}
+            date_str = date_val.get("start")
+            if not date_str:
+                continue
+            normalized_date = date_str[:10]
+            d = date_cls.fromisoformat(normalized_date)
+            iso = d.isocalendar()
+            week_key = f"{iso.year}-W{iso.week:02d}"
+            if week_key not in weeks or normalized_date < weeks[week_key]:
+                weeks[week_key] = normalized_date
+        except Exception as exc:
+            log.warning("weigh_backfill_job row parse error: %s", exc)
 
-        logged = 0
-        skipped = 0
-        for row in rows:
-            try:
-                props = row["properties"]
-                date_val = (props.get("Date") or {}).get("date") or {}
-                date_str = date_val.get("start")
-                if not date_str:
-                    skipped += 1
-                    continue
-                time_in_bed = (props.get("Time in Bed hrs") or {}).get("number")
-                if time_in_bed is None or time_in_bed < SLEEP_GOAL_HOURS:
-                    skipped += 1
-                    continue
-                if _already_logged_on_date(notion, log_db_id, sleep_habit["page_id"], date_str):
-                    skipped += 1
-                    continue
-                _log_habit_on_date(notion, log_db_id, sleep_habit["page_id"], sleep_habit["name"], date_str)
-                logged += 1
-            except Exception as e:
-                log.warning("sleep_backfill_job row error: %s", e)
+    logged = 0
+    skipped = 0
+    for date_str in weeks.values():
+        try:
+            if _already_logged_on_date(notion, log_db_id, weigh_habit["page_id"], date_str):
                 skipped += 1
+                continue
+            _log_habit_on_date(notion, log_db_id, weigh_habit["page_id"], weigh_habit["name"], date_str)
+            logged += 1
+        except Exception as exc:
+            log.warning("weigh_backfill_job log error for %s: %s", date_str, exc)
+            skipped += 1
 
-        log.info("sleep_backfill_job complete: logged=%d skipped=%d", logged, skipped)
-        return {"status": "done", "logged": logged, "skipped": skipped}
-    except Exception as e:
-        log.warning("sleep_backfill_job failed: %s", e)
-        return {"status": "error", "reason": str(e)}
+    log.info("weigh_backfill_job complete: logged=%d skipped=%d", logged, skipped)
+    return {"status": "done", "logged": logged, "skipped": skipped}
 
 
 def register_handlers(manager: "UtilitySchedulerManager") -> None:

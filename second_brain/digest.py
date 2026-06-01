@@ -126,7 +126,7 @@ def pending_habits_for_digest(*, habit_cache: dict[str, dict], time_str: str | N
         except (AttributeError, ValueError):
             return 0
 
-    habits = [habit for habit in habit_cache.values() if not habit.get("auto_only", False)]
+    habits = [habit for habit in habit_cache.values() if not habit.get("auto_only")]
 
     if time_str is not None:
         current_minutes = _to_minutes(time_str)
