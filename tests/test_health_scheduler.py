@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from second_brain.healthtrack.scheduler import check_and_create_steps_entry
+from second_brain.healthtrack.scheduler import check_and_create_steps_entry, sleep_backfill_job
 
 
 class TestCheckAndCreateStepsEntry(IsolatedAsyncioTestCase):
@@ -78,4 +78,73 @@ class TestCheckAndCreateStepsEntry(IsolatedAsyncioTestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["action"], "error")
+        notion.pages.create.assert_not_called()
+
+
+class TestSleepBackfillJob(IsolatedAsyncioTestCase):
+    async def test_backfills_qualifying_sleep_rows_only(self):
+        notion = MagicMock()
+        habit_cache = {
+            "Sleep": {
+                "page_id": "sleep-page",
+                "name": "Sleep",
+                "auto_only": True,
+            }
+        }
+        health_rows = [
+            {
+                "properties": {
+                    "Date": {"date": {"start": "2026-05-27"}},
+                    "Time in Bed hrs": {"number": 7.5},
+                }
+            },
+            {
+                "properties": {
+                    "Date": {"date": {"start": "2026-05-28"}},
+                    "Time in Bed hrs": {"number": 6.5},
+                }
+            },
+            {
+                "properties": {
+                    "Date": {"date": {"start": "2026-05-29"}},
+                    "Time in Bed hrs": {"number": 8.0},
+                }
+            },
+        ]
+
+        with patch(
+            "second_brain.healthtrack.scheduler.query_all",
+            side_effect=[health_rows, [], [{"id": "existing-log"}]],
+        ), patch("second_brain.healthtrack.config.SLEEP_GOAL_HOURS", 7.0):
+            result = await sleep_backfill_job(
+                notion,
+                "log-db",
+                "metrics-db",
+                habit_cache,
+                "America/Chicago",
+            )
+
+        self.assertEqual(result, {"status": "done", "logged": 1, "skipped": 2})
+        notion.pages.create.assert_called_once()
+        create_kwargs = notion.pages.create.call_args.kwargs
+        self.assertEqual(create_kwargs["parent"], {"database_id": "log-db"})
+        props = create_kwargs["properties"]
+        self.assertEqual(props["Entry"], {"title": [{"text": {"content": "Sleep"}}]})
+        self.assertEqual(props["Habit"], {"relation": [{"id": "sleep-page"}]})
+        self.assertEqual(props["Completed"], {"checkbox": True})
+        self.assertEqual(props["Date"], {"date": {"start": "2026-05-27"}})
+        self.assertEqual(props["Source"], {"select": {"name": "🛌 Auto"}})
+
+    async def test_skips_when_sleep_habit_missing(self):
+        notion = MagicMock()
+
+        result = await sleep_backfill_job(
+            notion,
+            "log-db",
+            "metrics-db",
+            {},
+            "America/Chicago",
+        )
+
+        self.assertEqual(result["status"], "skipped")
         notion.pages.create.assert_not_called()

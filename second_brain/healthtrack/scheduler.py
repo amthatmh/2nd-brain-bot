@@ -12,7 +12,7 @@ from second_brain.healthtrack.steps import (
     _find_steps_habit_page_id,
 )
 from second_brain.error_reporting import send_system_log
-from second_brain.notion.properties import title_prop
+from second_brain.notion.properties import query_all, title_prop
 
 if TYPE_CHECKING:
     from second_brain.scheduler_manager import UtilitySchedulerManager
@@ -139,6 +139,91 @@ async def check_and_create_steps_entry(
         log.error("steps_sync_check: unexpected error: %s", exc)
         await send_system_log(bot, f"🚨 Steps sync check failed\n{type(exc).__name__}: {exc}")
         return {"ok": False, "action": "error", "reason": str(exc)}
+
+
+def _already_logged_on_date(notion, log_db_id: str, habit_page_id: str, date_str: str) -> bool:
+    """Like already_logged_today but for an explicit date string."""
+    try:
+        pages = query_all(notion, log_db_id, filter={
+            "and": [
+                {"property": "Habit", "relation": {"contains": habit_page_id}},
+                {"property": "Completed", "checkbox": {"equals": True}},
+                {"property": "Date", "date": {"equals": date_str}},
+            ]
+        })
+        return len(pages) > 0
+    except Exception as e:
+        log.warning("_already_logged_on_date failed for %s on %s: %s", habit_page_id, date_str, e)
+        return False
+
+
+def _log_habit_on_date(notion, log_db_id: str, habit_page_id: str, habit_name: str, date_str: str) -> None:
+    """Like log_habit but writes a specific historical date instead of today."""
+    props = {
+        "Entry": title_prop(habit_name),
+        "Habit": {"relation": [{"id": habit_page_id}]},
+        "Completed": {"checkbox": True},
+        "Date": {"date": {"start": date_str}},
+        "Source": {"select": {"name": "🛌 Auto"}},
+    }
+    try:
+        notion.pages.create(parent={"database_id": log_db_id}, properties=props)
+    except Exception as e:
+        log.warning("_log_habit_on_date retrying without Source for %s: %s", date_str, e)
+        minimal = {k: v for k, v in props.items() if k != "Source"}
+        notion.pages.create(parent={"database_id": log_db_id}, properties=minimal)
+    log.info("Backfilled Sleep habit for %s", date_str)
+
+
+async def sleep_backfill_job(notion, log_db_id, health_metrics_db_id, habit_cache, tz) -> dict:
+    """One-time backfill: create Habits Log entries for all past dates where Time in Bed >= goal."""
+    del tz
+    try:
+        from second_brain.healthtrack.config import SLEEP_GOAL_HOURS
+
+        sleep_habit = next(
+            (
+                h for h in habit_cache.values()
+                if "sleep" in h.get("name", "").lower() and h.get("auto_only")
+            ),
+            None,
+        )
+        if not sleep_habit:
+            return {"status": "skipped", "reason": "Sleep habit not found in cache"}
+
+        try:
+            rows = query_all(notion, health_metrics_db_id)
+        except Exception as e:
+            return {"status": "error", "reason": str(e)}
+
+        logged = 0
+        skipped = 0
+        for row in rows:
+            try:
+                props = row["properties"]
+                date_val = (props.get("Date") or {}).get("date") or {}
+                date_str = date_val.get("start")
+                if not date_str:
+                    skipped += 1
+                    continue
+                time_in_bed = (props.get("Time in Bed hrs") or {}).get("number")
+                if time_in_bed is None or time_in_bed < SLEEP_GOAL_HOURS:
+                    skipped += 1
+                    continue
+                if _already_logged_on_date(notion, log_db_id, sleep_habit["page_id"], date_str):
+                    skipped += 1
+                    continue
+                _log_habit_on_date(notion, log_db_id, sleep_habit["page_id"], sleep_habit["name"], date_str)
+                logged += 1
+            except Exception as e:
+                log.warning("sleep_backfill_job row error: %s", e)
+                skipped += 1
+
+        log.info("sleep_backfill_job complete: logged=%d skipped=%d", logged, skipped)
+        return {"status": "done", "logged": logged, "skipped": skipped}
+    except Exception as e:
+        log.warning("sleep_backfill_job failed: %s", e)
+        return {"status": "error", "reason": str(e)}
 
 
 def register_handlers(manager: "UtilitySchedulerManager") -> None:
