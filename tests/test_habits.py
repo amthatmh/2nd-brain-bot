@@ -94,6 +94,23 @@ class TestLoadHabitCacheFrequency(unittest.TestCase):
         self.assertEqual(cached["freq_per_week"], 5)
         self.assertEqual(cached["frequency_label"], "5x/week")
 
+    def test_load_habit_cache_reads_auto_only_checkbox(self):
+        main = load_main_module()
+        fake_habit = {
+            "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "properties": {
+                "Habit": {"title": [{"text": {"content": "Sleep"}}]},
+                "Active": {"checkbox": True},
+                "Auto Only": {"checkbox": True},
+            },
+        }
+
+        main.notion.databases.query = MagicMock(return_value={"results": [fake_habit]})
+        main.notion_habits.load_habit_cache(notion=main.notion, notion_habit_db=main.NOTION_HABIT_DB)
+        main._refresh_habit_cache_refs()
+
+        self.assertTrue(main.habit_cache["Sleep"]["auto_only"])
+
     def test_load_habit_cache_reads_show_after_plain_text_payload(self):
         main = load_main_module()
         fake_habit = {

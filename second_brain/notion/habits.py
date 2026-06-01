@@ -122,6 +122,7 @@ def load_habit_cache(*, notion: Any, notion_habit_db: str) -> None:
                 "description": txt("Description"),
                 "auto_only": auto_only,
                 "show_after": show_after,
+                "auto_only": bool(extract_checkbox(p.get("Auto Only"))),
                 "sort": num("Sort") or 99,
             }
         log.info(

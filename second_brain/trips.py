@@ -8,7 +8,7 @@ import re
 from datetime import date, timedelta
 from typing import Callable
 
-from second_brain.ai.client import get_claude_client
+from second_brain.ai.client import VOICE_INSTRUCTION, get_claude_client
 from second_brain.config import (
     CLAUDE_MODEL,
     NOTION_PACKING_ITEMS_DB,
@@ -430,6 +430,7 @@ def _build_trip_weather_summary(
     try:
         client = get_claude_client()
         prompt = (
+            f"{VOICE_INSTRUCTION}\n\n"
             f"You are a travel assistant helping someone prepare for a work trip to {destination}. "
             f"Summarize this weather forecast in 2-3 concise sentences from a packing and preparation perspective. "
             f"Mention any days with notable conditions. Do not use bullet points or markdown.\n\n"
