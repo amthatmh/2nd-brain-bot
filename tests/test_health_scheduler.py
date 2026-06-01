@@ -5,7 +5,11 @@ from __future__ import annotations
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from second_brain.healthtrack.scheduler import check_and_create_steps_entry
+from second_brain.healthtrack.scheduler import (
+    check_and_create_steps_entry,
+    weigh_backfill_job,
+    weigh_sync_job,
+)
 
 
 class TestCheckAndCreateStepsEntry(IsolatedAsyncioTestCase):
@@ -79,3 +83,99 @@ class TestCheckAndCreateStepsEntry(IsolatedAsyncioTestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["action"], "error")
         notion.pages.create.assert_not_called()
+
+
+class TestWeighJobs(IsolatedAsyncioTestCase):
+    async def test_weigh_sync_logs_when_weight_exists_this_week(self):
+        notion = MagicMock()
+        habit_cache = {
+            "Weigh": {"page_id": "habit-page", "name": "Weigh", "auto_only": True}
+        }
+        health_row = {
+            "properties": {
+                "Date": {"date": {"start": "2026-05-27"}},
+                "Weight (kg)": {"number": 76.8},
+            }
+        }
+
+        with patch("second_brain.healthtrack.scheduler._current_monday_str", return_value="2026-05-25"), \
+             patch("second_brain.healthtrack.scheduler.query_all", return_value=[health_row]) as query_all, \
+             patch("second_brain.notion.habits.get_week_completion_count", return_value=0):
+            result = await weigh_sync_job(
+                notion=notion,
+                log_db_id="log-db",
+                health_metrics_db_id="health-db",
+                habit_cache=habit_cache,
+                tz="America/Chicago",
+            )
+
+        self.assertEqual(result, {"status": "logged", "date": "2026-05-27", "weight_kg": 76.8})
+        query_all.assert_called_once_with(
+            notion,
+            "health-db",
+            filter={
+                "and": [
+                    {"property": "Date", "date": {"on_or_after": "2026-05-25"}},
+                    {"property": "Weight (kg)", "number": {"is_not_empty": True}},
+                ]
+            },
+        )
+        create_kwargs = notion.pages.create.call_args.kwargs
+        self.assertEqual(create_kwargs["parent"], {"database_id": "log-db"})
+        props = create_kwargs["properties"]
+        self.assertEqual(props["Entry"], {"title": [{"text": {"content": "Weigh"}}]})
+        self.assertEqual(props["Habit"], {"relation": [{"id": "habit-page"}]})
+        self.assertEqual(props["Completed"], {"checkbox": True})
+        self.assertEqual(props["Date"], {"date": {"start": "2026-05-27"}})
+        self.assertEqual(props["Source"], {"select": {"name": "Scheduler"}})
+
+    async def test_weigh_sync_skips_when_already_logged_this_week(self):
+        notion = MagicMock()
+        habit_cache = {
+            "Weigh": {"page_id": "habit-page", "name": "Weigh", "auto_only": True}
+        }
+
+        with patch("second_brain.healthtrack.scheduler.query_all") as query_all, \
+             patch("second_brain.notion.habits.get_week_completion_count", return_value=1):
+            result = await weigh_sync_job(
+                notion=notion,
+                log_db_id="log-db",
+                health_metrics_db_id="health-db",
+                habit_cache=habit_cache,
+                tz="America/Chicago",
+            )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "already logged this week")
+        query_all.assert_not_called()
+        notion.pages.create.assert_not_called()
+
+    async def test_weigh_backfill_logs_earliest_unlogged_date_per_iso_week(self):
+        notion = MagicMock()
+        habit_cache = {
+            "Weigh": {"page_id": "habit-page", "name": "Weigh", "auto_only": True}
+        }
+        health_rows = [
+            {"properties": {"Date": {"date": {"start": "2026-05-27"}}, "Weight (kg)": {"number": 76.8}}},
+            {"properties": {"Date": {"date": {"start": "2026-05-25"}}, "Weight (kg)": {"number": 77.0}}},
+            {"properties": {"Date": {"date": {"start": "2026-06-03"}}, "Weight (kg)": {"number": 76.4}}},
+        ]
+
+        with patch("second_brain.healthtrack.scheduler.query_all", return_value=health_rows), \
+             patch("second_brain.healthtrack.scheduler._already_logged_on_date", return_value=False) as already_logged:
+            result = await weigh_backfill_job(
+                notion=notion,
+                log_db_id="log-db",
+                health_metrics_db_id="health-db",
+                habit_cache=habit_cache,
+                tz="America/Chicago",
+            )
+
+        self.assertEqual(result, {"status": "done", "logged": 2, "skipped": 0})
+        self.assertEqual(already_logged.call_args_list[0].args[3], "2026-05-25")
+        self.assertEqual(already_logged.call_args_list[1].args[3], "2026-06-03")
+        logged_dates = [
+            call.kwargs["properties"]["Date"]["date"]["start"]
+            for call in notion.pages.create.call_args_list
+        ]
+        self.assertEqual(logged_dates, ["2026-05-25", "2026-06-03"])

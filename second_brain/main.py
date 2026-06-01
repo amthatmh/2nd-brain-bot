@@ -78,7 +78,11 @@ from second_brain.healthtrack.steps import (
     handle_steps_final_stamp,
     migrate_steps_entry_titles,
 )
-from second_brain.healthtrack.scheduler import check_and_create_steps_entry
+from second_brain.healthtrack.scheduler import (
+    check_and_create_steps_entry,
+    weigh_backfill_job,
+    weigh_sync_job,
+)
 import second_brain.config as _config_module
 _config_module = importlib.reload(_config_module)
 import second_brain.config as config
@@ -2235,6 +2239,14 @@ def _build_utility_job_dispatch(bot) -> dict[str, Callable]:
         "asana_sync": _utility_async_handler("asana_sync", lambda: run_asana_sync(bot)),
         "steps_final_stamp": _utility_async_handler("steps_final_stamp", lambda: _run_steps_final_stamp_dispatch(bot)),
         "steps_sync_check": _utility_async_handler("steps_sync_check", lambda: _run_steps_sync_check_dispatch(bot)),
+        "weigh_sync": _utility_async_handler(
+            "weigh_sync",
+            lambda: weigh_sync_job(notion, NOTION_LOG_DB, NOTION_HEALTH_METRICS_DB, habit_cache, TZ),
+        ),
+        "weigh_backfill": _utility_async_handler(
+            "weigh_backfill",
+            lambda: weigh_backfill_job(notion, NOTION_LOG_DB, NOTION_HEALTH_METRICS_DB, habit_cache, TZ),
+        ),
         "daily_log_generate": _utility_async_handler("daily_log_generate", lambda: generate_daily_log(bot)),
         "run_recurring_check": _utility_async_handler("run_recurring_check", lambda: run_recurring_check(bot)),
     }

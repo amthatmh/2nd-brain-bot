@@ -134,6 +134,23 @@ class TestLoadHabitCacheFrequency(unittest.TestCase):
 
         self.assertEqual(main.habit_cache["Meditate"]["show_after"], "05:00")
 
+    def test_load_habit_cache_reads_auto_only_checkbox(self):
+        main = load_main_module()
+        fake_habit = {
+            "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "properties": {
+                "Habit": {"title": [{"text": {"content": "Weigh"}}]},
+                "Active": {"checkbox": True},
+                "Auto Only": {"checkbox": True},
+            },
+        }
+
+        main.notion.databases.query = MagicMock(return_value={"results": [fake_habit]})
+        main.notion_habits.load_habit_cache(notion=main.notion, notion_habit_db=main.NOTION_HABIT_DB)
+        main._refresh_habit_cache_refs()
+
+        self.assertTrue(main.habit_cache["Weigh"]["auto_only"])
+
 
 class TestHabitLogQueries(unittest.TestCase):
     def test_log_habit_uses_configured_local_timezone_for_date(self):
@@ -305,6 +322,16 @@ class TestShowAfterGating(unittest.TestCase):
     def test_manual_habits_list_bypasses_show_after(self):
         self.assertIn("Read", self._pending_names(show_after="18:00", time_str=None))
 
+    def test_auto_only_habit_excluded_from_telegram_lists(self):
+        main = load_main_module()
+        page_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        main.habit_cache = {
+            "Weigh": {"page_id": page_id, "name": "Weigh", "sort": 1, "auto_only": True}
+        }
+
+        with patch.object(main, "already_logged_today", return_value=False), \
+            patch.object(main, "is_on_pace", return_value=False):
+            self.assertEqual(main.pending_habits_for_digest(time_str=None), [])
 
 
 class TestHabitButtonsMultiSelect(unittest.TestCase):
