@@ -1356,7 +1356,6 @@ def register_health_routes(
                 headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
             )
 
-        from datetime import date as date_cls
         from second_brain.healthtrack.metrics import _find_habit_page_id as _find_weigh_habit
 
         weigh_habit_name = health_config.WEIGH_HABIT_NAME
@@ -1385,19 +1384,14 @@ def register_health_routes(
                 headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
             )
 
-        weeks: dict[str, str] = {}
+        dates: list[str] = []
         for row in rows:
             try:
                 props = row["properties"]
                 date_val = (props.get("Date") or {}).get("date") or {}
                 date_str = (date_val.get("start") or "")[:10]
-                if not date_str:
-                    continue
-                d = date_cls.fromisoformat(date_str)
-                iso = d.isocalendar()
-                week_key = f"{iso.year}-W{iso.week:02d}"
-                if week_key not in weeks or date_str < weeks[week_key]:
-                    weeks[week_key] = date_str
+                if date_str:
+                    dates.append(date_str)
             except Exception as exc:
                 log.warning("weigh_backfill: row parse error: %s", exc)
 
@@ -1417,7 +1411,7 @@ def register_health_routes(
 
         logged = 0
         skipped = 0
-        for date_str in sorted(weeks.values()):
+        for date_str in sorted(set(dates)):
             try:
                 existing = await asyncio.to_thread(
                     query_all,
@@ -1444,7 +1438,7 @@ def register_health_routes(
 
         log.info("weigh_backfill: complete logged=%d skipped=%d", logged, skipped)
         return web.Response(
-            text=json.dumps({"ok": True, "logged": logged, "skipped": skipped, "weeks": list(weeks.keys())}),
+            text=json.dumps({"ok": True, "logged": logged, "skipped": skipped, "dates": sorted(set(dates))}),
             content_type="application/json",
             headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
         )
