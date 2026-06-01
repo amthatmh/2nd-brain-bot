@@ -296,6 +296,20 @@ async def weigh_backfill_job(notion, log_db_id, health_metrics_db_id, habit_cach
     return {"status": "done", "logged": logged, "skipped": skipped}
 
 
+async def handle_sleep_backfill_job(bot=None) -> dict:
+    """Utility Scheduler manager wrapper for the one-time Sleep habit backfill."""
+    del bot
+    from second_brain.main import NOTION_HEALTH_METRICS_DB, NOTION_LOG_DB, TZ, habit_cache, notion
+
+    return await sleep_backfill_job(
+        notion,
+        NOTION_LOG_DB,
+        NOTION_HEALTH_METRICS_DB,
+        habit_cache,
+        TZ,
+    )
+
+
 def register_handlers(manager: "UtilitySchedulerManager") -> None:
     """Register health tracking jobs with the Utility Scheduler Manager."""
     from second_brain.healthtrack.insights import handle_weekly_health_insight_job
@@ -310,9 +324,10 @@ def register_handlers(manager: "UtilitySchedulerManager") -> None:
     manager.register_handler("steps_morning_stamp", handle_steps_final_stamp_job)
     manager.register_handler("sleep_sync", handle_sleep_sync_job)
     manager.register_handler("sleep_resync", handle_sleep_resync_job)
+    manager.register_handler("sleep_backfill", handle_sleep_backfill_job)
     manager.register_handler("weekly_health_insight", handle_weekly_health_insight_job)
     log.info(
         "healthtrack: registered scheduler handlers "
         "(steps_sync_check, steps_final_stamp, steps_morning_stamp, sleep_sync, sleep_resync, "
-        "weekly_health_insight)"
+        "sleep_backfill, weekly_health_insight)"
     )
