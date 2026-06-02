@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from second_brain.healthtrack.routes import _parse_health_export_payload, register_health_routes
+from second_brain.healthtrack.routes import _parse_all_dates_from_payload, _parse_health_export_payload, register_health_routes
 from second_brain.healthtrack.steps import (
     _date_state,
     _load_threshold_state,
@@ -140,6 +141,11 @@ class TestParseHealthExportPayload(unittest.TestCase):
         result = _parse_health_export_payload(body)
         self.assertEqual(result, (8500, "2026-04-28"))
 
+    def test_flat_format_converts_utc_timestamp_to_local_date(self):
+        body = {"steps": 6255, "date": "2026-06-02 04:30:00 +0000"}
+        result = _parse_health_export_payload(body, tz=ZoneInfo("America/Chicago"))
+        self.assertEqual(result, (6255, "2026-06-01"))
+
     def test_flat_format_accepts_decimal_string_steps(self):
         body = {"steps": "1018.0", "date": "2026-05-04"}
         result = _parse_health_export_payload(body)
@@ -162,6 +168,21 @@ class TestParseHealthExportPayload(unittest.TestCase):
         result = _parse_health_export_payload(body)
         self.assertIsNotNone(result)
         self.assertEqual(result, (11247, "2026-04-28"))
+
+    def test_nested_format_groups_utc_timestamps_by_local_date(self):
+        body = {
+            "data": [
+                {
+                    "name": "Step Count",
+                    "data": [
+                        {"date": "2026-06-02 03:30:00 +0000", "qty": 2000},
+                        {"date": "2026-06-02 04:30:00 +0000", "qty": 4255},
+                    ],
+                }
+            ]
+        }
+        result = _parse_all_dates_from_payload(body, tz=ZoneInfo("America/Chicago"))
+        self.assertEqual(result, [(6255, "2026-06-01")])
 
     def test_health_auto_export_v2_metrics_wrapper(self):
         body = {
