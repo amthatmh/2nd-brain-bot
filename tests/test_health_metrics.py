@@ -325,6 +325,77 @@ class TestHealthMetricsRoute(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["date_str"], "2026-06-01")
         self.assertEqual(json.loads(status_body)["last_webhook"]["route"], "health_sync")
 
+    async def test_health_sync_accepts_bearer_secret_for_step_payload(self):
+        app = web.Application()
+        register_health_routes(
+            app,
+            notion=MagicMock(),
+            habit_db_id="habit-db",
+            log_db_id="log-db",
+            env_db_id="env-db",
+            tz=ZoneInfo("UTC"),
+            bot_getter=lambda: None,
+            chat_id=123,
+            health_metrics_db_id="metrics-db",
+        )
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with patch("second_brain.healthtrack.routes.WEBHOOK_SECRET", "secret"), \
+                 patch("second_brain.healthtrack.routes.handle_steps_sync", new_callable=AsyncMock) as sync_mock:
+                sync_mock.return_value = {
+                    "action": "updated",
+                    "steps": 6255,
+                    "date": "2026-06-01",
+                    "completed": False,
+                    "page_id": "steps-page",
+                    "timestamp": "2026-06-02T04:55:00+00:00",
+                }
+                response = await client.post(
+                    "/api/v1/health-sync",
+                    headers={"Authorization": "Bearer secret"},
+                    json={"steps": 6255, "date": "2026-06-01"},
+                )
+                body = await response.text()
+        finally:
+            await client.close()
+
+        self.assertEqual(response.status, 200, body)
+        sync_mock.assert_awaited_once()
+
+    async def test_health_sync_invalid_secret_updates_steps_status(self):
+        app = web.Application()
+        register_health_routes(
+            app,
+            notion=MagicMock(),
+            habit_db_id="habit-db",
+            log_db_id="log-db",
+            env_db_id="env-db",
+            tz=ZoneInfo("UTC"),
+            bot_getter=lambda: None,
+            chat_id=123,
+            health_metrics_db_id="metrics-db",
+        )
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with patch("second_brain.healthtrack.routes.WEBHOOK_SECRET", "secret"):
+                response = await client.post(
+                    "/api/v1/health-sync",
+                    headers={"X-Health-Secret": "wrong"},
+                    json={"steps": 6255, "date": "2026-06-01"},
+                )
+                body = await response.text()
+                status_response = await client.get("/api/v1/steps-status")
+                status_body = await status_response.text()
+        finally:
+            await client.close()
+
+        self.assertEqual(response.status, 401, body)
+        status = json.loads(status_body)["last_webhook"]
+        self.assertEqual(status["route"], "health_sync")
+        self.assertEqual(status["status"], "unauthorized")
+
     async def test_health_sync_malformed_payload_returns_400(self):
         app = web.Application()
         register_health_routes(

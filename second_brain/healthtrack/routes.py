@@ -213,6 +213,20 @@ def _record_steps_webhook(request: web.Request, *, status: str, detail: dict | N
         _last_steps_webhook.update(detail)
 
 
+def _request_health_secret(request: web.Request) -> str:
+    """Return the shared webhook secret from supported header/query shapes."""
+    auth_header = request.headers.get("Authorization", "").strip()
+    if auth_header.lower().startswith("bearer "):
+        bearer = auth_header[7:].strip()
+        if bearer:
+            return bearer
+    return (
+        request.headers.get("X-Health-Secret", "").strip()
+        or request.headers.get("X-Webhook-Secret", "").strip()
+        or request.query.get("secret", "").strip()
+    )
+
+
 def _steps_date_from_export_datetime(raw_date: Any, tz=None) -> str:
     """Return the local calendar date for a Health Auto Export timestamp."""
     raw = str(raw_date or "").strip()
@@ -957,7 +971,7 @@ def register_health_routes(
         if request.method == "OPTIONS":
             return web.Response(status=204, headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"))
 
-        incoming_secret = request.headers.get("X-Health-Secret", "").strip()
+        incoming_secret = _request_health_secret(request)
         if not incoming_secret:
             log.warning("steps_sync: missing X-Health-Secret header")
             _record_steps_webhook(request, status="missing_secret")
@@ -1043,9 +1057,14 @@ def register_health_routes(
         if request.method == "OPTIONS":
             return web.Response(status=204, headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"))
 
-        incoming_secret = request.headers.get("X-Health-Secret", "").strip()
+        incoming_secret = _request_health_secret(request)
         if not incoming_secret:
             log.warning("health_sync: missing X-Health-Secret header")
+            _record_steps_webhook(
+                request,
+                status="missing_secret",
+                detail={"route": "health_sync"},
+            )
             return web.Response(
                 status=401,
                 text=json.dumps({"ok": False, "error": "Missing X-Health-Secret header"}),
@@ -1055,6 +1074,11 @@ def register_health_routes(
 
         if WEBHOOK_SECRET and incoming_secret != WEBHOOK_SECRET:
             log.warning("health_sync: invalid secret")
+            _record_steps_webhook(
+                request,
+                status="unauthorized",
+                detail={"route": "health_sync"},
+            )
             return web.Response(
                 status=401,
                 text=json.dumps({"ok": False, "error": "Invalid X-Health-Secret"}),
@@ -1066,6 +1090,11 @@ def register_health_routes(
             body = await request.json()
         except Exception as e:
             log.warning("health_sync: invalid JSON payload: %s", e)
+            _record_steps_webhook(
+                request,
+                status="invalid_json",
+                detail={"route": "health_sync"},
+            )
             return web.Response(
                 status=400,
                 text=json.dumps({"ok": False, "error": "invalid JSON"}),
@@ -1086,6 +1115,15 @@ def register_health_routes(
                 route_label="health_sync",
             )
             log.info("health_sync: processed %d step date(s) from payload", len(date_steps_pairs))
+        else:
+            _record_steps_webhook(
+                request,
+                status="no_steps_found",
+                detail={
+                    "route": "health_sync",
+                    "payload_summary": _payload_summary(body),
+                },
+            )
 
         if not health_metrics_db_id:
             log.error("health_sync: NOTION_HEALTH_METRICS_DB is not configured")
