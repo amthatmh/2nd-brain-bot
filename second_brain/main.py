@@ -2754,10 +2754,14 @@ async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     status = await update.message.reply_text("🔄 Running sync…")
     try:
-        cinema_stats, asana_stats, _ = await asyncio.gather(
+        from second_brain.healthtrack.sleep import handle_sleep_sync_job
+
+        cinema_stats, asana_stats, weather_stats, steps_stats, sleep_stats = await asyncio.gather(
             run_cinema_sync(context.bot),
             run_asana_sync(context.bot),
             wx.fetch_weather_cache(context.bot),
+            _run_steps_sync_check_dispatch(context.bot),
+            handle_sleep_sync_job(context.bot),
             return_exceptions=True,
         )
         notion_habits.load_habit_cache(notion=notion, notion_habit_db=NOTION_HABIT_DB)
@@ -2766,6 +2770,8 @@ async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         if isinstance(cinema_stats, Exception):
             lines.append(f"Cinema: ❌ {cinema_stats}")
+        elif cinema_stats.get("action") == "disabled":
+            lines.append("Cinema: disabled")
         elif cinema_stats.get("action") != "disabled":
             lines.append(
                 f"Cinema: scanned={cinema_stats.get('scanned', 0)} updated={cinema_stats.get('updated', 0)} "
@@ -2782,7 +2788,28 @@ async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                 f"archived={asana_stats.get('archived', 0)}"
             )
 
-        lines.append("Weather: refreshed  |  Habits: reloaded")
+        if isinstance(weather_stats, Exception):
+            lines.append(f"Weather: ❌ {weather_stats}")
+        else:
+            lines.append("Weather: refreshed")
+
+        if isinstance(steps_stats, Exception):
+            lines.append(f"Steps: ❌ {steps_stats}")
+        else:
+            steps_action = steps_stats.get("action", "done")
+            steps_count = steps_stats.get("steps_count")
+            if steps_count is None:
+                lines.append(f"Steps: {steps_action}")
+            else:
+                lines.append(f"Steps: {steps_action} steps={steps_count}")
+
+        if isinstance(sleep_stats, Exception):
+            lines.append(f"Sleep: ❌ {sleep_stats}")
+        else:
+            sleep_sync_stats = sleep_stats.get("sleep_sync", {})
+            lines.append(f"Sleep: {sleep_sync_stats.get('action', 'done')}")
+
+        lines.append("Habits: reloaded")
         await status.edit_text("\n".join(lines))
     except Exception as e:
         log.exception("Manual /sync failed: %s", e)
