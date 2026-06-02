@@ -532,14 +532,55 @@ async def handle_steps_final_stamp(
     today = _local_today(tz)
     yesterday = _yesterday(tz)
 
+    # Resolve habit page_id once for Notion fallback lookups below.
+    habit_page_id_cache: str | None = None
+
+    def _get_habit_page_id() -> str | None:
+        nonlocal habit_page_id_cache
+        if habit_page_id_cache is None:
+            habit_page_id_cache = _find_steps_habit_page_id(notion, habit_db_id, habit_name)
+        return habit_page_id_cache
+
+    def _notion_steps_for_date(date_str: str) -> int:
+        """Query Notion log DB directly and return current Steps Count (0 if missing/null)."""
+        try:
+            habit_pid = _get_habit_page_id()
+            if not habit_pid:
+                return 0
+            ids = _normalise_existing_log_ids(
+                _find_existing_log_entry(notion, log_db_id, habit_pid, date_str)
+            )
+            if not ids:
+                return 0
+            page = notion.pages.retrieve(page_id=ids[0])
+            return int(
+                page.get("properties", {}).get("Steps Count", {}).get("number") or 0
+            )
+        except Exception as exc:
+            log.debug("steps: stamp Notion fallback query failed for %s: %s", date_str, exc)
+            return 0
+
     for date_str in (today, yesterday):
         state = _steps_state.get(date_str)
         steps = state["last_steps"] if state else 0
 
+        # If in-memory state is 0, check Notion directly — the webhook may have
+        # written a step count after the last startup backfill ran.
+        if steps == 0:
+            notion_steps = _notion_steps_for_date(date_str)
+            if notion_steps > 0:
+                log.info(
+                    "steps: stamp — restored %d steps for %s from Notion (memory was 0)",
+                    notion_steps,
+                    date_str,
+                )
+                steps = notion_steps
+                _date_state(date_str)["last_steps"] = steps
+
         # Skip today if no steps data yet (day just started)
         if date_str == today and steps == 0:
             log.info(
-                "steps: stamp — skipping today %s (no data yet, day just started)",
+                "steps: stamp — skipping today %s (no data in memory or Notion)",
                 date_str,
             )
             continue
@@ -547,7 +588,7 @@ async def handle_steps_final_stamp(
         # Skip yesterday if no data received at all
         if date_str == yesterday and steps == 0:
             log.info(
-                "steps: stamp — no data for yesterday %s, skipping",
+                "steps: stamp — no data for yesterday %s (no data in memory or Notion)",
                 date_str,
             )
             continue

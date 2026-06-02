@@ -1072,8 +1072,39 @@ def register_health_routes(
                 headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
             )
 
+        # If the payload also contains step count data, process it through the
+        # steps pipeline. This handles automations that send all health metrics
+        # (including Step Count) to /api/v1/health-sync instead of /api/v1/steps-sync.
+        date_steps_pairs = _parse_all_dates_from_payload(body)
+        steps_results: dict[str, dict] = {}
+        if date_steps_pairs:
+            try:
+                bot = bot_getter()
+            except Exception:
+                bot = None
+            for steps, date_str in date_steps_pairs:
+                steps_result = await handle_steps_sync(
+                    steps=steps,
+                    date_str=date_str,
+                    notion=notion,
+                    habit_db_id=habit_db_id,
+                    log_db_id=log_db_id,
+                    env_db_id=env_db_id,
+                    habit_name=health_config.STEPS_HABIT_NAME,
+                    threshold=STEPS_THRESHOLD,
+                    source_label=STEPS_SOURCE_LABEL,
+                    tz=tz,
+                    bot=bot,
+                    chat_id=chat_id,
+                    write_intraday_below_threshold=STEPS_WRITE_INTRADAY_BELOW_THRESHOLD,
+                    force_write=False,
+                )
+                steps_results[date_str] = steps_result
+            log.info("health_sync: processed %d step date(s) from payload", len(date_steps_pairs))
+
+        response_result = result if not steps_results else {**result, "steps": steps_results}
         return web.Response(
-            text=json.dumps({"ok": True, "result": result}),
+            text=json.dumps({"ok": True, "result": response_result}),
             content_type="application/json",
             headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
         )

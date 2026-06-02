@@ -15,9 +15,11 @@ from second_brain.healthtrack.scheduler import (
 
 
 def _fake_steps_mod(habit_page_id, existing_log_id):
+    state = {"last_steps": 0, "notion_page_id": None}
     return SimpleNamespace(
         _find_steps_habit_page_id=MagicMock(return_value=habit_page_id),
-        _find_existing_log_entry=MagicMock(return_value=existing_log_id),
+        _find_existing_log_entry=MagicMock(return_value=[existing_log_id] if existing_log_id else []),
+        _date_state=MagicMock(return_value=state),
     )
 
 
