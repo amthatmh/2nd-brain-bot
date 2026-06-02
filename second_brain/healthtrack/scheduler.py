@@ -110,7 +110,7 @@ async def check_and_create_steps_entry(
         dict: {"ok": bool, "action": "exists"|"created"|"error", "reason": str}
     """
     try:
-        from second_brain.healthtrack.steps import _find_existing_log_entry, _find_steps_habit_page_id
+        from second_brain.healthtrack.steps import _date_state, _find_existing_log_entry, _find_steps_habit_page_id
         today_str = _today_str(tz)
         target_log_db_id = log_db_id or habit_db_id
 
@@ -123,12 +123,13 @@ async def check_and_create_steps_entry(
             await send_system_log(bot, f"🚨 Steps sync check failed\n{reason}")
             return {"ok": False, "action": "error", "reason": reason}
 
-        existing_page_id = _find_existing_log_entry(
+        existing_page_ids = _find_existing_log_entry(
             notion,
             target_log_db_id,
             habit_page_id,
             today_str,
         )
+        existing_page_id = existing_page_ids[0] if existing_page_ids else None
         if existing_page_id:
             steps_count = None
             try:
@@ -144,6 +145,16 @@ async def check_and_create_steps_entry(
                     existing_page_id,
                     exc,
                 )
+            if steps_count and steps_count > 0:
+                state = _date_state(today_str)
+                if steps_count > state["last_steps"]:
+                    state["last_steps"] = steps_count
+                    state["notion_page_id"] = existing_page_id
+                    log.info(
+                        "steps_sync_check: restored %d steps for %s into memory",
+                        steps_count,
+                        today_str,
+                    )
             log.info(
                 "steps_sync_check: Steps entry found for %s (page_id: %s, count: %s)",
                 today_str,
