@@ -90,10 +90,12 @@ async def check_and_create_steps_entry(
     log_db_id: str | None = None,
 ) -> dict:
     """
-    Utility Scheduler job: ensure a Steps entry exists for today.
+    Utility Scheduler job: ensure a Steps entry exists for today and persist
+    the latest cached step count.
 
-    Runs every 60 minutes. If today's Steps entry is missing from Habits Log,
-    creates a placeholder entry with a blank/null Steps Count.
+    If today's Steps entry is missing from Habits Log, creates it with the
+    latest cached Steps Count. If it exists with a blank or lower Steps Count,
+    updates it upward.
 
     Args:
         notion: NotionClient instance.
@@ -110,9 +112,17 @@ async def check_and_create_steps_entry(
         dict: {"ok": bool, "action": "exists"|"created"|"error", "reason": str}
     """
     try:
-        from second_brain.healthtrack.steps import _date_state, _find_existing_log_entry, _find_steps_habit_page_id
+        from second_brain.healthtrack.config import STEPS_THRESHOLD
+        from second_brain.healthtrack.steps import (
+            _date_state,
+            _find_existing_log_entry,
+            _find_steps_habit_page_id,
+            _update_log_entry_steps,
+        )
         today_str = _today_str(tz)
         target_log_db_id = log_db_id or habit_db_id
+        state = _date_state(today_str)
+        cached_steps = int(state.get("last_steps") or 0)
 
         log.info("steps_sync_check: checking for Steps entry on %s", today_str)
 
@@ -132,6 +142,7 @@ async def check_and_create_steps_entry(
         existing_page_id = existing_page_ids[0] if existing_page_ids else None
         if existing_page_id:
             steps_count = None
+            current_steps = 0
             try:
                 entry = notion.pages.retrieve(page_id=existing_page_id)
                 steps_count = (
@@ -139,22 +150,55 @@ async def check_and_create_steps_entry(
                     .get("Steps Count", {})
                     .get("number")
                 )
+                if isinstance(steps_count, (int, float)):
+                    current_steps = int(steps_count)
             except Exception as exc:
                 log.warning(
                     "steps_sync_check: found entry %s but could not read Steps Count: %s",
                     existing_page_id,
                     exc,
                 )
-            if steps_count and steps_count > 0:
-                state = _date_state(today_str)
-                if steps_count > state["last_steps"]:
-                    state["last_steps"] = steps_count
-                    state["notion_page_id"] = existing_page_id
-                    log.info(
-                        "steps_sync_check: restored %d steps for %s into memory",
-                        steps_count,
-                        today_str,
-                    )
+            if current_steps > cached_steps:
+                state["last_steps"] = current_steps
+                state["notion_page_id"] = existing_page_id
+                cached_steps = current_steps
+                log.info(
+                    "steps_sync_check: restored %d steps for %s into memory",
+                    current_steps,
+                    today_str,
+                )
+
+            if steps_count is None or cached_steps > current_steps:
+                completed = cached_steps >= STEPS_THRESHOLD
+                if not _update_log_entry_steps(notion, existing_page_id, cached_steps, completed):
+                    reason = f"Failed to update Steps Count for {today_str}"
+                    log.error("steps_sync_check: %s", reason)
+                    await send_system_log(bot, f"🚨 Steps sync check failed\n{reason}")
+                    return {
+                        "ok": False,
+                        "action": "error",
+                        "reason": reason,
+                        "page_id": existing_page_id,
+                        "steps_count": steps_count,
+                    }
+                state["notion_page_id"] = existing_page_id
+                final_steps = max(cached_steps, current_steps)
+                log.info(
+                    "steps_sync_check: wrote %d steps for %s (was %s)",
+                    final_steps,
+                    today_str,
+                    steps_count,
+                )
+                return {
+                    "ok": True,
+                    "action": "updated",
+                    "reason": f"Updated Steps Count for {today_str}",
+                    "page_id": existing_page_id,
+                    "steps_count": final_steps,
+                    "previous_steps_count": steps_count,
+                }
+
+            state["notion_page_id"] = existing_page_id
             log.info(
                 "steps_sync_check: Steps entry found for %s (page_id: %s, count: %s)",
                 today_str,
@@ -179,27 +223,26 @@ async def check_and_create_steps_entry(
                 "Entry": title_prop("Steps"),
                 "Habit": {"relation": [{"id": habit_page_id}]},
                 "Date": {"date": {"start": today_str}},
+                "Steps Count": {"number": cached_steps},
+                "Completed": {"checkbox": cached_steps >= STEPS_THRESHOLD},
                 "Source": {"select": {"name": "Scheduler"}},
             },
         )
         page_id = new_entry["id"]
+        state["notion_page_id"] = page_id
         log.info(
-            "steps_sync_check: created placeholder Steps entry for %s (page_id: %s)",
+            "steps_sync_check: created Steps entry for %s with %d steps (page_id: %s)",
             today_str,
+            cached_steps,
             page_id,
-        )
-
-        log.warning(
-            "steps_sync_check: placeholder created for %s — "
-            "Auto Export has not synced yet. Will correct when data arrives.",
-            today_str,
         )
 
         return {
             "ok": True,
             "action": "created",
-            "reason": f"Created placeholder entry for {today_str}",
+            "reason": f"Created Steps entry for {today_str}",
             "page_id": page_id,
+            "steps_count": cached_steps,
         }
     except Exception as exc:
         log.error("steps_sync_check: unexpected error: %s", exc)
