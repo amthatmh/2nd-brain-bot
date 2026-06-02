@@ -264,7 +264,7 @@ def _parse_health_export_payload(body: dict, tz=None) -> tuple[int, str] | None:
         return None
 
     for metric in data_array:
-        name = (metric.get("name") or "").lower()
+        name = (metric.get("name") or metric.get("type") or "").lower()
         if "step" not in name:
             continue
         readings = metric.get("data", [])
@@ -332,7 +332,7 @@ def _parse_all_dates_from_payload(body: dict, tz=None) -> list[tuple[int, str]]:
         return []
 
     for metric in data_array:
-        name = (metric.get("name") or "").lower()
+        name = (metric.get("name") or metric.get("type") or "").lower()
         if "step" not in name:
             continue
         readings = metric.get("data", [])
@@ -881,6 +881,77 @@ def register_health_routes(
             weeks_history=weeks_history,
         )
 
+    async def _process_steps_pairs(
+        *,
+        request: web.Request,
+        body: dict,
+        date_steps_pairs: list[tuple[int, str]],
+        route_label: str,
+    ) -> dict[str, dict]:
+        log.info(
+            "%s: received %d step date(s) in payload: %s",
+            route_label,
+            len(date_steps_pairs),
+            [(d, s) for s, d in date_steps_pairs],
+        )
+        _record_steps_webhook(
+            request,
+            status="parsed",
+            detail={
+                "route": route_label,
+                "payload_summary": _payload_summary(body),
+                "parsed": [{"steps": s, "date": d} for s, d in date_steps_pairs],
+            },
+        )
+
+        try:
+            bot = bot_getter()
+        except Exception:
+            bot = None
+
+        all_results: dict[str, dict] = {}
+        for steps, date_str in date_steps_pairs:
+            result = await handle_steps_sync(
+                steps=steps,
+                date_str=date_str,
+                notion=notion,
+                habit_db_id=habit_db_id,
+                log_db_id=log_db_id,
+                env_db_id=env_db_id,
+                habit_name=health_config.STEPS_HABIT_NAME,
+                threshold=STEPS_THRESHOLD,
+                source_label=STEPS_SOURCE_LABEL,
+                tz=tz,
+                bot=bot,
+                chat_id=chat_id,
+                write_intraday_below_threshold=STEPS_WRITE_INTRADAY_BELOW_THRESHOLD,
+                force_write=True,
+            )
+            all_results[date_str] = result
+            failure_detail = _notion_upsert_failure_detail(result)
+            if failure_detail and bot is not None:
+                await send_system_log(
+                    bot,
+                    "🚨 Steps webhook Notion upsert failed\n"
+                    f"Route: {route_label}\n"
+                    f"Date: {date_str}\n"
+                    f"Steps: {steps}\n"
+                    f"Failure: {failure_detail}\n"
+                    f"Payload summary: {json.dumps(_payload_summary(body), sort_keys=True)}",
+                )
+            if on_sync_result:
+                try:
+                    callback_result = on_sync_result(result)
+                    if inspect.isawaitable(callback_result):
+                        await callback_result
+                except Exception as e:
+                    log.warning("%s: telemetry callback failed: %s", route_label, e)
+
+        _last_steps_webhook["status"] = "processed"
+        _last_steps_webhook["route"] = route_label
+        _last_steps_webhook["result"] = all_results
+        return all_results
+
     async def steps_sync_handler(request: web.Request) -> web.Response:
         # Handle CORS preflight
         if request.method == "OPTIONS":
@@ -952,64 +1023,12 @@ def register_health_routes(
                 headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
             )
 
-        log.info(
-            "steps_sync: received %d date(s) in payload: %s",
-            len(date_steps_pairs),
-            [(d, s) for s, d in date_steps_pairs],
+        all_results = await _process_steps_pairs(
+            request=request,
+            body=body,
+            date_steps_pairs=date_steps_pairs,
+            route_label="steps_sync",
         )
-        _record_steps_webhook(
-            request,
-            status="parsed",
-            detail={
-                "payload_summary": _payload_summary(body),
-                "parsed": [{"steps": s, "date": d} for s, d in date_steps_pairs],
-            },
-        )
-
-        try:
-            bot = bot_getter()
-        except Exception:
-            bot = None
-
-        all_results: dict[str, dict] = {}
-        for steps, date_str in date_steps_pairs:
-            result = await handle_steps_sync(
-                steps=steps,
-                date_str=date_str,
-                notion=notion,
-                habit_db_id=habit_db_id,
-                log_db_id=log_db_id,
-                env_db_id=env_db_id,
-                habit_name=health_config.STEPS_HABIT_NAME,
-                threshold=STEPS_THRESHOLD,
-                source_label=STEPS_SOURCE_LABEL,
-                tz=tz,
-                bot=bot,
-                chat_id=chat_id,
-                write_intraday_below_threshold=STEPS_WRITE_INTRADAY_BELOW_THRESHOLD,
-                force_write=True,
-            )
-            all_results[date_str] = result
-            failure_detail = _notion_upsert_failure_detail(result)
-            if failure_detail and bot is not None:
-                await send_system_log(
-                    bot,
-                    "🚨 Steps webhook Notion upsert failed\n"
-                    f"Date: {date_str}\n"
-                    f"Steps: {steps}\n"
-                    f"Failure: {failure_detail}\n"
-                    f"Payload summary: {json.dumps(_payload_summary(body), sort_keys=True)}",
-                )
-            if on_sync_result:
-                try:
-                    callback_result = on_sync_result(result)
-                    if inspect.isawaitable(callback_result):
-                        await callback_result
-                except Exception as e:
-                    log.warning("steps_sync: telemetry callback failed: %s", e)
-
-        _last_steps_webhook["status"] = "processed"
-        _last_steps_webhook["result"] = all_results
 
         return web.Response(
             text=json.dumps({"ok": True, "result": all_results}),
@@ -1043,15 +1062,6 @@ def register_health_routes(
                 headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
             )
 
-        if not health_metrics_db_id:
-            log.error("health_sync: NOTION_HEALTH_METRICS_DB is not configured")
-            return web.Response(
-                status=500,
-                text=json.dumps({"ok": False, "error": "NOTION_HEALTH_METRICS_DB is not configured"}),
-                content_type="application/json",
-                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
-            )
-
         try:
             body = await request.json()
         except Exception as e:
@@ -1059,6 +1069,46 @@ def register_health_routes(
             return web.Response(
                 status=400,
                 text=json.dumps({"ok": False, "error": "invalid JSON"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+            )
+
+        # Process steps before health metrics. Step Count may arrive through this
+        # endpoint even when the metrics payload is otherwise malformed or the
+        # metrics database is unavailable.
+        date_steps_pairs = _parse_all_dates_from_payload(body, tz=tz)
+        steps_results: dict[str, dict] = {}
+        if date_steps_pairs:
+            steps_results = await _process_steps_pairs(
+                request=request,
+                body=body,
+                date_steps_pairs=date_steps_pairs,
+                route_label="health_sync",
+            )
+            log.info("health_sync: processed %d step date(s) from payload", len(date_steps_pairs))
+
+        if not health_metrics_db_id:
+            log.error("health_sync: NOTION_HEALTH_METRICS_DB is not configured")
+            if steps_results:
+                return web.Response(
+                    text=json.dumps(
+                        {
+                            "ok": True,
+                            "result": {
+                                "health_metrics": {
+                                    "action": "skipped",
+                                    "reason": "NOTION_HEALTH_METRICS_DB is not configured",
+                                },
+                                "steps": steps_results,
+                            },
+                        }
+                    ),
+                    content_type="application/json",
+                    headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+                )
+            return web.Response(
+                status=500,
+                text=json.dumps({"ok": False, "error": "NOTION_HEALTH_METRICS_DB is not configured"}),
                 content_type="application/json",
                 headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
             )
@@ -1076,6 +1126,20 @@ def register_health_routes(
         except MalformedHealthMetricsPayload as e:
             received_keys = list(body.keys()) if isinstance(body, dict) else []
             log.warning("health_sync: malformed payload: %s", e)
+            if steps_results:
+                return web.Response(
+                    text=json.dumps(
+                        {
+                            "ok": True,
+                            "result": {
+                                "health_metrics": {"action": "skipped", "reason": str(e)},
+                                "steps": steps_results,
+                            },
+                        }
+                    ),
+                    content_type="application/json",
+                    headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
+                )
             return web.Response(
                 status=400,
                 text=json.dumps({"ok": False, "error": str(e), "received_keys": received_keys}),
@@ -1101,36 +1165,6 @@ def register_health_routes(
                 content_type="application/json",
                 headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
             )
-
-        # If the payload also contains step count data, process it through the
-        # steps pipeline. This handles automations that send all health metrics
-        # (including Step Count) to /api/v1/health-sync instead of /api/v1/steps-sync.
-        date_steps_pairs = _parse_all_dates_from_payload(body, tz=tz)
-        steps_results: dict[str, dict] = {}
-        if date_steps_pairs:
-            try:
-                bot = bot_getter()
-            except Exception:
-                bot = None
-            for steps, date_str in date_steps_pairs:
-                steps_result = await handle_steps_sync(
-                    steps=steps,
-                    date_str=date_str,
-                    notion=notion,
-                    habit_db_id=habit_db_id,
-                    log_db_id=log_db_id,
-                    env_db_id=env_db_id,
-                    habit_name=health_config.STEPS_HABIT_NAME,
-                    threshold=STEPS_THRESHOLD,
-                    source_label=STEPS_SOURCE_LABEL,
-                    tz=tz,
-                    bot=bot,
-                    chat_id=chat_id,
-                    write_intraday_below_threshold=STEPS_WRITE_INTRADAY_BELOW_THRESHOLD,
-                    force_write=True,
-                )
-                steps_results[date_str] = steps_result
-            log.info("health_sync: processed %d step date(s) from payload", len(date_steps_pairs))
 
         response_result = result if not steps_results else {**result, "steps": steps_results}
         return web.Response(
