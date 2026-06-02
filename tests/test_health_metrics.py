@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 from aiohttp import web
@@ -277,6 +277,54 @@ class TestHealthMetricsUpsert(unittest.IsolatedAsyncioTestCase):
 
 
 class TestHealthMetricsRoute(unittest.IsolatedAsyncioTestCase):
+    async def test_health_sync_step_only_payload_still_writes_steps(self):
+        app = web.Application()
+        register_health_routes(
+            app,
+            notion=MagicMock(),
+            habit_db_id="habit-db",
+            log_db_id="log-db",
+            env_db_id="env-db",
+            tz=ZoneInfo("UTC"),
+            bot_getter=lambda: None,
+            chat_id=123,
+            health_metrics_db_id="metrics-db",
+        )
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with patch("second_brain.healthtrack.routes.WEBHOOK_SECRET", "secret"), \
+                 patch("second_brain.healthtrack.routes.handle_steps_sync", new_callable=AsyncMock) as sync_mock:
+                sync_mock.return_value = {
+                    "action": "updated",
+                    "steps": 6255,
+                    "date": "2026-06-01",
+                    "completed": False,
+                    "page_id": "steps-page",
+                    "timestamp": "2026-06-02T04:55:00+00:00",
+                }
+                response = await client.post(
+                    "/api/v1/health-sync",
+                    headers={"X-Health-Secret": "secret"},
+                    json={"steps": 6255, "date": "2026-06-01"},
+                )
+                body = await response.text()
+                status_response = await client.get("/api/v1/steps-status")
+                status_body = await status_response.text()
+        finally:
+            await client.close()
+
+        self.assertEqual(response.status, 200, body)
+        payload = json.loads(body)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["result"]["steps"]["2026-06-01"]["steps"], 6255)
+        self.assertEqual(payload["result"]["health_metrics"]["action"], "skipped")
+        sync_mock.assert_awaited_once()
+        kwargs = sync_mock.await_args.kwargs
+        self.assertEqual(kwargs["steps"], 6255)
+        self.assertEqual(kwargs["date_str"], "2026-06-01")
+        self.assertEqual(json.loads(status_body)["last_webhook"]["route"], "health_sync")
+
     async def test_health_sync_malformed_payload_returns_400(self):
         app = web.Application()
         register_health_routes(

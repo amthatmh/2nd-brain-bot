@@ -252,6 +252,18 @@ class TestParseHealthExportPayload(unittest.TestCase):
         result = _parse_health_export_payload(body)
         self.assertEqual(result, (9000, "2026-04-28"))
 
+    def test_nested_format_accepts_step_metric_type_without_name(self):
+        body = {
+            "data": [
+                {
+                    "type": "HKQuantityTypeIdentifierStepCount",
+                    "data": [{"date": "2026-04-28", "qty": 9000}],
+                }
+            ]
+        }
+        result = _parse_health_export_payload(body)
+        self.assertEqual(result, (9000, "2026-04-28"))
+
 
 # ── Steps sync logic ──────────────────────────────────────────────────────────
 
