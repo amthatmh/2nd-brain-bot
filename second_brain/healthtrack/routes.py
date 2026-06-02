@@ -957,7 +957,7 @@ def register_health_routes(
                 bot=bot,
                 chat_id=chat_id,
                 write_intraday_below_threshold=STEPS_WRITE_INTRADAY_BELOW_THRESHOLD,
-                force_write=False,
+                force_write=True,
             )
             all_results[date_str] = result
             failure_detail = _notion_upsert_failure_detail(result)
@@ -1097,7 +1097,7 @@ def register_health_routes(
                     bot=bot,
                     chat_id=chat_id,
                     write_intraday_below_threshold=STEPS_WRITE_INTRADAY_BELOW_THRESHOLD,
-                    force_write=False,
+                    force_write=True,
                 )
                 steps_results[date_str] = steps_result
             log.info("health_sync: processed %d step date(s) from payload", len(date_steps_pairs))
