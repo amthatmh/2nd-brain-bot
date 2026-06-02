@@ -213,13 +213,39 @@ def _record_steps_webhook(request: web.Request, *, status: str, detail: dict | N
         _last_steps_webhook.update(detail)
 
 
-def _parse_health_export_payload(body: dict) -> tuple[int, str] | None:
+def _steps_date_from_export_datetime(raw_date: Any, tz=None) -> str:
+    """Return the local calendar date for a Health Auto Export timestamp."""
+    raw = str(raw_date or "").strip()
+    if not raw:
+        return ""
+    if tz is None or re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        return raw[:10]
+
+    parsed: datetime | None = None
+    for fmt in ("%Y-%m-%d %H:%M:%S %z", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            parsed = datetime.strptime(raw, fmt)
+            break
+        except ValueError:
+            continue
+    if parsed is None:
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return raw[:10]
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(tz).date().isoformat()
+
+
+def _parse_health_export_payload(body: dict, tz=None) -> tuple[int, str] | None:
     # Shape 1: flat simple format {"steps": 1234, "date": "YYYY-MM-DD"}
     if "steps" in body and "date" in body:
         steps = _coerce_step_count(body.get("steps"))
         if steps is not None:
-            raw_date = str(body["date"])[:10]
-            return steps, raw_date
+            date_str = _steps_date_from_export_datetime(body["date"], tz)
+            return steps, date_str
 
     # Shape 2: Health Auto Export v2 — body["data"] is a dict with "metrics" key
     # Shape 3: Health Auto Export v1 — body["data"] is a list directly
@@ -254,10 +280,12 @@ def _parse_health_export_payload(body: dict) -> tuple[int, str] | None:
             )
             if qty is None:
                 continue
-            raw_date = str(reading.get("date") or reading.get("startDate") or "")
-            if not raw_date:
+            date_str = _steps_date_from_export_datetime(
+                reading.get("date") or reading.get("startDate"),
+                tz,
+            )
+            if not date_str:
                 continue
-            date_str = raw_date[:10]
             daily_totals[date_str] = daily_totals.get(date_str, 0) + qty
 
         if not daily_totals:
@@ -273,7 +301,7 @@ def _parse_health_export_payload(body: dict) -> tuple[int, str] | None:
 
 
 
-def _parse_all_dates_from_payload(body: dict) -> list[tuple[int, str]]:
+def _parse_all_dates_from_payload(body: dict, tz=None) -> list[tuple[int, str]]:
     """
     Parse ALL date/steps pairs from a Health Auto Export payload.
     Returns list of (steps, date_str) tuples, one per calendar date.
@@ -285,8 +313,8 @@ def _parse_all_dates_from_payload(body: dict) -> list[tuple[int, str]]:
     if "steps" in body and "date" in body:
         steps = _coerce_step_count(body.get("steps"))
         if steps is not None:
-            raw_date = str(body["date"])[:10]
-            return [(steps, raw_date)]
+            date_str = _steps_date_from_export_datetime(body["date"], tz)
+            return [(steps, date_str)]
 
     # Shape 2: Health Auto Export v2 — body["data"] is a dict with "metrics" key
     # Shape 3: Health Auto Export v1 — body["data"] is a list directly
@@ -320,10 +348,12 @@ def _parse_all_dates_from_payload(body: dict) -> list[tuple[int, str]]:
             )
             if qty is None:
                 continue
-            raw_date = str(reading.get("date") or reading.get("startDate") or "")
-            if not raw_date:
+            date_str = _steps_date_from_export_datetime(
+                reading.get("date") or reading.get("startDate"),
+                tz,
+            )
+            if not date_str:
                 continue
-            date_str = raw_date[:10]
             daily_totals[date_str] = daily_totals.get(date_str, 0) + qty
 
         if daily_totals:
@@ -889,7 +919,7 @@ def register_health_routes(
                 headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
             )
 
-        date_steps_pairs = _parse_all_dates_from_payload(body)
+        date_steps_pairs = _parse_all_dates_from_payload(body, tz=tz)
         if not date_steps_pairs:
             summary = _payload_summary(body)
             received_keys = list(body.keys()) if isinstance(body, dict) else []
@@ -1075,7 +1105,7 @@ def register_health_routes(
         # If the payload also contains step count data, process it through the
         # steps pipeline. This handles automations that send all health metrics
         # (including Step Count) to /api/v1/health-sync instead of /api/v1/steps-sync.
-        date_steps_pairs = _parse_all_dates_from_payload(body)
+        date_steps_pairs = _parse_all_dates_from_payload(body, tz=tz)
         steps_results: dict[str, dict] = {}
         if date_steps_pairs:
             try:
@@ -1157,7 +1187,7 @@ def register_health_routes(
                 headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
             )
 
-        date_steps_pairs = _parse_all_dates_from_payload(body)
+        date_steps_pairs = _parse_all_dates_from_payload(body, tz=tz)
         if not date_steps_pairs:
             received_keys = list(body.keys()) if isinstance(body, dict) else []
             log.warning("steps_backfill: could not parse any dates from payload. Body keys: %s", received_keys)
