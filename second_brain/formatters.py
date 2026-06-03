@@ -381,8 +381,6 @@ def format_digest_weather_card() -> str:
     high_c = int(today.get("temp_high", 0))
     low_c = int(today.get("temp_low", 0))
     wx.save_today_weather_snapshot(high_c, low_c, condition)
-    high_f = int(round((high_c * 9 / 5) + 32))
-    low_f = int(round((low_c * 9 / 5) + 32))
     rain = int(today.get("precip_chance", 0))
     uvi = float(today.get("uvi", 0))
     sunscreen = "Recommended if outdoors" if uvi >= 3 else "Usually optional"
@@ -390,7 +388,6 @@ def format_digest_weather_card() -> str:
     lines = [
         f"📍 {location} · {current_icon} {condition}",
         f"🌡️ {high_c}°C / {low_c}°C",
-        f"    {high_f}°F / {low_f}°F",
         f"💧 Rain chance: {rain}%",
     ]
     if _should_show_uv_guidance(uvi, sunrise_iso=today.get("sunrise"), sunset_iso=today.get("sunset")):
