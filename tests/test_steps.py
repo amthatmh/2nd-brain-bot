@@ -13,7 +13,9 @@ from aiohttp.test_utils import TestClient, TestServer
 from second_brain.healthtrack.routes import _parse_all_dates_from_payload, _parse_health_export_payload, register_health_routes
 from second_brain.healthtrack.steps import (
     _date_state,
+    _load_latest_steps_state,
     _load_threshold_state,
+    _persist_latest_steps_state,
     _persist_threshold_state,
     _steps_state,
     backfill_steps_state_from_notion,
@@ -269,6 +271,49 @@ class TestParseHealthExportPayload(unittest.TestCase):
 
 
 class TestThresholdStatePersistence(unittest.TestCase):
+    def test_persist_latest_steps_state_keeps_highest_count(self):
+        notion = MagicMock()
+        notion.databases.query.return_value = {
+            "results": [
+                {
+                    "id": "env-row",
+                    "properties": {
+                        "Value": {"rich_text": [{"plain_text": "15266"}]}
+                    },
+                }
+            ]
+        }
+
+        latest = _persist_latest_steps_state(notion, "env-db", "2026-06-03", 220)
+
+        self.assertEqual(latest, 15266)
+        notion.pages.update.assert_called_once()
+        props = notion.pages.update.call_args.kwargs["properties"]
+        self.assertEqual(props["Value"]["rich_text"][0]["text"]["content"], "15266")
+
+    def test_load_latest_steps_state_reads_env_row(self):
+        notion = MagicMock()
+        notion.databases.query.return_value = {
+            "results": [
+                {
+                    "id": "env-row",
+                    "properties": {
+                        "Value": {"rich_text": [{"plain_text": "15266"}]}
+                    },
+                }
+            ]
+        }
+
+        latest = _load_latest_steps_state(notion, "env-db", "2026-06-03")
+
+        self.assertEqual(latest, 15266)
+        query_kwargs = notion.databases.query.call_args.kwargs
+        self.assertEqual(query_kwargs["database_id"], "env-db")
+        self.assertEqual(
+            query_kwargs["filter"],
+            {"property": "Name", "title": {"equals": "steps_latest_2026-06-03"}},
+        )
+
     def test_persist_threshold_state_uses_standard_env_key(self):
         notion = MagicMock()
         notion.databases.query.return_value = {"results": []}
@@ -380,6 +425,34 @@ class TestHandleStepsSync(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(result["action"], "skipped")
         self.assertIn(result["action"], ("created", "updated"))
         self.assertEqual(result["steps"], 9500)
+
+    async def test_force_write_uses_latest_persisted_steps_when_higher(self):
+        notion = self._make_notion()
+        tz = self._make_tz()
+
+        with patch("second_brain.healthtrack.steps._local_today", return_value="2026-06-03"), \
+             patch("second_brain.healthtrack.steps._find_steps_habit_page_id", return_value="habit-pid"), \
+             patch("second_brain.healthtrack.steps._load_latest_steps_state", return_value=15266), \
+             patch("second_brain.healthtrack.steps._persist_latest_steps_state", return_value=15266):
+            result = await handle_steps_sync(
+                steps=220,
+                date_str="2026-06-03",
+                notion=notion,
+                habit_db_id="h",
+                log_db_id="l",
+                env_db_id="env-db",
+                habit_name="Steps",
+                threshold=10000,
+                source_label="📱 Apple Watch",
+                tz=tz,
+                force_write=True,
+            )
+
+        self.assertEqual(result["action"], "created")
+        self.assertEqual(result["steps"], 15266)
+        props = notion.pages.create.call_args.kwargs["properties"]
+        self.assertEqual(props["Steps Count"]["number"], 15266)
+        self.assertTrue(props["Completed"]["checkbox"])
 
     async def test_sub_threshold_intraday_still_skips_without_force(self):
         """Normal intraday sync below threshold should still be skipped."""

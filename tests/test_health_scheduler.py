@@ -14,13 +14,14 @@ from second_brain.healthtrack.scheduler import (
 )
 
 
-def _fake_steps_mod(habit_page_id, existing_log_id, *, last_steps=0, update_ok=True):
+def _fake_steps_mod(habit_page_id, existing_log_id, *, last_steps=0, latest_steps=0, update_ok=True):
     state = {"last_steps": last_steps, "notion_page_id": None}
     return SimpleNamespace(
         _state=state,
         _find_steps_habit_page_id=MagicMock(return_value=habit_page_id),
         _find_existing_log_entry=MagicMock(return_value=[existing_log_id] if existing_log_id else []),
         _date_state=MagicMock(return_value=state),
+        _load_latest_steps_state=MagicMock(return_value=latest_steps),
         _update_log_entry_steps=MagicMock(return_value=update_ok),
     )
 
@@ -77,7 +78,7 @@ class TestCheckAndCreateStepsEntry(IsolatedAsyncioTestCase):
         notion = MagicMock()
         notion.pages.create.return_value = {"id": "created-page"}
         bot = AsyncMock()
-        fake_steps = _fake_steps_mod("habit-page", None)
+        fake_steps = _fake_steps_mod("habit-page", None, last_steps=6255)
 
         with patch("second_brain.healthtrack.scheduler._today_str", return_value="2026-05-07"), \
              patch.dict("sys.modules", {"second_brain.healthtrack.steps": fake_steps}):
@@ -94,7 +95,7 @@ class TestCheckAndCreateStepsEntry(IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["action"], "created")
         self.assertEqual(result["page_id"], "created-page")
-        self.assertEqual(result["steps_count"], 0)
+        self.assertEqual(result["steps_count"], 6255)
         create_kwargs = notion.pages.create.call_args.kwargs
         self.assertEqual(create_kwargs["parent"], {"database_id": "log-db"})
         props = create_kwargs["properties"]
@@ -102,8 +103,61 @@ class TestCheckAndCreateStepsEntry(IsolatedAsyncioTestCase):
         self.assertEqual(props["Habit"], {"relation": [{"id": "habit-page"}]})
         self.assertEqual(props["Source"], {"select": {"name": "Scheduler"}})
         self.assertEqual(props["Entry"], {"title": [{"text": {"content": "Steps"}}]})
-        self.assertEqual(props["Steps Count"], {"number": 0})
+        self.assertEqual(props["Steps Count"], {"number": 6255})
         self.assertEqual(props["Completed"], {"checkbox": False})
+        bot.send_message.assert_not_awaited()
+
+    async def test_updates_existing_zero_steps_count_from_latest_received_state(self):
+        notion = MagicMock()
+        notion.pages.retrieve.return_value = {
+            "properties": {"Steps Count": {"number": 0}}
+        }
+        fake_steps = _fake_steps_mod("habit-page", "log-page", last_steps=0, latest_steps=15266)
+
+        with patch("second_brain.healthtrack.scheduler._today_str", return_value="2026-05-07"), \
+             patch.dict("sys.modules", {"second_brain.healthtrack.steps": fake_steps}):
+            result = await check_and_create_steps_entry(
+                notion=notion,
+                habit_db_id="habits-db",
+                log_db_id="log-db",
+                habit_name="Steps",
+                tz="America/Chicago",
+                env_db_id="env-db",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["action"], "updated")
+        self.assertEqual(result["page_id"], "log-page")
+        self.assertEqual(result["steps_count"], 15266)
+        fake_steps._load_latest_steps_state.assert_called_once_with(notion, "env-db", "2026-05-07")
+        fake_steps._update_log_entry_steps.assert_called_once_with(notion, "log-page", 15266, True)
+        notion.pages.create.assert_not_called()
+
+    async def test_creates_missing_steps_entry_from_latest_received_state(self):
+        notion = MagicMock()
+        notion.pages.create.return_value = {"id": "created-page"}
+        bot = AsyncMock()
+        fake_steps = _fake_steps_mod("habit-page", None, last_steps=0, latest_steps=220)
+
+        with patch("second_brain.healthtrack.scheduler._today_str", return_value="2026-05-07"), \
+             patch.dict("sys.modules", {"second_brain.healthtrack.steps": fake_steps}):
+            result = await check_and_create_steps_entry(
+                notion=notion,
+                habit_db_id="habits-db",
+                log_db_id="log-db",
+                habit_name="Steps",
+                tz="America/Chicago",
+                env_db_id="env-db",
+                chat_id=123,
+                bot=bot,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["action"], "created")
+        self.assertEqual(result["steps_count"], 220)
+        fake_steps._load_latest_steps_state.assert_called_once_with(notion, "env-db", "2026-05-07")
+        props = notion.pages.create.call_args.kwargs["properties"]
+        self.assertEqual(props["Steps Count"], {"number": 220})
         bot.send_message.assert_not_awaited()
 
     async def test_returns_error_when_steps_habit_cannot_be_resolved(self):

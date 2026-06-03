@@ -84,6 +84,17 @@ def _threshold_state_key(date_str: str) -> str:
     return f"steps_threshold_{date_str}"
 
 
+def _latest_steps_state_key(date_str: str) -> str:
+    return f"steps_latest_{date_str}"
+
+
+def _first_rich_text_value(page: dict) -> str:
+    chunks = page.get("properties", {}).get("Value", {}).get("rich_text", [])
+    if not chunks:
+        return ""
+    return chunks[0].get("plain_text") or chunks[0].get("text", {}).get("content") or ""
+
+
 def _persist_threshold_state(notion, env_db_id: str, date_str: str, message_id: int) -> None:
     """Persist today's threshold Telegram message id in the ENV database."""
     if not env_db_id:
@@ -107,6 +118,57 @@ def _persist_threshold_state(notion, env_db_id: str, date_str: str, message_id: 
         log.warning("steps: failed to persist threshold message id for %s: %s", date_str, e)
 
 
+def _persist_latest_steps_state(notion, env_db_id: str, date_str: str, steps: int) -> int:
+    """Persist the highest step count received for a date in the ENV database."""
+    if not env_db_id or steps <= 0:
+        return steps
+    key = _latest_steps_state_key(date_str)
+    try:
+        results = notion.databases.query(
+            database_id=env_db_id,
+            filter={"property": "Name", "title": {"equals": key}},
+        )
+        pages = results.get("results", [])
+        existing_steps = 0
+        if pages:
+            try:
+                existing_steps = int(_first_rich_text_value(pages[0]) or 0)
+            except ValueError:
+                existing_steps = 0
+        latest_steps = max(int(steps), existing_steps)
+        props = {
+            "Name": title_prop(key),
+            "Value": rich_text_prop(str(latest_steps)),
+        }
+        if pages:
+            notion.pages.update(page_id=pages[0]["id"], properties={"Value": props["Value"]})
+        else:
+            notion.pages.create(parent={"database_id": env_db_id}, properties=props)
+        return latest_steps
+    except Exception as e:
+        log.warning("steps: failed to persist latest step count for %s: %s", date_str, e)
+        return steps
+
+
+def _load_latest_steps_state(notion, env_db_id: str, date_str: str) -> int:
+    """Load the highest step count received for a date from the ENV database."""
+    if not env_db_id:
+        return 0
+    key = _latest_steps_state_key(date_str)
+    try:
+        results = notion.databases.query(
+            database_id=env_db_id,
+            filter={"property": "Name", "title": {"equals": key}},
+        )
+        pages = results.get("results", [])
+        if not pages:
+            return 0
+        return int(_first_rich_text_value(pages[0]) or 0)
+    except Exception as e:
+        log.warning("steps: failed to load latest step count for %s: %s", date_str, e)
+        return 0
+
+
 def _load_threshold_state(notion, env_db_id: str, date_str: str) -> int | None:
     """Load a persisted threshold Telegram message id from the ENV database."""
     if not env_db_id:
@@ -120,10 +182,7 @@ def _load_threshold_state(notion, env_db_id: str, date_str: str) -> int | None:
         pages = results.get("results", [])
         if not pages:
             return None
-        chunks = pages[0].get("properties", {}).get("Value", {}).get("rich_text", [])
-        if not chunks:
-            return None
-        raw = chunks[0].get("plain_text") or chunks[0].get("text", {}).get("content")
+        raw = _first_rich_text_value(pages[0])
         return int(raw) if raw else None
     except Exception as e:
         log.warning("steps: failed to load threshold message id for %s: %s", date_str, e)
@@ -368,6 +427,12 @@ async def handle_steps_sync(
 
     state = _date_state(date_str)
     state["last_steps"] = max(state["last_steps"], steps)
+    if env_db_id:
+        state["last_steps"] = max(
+            state["last_steps"],
+            _load_latest_steps_state(notion, env_db_id, date_str),
+        )
+        steps = state["last_steps"]
 
     completed = steps >= threshold
 
@@ -438,6 +503,12 @@ async def handle_steps_sync(
                 else:
                     # Transient Telegram error — log and retry on next sync, don't spam
                     log.warning("steps: edit failed, will retry next sync: %s", e)
+
+    if env_db_id:
+        latest_steps = _persist_latest_steps_state(notion, env_db_id, date_str, state["last_steps"])
+        state["last_steps"] = max(state["last_steps"], latest_steps)
+        steps = state["last_steps"]
+        completed = steps >= threshold
 
     # ── Intraday sub-threshold behavior (configurable) ──
     # Legacy mode only cached intraday counts until threshold/nightly stamp.
@@ -682,7 +753,7 @@ def get_steps_state_summary() -> dict:
 @track_job_execution("steps_sync_check")
 async def handle_steps_sync_check(bot=None) -> dict:
     """Utility Scheduler job: ensure today's Steps entry exists."""
-    from second_brain.main import MY_CHAT_ID, NOTION_HABIT_DB, NOTION_LOG_DB, TZ, notion
+    from second_brain.main import MY_CHAT_ID, NOTION_ENV_DB, NOTION_HABIT_DB, NOTION_LOG_DB, TZ, notion
     from second_brain.healthtrack import config as health_config
     from second_brain.healthtrack.scheduler import check_and_create_steps_entry
 
@@ -692,6 +763,7 @@ async def handle_steps_sync_check(bot=None) -> dict:
         log_db_id=NOTION_LOG_DB,
         habit_name=health_config.STEPS_HABIT_NAME,
         tz=TZ,
+        env_db_id=NOTION_ENV_DB,
         bot=bot,
         chat_id=MY_CHAT_ID,
     )

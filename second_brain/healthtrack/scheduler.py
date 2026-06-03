@@ -88,6 +88,7 @@ async def check_and_create_steps_entry(
     chat_id: str | int | None = None,
     bot=None,
     log_db_id: str | None = None,
+    env_db_id: str = "",
 ) -> dict:
     """
     Utility Scheduler job: ensure a Steps entry exists for today and persist
@@ -117,12 +118,22 @@ async def check_and_create_steps_entry(
             _date_state,
             _find_existing_log_entry,
             _find_steps_habit_page_id,
+            _load_latest_steps_state,
             _update_log_entry_steps,
         )
         today_str = _today_str(tz)
         target_log_db_id = log_db_id or habit_db_id
         state = _date_state(today_str)
         cached_steps = int(state.get("last_steps") or 0)
+        latest_persisted_steps = _load_latest_steps_state(notion, env_db_id, today_str)
+        if latest_persisted_steps > cached_steps:
+            cached_steps = latest_persisted_steps
+            state["last_steps"] = latest_persisted_steps
+            log.info(
+                "steps_sync_check: restored %d steps for %s from latest received state",
+                latest_persisted_steps,
+                today_str,
+            )
 
         log.info("steps_sync_check: checking for Steps entry on %s", today_str)
 
@@ -168,7 +179,21 @@ async def check_and_create_steps_entry(
                     today_str,
                 )
 
-            if steps_count is None or not current_steps or cached_steps > current_steps:
+            if cached_steps <= 0 and current_steps <= 0:
+                state["notion_page_id"] = existing_page_id
+                log.info(
+                    "steps_sync_check: Steps entry found for %s but no latest step data has been received yet; leaving Notion unchanged",
+                    today_str,
+                )
+                return {
+                    "ok": True,
+                    "action": "skipped",
+                    "reason": f"No latest steps available for {today_str}",
+                    "page_id": existing_page_id,
+                    "steps_count": steps_count,
+                }
+
+            if cached_steps > current_steps or (steps_count is None and cached_steps > 0):
                 completed = cached_steps >= STEPS_THRESHOLD
                 if not _update_log_entry_steps(notion, existing_page_id, cached_steps, completed):
                     reason = f"Failed to update Steps Count for {today_str}"
@@ -214,7 +239,23 @@ async def check_and_create_steps_entry(
             }
 
         log.warning(
-            "steps_sync_check: Steps entry missing for %s, creating placeholder",
+            "steps_sync_check: Steps entry missing for %s",
+            today_str,
+        )
+        if cached_steps <= 0:
+            log.info(
+                "steps_sync_check: no latest step data received for %s; skipping placeholder create",
+                today_str,
+            )
+            return {
+                "ok": True,
+                "action": "skipped",
+                "reason": f"No latest steps available for {today_str}",
+                "steps_count": cached_steps,
+            }
+
+        log.warning(
+            "steps_sync_check: creating Steps entry for %s with cached steps",
             today_str,
         )
         new_entry = notion.pages.create(

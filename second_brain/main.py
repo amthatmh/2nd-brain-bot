@@ -2188,6 +2188,7 @@ async def _run_steps_sync_check_dispatch(bot) -> dict:
         log_db_id=NOTION_LOG_DB,
         habit_name=health_config.STEPS_HABIT_NAME,
         tz=TZ,
+        env_db_id=NOTION_ENV_DB,
         bot=bot,
         chat_id=MY_CHAT_ID,
     )
