@@ -168,7 +168,21 @@ async def check_and_create_steps_entry(
                     today_str,
                 )
 
-            if steps_count is None or cached_steps > current_steps:
+            if cached_steps <= 0 and current_steps <= 0:
+                state["notion_page_id"] = existing_page_id
+                log.info(
+                    "steps_sync_check: Steps entry found for %s but no step data is cached yet; leaving Notion unchanged",
+                    today_str,
+                )
+                return {
+                    "ok": True,
+                    "action": "skipped",
+                    "reason": f"No cached steps available for {today_str}",
+                    "page_id": existing_page_id,
+                    "steps_count": steps_count,
+                }
+
+            if cached_steps > current_steps or (steps_count is None and cached_steps > 0):
                 completed = cached_steps >= STEPS_THRESHOLD
                 if not _update_log_entry_steps(notion, existing_page_id, cached_steps, completed):
                     reason = f"Failed to update Steps Count for {today_str}"
@@ -214,7 +228,23 @@ async def check_and_create_steps_entry(
             }
 
         log.warning(
-            "steps_sync_check: Steps entry missing for %s, creating placeholder",
+            "steps_sync_check: Steps entry missing for %s",
+            today_str,
+        )
+        if cached_steps <= 0:
+            log.info(
+                "steps_sync_check: no step data cached for %s; skipping placeholder create",
+                today_str,
+            )
+            return {
+                "ok": True,
+                "action": "skipped",
+                "reason": f"No cached steps available for {today_str}",
+                "steps_count": cached_steps,
+            }
+
+        log.warning(
+            "steps_sync_check: creating Steps entry for %s with cached steps",
             today_str,
         )
         new_entry = notion.pages.create(

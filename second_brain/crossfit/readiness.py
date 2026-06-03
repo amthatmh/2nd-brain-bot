@@ -15,6 +15,8 @@ from second_brain.notion.properties import rich_text_prop, title_prop
 
 log = logging.getLogger(__name__)
 
+_readiness_logged_cache: dict[str, bool] = {}
+
 
 async def _maybe_await(value):
     if inspect.isawaitable(value):
@@ -28,6 +30,8 @@ async def check_readiness_logged_today(notion_client, daily_readiness_db_id: Opt
     daily_readiness_db_id = daily_readiness_db_id or os.getenv("NOTION_DAILY_READINESS_DB", "")
     if not daily_readiness_db_id or notion_client is None:
         return False
+    if _readiness_logged_cache.get(today):
+        return True
     try:
         results = await _maybe_await(
             notion_call(
@@ -37,7 +41,10 @@ async def check_readiness_logged_today(notion_client, daily_readiness_db_id: Opt
                 page_size=1,
             )
         )
-        return len(results.get("results", [])) > 0
+        if len(results.get("results", [])) > 0:
+            _readiness_logged_cache[today] = True
+            return True
+        return False
     except Exception as e:
         log.error("Error checking readiness: %s", e)
         return False
@@ -77,13 +84,15 @@ async def log_daily_readiness(
         "Resting HR": {"number": resting_hr} if resting_hr is not None else None,
         "Weekly Program": {"relation": [{"id": weekly_program_id}] if weekly_program_id else []},
     }
-    return await _maybe_await(
+    result = await _maybe_await(
         notion_call(
             notion_client.pages.create,
             parent={"database_id": daily_readiness_db_id},
             properties={k: v for k, v in properties.items() if v is not None},
         )
     )
+    _readiness_logged_cache[today] = True
+    return result
 
 
 def extract_readiness_score(page: dict) -> Optional[float]:

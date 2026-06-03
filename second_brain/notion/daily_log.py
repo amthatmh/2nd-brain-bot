@@ -217,7 +217,7 @@ async def generate_daily_log(
         activity_lines = "\n".join(f"- {a}" for a in claude_activity)
         activity_section = f"CLAUDE SESSION ACTIVITY (timestamped dev session snippets):\n{activity_lines}\n\n"
 
-    recent_carried_forward = get_recent_carried_forward(notion, notion_daily_log_db, tz, days=3)
+    recent_carried_forward = get_recent_carried_forward(notion, notion_daily_log_db, tz, days=1)
 
     def _bullet_list(items: list[str]) -> str:
         return "\n".join(f"- {i}" for i in items) if items else "None"
@@ -272,7 +272,7 @@ Return ONLY valid JSON, no markdown fences:
   "testing_validation": "bullet list from Telegram task completions, notes, or signoff text related to testing. Empty string if nothing tested.",
   "issues_bugs": "bullet list of bugs/issues from Telegram deferred tasks + notes. Empty string if none.",
   "key_learnings": "Multi-subsection field with ### Second Brain and ### Brian II headings. Use task/note/signoff/session activity patterns only. Max 5 bullets per subsection. Omit subsections where no learnings exist. Empty string if nothing notable.",
-  "carried_forward": "Unresolved threads only. EXCLUDE any item whose task name appears in TASKS COMPLETED above — those are resolved. Max 5 bullets. Empty string if everything resolved."
+  "carried_forward": "Unresolved threads only. STRICT RULES: (1) EXCLUDE any item from previous Carried Forward that matches a task in TASKS COMPLETED. (2) EXCLUDE any item from previous Carried Forward that does NOT appear in TASKS DEFERRED and is NOT explicitly mentioned as still-pending in MANUAL SIGNOFF NOTES. Items must be warranted by today's evidence, do not perpetuate automatically. The list must shrink as work gets done. Max 5 bullets. Empty string if nothing clearly unresolved."
 }}
 
 CRITICAL RULES:
