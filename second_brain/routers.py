@@ -1648,23 +1648,9 @@ async def _cb_h_done(q, parts, context) -> None:
             failed_names.append(habit_name)
             log.error("Habit log Notion error for %s: %s", habit_name, notion_error)
 
-    session_habits = _main()._habit_selection_habits(message_id)
-    remaining_habits = [h for h in session_habits if h["page_id"] not in logged_page_ids]
-
     _main()._habit_selections.pop(message_id, None)
 
-    if remaining_habits:
-        text = q.message.text or q.message.caption or ""
-        check_type = (
-            "evening" if "Evening check-in" in text
-            else "manual" if "Which habit" in text
-            else "morning"
-        )
-        new_markup = kb.habit_buttons(remaining_habits, check_type, selected=set())
-        _main()._store_habit_selection_session(message_id, remaining_habits)
-        await q.edit_message_reply_markup(reply_markup=new_markup)
-    else:
-        await q.edit_message_reply_markup(reply_markup=None)
+    await q.edit_message_reply_markup(reply_markup=None)
 
     if logged_names:
         just_hit = set(
@@ -1690,7 +1676,8 @@ async def _cb_h_done(q, parts, context) -> None:
                 count = _main().get_week_completion_count(page_id)
                 freq = _main().get_habit_frequency(page_id)
                 goal = " 🎯" if name in just_hit else ""
-                lines.append(f"{icon} {name} — {count}/{freq} this week{goal}")
+                if freq and count >= freq - 1:
+                    lines.append(f"{icon} {name} — {count}/{freq} this week{goal}")
             except Exception as progress_error:
                 log.debug("Habit progress unavailable for %s: %s", name, progress_error)
         if failed_names:

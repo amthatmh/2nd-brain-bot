@@ -168,7 +168,7 @@ async def check_and_create_steps_entry(
                     today_str,
                 )
 
-            if steps_count is None or cached_steps > current_steps:
+            if steps_count is None or not current_steps or cached_steps > current_steps:
                 completed = cached_steps >= STEPS_THRESHOLD
                 if not _update_log_entry_steps(notion, existing_page_id, cached_steps, completed):
                     reason = f"Failed to update Steps Count for {today_str}"

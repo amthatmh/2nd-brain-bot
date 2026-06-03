@@ -438,7 +438,7 @@ def _generate_digest_brief(weather_block, overdue_count, today_count, habit_coun
                 f"Habits pending: {habit_count}\n\n"
                 "Write one warm direct sentence weaving weather (and how it compares to yesterday) "
                 "into the day — help the user know what to wear and what to prioritise. "
-                "No greeting. No padding."
+                "Use Celsius for any temperatures mentioned. No greeting. No padding."
             )}],
         )
         return resp.content[0].text.strip().strip('"')
