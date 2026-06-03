@@ -75,11 +75,9 @@ from second_brain.healthtrack import config as health_config
 from second_brain.healthtrack.steps import (
     _find_steps_habit_page_id,
     backfill_steps_state_from_notion,
-    handle_steps_final_stamp,
     migrate_steps_entry_titles,
 )
 from second_brain.healthtrack.scheduler import (
-    check_and_create_steps_entry,
     weigh_backfill_job,
     weigh_sync_job,
 )
@@ -2181,41 +2179,6 @@ async def process_pending_programmes(bot) -> None:
     from second_brain.crossfit.weekly_program import process_pending_programmes as _impl
     await _impl(notion, bot, workout_program_db=NOTION_WORKOUT_PROGRAM_DB, chat_id=MY_CHAT_ID)
 
-async def _run_steps_sync_check_dispatch(bot) -> dict:
-    result = await check_and_create_steps_entry(
-        notion=notion,
-        habit_db_id=NOTION_HABIT_DB,
-        log_db_id=NOTION_LOG_DB,
-        habit_name=health_config.STEPS_HABIT_NAME,
-        tz=TZ,
-        bot=bot,
-        chat_id=MY_CHAT_ID,
-    )
-    sync_status["steps"]["last_run"] = utc_now_iso()
-    sync_status["steps"]["ok"] = bool(result.get("ok"))
-    sync_status["steps"]["error"] = None if result.get("ok") else result.get("reason")
-    sync_status["steps"]["stats"] = result
-    return result
-
-async def _run_steps_final_stamp_dispatch(bot) -> dict:
-    result = await handle_steps_final_stamp(
-        notion=notion,
-        habit_db_id=NOTION_HABIT_DB,
-        log_db_id=NOTION_LOG_DB,
-        env_db_id=NOTION_ENV_DB,
-        habit_name=health_config.STEPS_HABIT_NAME,
-        threshold=health_config.STEPS_THRESHOLD,
-        source_label=health_config.STEPS_SOURCE_LABEL,
-        tz=TZ,
-        bot=bot,
-        chat_id=MY_CHAT_ID,
-    )
-    sync_status["steps"]["last_run"] = utc_now_iso()
-    sync_status["steps"]["ok"] = True
-    sync_status["steps"]["error"] = None
-    sync_status["steps"]["stats"] = result
-    return result
-
 UTILITY_JOB_DISPATCH: dict[str, Callable] = {}
 
 def _utility_async_handler(job_key: str, coro_factory: Callable):
@@ -2249,8 +2212,6 @@ def _build_utility_job_dispatch(bot) -> dict[str, Callable]:
         "process_pending_programmes": _utility_async_handler("process_pending_programmes", lambda: process_pending_programmes(bot)),
         "cinema_sync": _utility_async_handler("cinema_sync", lambda: run_cinema_sync(bot)),
         "asana_sync": _utility_async_handler("asana_sync", lambda: run_asana_sync(bot)),
-        "steps_final_stamp": _utility_async_handler("steps_final_stamp", lambda: _run_steps_final_stamp_dispatch(bot)),
-        "steps_sync_check": _utility_async_handler("steps_sync_check", lambda: _run_steps_sync_check_dispatch(bot)),
         "weigh_sync": _utility_async_handler(
             "weigh_sync",
             lambda: weigh_sync_job(notion, NOTION_LOG_DB, NOTION_HEALTH_METRICS_DB, habit_cache, TZ),
@@ -2756,11 +2717,10 @@ async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         from second_brain.healthtrack.sleep import handle_sleep_sync_job
 
-        cinema_stats, asana_stats, weather_stats, steps_stats, sleep_stats = await asyncio.gather(
+        cinema_stats, asana_stats, weather_stats, sleep_stats = await asyncio.gather(
             run_cinema_sync(context.bot),
             run_asana_sync(context.bot),
             wx.fetch_weather_cache(context.bot),
-            _run_steps_sync_check_dispatch(context.bot),
             handle_sleep_sync_job(context.bot),
             return_exceptions=True,
         )
@@ -2792,16 +2752,6 @@ async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             lines.append(f"Weather: ❌ {weather_stats}")
         else:
             lines.append("Weather: refreshed")
-
-        if isinstance(steps_stats, Exception):
-            lines.append(f"Steps: ❌ {steps_stats}")
-        else:
-            steps_action = steps_stats.get("action", "done")
-            steps_count = steps_stats.get("steps_count")
-            if steps_count is None:
-                lines.append(f"Steps: {steps_action}")
-            else:
-                lines.append(f"Steps: {steps_action} steps={steps_count}")
 
         if isinstance(sleep_stats, Exception):
             lines.append(f"Sleep: ❌ {sleep_stats}")
