@@ -13,6 +13,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from second_brain.healthtrack.routes import _parse_all_dates_from_payload, _parse_health_export_payload, register_health_routes
 from second_brain.healthtrack.steps import (
     _date_state,
+    _find_existing_log_entry,
     _load_threshold_state,
     _persist_threshold_state,
     _steps_state,
@@ -126,6 +127,38 @@ class TestMigrateStepsEntryTitles(unittest.TestCase):
                 call.kwargs["properties"],
                 {"Entry": {"title": [{"text": {"content": "Steps"}}]}},
             )
+
+
+class TestFindExistingStepsLogEntry(unittest.TestCase):
+    def test_merges_relation_and_title_date_matches(self):
+        notion = MagicMock()
+        notion.databases.query.side_effect = [
+            {"results": [{"id": "relation-row"}, {"id": "shared-row"}]},
+            {"results": [{"id": "title-row"}, {"id": "shared-row"}]},
+        ]
+
+        result = _find_existing_log_entry(
+            notion=notion,
+            log_db_id="log-db",
+            habit_page_id="habit-page",
+            date_str="2026-06-03",
+        )
+
+        self.assertEqual(result, ["relation-row", "shared-row", "title-row"])
+        relation_filter = notion.databases.query.call_args_list[0].kwargs["filter"]
+        fallback_filter = notion.databases.query.call_args_list[1].kwargs["filter"]
+        self.assertEqual(
+            relation_filter["and"][0],
+            {"property": "Habit", "relation": {"contains": "habit-page"}},
+        )
+        self.assertEqual(
+            fallback_filter["and"][0],
+            {"property": "Entry", "title": {"equals": "Steps"}},
+        )
+        self.assertEqual(
+            fallback_filter["and"][1],
+            {"property": "Date", "date": {"equals": "2026-06-03"}},
+        )
 
 
 # ── Payload parsing ───────────────────────────────────────────────────────────

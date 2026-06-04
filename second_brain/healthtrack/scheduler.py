@@ -30,24 +30,49 @@ def _current_monday_str(tz) -> str:
     return monday.isoformat()
 
 
-def _latest_steps_from_last_webhook(date_str: str) -> int:
-    """Return the latest parsed Health Auto step count for a date, if available."""
+def _last_webhook_steps_snapshot(date_str: str) -> dict[str, Any]:
+    """Return parsed Health Auto step counts from the latest webhook attempt."""
+    snapshot: dict[str, Any] = {
+        "steps_for_date": 0,
+        "latest_date": None,
+        "latest_steps": 0,
+        "parsed_dates": [],
+        "status": None,
+        "at": None,
+    }
     try:
         from second_brain.healthtrack.routes import _last_steps_webhook
 
-        latest = 0
+        snapshot["status"] = _last_steps_webhook.get("status")
+        snapshot["at"] = _last_steps_webhook.get("at")
+        by_date: dict[str, int] = {}
         for item in _last_steps_webhook.get("parsed") or []:
-            if not isinstance(item, dict) or item.get("date") != date_str:
+            if not isinstance(item, dict):
                 continue
             try:
                 steps = int(item.get("steps") or 0)
             except (TypeError, ValueError):
                 continue
-            latest = max(latest, steps)
-        return latest
+            item_date = str(item.get("date") or "").strip()
+            if not item_date:
+                continue
+            by_date[item_date] = max(by_date.get(item_date, 0), steps)
+        parsed_dates = sorted(by_date)
+        snapshot["parsed_dates"] = parsed_dates
+        snapshot["steps_for_date"] = by_date.get(date_str, 0)
+        if parsed_dates:
+            latest_date = parsed_dates[-1]
+            snapshot["latest_date"] = latest_date
+            snapshot["latest_steps"] = by_date.get(latest_date, 0)
+        return snapshot
     except Exception as exc:
         log.debug("steps_sync_check: last webhook lookup unavailable for %s: %s", date_str, exc)
-        return 0
+        return snapshot
+
+
+def _latest_steps_from_last_webhook(date_str: str) -> int:
+    """Return the latest parsed Health Auto step count for a date, if available."""
+    return int(_last_webhook_steps_snapshot(date_str).get("steps_for_date") or 0)
 
 
 def _already_logged_on_date(notion, log_db_id: str, habit_page_id: str, date_str: str) -> bool:
@@ -143,7 +168,8 @@ async def check_and_create_steps_entry(
         target_log_db_id = log_db_id or habit_db_id
         state = _date_state(today_str)
         cached_steps = int(state.get("last_steps") or 0)
-        webhook_steps = _latest_steps_from_last_webhook(today_str)
+        webhook_snapshot = _last_webhook_steps_snapshot(today_str)
+        webhook_steps = int(webhook_snapshot.get("steps_for_date") or 0)
         if webhook_steps > cached_steps:
             cached_steps = webhook_steps
             state["last_steps"] = webhook_steps
@@ -172,15 +198,25 @@ async def check_and_create_steps_entry(
         if existing_page_id:
             steps_count = None
             current_steps = 0
+            existing_counts: dict[str, int] = {}
             try:
-                entry = notion.pages.retrieve(page_id=existing_page_id)
-                steps_count = (
-                    entry.get("properties", {})
-                    .get("Steps Count", {})
-                    .get("number")
-                )
-                if isinstance(steps_count, (int, float)):
-                    current_steps = int(steps_count)
+                for page_id in existing_page_ids:
+                    entry = notion.pages.retrieve(page_id=page_id)
+                    page_steps_count = (
+                        entry.get("properties", {})
+                        .get("Steps Count", {})
+                        .get("number")
+                    )
+                    if page_id == existing_page_id:
+                        steps_count = page_steps_count
+                    if isinstance(page_steps_count, (int, float)):
+                        existing_counts[page_id] = int(page_steps_count)
+                if existing_counts:
+                    existing_page_id, current_steps = max(
+                        existing_counts.items(),
+                        key=lambda item: item[1],
+                    )
+                    steps_count = current_steps
             except Exception as exc:
                 log.warning(
                     "steps_sync_check: found entry %s but could not read Steps Count: %s",
@@ -199,16 +235,34 @@ async def check_and_create_steps_entry(
 
             if cached_steps <= 0 and current_steps <= 0:
                 state["notion_page_id"] = existing_page_id
-                log.info(
-                    "steps_sync_check: Steps entry found for %s but no step data is cached yet; leaving Notion unchanged",
-                    today_str,
-                )
+                parsed_dates = webhook_snapshot.get("parsed_dates") or []
+                latest_date = webhook_snapshot.get("latest_date")
+                latest_steps = webhook_snapshot.get("latest_steps")
+                if parsed_dates and latest_date:
+                    reason = (
+                        f"No steps data for {today_str}; latest Health Auto payload ended at "
+                        f"{latest_date} with {latest_steps} steps"
+                    )
+                    log.info(
+                        "steps_sync_check: %s (payload dates: %s)",
+                        reason,
+                        parsed_dates,
+                    )
+                else:
+                    reason = f"No cached steps available for {today_str}"
+                    log.info(
+                        "steps_sync_check: Steps entry found for %s but no step data is cached yet; leaving Notion unchanged",
+                        today_str,
+                    )
                 return {
                     "ok": True,
                     "action": "skipped",
-                    "reason": f"No cached steps available for {today_str}",
+                    "reason": reason,
                     "page_id": existing_page_id,
                     "steps_count": steps_count,
+                    "latest_payload_date": latest_date,
+                    "latest_payload_steps": latest_steps,
+                    "payload_dates": parsed_dates,
                 }
 
             if cached_steps > 0:
@@ -224,6 +278,24 @@ async def check_and_create_steps_entry(
                         "page_id": existing_page_id,
                         "steps_count": steps_count,
                     }
+                duplicate_ids = [page_id for page_id in existing_page_ids if page_id != existing_page_id]
+                for duplicate_id in duplicate_ids:
+                    try:
+                        notion.pages.update(page_id=duplicate_id, archived=True)
+                    except Exception as exc:
+                        log.warning(
+                            "steps_sync_check: failed to archive duplicate Steps entry %s for %s: %s",
+                            duplicate_id,
+                            today_str,
+                            exc,
+                        )
+                if duplicate_ids:
+                    log.warning(
+                        "steps_sync_check: archived %d duplicate Steps entries for %s; kept %s",
+                        len(duplicate_ids),
+                        today_str,
+                        existing_page_id,
+                    )
                 state["notion_page_id"] = existing_page_id
                 final_steps = max(cached_steps, current_steps)
                 log.info(
@@ -261,15 +333,33 @@ async def check_and_create_steps_entry(
             today_str,
         )
         if cached_steps <= 0:
-            log.info(
-                "steps_sync_check: no step data cached for %s; skipping placeholder create",
-                today_str,
-            )
+            parsed_dates = webhook_snapshot.get("parsed_dates") or []
+            latest_date = webhook_snapshot.get("latest_date")
+            latest_steps = webhook_snapshot.get("latest_steps")
+            if parsed_dates and latest_date:
+                reason = (
+                    f"No steps data for {today_str}; latest Health Auto payload ended at "
+                    f"{latest_date} with {latest_steps} steps"
+                )
+                log.info(
+                    "steps_sync_check: %s; skipping placeholder create (payload dates: %s)",
+                    reason,
+                    parsed_dates,
+                )
+            else:
+                reason = f"No cached steps available for {today_str}"
+                log.info(
+                    "steps_sync_check: no step data cached for %s; skipping placeholder create",
+                    today_str,
+                )
             return {
                 "ok": True,
                 "action": "skipped",
-                "reason": f"No cached steps available for {today_str}",
+                "reason": reason,
                 "steps_count": cached_steps,
+                "latest_payload_date": latest_date,
+                "latest_payload_steps": latest_steps,
+                "payload_dates": parsed_dates,
             }
 
         log.warning(

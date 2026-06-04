@@ -155,6 +155,14 @@ def _find_existing_log_entry(notion, log_db_id: str, habit_page_id: str, date_st
     """
     Return all Notion page_ids for existing Habit Log entries for this habit+date.
     """
+    page_ids: list[str] = []
+
+    def _add_pages(pages) -> None:
+        for page in pages or []:
+            page_id = page.get("id")
+            if page_id and page_id not in page_ids:
+                page_ids.append(page_id)
+
     try:
         results = notion.databases.query(
             database_id=log_db_id,
@@ -165,11 +173,25 @@ def _find_existing_log_entry(notion, log_db_id: str, habit_page_id: str, date_st
                 ]
             },
         )
-        pages = results.get("results", [])
-        return [p["id"] for p in pages if p.get("id")]
+        _add_pages(results.get("results", []))
     except Exception as e:
         log.error("steps: error querying existing log entry for %s: %s", date_str, e)
-        return []
+
+    try:
+        results = notion.databases.query(
+            database_id=log_db_id,
+            filter={
+                "and": [
+                    {"property": "Entry", "title": {"equals": "Steps"}},
+                    {"property": "Date", "date": {"equals": date_str}},
+                ]
+            },
+        )
+        _add_pages(results.get("results", []))
+    except Exception as e:
+        log.debug("steps: title/date fallback query skipped for %s: %s", date_str, e)
+
+    return page_ids
 
 
 def _normalise_existing_log_ids(value) -> list[str]:
