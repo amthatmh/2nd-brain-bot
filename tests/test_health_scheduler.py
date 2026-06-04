@@ -75,6 +75,43 @@ class TestCheckAndCreateStepsEntry(IsolatedAsyncioTestCase):
         fake_steps._update_log_entry_steps.assert_called_once_with(notion, "log-page", 6255, False)
         notion.pages.create.assert_not_called()
 
+    async def test_updates_existing_zero_steps_count_from_latest_webhook_payload(self):
+        notion = MagicMock()
+        notion.pages.retrieve.return_value = {
+            "properties": {"Steps Count": {"number": 0}}
+        }
+        fake_steps = _fake_steps_mod("habit-page", "log-page", last_steps=0)
+        fake_routes = SimpleNamespace(
+            _last_steps_webhook={
+                "parsed": [
+                    {"steps": 8100, "date": "2026-05-06"},
+                    {"steps": 9500, "date": "2026-05-07"},
+                    {"steps": 9200, "date": "2026-05-07"},
+                ]
+            }
+        )
+
+        with patch("second_brain.healthtrack.scheduler._today_str", return_value="2026-05-07"), \
+             patch.dict("sys.modules", {
+                 "second_brain.healthtrack.steps": fake_steps,
+                 "second_brain.healthtrack.routes": fake_routes,
+             }):
+            result = await check_and_create_steps_entry(
+                notion=notion,
+                habit_db_id="habits-db",
+                log_db_id="log-db",
+                habit_name="Steps",
+                tz="America/Chicago",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["action"], "updated")
+        self.assertEqual(result["page_id"], "log-page")
+        self.assertEqual(result["steps_count"], 9500)
+        self.assertEqual(fake_steps._state["last_steps"], 9500)
+        fake_steps._update_log_entry_steps.assert_called_once_with(notion, "log-page", 9500, False)
+        notion.pages.create.assert_not_called()
+
     async def test_creates_steps_entry_with_cached_steps_count_when_missing(self):
         notion = MagicMock()
         notion.pages.create.return_value = {"id": "created-page"}
