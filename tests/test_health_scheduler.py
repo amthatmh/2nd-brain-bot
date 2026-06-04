@@ -241,10 +241,6 @@ class TestWeighJobs(IsolatedAsyncioTestCase):
 
     async def test_register_handlers_exposes_sleep_backfill(self):
         manager = MagicMock()
-        fake_steps = SimpleNamespace(
-            handle_steps_final_stamp_job=MagicMock(),
-            handle_steps_sync_check=MagicMock(),
-        )
         fake_sleep = SimpleNamespace(
             handle_sleep_resync_job=MagicMock(),
             handle_sleep_sync_job=MagicMock(),
@@ -252,7 +248,6 @@ class TestWeighJobs(IsolatedAsyncioTestCase):
         fake_insights = SimpleNamespace(handle_weekly_health_insight_job=MagicMock())
 
         with patch.dict("sys.modules", {
-            "second_brain.healthtrack.steps": fake_steps,
             "second_brain.healthtrack.sleep": fake_sleep,
             "second_brain.healthtrack.insights": fake_insights,
         }):
@@ -263,4 +258,7 @@ class TestWeighJobs(IsolatedAsyncioTestCase):
             for call in manager.register_handler.call_args_list
         }
         self.assertIn("sleep_backfill", registered)
+        self.assertNotIn("steps_sync_check", registered)
+        self.assertNotIn("steps_morning_stamp", registered)
+        self.assertNotIn("steps_final_stamp", registered)
         self.assertTrue(callable(registered["sleep_backfill"]))
