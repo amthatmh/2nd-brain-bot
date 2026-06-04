@@ -30,6 +30,26 @@ def _current_monday_str(tz) -> str:
     return monday.isoformat()
 
 
+def _latest_steps_from_last_webhook(date_str: str) -> int:
+    """Return the latest parsed Health Auto step count for a date, if available."""
+    try:
+        from second_brain.healthtrack.routes import _last_steps_webhook
+
+        latest = 0
+        for item in _last_steps_webhook.get("parsed") or []:
+            if not isinstance(item, dict) or item.get("date") != date_str:
+                continue
+            try:
+                steps = int(item.get("steps") or 0)
+            except (TypeError, ValueError):
+                continue
+            latest = max(latest, steps)
+        return latest
+    except Exception as exc:
+        log.debug("steps_sync_check: last webhook lookup unavailable for %s: %s", date_str, exc)
+        return 0
+
+
 def _already_logged_on_date(notion, log_db_id: str, habit_page_id: str, date_str: str) -> bool:
     """Return whether a completed habit log already exists on a specific date."""
     try:
@@ -123,6 +143,15 @@ async def check_and_create_steps_entry(
         target_log_db_id = log_db_id or habit_db_id
         state = _date_state(today_str)
         cached_steps = int(state.get("last_steps") or 0)
+        webhook_steps = _latest_steps_from_last_webhook(today_str)
+        if webhook_steps > cached_steps:
+            cached_steps = webhook_steps
+            state["last_steps"] = webhook_steps
+            log.info(
+                "steps_sync_check: restored %d steps for %s from latest Health Auto payload",
+                webhook_steps,
+                today_str,
+            )
 
         log.info("steps_sync_check: checking for Steps entry on %s", today_str)
 
