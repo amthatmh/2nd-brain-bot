@@ -182,7 +182,7 @@ async def check_and_create_steps_entry(
                     "steps_count": steps_count,
                 }
 
-            if cached_steps > current_steps or (steps_count is None and cached_steps > 0):
+            if cached_steps > 0:
                 completed = cached_steps >= STEPS_THRESHOLD
                 if not _update_log_entry_steps(notion, existing_page_id, cached_steps, completed):
                     reason = f"Failed to update Steps Count for {today_str}"
@@ -442,12 +442,14 @@ def register_handlers(manager: "UtilitySchedulerManager") -> None:
     """Register health tracking jobs with the Utility Scheduler Manager."""
     from second_brain.healthtrack.insights import handle_weekly_health_insight_job
     from second_brain.healthtrack.sleep import handle_sleep_resync_job, handle_sleep_sync_job
+    from second_brain.healthtrack.steps import handle_steps_sync_check
 
+    manager.register_handler("steps_sync_check", handle_steps_sync_check)
     manager.register_handler("sleep_sync", handle_sleep_sync_job)
     manager.register_handler("sleep_resync", handle_sleep_resync_job)
     manager.register_handler("sleep_backfill", handle_sleep_backfill_job)
     manager.register_handler("weekly_health_insight", handle_weekly_health_insight_job)
     log.info(
         "healthtrack: registered scheduler handlers "
-        "(sleep_sync, sleep_resync, sleep_backfill, weekly_health_insight)"
+        "(steps_sync_check, sleep_sync, sleep_resync, sleep_backfill, weekly_health_insight)"
     )
