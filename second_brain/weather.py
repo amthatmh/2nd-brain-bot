@@ -63,13 +63,30 @@ weather_cache: ExpiringDict = ExpiringDict(ttl_seconds=3600)
 
 def save_today_weather_snapshot(high_c: int, low_c: int, condition: str) -> None:
     try:
+        today = datetime.now(TZ).date().isoformat()
+        snapshots: dict[str, dict] = {}
+        if _yesterday_weather_file.exists():
+            existing = json.loads(_yesterday_weather_file.read_text() or "{}")
+            if isinstance(existing, dict):
+                if isinstance(existing.get("snapshots"), dict):
+                    snapshots = {
+                        str(day): snap
+                        for day, snap in existing["snapshots"].items()
+                        if isinstance(snap, dict)
+                    }
+                elif existing.get("date"):
+                    snapshots[str(existing["date"])] = existing
+        snapshots[today] = {
+            "high_c": high_c,
+            "low_c": low_c,
+            "condition": condition,
+            "date": today,
+        }
+        snapshots = dict(sorted(snapshots.items())[-14:])
         _yesterday_weather_file.write_text(
             json.dumps(
                 {
-                    "high_c": high_c,
-                    "low_c": low_c,
-                    "condition": condition,
-                    "date": date.today().isoformat(),
+                    "snapshots": snapshots,
                 }
             )
         )
@@ -80,7 +97,12 @@ def save_today_weather_snapshot(high_c: int, low_c: int, condition: str) -> None
 def load_yesterday_weather() -> dict | None:
     try:
         data = json.loads(_yesterday_weather_file.read_text())
-        if data.get("date") == (date.today() - timedelta(days=1)).isoformat():
+        yesterday = (datetime.now(TZ).date() - timedelta(days=1)).isoformat()
+        snapshots = data.get("snapshots")
+        if isinstance(snapshots, dict):
+            snapshot = snapshots.get(yesterday)
+            return snapshot if isinstance(snapshot, dict) else None
+        if data.get("date") == yesterday:
             return data
     except Exception:
         pass

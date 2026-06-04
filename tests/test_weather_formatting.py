@@ -217,6 +217,30 @@ def test_fetch_daily_weather_reuses_cached_one_call_data(monkeypatch):
     assert weather_five_days[0] == digest_today[0]
 
 
+def test_today_weather_snapshot_preserves_yesterday_reference(monkeypatch, tmp_path):
+    snapshot_file = tmp_path / "yesterday_weather.json"
+    today = datetime.now(wx.TZ).date()
+    yesterday = (today - timedelta(days=1)).isoformat()
+    snapshot_file.write_text(
+        (
+            '{"high_c":18,"low_c":9,"condition":"Rain",'
+            f'"date":"{yesterday}"'
+            "}"
+        )
+    )
+
+    monkeypatch.setattr(wx, "_yesterday_weather_file", snapshot_file)
+
+    wx.save_today_weather_snapshot(25, 15, "Clouds")
+
+    yesterday_weather = wx.load_yesterday_weather()
+    assert yesterday_weather is not None
+    assert yesterday_weather["date"] == yesterday
+    assert yesterday_weather["high_c"] == 18
+    assert yesterday_weather["low_c"] == 9
+    assert yesterday_weather["condition"] == "Rain"
+
+
 def test_fetch_multi_day_forecast_buckets_three_hour_rows(monkeypatch):
     monkeypatch.setattr(wx, "OPENWEATHER_KEY", "test-openweather-key")
     wx._loc.lat = 41.88
