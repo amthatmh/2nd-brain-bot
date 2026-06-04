@@ -26,14 +26,15 @@ def _fake_steps_mod(habit_page_id, existing_log_id, *, last_steps=0, update_ok=T
 
 
 class TestCheckAndCreateStepsEntry(IsolatedAsyncioTestCase):
-    async def test_returns_exists_when_today_steps_entry_is_present(self):
+    async def test_updates_existing_steps_entry_on_interval(self):
         notion = MagicMock()
         notion.pages.retrieve.return_value = {
             "properties": {"Steps Count": {"number": 8500}}
         }
+        fake_steps = _fake_steps_mod("habit-page", "log-page")
 
         with patch("second_brain.healthtrack.scheduler._today_str", return_value="2026-05-07"), \
-             patch.dict("sys.modules", {"second_brain.healthtrack.steps": _fake_steps_mod("habit-page", "log-page")}):
+             patch.dict("sys.modules", {"second_brain.healthtrack.steps": fake_steps}):
             result = await check_and_create_steps_entry(
                 notion=notion,
                 habit_db_id="habits-db",
@@ -43,9 +44,10 @@ class TestCheckAndCreateStepsEntry(IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(result["action"], "exists")
+        self.assertEqual(result["action"], "updated")
         self.assertEqual(result["page_id"], "log-page")
         self.assertEqual(result["steps_count"], 8500)
+        fake_steps._update_log_entry_steps.assert_called_once_with(notion, "log-page", 8500, False)
         notion.pages.create.assert_not_called()
 
     async def test_updates_existing_blank_steps_count_from_cached_state(self):
@@ -241,6 +243,9 @@ class TestWeighJobs(IsolatedAsyncioTestCase):
 
     async def test_register_handlers_exposes_sleep_backfill(self):
         manager = MagicMock()
+        fake_steps = SimpleNamespace(
+            handle_steps_sync_check=MagicMock(),
+        )
         fake_sleep = SimpleNamespace(
             handle_sleep_resync_job=MagicMock(),
             handle_sleep_sync_job=MagicMock(),
@@ -248,6 +253,7 @@ class TestWeighJobs(IsolatedAsyncioTestCase):
         fake_insights = SimpleNamespace(handle_weekly_health_insight_job=MagicMock())
 
         with patch.dict("sys.modules", {
+            "second_brain.healthtrack.steps": fake_steps,
             "second_brain.healthtrack.sleep": fake_sleep,
             "second_brain.healthtrack.insights": fake_insights,
         }):
@@ -258,7 +264,8 @@ class TestWeighJobs(IsolatedAsyncioTestCase):
             for call in manager.register_handler.call_args_list
         }
         self.assertIn("sleep_backfill", registered)
-        self.assertNotIn("steps_sync_check", registered)
+        self.assertIn("steps_sync_check", registered)
         self.assertNotIn("steps_morning_stamp", registered)
         self.assertNotIn("steps_final_stamp", registered)
+        self.assertIs(registered["steps_sync_check"], fake_steps.handle_steps_sync_check)
         self.assertTrue(callable(registered["sleep_backfill"]))
