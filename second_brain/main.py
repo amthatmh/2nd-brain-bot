@@ -168,7 +168,7 @@ from second_brain import keyboards as kb
 from second_brain import formatters as fmt
 from second_brain import digest as digest_helpers
 from second_brain import mute as mute_helpers
-from second_brain.utils import _safe_user_error, get_current_monday, parse_time_to_minutes
+from second_brain.utils import _safe_user_error, get_current_monday, next_weekday, parse_time_to_minutes
 from second_brain.digest import (
     get_digest_config,
     _filter_digest_tasks,
