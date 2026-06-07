@@ -43,6 +43,8 @@ METRIC_DEFS: dict[str, dict[str, str]] = {
     "hrv": {"property": "HRV (ms)", "unit": "ms", "good": "up"},
     "vo2_max": {"property": "VO2 Max", "unit": "", "good": "up"},
     "respiratory": {"property": "Respiratory Rate (brpm)", "unit": "brpm", "good": "flat"},
+    "blood_oxygen": {"property": "Blood Oxygen (%)", "unit": "%", "good": "up"},
+    "body_temperature": {"property": "Body Temperature (°C)", "unit": "°C", "good": "flat"},
     "exercise_time": {"property": "Exercise Time (min)", "unit": "min", "good": "up"},
     "active_energy": {"property": "Active Energy (kcal)", "unit": "kcal", "good": "up"},
     "resting_energy": {"property": "Resting Energy (kcal)", "unit": "kcal", "good": "flat"},
@@ -181,6 +183,16 @@ def _fetch_habit_rows(notion, habit_log_db_id: str, start: date | None, end: dat
     )
 
 
+def _fetch_readiness_rows(notion, readiness_db_id: str, start: date | None, end: date) -> list[dict[str, Any]]:
+    if not readiness_db_id:
+        return []
+    query: dict[str, Any] = {"sorts": [{"property": "Date", "direction": "ascending"}]}
+    date_filter = _range_filter(start, end)
+    if date_filter:
+        query["filter"] = date_filter
+    return _query_all(notion, readiness_db_id, **query)
+
+
 def _normalise_habit_name(name: str) -> str:
     return re.sub(r"^[^\w]+\s*", "", name).strip().lower()
 
@@ -224,6 +236,70 @@ def _build_metrics(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]
             except Exception:
                 pass
     return metrics
+
+
+def _extract_select_int(prop: dict[str, Any]) -> int | None:
+    name = str((prop.get("select") or {}).get("name") or "").strip()
+    if not name:
+        text = _extract_plain_text(prop)
+        name = text.strip()
+    try:
+        return int(float(name))
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_readiness_series(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    series: list[dict[str, Any]] = []
+    for row in rows:
+        props = row.get("properties", {})
+        date_str = _extract_date(props.get("Date", {}))
+        if not date_str:
+            continue
+        item: dict[str, Any] = {"date": date_str}
+        score = _extract_number(props.get("Readiness", {}))
+        if score is not None and math.isfinite(score):
+            item["score"] = round(score, 2)
+        for key, prop_name in (
+            ("sleep_quality", "Sleep Quality"),
+            ("energy", "Energy"),
+            ("mood", "Mood"),
+            ("stress", "Stress"),
+            ("soreness", "Soreness"),
+        ):
+            value = _extract_select_int(props.get(prop_name, {}))
+            if value is not None:
+                item[key] = value
+        if len(item) > 1:
+            series.append(item)
+    return series
+
+
+def _avg(values: list[float]) -> float | None:
+    return round(sum(values) / len(values), 2) if values else None
+
+
+def _weekly_readiness(readiness_series: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    weeks: dict[date, dict[str, list[float]]] = defaultdict(lambda: {"score": [], "energy": [], "mood": []})
+    for point in readiness_series:
+        try:
+            day = datetime.fromisoformat(str(point["date"])).date()
+        except (KeyError, ValueError):
+            continue
+        week = day - timedelta(days=day.weekday())
+        for source_key, dest_key in (("score", "score"), ("energy", "energy"), ("mood", "mood")):
+            value = point.get(source_key)
+            if isinstance(value, (int, float)) and math.isfinite(float(value)):
+                weeks[week][dest_key].append(float(value))
+    return [
+        {
+            "week": week.isoformat(),
+            "avg_score": _avg(values["score"]),
+            "avg_energy": _avg(values["energy"]),
+            "avg_mood": _avg(values["mood"]),
+        }
+        for week, values in sorted(weeks.items())
+    ]
 
 
 def _direction(delta: float, tolerance: float = 0.05) -> str:
@@ -282,6 +358,23 @@ def _trend_word(points: list[dict[str, Any]], positive_direction: str, label: st
     return f"{label} {suffix}"
 
 
+def _latest_value(metrics: dict[str, list[dict[str, Any]]], key: str) -> float | None:
+    points = metrics.get(key) or []
+    return points[-1]["value"] if points else None
+
+
+def _trend_is_worse(metrics: dict[str, list[dict[str, Any]]], key: str, positive_direction: str) -> bool:
+    points = metrics.get(key) or []
+    if len(points) < 2:
+        return False
+    direction = _direction(float(points[-1]["value"]) - float(points[0]["value"]))
+    return direction != "flat" and direction != positive_direction
+
+
+def _plural(value: int, singular: str, plural: str | None = None) -> str:
+    return singular if value == 1 else (plural or f"{singular}s")
+
+
 def _body_score(metrics: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
     # Body Score formula: average weight↓, body-fat↓, and lean-mass↑ directional
     # signals, where improving=100, flat=50, worsening=0.
@@ -292,6 +385,20 @@ def _body_score(metrics: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
     ])
     if value is None:
         return {"value": None, "status": "no_data", "description": "Not enough body data yet"}
+    weak_signals = [
+        label
+        for key, label, good in (
+            ("weight", "weight", "down"),
+            ("body_fat", "body fat", "down"),
+            ("lean_mass", "lean mass", "up"),
+        )
+        if _trend_is_worse(metrics, key, good)
+    ]
+    recommendation = (
+        "Next move: keep the current cut/recomp pattern, with protein and strength work protected."
+        if not weak_signals
+        else f"Next move: focus on {', '.join(weak_signals)} with consistent protein, strength training, and a smaller calorie swing."
+    )
     return {
         "value": value,
         "description": " · ".join([
@@ -299,6 +406,7 @@ def _body_score(metrics: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
             _trend_word(metrics["body_fat"], "down", "Fat"),
             _trend_word(metrics["lean_mass"], "up", "Lean mass"),
         ]),
+        "recommendation": recommendation,
     }
 
 
@@ -312,6 +420,20 @@ def _cardio_score(metrics: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
     ])
     if value is None:
         return {"value": None, "status": "no_data", "description": "Not enough cardio data yet"}
+    weak_signals = [
+        label
+        for key, label, good in (
+            ("resting_hr", "resting HR", "down"),
+            ("hrv", "HRV", "up"),
+            ("vo2_max", "VO2 Max", "up"),
+        )
+        if _trend_is_worse(metrics, key, good)
+    ]
+    recommendation = (
+        "Next move: keep the aerobic base work steady and avoid letting recovery slide."
+        if not weak_signals
+        else f"Next move: {', '.join(weak_signals)} {'needs' if len(weak_signals) == 1 else 'need'} recovery attention; protect sleep, hydration, easy Zone 2, and avoid stacking hard days."
+    )
     return {
         "value": value,
         "description": " · ".join([
@@ -319,6 +441,7 @@ def _cardio_score(metrics: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
             _trend_word(metrics["hrv"], "up", "HRV"),
             _trend_word(metrics["vo2_max"], "up", "VO2 Max"),
         ]),
+        "recommendation": recommendation,
     }
 
 
@@ -344,7 +467,17 @@ def _sleep_score(metrics: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
         parts.append(f"REM {latest_rem:g} min")
     if latest_efficiency is not None:
         parts.append(f"Efficiency {latest_efficiency:g}%")
-    return {"value": value, "description": " · ".join(parts)}
+    if latest_total is not None and latest_total < 420:
+        recommendation = "Next move: the biggest lever is more total sleep; move bedtime earlier or protect a longer sleep window."
+    elif latest_deep is not None and latest_deep < 90:
+        recommendation = "Next move: deep sleep is the limiter; keep late alcohol, heavy meals, and hard evening training in check."
+    elif latest_rem is not None and latest_rem < 80:
+        recommendation = "Next move: REM is the limiter; prioritize consistent wake time and enough total sleep opportunity."
+    elif latest_efficiency is not None and latest_efficiency < 85:
+        recommendation = "Next move: improve efficiency with a cooler room, tighter wind-down, and fewer wake-window interruptions."
+    else:
+        recommendation = "Next move: sleep quality is holding up; keep the routine consistent."
+    return {"value": value, "description": " · ".join(parts), "recommendation": recommendation}
 
 
 def _weekly_activity(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -382,9 +515,20 @@ def _activity_score(weekly: list[dict[str, Any]]) -> dict[str, Any]:
     # completion at 40%: ((workout_pct * 0.6) + (steps_pct * 0.4)) * 100.
     value = round(((workout_pct * 0.6) + (steps_pct * 0.4)) * 100)
     latest = weekly[-1]
+    workout_gap = max(3 - latest["workout_days"], 0)
+    steps_gap = max(7 - latest["steps_days"], 0)
+    if workout_gap and steps_gap:
+        recommendation = f"Next move: add {workout_gap} {_plural(workout_gap, 'workout day')} and {steps_gap} {_plural(steps_gap, 'step day', 'steps days')} to hit the weekly targets."
+    elif workout_gap:
+        recommendation = f"Next move: add {workout_gap} {_plural(workout_gap, 'workout day')} to reach the 3-day training target."
+    elif steps_gap:
+        recommendation = f"Next move: add {steps_gap} {_plural(steps_gap, 'step day', 'steps days')} to complete the daily movement streak."
+    else:
+        recommendation = "Next move: consistency is strong; keep intensity sensible so recovery does not pay for it."
     return {
         "value": value,
         "description": f"{latest['workout_days']}/7 workout days · {latest['steps_days']}/7 steps days this week",
+        "recommendation": recommendation,
         "steps_threshold": STEPS_THRESHOLD,
     }
 
@@ -398,6 +542,12 @@ def _latest(metrics: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
         "hrv",
         "vo2_max",
         "respiratory",
+        "blood_oxygen",
+        "body_temperature",
+        "exercise_time",
+        "active_energy",
+        "resting_energy",
+        "flights",
         "total_sleep",
         "deep_sleep",
         "sleep_efficiency",
@@ -417,6 +567,10 @@ def _deltas(metrics: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
         "resting_hr",
         "hrv",
         "vo2_max",
+        "blood_oxygen",
+        "body_temperature",
+        "exercise_time",
+        "active_energy",
         "total_sleep",
         "deep_sleep",
         "sleep_efficiency",
@@ -437,12 +591,16 @@ def build_dashboard_payload(
     habit_log_db_id: str,
     range_value: str,
     tz,
+    readiness_db_id: str = "",
 ) -> dict[str, Any]:
     start, end = _date_window(range_value, tz)
     health_rows = _fetch_health_rows(notion, health_metrics_db_id, start, end)
     habit_rows = _fetch_habit_rows(notion, habit_log_db_id, start, end)
+    readiness_rows = _fetch_readiness_rows(notion, readiness_db_id, start, end)
     metrics = _build_metrics(health_rows)
     weekly = _weekly_activity(habit_rows)
+    readiness_series = _build_readiness_series(readiness_rows)
+    weekly_readiness = _weekly_readiness(readiness_series)
 
     has_any_health_data = any(metrics[key] for key in metrics)
     scores = {
@@ -459,6 +617,8 @@ def build_dashboard_payload(
         "scores": scores,
         "metrics": metrics,
         "weekly_activity": weekly,
+        "readiness_series": readiness_series,
+        "weekly_readiness": weekly_readiness,
         "latest": _latest(metrics),
         "deltas": _deltas(metrics),
     }
@@ -486,6 +646,10 @@ def _dashboard_cache_path(filename: str) -> Path:
 
 def _health_cache_filename(range_value: str) -> str:
     return f"{_HEALTH_CACHE_PREFIX}-{range_value}.json"
+
+
+def _summary_cache_filename() -> str:
+    return f"{_HEALTH_CACHE_PREFIX}-summary.json"
 
 
 def _store_dashboard_cache(range_value: str, payload: dict[str, Any], *, generated_at: datetime) -> None:
@@ -527,12 +691,14 @@ async def _refresh_dashboard_cache(
     habit_log_db_id: str,
     range_value: str,
     tz,
+    readiness_db_id: str = "",
 ) -> dict[str, Any]:
     payload = await asyncio.to_thread(
         build_dashboard_payload,
         notion=notion,
         health_metrics_db_id=health_metrics_db_id,
         habit_log_db_id=habit_log_db_id,
+        readiness_db_id=readiness_db_id,
         range_value=range_value,
         tz=tz,
     )
@@ -547,6 +713,7 @@ def _schedule_dashboard_refresh(
     habit_log_db_id: str,
     range_value: str,
     tz,
+    readiness_db_id: str = "",
 ) -> None:
     task = _health_dashboard_refresh_tasks.get(range_value)
     if task and not task.done():
@@ -558,6 +725,7 @@ def _schedule_dashboard_refresh(
                 notion=notion,
                 health_metrics_db_id=health_metrics_db_id,
                 habit_log_db_id=habit_log_db_id,
+                readiness_db_id=readiness_db_id,
                 range_value=range_value,
                 tz=tz,
             )
@@ -574,6 +742,7 @@ async def prewarm_health_dashboard_cache(
     health_metrics_db_id: str,
     habit_log_db_id: str,
     tz,
+    readiness_db_id: str = "",
     ranges: tuple[str, ...] = ("1m", "3m", "6m", "all"),
 ) -> None:
     """Warm health dashboard responses after startup without blocking HTTP serving."""
@@ -583,6 +752,7 @@ async def prewarm_health_dashboard_cache(
                 notion=notion,
                 health_metrics_db_id=health_metrics_db_id,
                 habit_log_db_id=habit_log_db_id,
+                readiness_db_id=readiness_db_id,
                 range_value=range_value,
                 tz=tz,
             )
@@ -598,7 +768,149 @@ async def prewarm_health_dashboard_cache(
         log.info("health_dashboard: prewarmed %d range(s)", len(results))
 
 
-def create_health_dashboard_handler(*, notion, health_metrics_db_id: str, habit_log_db_id: str, tz):
+def _store_summary_cache(payload: dict[str, Any], *, generated_at: datetime) -> None:
+    _health_dashboard_cache["summary"] = {"payload": payload, "generated_at": generated_at}
+    try:
+        _dashboard_cache_path(_summary_cache_filename()).write_text(
+            json.dumps({"payload": payload, "generated_at": generated_at.isoformat()}),
+            encoding="utf-8",
+        )
+    except Exception as exc:  # noqa: BLE001 - memory cache remains authoritative.
+        log.warning("health_dashboard: summary disk write failed: %s", exc)
+
+
+def _load_summary_cache_from_disk(*, now: datetime) -> dict[str, Any] | None:
+    try:
+        cache_path = _dashboard_cache_path(_summary_cache_filename())
+        if not cache_path.exists():
+            return None
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        payload = cached.get("payload")
+        generated_at_raw = cached.get("generated_at")
+        if not isinstance(payload, dict) or not generated_at_raw:
+            return None
+        generated_at = datetime.fromisoformat(generated_at_raw)
+        if (now - generated_at).total_seconds() >= _HEALTH_STALE_SECONDS:
+            return None
+        _health_dashboard_cache["summary"] = {"payload": payload, "generated_at": generated_at}
+        return payload
+    except Exception as exc:  # noqa: BLE001 - disk cache fallback is best-effort.
+        log.warning("health_dashboard: summary disk read failed: %s", exc)
+        return None
+
+
+def _score_text(scores: dict[str, Any]) -> str:
+    parts = []
+    for key in ("body", "cardio", "activity", "sleep"):
+        score = scores.get(key, {})
+        value = score.get("value")
+        description = score.get("description") or "not enough data"
+        parts.append(f"{key}: {value if value is not None else 'no score'} ({description})")
+    return "; ".join(parts)
+
+
+def generate_dashboard_summary(payload_1m: dict[str, Any], claude, model: str) -> str:
+    """Generate a short coach-style daily dashboard summary."""
+    scores = payload_1m.get("scores") or {}
+    latest = payload_1m.get("latest") or {}
+    deltas = payload_1m.get("deltas") or {}
+    prompt = (
+        "Write 2-3 concise sentences in a calm coach tone for a personal health dashboard. "
+        "Highlight the best and weakest signals from the last month, using plain language. "
+        "No greeting, no markdown, no medical diagnosis.\n\n"
+        f"Scores: {_score_text(scores)}\n"
+        f"Latest metrics: {json.dumps(latest, sort_keys=True)}\n"
+        f"Deltas: {json.dumps(deltas, sort_keys=True)}"
+    )
+    resp = claude.messages.create(
+        model=model,
+        max_tokens=180,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return resp.content[0].text.strip().strip('"')
+
+
+async def refresh_health_summary_cache(
+    *,
+    notion,
+    health_metrics_db_id: str,
+    habit_log_db_id: str,
+    tz,
+    claude,
+    model: str,
+    readiness_db_id: str = "",
+) -> dict[str, Any]:
+    payload_1m = await _refresh_dashboard_cache(
+        notion=notion,
+        health_metrics_db_id=health_metrics_db_id,
+        habit_log_db_id=habit_log_db_id,
+        readiness_db_id=readiness_db_id,
+        range_value="1m",
+        tz=tz,
+    )
+    summary = await asyncio.to_thread(generate_dashboard_summary, payload_1m, claude, model)
+    payload = {"summary": summary, "generated_at": _utc_now_iso()}
+    _store_summary_cache(payload, generated_at=datetime.now(tz))
+    return payload
+
+
+def create_health_summary_handler(
+    *,
+    notion,
+    health_metrics_db_id: str,
+    habit_log_db_id: str,
+    tz,
+    claude,
+    model: str,
+    readiness_db_id: str = "",
+):
+    if not health_metrics_db_id:
+        raise RuntimeError("NOTION_HEALTH_METRICS_DB is required for /api/health-summary")
+    if not habit_log_db_id:
+        raise RuntimeError("NOTION_HABIT_LOG_DB/NOTION_LOG_DB is required for /api/health-summary")
+
+    async def health_summary_handler(request: web.Request) -> web.Response:
+        now = datetime.now(tz)
+        cached = _health_dashboard_cache.get("summary")
+        if not cached:
+            _load_summary_cache_from_disk(now=now)
+            cached = _health_dashboard_cache.get("summary")
+
+        age = _cache_age_seconds(cached, now)
+        if cached and age is not None and age < _HEALTH_STALE_SECONDS:
+            return web.Response(
+                text=json.dumps(cached["payload"]),
+                content_type="application/json",
+                headers={**cors_headers(), "X-Second-Brain-Cache": "fresh" if age < _HEALTH_CACHE_TTL_SECONDS else "stale"},
+            )
+
+        try:
+            payload = await refresh_health_summary_cache(
+                notion=notion,
+                health_metrics_db_id=health_metrics_db_id,
+                habit_log_db_id=habit_log_db_id,
+                readiness_db_id=readiness_db_id,
+                tz=tz,
+                claude=claude,
+                model=model,
+            )
+            return web.Response(
+                text=json.dumps(payload),
+                content_type="application/json",
+                headers={**cors_headers(), "X-Second-Brain-Cache": "miss"},
+            )
+        except Exception as exc:  # noqa: BLE001 - frontend hides this card gracefully.
+            log.warning("/api/health-summary error: %s", exc)
+            return web.json_response(
+                {"error": "summary_unavailable", "message": str(exc)},
+                status=503,
+                headers=cors_headers(),
+            )
+
+    return health_summary_handler
+
+
+def create_health_dashboard_handler(*, notion, health_metrics_db_id: str, habit_log_db_id: str, tz, readiness_db_id: str = ""):
     if not health_metrics_db_id:
         raise RuntimeError("NOTION_HEALTH_METRICS_DB is required for /api/health-dashboard")
     if not habit_log_db_id:
@@ -631,6 +943,7 @@ def create_health_dashboard_handler(*, notion, health_metrics_db_id: str, habit_
                 notion=notion,
                 health_metrics_db_id=health_metrics_db_id,
                 habit_log_db_id=habit_log_db_id,
+                readiness_db_id=readiness_db_id,
                 range_value=range_value,
                 tz=tz,
             )
@@ -645,6 +958,7 @@ def create_health_dashboard_handler(*, notion, health_metrics_db_id: str, habit_
                 notion=notion,
                 health_metrics_db_id=health_metrics_db_id,
                 habit_log_db_id=habit_log_db_id,
+                readiness_db_id=readiness_db_id,
                 range_value=range_value,
                 tz=tz,
             )

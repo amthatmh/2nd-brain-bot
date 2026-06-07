@@ -209,8 +209,10 @@ from second_brain.utils import ExpiringDict, local_today
 from second_brain.http_utils import cors_headers
 from second_brain.healthtrack.dashboard import (
     create_health_dashboard_handler,
+    create_health_summary_handler,
     load_steps_threshold_from_env_db as load_dashboard_steps_threshold,
     prewarm_health_dashboard_cache,
+    refresh_health_summary_cache,
 )
 from second_brain.services import task_parsing as task_parsing_service
 from second_brain.services import note_utils as note_utils_service
@@ -2061,7 +2063,20 @@ async def start_http_server() -> None:
             notion=notion,
             health_metrics_db_id=NOTION_HEALTH_METRICS_DB,
             habit_log_db_id=NOTION_LOG_DB,
+            readiness_db_id=NOTION_DAILY_READINESS_DB,
             tz=TZ,
+        ),
+    )
+    app.router.add_get(
+        "/api/health-summary",
+        create_health_summary_handler(
+            notion=notion,
+            health_metrics_db_id=NOTION_HEALTH_METRICS_DB,
+            habit_log_db_id=NOTION_LOG_DB,
+            readiness_db_id=NOTION_DAILY_READINESS_DB,
+            tz=TZ,
+            claude=get_claude_client(),
+            model=CLAUDE_MODEL,
         ),
     )
     app.router.add_get("/health", lambda r: web.Response(text="ok"))
@@ -2105,9 +2120,21 @@ async def refresh_public_dashboard_caches() -> None:
             notion=notion,
             health_metrics_db_id=NOTION_HEALTH_METRICS_DB,
             habit_log_db_id=NOTION_LOG_DB,
+            readiness_db_id=NOTION_DAILY_READINESS_DB,
             tz=TZ,
             ranges=("1m", "3m", "6m", "all"),
         )
+
+async def _refresh_health_summary_job() -> dict:
+    return await refresh_health_summary_cache(
+        notion=notion,
+        health_metrics_db_id=NOTION_HEALTH_METRICS_DB,
+        habit_log_db_id=NOTION_LOG_DB,
+        readiness_db_id=NOTION_DAILY_READINESS_DB,
+        tz=TZ,
+        claude=get_claude_client(),
+        model=CLAUDE_MODEL,
+    )
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STARTUP HELPERS — schema validation + alert
@@ -2240,6 +2267,7 @@ def _build_utility_job_dispatch(bot) -> dict[str, Callable]:
         ),
         "daily_log_generate": _utility_async_handler("daily_log_generate", lambda: generate_daily_log(bot)),
         "run_recurring_check": _utility_async_handler("run_recurring_check", lambda: run_recurring_check(bot)),
+        "health_summary_refresh": _utility_async_handler("health_summary_refresh", lambda: _refresh_health_summary_job()),
     }
     UTILITY_JOB_DISPATCH.clear()
     UTILITY_JOB_DISPATCH.update(dispatch)
@@ -2562,6 +2590,13 @@ async def post_init(app: Application) -> None:
             _tracked_utility_manager_handler(
                 "refresh_public_dashboard_caches",
                 lambda bot: refresh_public_dashboard_caches(),
+            ),
+        )
+        utility_manager.register_handler(
+            "health_summary_refresh",
+            _tracked_utility_manager_handler(
+                "health_summary_refresh",
+                lambda bot: _refresh_health_summary_job(),
             ),
         )
 

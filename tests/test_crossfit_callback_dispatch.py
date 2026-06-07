@@ -44,7 +44,7 @@ class TestCfCallbackDispatch(unittest.IsolatedAsyncioTestCase):
         cf_pending = {"123": {"mode": "strength"}}
         await handle_cf_callback(q, ["cf", "cancel"], MagicMock(), MagicMock(), {}, cf_pending)
         self.assertNotIn("123", cf_pending)
-        q.message.reply_text.assert_awaited_once_with("❌ Session cancelled.")
+        q.edit_message_text.assert_awaited_once_with("❌ Session cancelled.", reply_markup=None)
 
     async def test_chain_no_clears_pending_and_replies(self):
         from second_brain.crossfit.handlers import handle_cf_callback
@@ -53,7 +53,7 @@ class TestCfCallbackDispatch(unittest.IsolatedAsyncioTestCase):
         cf_pending = {"123": {"session_chain": ["b"]}}
         await handle_cf_callback(q, ["cf", "chain_no"], MagicMock(), MagicMock(), {}, cf_pending)
         self.assertNotIn("123", cf_pending)
-        q.message.reply_text.assert_awaited_once_with("✅ Session complete.")
+        q.edit_message_text.assert_awaited_once_with("✅ Session complete.", reply_markup=None)
 
     async def test_log_strength_routes_to_strength_flow(self):
         from second_brain.crossfit.handlers import handle_cf_callback

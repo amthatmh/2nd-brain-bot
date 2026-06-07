@@ -7,21 +7,50 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     :root{
-      --bg:#0d0d0f;--bg-card:#141416;--bg-card-hover:#1a1a1e;--border:#1e1e22;
-      --text-primary:#ffffff;--text-secondary:#888888;--text-muted:#444444;
-      --accent-blue:#6b8cff;--accent-green:#4ade80;--accent-red:#ff6b6b;--accent-yellow:#fbbf24;
-      --shadow:0 22px 70px rgba(0,0,0,.35);--radius:24px;
+      --bg:#0d0d0f;--surface:#141416;--surface-2:#1a1a1e;--border:#25252b;
+      --text:#ffffff;--muted:#9b9ba3;--faint:#5d5d66;
+      --blue:#6b8cff;--green:#4ade80;--red:#ff6b6b;--yellow:#fbbf24;--cyan:#67e8f9;--violet:#a78bfa;
+      --shadow:0 18px 46px rgba(0,0,0,.28);--radius:8px;
     }
     html[data-theme="light"]{
-      --bg:#f5f5f7;--bg-card:#ffffff;--bg-card-hover:#f0f0f5;--border:#e5e5ea;
-      --text-primary:#1d1d1f;--text-secondary:#86868b;--text-muted:#c7c7cc;
-      --accent-blue:#007aff;--accent-green:#34c759;--accent-red:#ff3b30;--accent-yellow:#ff9500;
-      --shadow:0 18px 50px rgba(29,29,31,.08);
+      --bg:#f5f5f7;--surface:#ffffff;--surface-2:#f0f0f5;--border:#e5e5ea;
+      --text:#1d1d1f;--muted:#6f6f78;--faint:#a7a7b0;
+      --blue:#007aff;--green:#34c759;--red:#ff3b30;--yellow:#ff9500;--cyan:#0ea5e9;--violet:#8b5cf6;
+      --shadow:0 14px 38px rgba(29,29,31,.08);
     }
-    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text-primary);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Inter',sans-serif;transition:background .2s ease,color .2s ease}
-    .app{width:min(1220px,100%);margin:0 auto;padding:22px 14px 42px}.header{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:14px;margin-bottom:22px}.title{font-size:2rem;font-weight:760;letter-spacing:-.05em}.subtitle{color:var(--text-secondary);font-size:.88rem;margin-top:4px}.updated{justify-self:center;color:var(--text-secondary);font-size:.88rem}.header-actions{justify-self:end;display:flex;align-items:center;gap:8px}.theme-toggle,.habit-link{border:1px solid var(--border);background:var(--bg-card);color:var(--text-secondary);height:44px;border-radius:999px;cursor:pointer}.theme-toggle{color:var(--text-primary);width:44px;font-size:1.1rem}.habit-link{display:inline-flex;align-items:center;padding:0 14px;text-decoration:none;font-weight:700;font-size:.88rem}.range{display:inline-flex;gap:6px;padding:6px;background:var(--bg-card);border:1px solid var(--border);border-radius:999px;margin-bottom:18px}.range button{border:none;border-radius:999px;padding:10px 18px;color:var(--text-secondary);background:transparent;font-weight:700;cursor:pointer}.range button.active{background:var(--accent-blue);color:#fff}.banner{display:none;margin:0 0 18px;padding:14px 16px;border:1px solid rgba(255,107,107,.35);border-radius:18px;background:rgba(255,107,107,.1);color:var(--accent-red)}.grid{display:grid;gap:14px}.scores{grid-template-columns:repeat(4,1fr);margin-bottom:14px}.metrics{grid-template-columns:repeat(4,1fr);margin:14px 0}.card,.metric,.chart-card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow)}.card{padding:18px;min-height:190px}.card.muted{opacity:.68}.card-top{display:flex;align-items:center;justify-content:space-between;gap:10px}.score-name{font-weight:750}.info{border:none;background:transparent;color:var(--text-secondary);font-size:1rem;cursor:pointer}.score{font-size:3.5rem;line-height:1;font-weight:800;letter-spacing:-.08em;margin:20px 0 8px}.desc{color:var(--text-secondary);font-size:.92rem;line-height:1.35}.badge{display:inline-flex;margin-left:8px;padding:4px 8px;border-radius:999px;background:rgba(251,191,36,.12);color:var(--accent-yellow);font-size:.72rem;font-weight:800}.explain{display:none;margin-top:14px;padding-top:14px;border-top:1px solid var(--border);color:var(--text-secondary);font-size:.86rem;line-height:1.45}.explain.show{display:block}.metric{padding:16px}.metric-name{color:var(--text-secondary);font-size:.74rem;letter-spacing:.08em;text-transform:uppercase;font-weight:800}.metric-value{font-size:2rem;font-weight:800;letter-spacing:-.04em;margin:10px 0 5px}.delta{font-size:.88rem;color:var(--text-secondary)}.delta.good{color:var(--accent-green)}.delta.bad{color:var(--accent-red)}.delta.flat{color:var(--text-secondary)}.charts{grid-template-columns:1fr;gap:16px}.chart-card{padding:18px}.chart-head{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-bottom:12px}.chart-title{font-size:1.05rem;font-weight:780}.chart-sub{color:var(--text-secondary);font-size:.84rem}.chart-wrap{height:340px}.chart-wrap.small{height:220px;margin-top:14px}.empty{padding:28px;text-align:center;color:var(--text-secondary);border:1px dashed var(--border);border-radius:18px}.loading{padding:28px;color:var(--text-secondary)}.footer{margin:30px 0 6px;text-align:center;color:var(--text-secondary);font-size:.86rem}.footer a{color:var(--accent-blue);text-decoration:none}.skeleton{background:linear-gradient(90deg,rgba(255,255,255,0.06) 25%,rgba(255,255,255,0.12) 50%,rgba(255,255,255,0.06) 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:8px}html[data-theme="light"] .skeleton{background:linear-gradient(90deg,#e8e8ec 25%,#f0f0f5 50%,#e8e8ec 75%);background-size:200% 100%;animation:shimmer 1.5s infinite}@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}.skeleton-card{border-radius:12px;padding:20px;margin-bottom:16px;background:var(--bg-card,rgba(255,255,255,0.05));border:1px solid var(--border);box-shadow:var(--shadow)}.skeleton-score{height:64px;width:60%;margin-bottom:8px}.skeleton-label{height:14px;width:80%}.skeleton-metric{height:48px;width:50%;margin-bottom:8px}
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Inter',sans-serif}
+    .app{width:min(1220px,100%);margin:0 auto;padding:22px 14px 42px}
+    .header{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:14px;margin-bottom:18px}
+    .title{font-size:2rem;font-weight:760}.subtitle,.updated,.chart-sub,.desc,.delta{color:var(--muted)}
+    .subtitle{font-size:.88rem;margin-top:4px}.updated{justify-self:center;font-size:.88rem}
+    .header-actions{justify-self:end;display:flex;align-items:center;gap:8px}
+    .theme-toggle,.habit-link{border:1px solid var(--border);background:var(--surface);color:var(--text);height:42px;border-radius:999px;cursor:pointer}
+    .theme-toggle{width:42px;font-size:1rem}.habit-link{display:inline-flex;align-items:center;padding:0 14px;text-decoration:none;font-weight:700;font-size:.88rem}
+    .nav-stack{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:18px}
+    .range,.tabs{display:inline-flex;gap:6px;padding:6px;background:var(--surface);border:1px solid var(--border);border-radius:999px}
+    .range button,.tabs button{border:0;border-radius:999px;padding:10px 18px;color:var(--muted);background:transparent;font-weight:750;cursor:pointer}
+    .range button.active,.tabs button.active{background:var(--blue);color:#fff}
+    .banner{display:none;margin:0 0 18px;padding:14px 16px;border:1px solid rgba(255,107,107,.35);border-radius:var(--radius);background:rgba(255,107,107,.1);color:var(--red)}
+    .tab-section{display:none}.tab-section.active{display:block}
+    .grid{display:grid;gap:14px}.scores{grid-template-columns:repeat(4,1fr);margin-bottom:14px}.scores.single{grid-template-columns:minmax(240px,1fr)}
+    .metrics{grid-template-columns:repeat(5,1fr);margin:14px 0}.charts{grid-template-columns:1fr;gap:16px}
+    .card,.metric,.chart-card,.summary-card,.table-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow)}
+    .card{padding:18px;min-height:160px}.card-top{display:flex;align-items:center;justify-content:space-between;gap:10px}
+    .score-name{font-weight:750}.info{border:0;background:transparent;color:var(--muted);font-size:1rem;cursor:pointer}
+    .score{font-size:3.15rem;line-height:1;font-weight:800;margin:18px 0 8px}
+    .desc{font-size:.92rem;line-height:1.35}.coach{margin-top:10px;padding-top:10px;border-top:1px solid var(--border);color:var(--text);font-size:.9rem;line-height:1.38}.explain{display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);color:var(--muted);font-size:.86rem;line-height:1.45}.explain.show{display:block}
+    .summary-card{padding:18px;margin-bottom:14px}.summary-title,.chart-title{font-size:1.05rem;font-weight:780}.summary-text{margin-top:10px;color:var(--muted);line-height:1.48;font-style:italic}
+    .metric{padding:16px;min-height:116px}.metric-name{color:var(--muted);font-size:.74rem;letter-spacing:.08em;text-transform:uppercase;font-weight:800}
+    .metric-value{font-size:1.85rem;font-weight:800;margin:10px 0 5px}.metric-value small{font-size:.8rem;color:var(--muted)}
+    .delta{font-size:.88rem}.delta.good{color:var(--green)}.delta.bad{color:var(--red)}.delta.flat{color:var(--muted)}
+    .chart-card,.table-card{padding:18px}.chart-head{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-bottom:12px}.chart-sub{font-size:.84rem}.chart-wrap{height:340px}
+    .empty{padding:24px;text-align:center;color:var(--muted);border:1px dashed var(--border);border-radius:var(--radius)}
+    .loading{padding:28px;color:var(--muted)}.weekly-table{width:100%;border-collapse:collapse}.weekly-table th,.weekly-table td{padding:12px 10px;border-bottom:1px solid var(--border);text-align:left}.weekly-table th{color:var(--muted);font-size:.76rem;text-transform:uppercase;letter-spacing:.08em}.weekly-table tr:last-child td{border-bottom:0}.good{color:var(--green)}.bad{color:var(--red)}
+    .footer{margin:30px 0 6px;text-align:center;color:var(--muted);font-size:.86rem}.footer a{color:var(--blue);text-decoration:none}
+    .skeleton{background:linear-gradient(90deg,rgba(255,255,255,.06) 25%,rgba(255,255,255,.12) 50%,rgba(255,255,255,.06) 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:8px}@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}.skeleton-card{height:160px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px}.skeleton-line{height:16px;margin-bottom:18px}.skeleton-big{height:58px;width:56%}
     @media(max-width:980px){.scores{grid-template-columns:repeat(2,1fr)}.metrics{grid-template-columns:repeat(2,1fr)}}
-    @media(max-width:620px){.app{padding:18px 10px 32px}.header{grid-template-columns:1fr auto}.updated{grid-column:1/-1;grid-row:2;justify-self:start}.title{font-size:1.8rem}.scores,.metrics{grid-template-columns:1fr}.range{width:100%;justify-content:space-between}.range button{flex:1;padding:10px 12px}.chart-wrap{height:280px}}
+    @media(max-width:620px){.app{padding:18px 10px 32px}.header{grid-template-columns:1fr auto}.updated{grid-column:1/-1;grid-row:2;justify-self:start}.title{font-size:1.8rem}.range,.tabs{width:100%;justify-content:space-between}.range button,.tabs button{flex:1;padding:10px 10px}.scores,.scores.single,.metrics{grid-template-columns:1fr}.chart-wrap{height:280px}.weekly-table{font-size:.88rem}}
   </style>
 </head>
 <body>
@@ -31,23 +60,46 @@
         <div class="title">HealthKit</div>
         <div class="subtitle">Powered by Notion · Live from Railway</div>
       </div>
-      <div class="updated" id="lastUpdated">Loading…</div>
+      <div class="updated" id="lastUpdated">Loading...</div>
       <div class="header-actions">
         <a class="habit-link" href="https://amthatmh.github.io/2nd-brain-bot/">HabitKit</a>
         <button class="theme-toggle" id="themeToggle" aria-label="Toggle theme">☾</button>
       </div>
     </header>
 
-    <nav class="range" aria-label="Time range">
-      <button class="active" data-range="1m">1M</button><button data-range="3m">3M</button><button data-range="6m">6M</button><button data-range="all">All</button>
-    </nav>
+    <div class="nav-stack">
+      <nav class="range" aria-label="Time range">
+        <button class="active" data-range="1m">1M</button><button data-range="3m">3M</button><button data-range="6m">6M</button><button data-range="all">All</button>
+      </nav>
+      <nav class="tabs" aria-label="Dashboard section">
+        <button class="active" data-tab="overview">Overview</button><button data-tab="rest">Rest</button><button data-tab="activity">Activity</button>
+      </nav>
+    </div>
     <div class="banner" id="errorBanner">Could not load health data. Try again.</div>
 
-    <section class="grid scores" id="scores"></section>
-    <section class="grid metrics" id="metrics"></section>
-    <section class="grid charts" id="charts"><div class="loading">Loading charts…</div></section>
+    <section class="tab-section active" data-tab-section="overview">
+      <article class="summary-card" id="summaryCard" hidden>
+        <div class="summary-title">Daily Summary</div>
+        <div class="summary-text" id="summaryText"></div>
+      </article>
+      <section class="grid scores" id="overviewScores"></section>
+      <section class="grid charts" id="overviewCharts"><div class="loading">Loading charts...</div></section>
+    </section>
 
-    <footer class="footer">Data from Apple Health via Auto Export · Withings scale · <a href="/">HabitKit dashboard</a></footer>
+    <section class="tab-section" data-tab-section="rest">
+      <section class="grid scores single" id="restScore"></section>
+      <section class="grid metrics" id="restMetrics"></section>
+      <section class="grid charts" id="restCharts"></section>
+      <section id="weeklyFeel"></section>
+    </section>
+
+    <section class="tab-section" data-tab-section="activity">
+      <section class="grid scores single" id="activityScore"></section>
+      <section class="grid metrics" id="activityMetrics"></section>
+      <section class="grid charts" id="activityCharts"></section>
+    </section>
+
+    <footer class="footer">Data from Apple Health via Auto Export · Fitbit sleep · Withings scale · <a href="/">HabitKit dashboard</a></footer>
   </main>
 <script>
 const API_BASE = 'https://worker-production-d366.up.railway.app';
@@ -55,140 +107,205 @@ const RANGES = ['1m', '3m', '6m', 'all'];
 const cache = {};
 const charts = {};
 let currentRange = '1m';
+let currentTab = 'overview';
 const metricDefs = {
-  weight:{label:'Weight',unit:'kg',good:'down'},body_fat:{label:'Body Fat',unit:'%',good:'down'},lean_mass:{label:'Lean Mass',unit:'kg',good:'up'},resting_hr:{label:'Resting HR',unit:'bpm',good:'down'},
-  hrv:{label:'HRV',unit:'ms',good:'up'},vo2_max:{label:'VO2 Max',unit:'',good:'up'},respiratory:{label:'Resp. Rate',unit:'brpm',good:'flat'},headphone_db:{label:'Headphone dB',unit:'dB',good:'down'},
-  total_sleep:{label:'Total Sleep',unit:'min',good:'up'},deep_sleep:{label:'Deep Sleep',unit:'min',good:'up'},sleep_efficiency:{label:'Sleep Eff.',unit:'%',good:'up'},
-  rem_sleep:{label:'REM Sleep',unit:'min',good:'up'},light_sleep:{label:'Light Sleep',unit:'min',good:'up'},awake_sleep:{label:'Awake in Bed',unit:'min',good:'down'}
+  weight:{label:'Weight',unit:'kg',good:'down'},body_fat:{label:'Body Fat',unit:'%',good:'down'},lean_mass:{label:'Lean Mass',unit:'kg',good:'up'},
+  resting_hr:{label:'Resting HR',unit:'bpm',good:'down'},hrv:{label:'HRV',unit:'ms',good:'up'},vo2_max:{label:'VO2 Max',unit:'',good:'up'},respiratory:{label:'Resp. Rate',unit:'brpm',good:'flat'},
+  total_sleep:{label:'Total Sleep',unit:'min',good:'up'},deep_sleep:{label:'Deep Sleep',unit:'min',good:'up'},rem_sleep:{label:'REM Sleep',unit:'min',good:'up'},light_sleep:{label:'Light Sleep',unit:'min',good:'up'},awake_sleep:{label:'Awake in Bed',unit:'min',good:'down'},sleep_efficiency:{label:'Sleep Eff.',unit:'%',good:'up'},
+  exercise_time:{label:'Exercise Time',unit:'min',good:'up'},active_energy:{label:'Active Energy',unit:'kcal',good:'up'},resting_energy:{label:'Resting Energy',unit:'kcal',good:'flat'},flights:{label:'Flights Climbed',unit:'',good:'up'},blood_oxygen:{label:'Blood O₂',unit:'%',good:'up'},body_temperature:{label:'Body Temp.',unit:'°C',good:'flat'}
 };
 const scoreInfo = {
-  body:'Combines weight trend, body fat %, and lean mass changes over the selected period. A score above 70 means all three are moving in a healthy direction.',
-  cardio:'Combines resting heart rate trend, HRV trend, and VO2 Max direction. Lower resting HR and higher HRV are both positive signals.',
-  activity:(steps)=>`Weighted: Workout days = 60%, Steps goal days = 40%. Target: 3 workout sessions/week and 7 days/week hitting ${steps} steps.`,
-  sleep:'Progress toward 7h total sleep, 80+ min REM, 90+ min deep sleep, and 85% efficiency. All four contribute equally to the score.'
+  body:'Combines weight trend, body fat, and lean mass changes over the selected period.',
+  cardio:'Combines resting heart rate trend, HRV trend, and VO2 Max direction.',
+  activity:(steps)=>`Workout consistency and days meeting the ${steps} step goal.`,
+  sleep:'Progress toward total sleep, REM, deep sleep, and sleep efficiency targets.'
 };
+const scoreLabels = {body:'Body',cardio:'Cardio',activity:'Activity',sleep:'Sleep'};
+const restMetricKeys = ['total_sleep','deep_sleep','rem_sleep','light_sleep','awake_sleep','sleep_efficiency','blood_oxygen','body_temperature'];
+const activityMetricKeys = ['exercise_time','active_energy','resting_energy','flights'];
 function applyTheme(theme){document.documentElement.dataset.theme=theme;localStorage.setItem('health_theme',theme);document.getElementById('themeToggle').textContent=theme==='dark'?'☾':'☀';}
 applyTheme(localStorage.getItem('health_theme')||'dark');
 document.getElementById('themeToggle').addEventListener('click',()=>applyTheme(document.documentElement.dataset.theme==='dark'?'light':'dark'));
 document.querySelectorAll('.range button').forEach(btn=>btn.addEventListener('click',()=>{
   document.querySelectorAll('.range button').forEach(b=>b.classList.remove('active'));
-  btn.classList.add('active');
-  currentRange=btn.dataset.range;
-  if(cache[currentRange]){
-    document.getElementById('errorBanner').style.display='none';
-    renderDashboard(cache[currentRange]);
-  }else{
-    fetchDashboard(currentRange);
-  }
+  btn.classList.add('active'); currentRange=btn.dataset.range;
+  cache[currentRange] ? renderDashboard(cache[currentRange]) : fetchDashboard(currentRange);
 }));
-async function prefetchAll(){
-  document.getElementById('errorBanner').style.display='none';
-  renderSkeleton();
-  try{
-    const data = await fetchHealthRange('1m');
-    renderDashboard(data);
-  }catch(err){
-    console.error(err);
-    showErrorState('Could not load health data. Try refreshing.');
-  }
-  RANGES.filter(range => range !== '1m').forEach(range => {
-    fetchHealthRange(range).catch(err => console.warn(`Failed to fetch range ${range}:`, err));
-  });
-}
-async function fetchWithTimeout(url, options = {}, timeoutMs = 5000){
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try{
-    return await fetch(url, {...options, signal: controller.signal});
-  }catch(e){
-    if(e.name === 'AbortError') throw new Error('Request timed out');
-    throw e;
-  }finally{
-    clearTimeout(timeout);
-  }
+document.querySelectorAll('.tabs button').forEach(btn=>btn.addEventListener('click',()=>{
+  document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('[data-tab-section]').forEach(s=>s.classList.remove('active'));
+  btn.classList.add('active'); currentTab=btn.dataset.tab;
+  document.querySelector(`[data-tab-section="${currentTab}"]`).classList.add('active');
+}));
+async function fetchWithTimeout(url, options={}, timeoutMs=5000){
+  const controller=new AbortController(); const timeout=setTimeout(()=>controller.abort(),timeoutMs);
+  try{return await fetch(url,{...options,signal:controller.signal});}
+  finally{clearTimeout(timeout);}
 }
 async function fetchHealthRange(range){
-  const res = await fetchWithTimeout(`${API_BASE}/api/health-dashboard?range=${range}`, {}, 5000);
-  const data = await res.json();
-  if(!res.ok) throw new Error(data.message || `HTTP ${res.status}`);
-  cache[range] = data;
-  return data;
+  const res=await fetchWithTimeout(`${API_BASE}/api/health-dashboard?range=${range}`,{},5000);
+  const data=await res.json(); if(!res.ok) throw new Error(data.message||`HTTP ${res.status}`);
+  cache[range]=data; return data;
+}
+async function fetchSummary(){
+  try{
+    const res=await fetchWithTimeout(`${API_BASE}/api/health-summary`,{},7000);
+    const data=await res.json(); if(!res.ok||!data.summary) return;
+    document.getElementById('summaryText').textContent=data.summary;
+    document.getElementById('summaryCard').hidden=false;
+  }catch(e){document.getElementById('summaryCard').hidden=true;}
 }
 async function fetchDashboard(range='1m'){
-  document.getElementById('errorBanner').style.display='none';
-  renderSkeleton();
-  try{
-    const data = await fetchHealthRange(range);
-    renderDashboard(data);
-  }catch(err){console.error(err);showErrorState('Could not load data for this range.');}
+  document.getElementById('errorBanner').style.display='none'; renderSkeleton();
+  try{renderDashboard(await fetchHealthRange(range));}
+  catch(err){console.error(err);showErrorState('Could not load data for this range.');}
+}
+async function prefetchAll(){
+  await fetchDashboard('1m'); fetchSummary();
+  RANGES.filter(r=>r!=='1m').forEach(r=>fetchHealthRange(r).catch(err=>console.warn(`Failed to fetch range ${r}:`,err)));
 }
 function renderSkeleton(){
-  const scoresContainer=document.getElementById('scores');
-  if(scoresContainer){
-    let html='';
-    for(let i=0;i<4;i++){html += `
-      <div class="skeleton-card" style="flex:1; min-width:140px;">
-        <div class="skeleton skeleton-score"></div>
-        <div class="skeleton skeleton-label"></div>
-      </div>`;}
-    scoresContainer.innerHTML=html;
-  }
-  const metricsContainer=document.getElementById('metrics');
-  if(metricsContainer){
-    let html='';
-    for(let i=0;i<6;i++){html += `
-      <div class="skeleton-card" style="flex:1; min-width:140px;">
-        <div class="skeleton skeleton-label" style="width:50%; margin-bottom:12px;"></div>
-        <div class="skeleton skeleton-metric"></div>
-        <div class="skeleton skeleton-label" style="width:40%; margin-top:8px;"></div>
-      </div>`;}
-    metricsContainer.innerHTML=html;
-  }
-  document.getElementById('charts').innerHTML='<div class="loading">Loading charts…</div>';
+  ['overviewScores','restScore','activityScore'].forEach(id=>{document.getElementById(id).innerHTML='<div class="skeleton-card"><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-big"></div></div>';});
+  ['restMetrics','activityMetrics'].forEach(id=>{document.getElementById(id).innerHTML='<div class="loading">Loading metrics...</div>';});
+  ['overviewCharts','restCharts','activityCharts'].forEach(id=>{document.getElementById(id).innerHTML='<div class="loading">Loading charts...</div>';});
+  document.getElementById('weeklyFeel').innerHTML='';
 }
-function setEmpty(msg){destroyCharts();document.getElementById('scores').innerHTML=`<div class="empty">${msg}</div>`;document.getElementById('metrics').innerHTML='';document.getElementById('charts').innerHTML='';}
-function showErrorState(msg){document.getElementById('errorBanner').textContent=msg;document.getElementById('errorBanner').style.display='block';setEmpty(msg);}
+function showErrorState(msg){
+  document.getElementById('errorBanner').textContent=msg; document.getElementById('errorBanner').style.display='block'; destroyCharts();
+  ['overviewScores','restScore','activityScore'].forEach(id=>document.getElementById(id).innerHTML=`<div class="empty">${msg}</div>`);
+  ['restMetrics','activityMetrics','overviewCharts','restCharts','activityCharts','weeklyFeel'].forEach(id=>document.getElementById(id).innerHTML='');
+}
 function renderDashboard(data){
-  document.getElementById('lastUpdated').textContent = data.generated_at ? `Updated ${new Date(data.generated_at).toLocaleString()}` : 'Updated just now';
-  renderScores(data); renderMetrics(data); renderCharts(data);
+  document.getElementById('lastUpdated').textContent=data.generated_at?`Updated ${new Date(data.generated_at).toLocaleString()}`:'Updated just now';
+  destroyCharts();
+  renderScoreSet('overviewScores',['body','cardio','activity','sleep'],data);
+  renderScoreSet('restScore',['sleep'],data);
+  renderScoreSet('activityScore',['activity'],data);
+  renderMetricSet('restMetrics',restMetricKeys,data);
+  renderMetricSet('activityMetrics',activityMetricKeys,data);
+  renderOverviewCharts(data); renderRestCharts(data); renderActivityCharts(data); renderWeeklyFeel(data.weekly_readiness||[]);
 }
-function renderScores(data){
-  const cfg=[['body','🏋️ Body'],['cardio','❤️ Cardio'],['activity','🏃 Activity'],['sleep','😴 Sleep']];
-  document.getElementById('scores').innerHTML=cfg.map(([key,label])=>{const s=data.scores?.[key]||{};const coming=s.status==='coming_soon';const muted=coming?' muted':'';const badge=coming?'<span class="badge">Coming soon</span>':'';const info=key==='activity'?scoreInfo.activity(data.steps_threshold||s.steps_threshold||10000):scoreInfo[key];return `<article class="card${muted}"><div class="card-top"><div class="score-name">${label}${badge}</div><button class="info" onclick="toggleInfo(this)">ⓘ</button></div><div class="score">${s.value ?? '—'}</div><div class="desc">${s.description || 'Not enough data yet'}</div><div class="explain">${info}</div></article>`}).join('');
+function renderScoreSet(id,keys,data){
+  document.getElementById(id).innerHTML=keys.map(key=>scoreCard(key,data)).join('');
+}
+function scoreCard(key,data){
+  const s=data.scores?.[key]||{}; const info=key==='activity'?scoreInfo.activity(data.steps_threshold||s.steps_threshold||10000):scoreInfo[key];
+  const rec=s.recommendation||scoreRecommendation(key,data);
+  return `<article class="card"><div class="card-top"><div class="score-name">${scoreLabels[key]}</div><button class="info" onclick="toggleInfo(this)">ⓘ</button></div><div class="score">${s.value ?? '—'}</div><div class="desc">${s.description||'Not enough data yet'}</div>${rec?`<div class="coach">${rec}</div>`:''}<div class="explain">${info}</div></article>`;
 }
 function toggleInfo(btn){btn.closest('.card').querySelector('.explain').classList.toggle('show');}
-function renderMetrics(data){
-  document.getElementById('metrics').innerHTML=Object.entries(metricDefs).map(([key,def])=>{const value=data.latest?.[key];const delta=data.deltas?.[key];const cls=deltaClass(delta,def.good);const arrow=delta?.direction==='up'?'↑':delta?.direction==='down'?'↓':'—';const deltaText=delta?`${arrow} ${Math.abs(delta.value)} ${delta.unit}`:'No data yet';return `<article class="metric"><div class="metric-name">${def.label}</div><div class="metric-value">${value ?? '—'}${value!=null&&def.unit?' <small>'+def.unit+'</small>':''}</div><div class="delta ${cls}">${deltaText}</div></article>`}).join('');
+function scoreRecommendation(key,data){
+  const m=data.metrics||{}, d=data.deltas||{}, latest=data.latest||{};
+  const isBad=(metric,good)=>d[metric]&&d[metric].direction!=='flat'&&good!=='flat'&&d[metric].direction!==good;
+  if(key==='body'){
+    const weak=[['weight','weight','down'],['body_fat','body fat','down'],['lean_mass','lean mass','up']].filter(x=>isBad(x[0],x[2])).map(x=>x[1]);
+    return weak.length?`Next move: focus on ${weak.join(', ')} with steady protein, strength training, and a smaller calorie swing.`:'Next move: keep the current pattern: protein, strength work, and recovery are doing their jobs.';
+  }
+  if(key==='cardio'){
+    const weak=[['resting_hr','resting HR','down'],['hrv','HRV','up'],['vo2_max','VO2 Max','up']].filter(x=>isBad(x[0],x[2])).map(x=>x[1]);
+    return weak.length?`Next move: ${weak.join(', ')} ${weak.length===1?'needs':'need'} recovery attention; protect sleep, hydration, easy Zone 2, and avoid stacking hard days.`:'Next move: keep aerobic work steady and do not let recovery slide.';
+  }
+  if(key==='activity'){
+    const weekly=data.weekly_activity||[]; const w=weekly[weekly.length-1]||{}; const workoutGap=Math.max(3-(w.workout_days||0),0); const stepsGap=Math.max(7-(w.steps_days||0),0);
+    if(workoutGap&&stepsGap)return `Next move: add ${workoutGap} ${plural(workoutGap,'workout day')} and ${stepsGap} ${plural(stepsGap,'step day','steps days')} to hit the weekly targets.`;
+    if(workoutGap)return `Next move: add ${workoutGap} ${plural(workoutGap,'workout day')} to reach the 3-day training target.`;
+    if(stepsGap)return `Next move: add ${stepsGap} ${plural(stepsGap,'step day','steps days')} to complete the movement streak.`;
+    return 'Next move: consistency is strong; keep intensity sensible so recovery does not pay for it.';
+  }
+  if(key==='sleep'){
+    const total=latest.total_sleep??lastValue(m.total_sleep), deep=latest.deep_sleep??lastValue(m.deep_sleep), rem=latest.rem_sleep??lastValue(m.rem_sleep), efficiency=latest.sleep_efficiency??lastValue(m.sleep_efficiency);
+    if(total!=null&&total<420)return 'Next move: the biggest lever is more total sleep; move bedtime earlier or protect a longer sleep window.';
+    if(deep!=null&&deep<90)return 'Next move: deep sleep is the limiter; keep late alcohol, heavy meals, and hard evening training in check.';
+    if(rem!=null&&rem<80)return 'Next move: REM is the limiter; prioritize consistent wake time and enough total sleep opportunity.';
+    if(efficiency!=null&&efficiency<85)return 'Next move: improve efficiency with a cooler room, tighter wind-down, and fewer wake-window interruptions.';
+    return 'Next move: sleep quality is holding up; keep the routine consistent.';
+  }
+  return '';
 }
-function deltaClass(delta,good){if(!delta||delta.direction==='flat')return 'flat'; if(good==='flat')return 'flat'; return delta.direction===good?'good':'bad';}
+function lastValue(points){return Array.isArray(points)&&points.length?points[points.length-1].value:null;}
+function plural(value,singular,pluralText){return value===1?singular:(pluralText||`${singular}s`);}
+function renderMetricSet(id,keys,data){
+  const cards=keys.map(key=>metricCard(key,data)).filter(Boolean);
+  document.getElementById(id).innerHTML=cards.length?cards.join(''):'<div class="empty">No synced data yet</div>';
+}
+function metricCard(key,data){
+  const def=metricDefs[key]; const series=data.metrics?.[key]||[]; const value=data.latest?.[key] ?? (series.length ? series[series.length-1].value : null);
+  if(!series.length&&value==null) return '';
+  const delta=data.deltas?.[key]; const cls=deltaClass(delta,def.good); const arrow=delta?.direction==='up'?'↑':delta?.direction==='down'?'↓':'—';
+  const fallback=metricConclusion(key,value,delta,data);
+  const deltaText=fallback || (delta?`${arrow} ${Math.abs(delta.value)} ${delta.unit}`:'Latest synced; trend pending');
+  return `<article class="metric"><div class="metric-name">${def.label}</div><div class="metric-value">${value ?? '—'}${value!=null&&def.unit?' <small>'+def.unit+'</small>':''}</div><div class="delta ${fallback?fallbackTone(key,value,delta):cls}">${deltaText}</div></article>`;
+}
+function deltaClass(delta,good){if(!delta||delta.direction==='flat'||good==='flat')return 'flat';return delta.direction===good?'good':'bad';}
+function metricConclusion(key,value,delta,data){
+  if(value==null)return '';
+  const targets={total_sleep:420,deep_sleep:90,rem_sleep:80,sleep_efficiency:85};
+  if(key==='total_sleep')return value>=targets.total_sleep?'At or above 7h target':`${Math.round(targets.total_sleep-value)} min below 7h target`;
+  if(key==='deep_sleep')return value>=targets.deep_sleep?'At or above deep sleep target':`${Math.round(targets.deep_sleep-value)} min below deep sleep target`;
+  if(key==='rem_sleep')return value>=targets.rem_sleep?'At or above REM target':`${round1(targets.rem_sleep-value)} min below REM target`;
+  if(key==='light_sleep')return 'Stage context; read with total sleep';
+  if(key==='awake_sleep')return value<=30?'Awake time looks controlled':'Awake time is elevated';
+  if(key==='sleep_efficiency')return value>=targets.sleep_efficiency?'Above 85% efficiency target':`${round1(targets.sleep_efficiency-value)} pts below efficiency target`;
+  if(key==='blood_oxygen')return 'Recovery vital synced; watch for unusual dips';
+  if(key==='body_temperature')return delta?`Trend ${delta.direction==='up'?'+':delta.direction==='down'?'-':''}${Math.abs(delta.value)} ${delta.unit}`:'Recovery vital synced; trend pending';
+  if(['exercise_time','active_energy','resting_energy','flights'].includes(key))return delta?'': 'Latest synced; trend pending';
+  return '';
+}
+function fallbackTone(key,value,delta){
+  if(['total_sleep','deep_sleep','rem_sleep'].includes(key))return value>=({total_sleep:420,deep_sleep:90,rem_sleep:80}[key])?'good':'bad';
+  if(key==='sleep_efficiency')return value>=85?'good':'bad';
+  if(key==='awake_sleep')return value<=30?'good':'bad';
+  return deltaClass(delta,metricDefs[key]?.good);
+}
+function round1(value){return Math.round(value*10)/10;}
 function has(points){return Array.isArray(points)&&points.length>0;}
 function cssVar(name){return getComputedStyle(document.documentElement).getPropertyValue(name).trim();}
-function chartBase(){return {responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:cssVar('--text-secondary'),boxWidth:10,usePointStyle:true}},tooltip:{mode:'index',intersect:false}},scales:{x:{ticks:{color:cssVar('--text-secondary')},grid:{color:'transparent'}},y:{ticks:{color:cssVar('--text-secondary')},grid:{color:cssVar('--border')}}}};}
-function renderCharts(data){
-  destroyCharts(); const m=data.metrics||{}; let html='';
-  if(has(m.weight)||has(m.body_fat)||has(m.lean_mass)) html += chartCard('bodyChart','Body Composition','Weight, body fat, and lean mass trends');
-  if(has(m.resting_hr)||has(m.hrv)||has(m.vo2_max)) html += chartCard('cardioChart','Cardiovascular','Resting HR, HRV, and VO2 Max');
-  if(has(m.total_sleep)||has(m.deep_sleep)||has(m.rem_sleep)||has(m.light_sleep)||has(m.sleep_efficiency)) html += chartCard('sleepChart','Sleep','Total sleep, stages, and sleep efficiency');
-  if(has(m.deep_sleep)||has(m.rem_sleep)||has(m.light_sleep)||has(m.awake_sleep)) html += chartCard('sleepStagesChart','Sleep Stage Breakdown','Nightly deep, REM, light, and awake composition');
-  if(has(m.bedtime)) html += chartCard('bedtimeChart','Bedtime Trend','Time of night you fell asleep (hours, 24+ = after midnight)');
-  if(Array.isArray(data.weekly_activity)&&data.weekly_activity.length) html += chartCard('activityChart','Activity','Workout days and steps-goal days per week');
-  document.getElementById('charts').innerHTML = html || '<div class="empty">Not enough data yet for charts.</div>';
-  if(document.getElementById('bodyChart')) makeBodyChart(m); if(document.getElementById('cardioChart')) makeCardioChart(m); if(document.getElementById('sleepChart')) makeSleepChart(m); if(document.getElementById('sleepStagesChart')) makeSleepStagesChart(m); if(document.getElementById('bedtimeChart')) makeBedtimeChart(m); if(document.getElementById('activityChart')) makeActivityChart(data.weekly_activity);
-}
+function chartBase(){return {responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:cssVar('--muted'),boxWidth:10,usePointStyle:true}},tooltip:{mode:'index',intersect:false}},scales:{x:{ticks:{color:cssVar('--muted')},grid:{color:'transparent'}},y:{ticks:{color:cssVar('--muted')},grid:{color:cssVar('--border')}}}};}
 function chartCard(id,title,sub){return `<article class="chart-card"><div class="chart-head"><div><div class="chart-title">${title}</div><div class="chart-sub">${sub}</div></div></div><div class="chart-wrap"><canvas id="${id}"></canvas></div></article>`;}
 function labelsFor(...series){return [...new Set(series.flatMap(s=>(s||[]).map(p=>p.date)))].sort();}
 function mapSeries(points,labels){const byDate=Object.fromEntries((points||[]).map(p=>[p.date,p.value]));return labels.map(d=>byDate[d]??null);}
-function makeBodyChart(m){const labels=labelsFor(m.weight,m.body_fat,m.lean_mass);charts.body=new Chart(document.getElementById('bodyChart'),{type:'line',data:{labels,datasets:[{label:'Weight kg',data:mapSeries(m.weight,labels),borderColor:cssVar('--accent-blue'),tension:.4,yAxisID:'y'},{label:'Body Fat %',data:mapSeries(m.body_fat,labels),borderColor:cssVar('--accent-yellow'),tension:.4,yAxisID:'y1'},{label:'Lean Mass kg',data:mapSeries(m.lean_mass,labels),borderColor:cssVar('--accent-green'),tension:.4,yAxisID:'y'}]},options:{...chartBase(),scales:{...chartBase().scales,y1:{position:'right',ticks:{color:cssVar('--text-secondary')},grid:{drawOnChartArea:false}}}}});}
-function makeCardioChart(m){const labels=labelsFor(m.resting_hr,m.hrv,m.vo2_max);charts.cardio=new Chart(document.getElementById('cardioChart'),{type:'line',data:{labels,datasets:[{label:'Resting HR',data:mapSeries(m.resting_hr,labels),borderColor:cssVar('--accent-red'),tension:.4,yAxisID:'y'},{label:'HRV',data:mapSeries(m.hrv,labels),borderColor:cssVar('--accent-green'),tension:.4,yAxisID:'y1'},{label:'VO2 Max',data:mapSeries(m.vo2_max,labels),borderColor:cssVar('--accent-blue'),tension:.4,yAxisID:'y1'}]},options:{...chartBase(),scales:{...chartBase().scales,y1:{position:'right',ticks:{color:cssVar('--text-secondary')},grid:{drawOnChartArea:false}}}}});}
-function makeSleepChart(m){const labels=labelsFor(m.total_sleep,m.deep_sleep,m.rem_sleep,m.light_sleep,m.sleep_efficiency);charts.sleep=new Chart(document.getElementById('sleepChart'),{type:'line',data:{labels,datasets:[{label:'Total Sleep (min)',data:mapSeries(m.total_sleep,labels),borderColor:cssVar('--accent-blue'),tension:.3,pointRadius:2,yAxisID:'y'},{label:'Deep Sleep (min)',data:mapSeries(m.deep_sleep,labels),borderColor:cssVar('--accent-green'),tension:.3,pointRadius:2,yAxisID:'y'},{label:'REM Sleep (min)',data:mapSeries(m.rem_sleep,labels),borderColor:'#a78bfa',tension:.3,pointRadius:2,yAxisID:'y'},{label:'Light Sleep (min)',data:mapSeries(m.light_sleep,labels),borderColor:'#67e8f9',tension:.3,pointRadius:2,yAxisID:'y'},{label:'Efficiency %',data:mapSeries(m.sleep_efficiency,labels),borderColor:cssVar('--accent-yellow'),tension:.3,pointRadius:2,yAxisID:'y1'}]},options:{...chartBase(),scales:{...chartBase().scales,y:{...chartBase().scales.y,suggestedMin:0},y1:{position:'right',ticks:{color:cssVar('--text-secondary')},grid:{drawOnChartArea:false},suggestedMin:0,suggestedMax:100}}}});}
-function makeSleepStagesChart(m){const labels=labelsFor(m.deep_sleep,m.rem_sleep,m.light_sleep,m.awake_sleep);const base=chartBase();charts.sleepStages=new Chart(document.getElementById('sleepStagesChart'),{type:'bar',data:{labels,datasets:[{label:'Deep',data:mapSeries(m.deep_sleep,labels),backgroundColor:cssVar('--accent-green')},{label:'REM',data:mapSeries(m.rem_sleep,labels),backgroundColor:'#a78bfa'},{label:'Light',data:mapSeries(m.light_sleep,labels),backgroundColor:'#67e8f9'},{label:'Awake',data:mapSeries(m.awake_sleep,labels),backgroundColor:cssVar('--accent-red')}]},options:{...base,scales:{...base.scales,x:{...base.scales.x,stacked:true},y:{...base.scales.y,stacked:true}}}});}
-function makeBedtimeChart(m){const labels=labelsFor(m.bedtime);charts.bedtime=new Chart(document.getElementById('bedtimeChart'),{type:'line',data:{labels,datasets:[{label:'Bedtime (hr)',data:mapSeries(m.bedtime,labels),borderColor:cssVar('--accent-yellow'),tension:.3,pointRadius:3}]},options:{...chartBase(),scales:{...chartBase().scales,y:{...chartBase().scales.y,reverse:true,min:22,max:30,ticks:{color:cssVar('--text-secondary'),callback:v=>{const h=v>24?v-24:v;return `${Math.floor(h)}:${String(Math.round((h%1)*60)).padStart(2,'0')}`;}}}}}});}
-function makeActivityChart(weekly){const labels=weekly.map(w=>w.week);charts.activity=new Chart(document.getElementById('activityChart'),{type:'bar',data:{labels,datasets:[{label:'Workout days',data:weekly.map(w=>w.workout_days),backgroundColor:cssVar('--accent-blue')},{label:'Steps days',data:weekly.map(w=>w.steps_days),backgroundColor:cssVar('--accent-green')},{label:'Workout target',data:weekly.map(()=>3),type:'line',borderColor:cssVar('--accent-yellow'),pointRadius:0,borderDash:[5,5]},{label:'Steps target',data:weekly.map(()=>7),type:'line',borderColor:cssVar('--text-secondary'),pointRadius:0,borderDash:[3,5]}]},options:chartBase()});}
+function renderOverviewCharts(data){
+  const m=data.metrics||{}; let html='';
+  if(has(m.weight)||has(m.body_fat)||has(m.lean_mass)) html+=chartCard('bodyChart','Body Composition','Weight, body fat, and lean mass trends');
+  if(has(m.resting_hr)||has(m.hrv)||has(m.vo2_max)||has(m.blood_oxygen)||has(m.body_temperature)) html+=chartCard('cardioChart','Cardiovascular','Resting HR, HRV, VO2 Max, blood oxygen, and body temperature');
+  document.getElementById('overviewCharts').innerHTML=html||'<div class="empty">Not enough data yet for charts.</div>';
+  if(document.getElementById('bodyChart')) makeBodyChart(m); if(document.getElementById('cardioChart')) makeCardioChart(m);
+}
+function renderRestCharts(data){
+  const m=data.metrics||{}; let html='';
+  if(has(data.readiness_series)) html+=chartCard('readinessChart','Readiness Trend','Daily readiness with weekly energy and mood');
+  if(has(m.total_sleep)||has(m.deep_sleep)||has(m.rem_sleep)||has(m.light_sleep)||has(m.sleep_efficiency)) html+=chartCard('sleepChart','Sleep','Total sleep, stages, and efficiency');
+  if(has(m.deep_sleep)||has(m.rem_sleep)||has(m.light_sleep)||has(m.awake_sleep)) html+=chartCard('sleepStagesChart','Sleep Stage Breakdown','Nightly deep, REM, light, and awake composition');
+  if(has(m.bedtime)) html+=chartCard('bedtimeChart','Bedtime Trend','Time of night asleep began');
+  document.getElementById('restCharts').innerHTML=html||'<div class="empty">No rest or sleep data synced yet</div>';
+  if(document.getElementById('readinessChart')) makeReadinessChart(data.readiness_series||[],data.weekly_readiness||[]);
+  if(document.getElementById('sleepChart')) makeSleepChart(m); if(document.getElementById('sleepStagesChart')) makeSleepStagesChart(m); if(document.getElementById('bedtimeChart')) makeBedtimeChart(m);
+}
+function renderActivityCharts(data){
+  const weekly=data.weekly_activity||[];
+  document.getElementById('activityCharts').innerHTML=weekly.length?chartCard('activityChart','Weekly Activity','Workout days and steps-goal days per week'):'<div class="empty">No activity data synced yet</div>';
+  if(document.getElementById('activityChart')) makeActivityChart(weekly);
+}
+function makeBodyChart(m){const labels=labelsFor(m.weight,m.body_fat,m.lean_mass);charts.body=new Chart(document.getElementById('bodyChart'),{type:'line',data:{labels,datasets:[{label:'Weight kg',data:mapSeries(m.weight,labels),borderColor:cssVar('--blue'),tension:.35,yAxisID:'y'},{label:'Body Fat %',data:mapSeries(m.body_fat,labels),borderColor:cssVar('--yellow'),tension:.35,yAxisID:'y1'},{label:'Lean Mass kg',data:mapSeries(m.lean_mass,labels),borderColor:cssVar('--green'),tension:.35,yAxisID:'y'}]},options:{...chartBase(),scales:{...chartBase().scales,y1:{position:'right',ticks:{color:cssVar('--muted')},grid:{drawOnChartArea:false}}}}});}
+function makeCardioChart(m){const labels=labelsFor(m.resting_hr,m.hrv,m.vo2_max,m.blood_oxygen,m.body_temperature);charts.cardio=new Chart(document.getElementById('cardioChart'),{type:'line',data:{labels,datasets:[{label:'Resting HR',data:mapSeries(m.resting_hr,labels),borderColor:cssVar('--red'),tension:.35,yAxisID:'y'},{label:'HRV',data:mapSeries(m.hrv,labels),borderColor:cssVar('--green'),tension:.35,yAxisID:'y1'},{label:'VO2 Max',data:mapSeries(m.vo2_max,labels),borderColor:cssVar('--blue'),tension:.35,yAxisID:'y1'},{label:'Blood O₂ %',data:mapSeries(m.blood_oxygen,labels),borderColor:cssVar('--cyan'),tension:.35,yAxisID:'y1'},{label:'Body Temp °C',data:mapSeries(m.body_temperature,labels),borderColor:cssVar('--yellow'),tension:.35,yAxisID:'y1'}]},options:{...chartBase(),scales:{...chartBase().scales,y1:{position:'right',ticks:{color:cssVar('--muted')},grid:{drawOnChartArea:false}}}}});}
+function makeSleepChart(m){const labels=labelsFor(m.total_sleep,m.deep_sleep,m.rem_sleep,m.light_sleep,m.sleep_efficiency);charts.sleep=new Chart(document.getElementById('sleepChart'),{type:'line',data:{labels,datasets:[{label:'Total Sleep',data:mapSeries(m.total_sleep,labels),borderColor:cssVar('--blue'),tension:.3,pointRadius:2,yAxisID:'y'},{label:'Deep',data:mapSeries(m.deep_sleep,labels),borderColor:cssVar('--green'),tension:.3,pointRadius:2,yAxisID:'y'},{label:'REM',data:mapSeries(m.rem_sleep,labels),borderColor:cssVar('--violet'),tension:.3,pointRadius:2,yAxisID:'y'},{label:'Light',data:mapSeries(m.light_sleep,labels),borderColor:cssVar('--cyan'),tension:.3,pointRadius:2,yAxisID:'y'},{label:'Efficiency %',data:mapSeries(m.sleep_efficiency,labels),borderColor:cssVar('--yellow'),tension:.3,pointRadius:2,yAxisID:'y1'}]},options:{...chartBase(),scales:{...chartBase().scales,y:{...chartBase().scales.y,suggestedMin:0},y1:{position:'right',ticks:{color:cssVar('--muted')},grid:{drawOnChartArea:false},suggestedMin:0,suggestedMax:100}}}});}
+function makeSleepStagesChart(m){const labels=labelsFor(m.deep_sleep,m.rem_sleep,m.light_sleep,m.awake_sleep);const base=chartBase();charts.sleepStages=new Chart(document.getElementById('sleepStagesChart'),{type:'bar',data:{labels,datasets:[{label:'Deep',data:mapSeries(m.deep_sleep,labels),backgroundColor:cssVar('--green')},{label:'REM',data:mapSeries(m.rem_sleep,labels),backgroundColor:cssVar('--violet')},{label:'Light',data:mapSeries(m.light_sleep,labels),backgroundColor:cssVar('--cyan')},{label:'Awake',data:mapSeries(m.awake_sleep,labels),backgroundColor:cssVar('--red')}]},options:{...base,scales:{...base.scales,x:{...base.scales.x,stacked:true},y:{...base.scales.y,stacked:true}}}});}
+function makeBedtimeChart(m){const labels=labelsFor(m.bedtime);charts.bedtime=new Chart(document.getElementById('bedtimeChart'),{type:'line',data:{labels,datasets:[{label:'Bedtime',data:mapSeries(m.bedtime,labels),borderColor:cssVar('--yellow'),tension:.3,pointRadius:3}]},options:{...chartBase(),scales:{...chartBase().scales,y:{...chartBase().scales.y,reverse:true,min:22,max:30,ticks:{color:cssVar('--muted'),callback:v=>{const h=v>24?v-24:v;return `${Math.floor(h)}:${String(Math.round((h%1)*60)).padStart(2,'0')}`;}}}}}});}
+function makeActivityChart(weekly){const labels=weekly.map(w=>w.week);charts.activity=new Chart(document.getElementById('activityChart'),{type:'bar',data:{labels,datasets:[{label:'Workout days',data:weekly.map(w=>w.workout_days),backgroundColor:cssVar('--blue')},{label:'Steps days',data:weekly.map(w=>w.steps_days),backgroundColor:cssVar('--green')},{label:'Workout target',data:weekly.map(()=>3),type:'line',borderColor:cssVar('--yellow'),pointRadius:0,borderDash:[5,5]},{label:'Steps target',data:weekly.map(()=>7),type:'line',borderColor:cssVar('--muted'),pointRadius:0,borderDash:[3,5]}]},options:chartBase()});}
+function makeReadinessChart(series,weekly){
+  const dailyLabels=series.map(p=>p.date); const weeklyByDate=Object.fromEntries(weekly.map(w=>[w.week,w]));
+  charts.readiness=new Chart(document.getElementById('readinessChart'),{type:'line',data:{labels:dailyLabels,datasets:[{label:'Readiness',data:series.map(p=>p.score??null),borderColor:cssVar('--blue'),tension:.35,pointRadius:2,yAxisID:'y'},{label:'Weekly energy',data:dailyLabels.map(d=>weeklyByDate[d]?.avg_energy??null),type:'bar',backgroundColor:'rgba(74,222,128,.45)',yAxisID:'y1'},{label:'Weekly mood',data:dailyLabels.map(d=>weeklyByDate[d]?.avg_mood??null),type:'bar',backgroundColor:'rgba(251,191,36,.45)',yAxisID:'y1'}]},options:{...chartBase(),scales:{...chartBase().scales,y:{...chartBase().scales.y,suggestedMin:0,suggestedMax:100},y1:{position:'right',ticks:{color:cssVar('--muted')},grid:{drawOnChartArea:false},suggestedMin:0,suggestedMax:5}}}});
+}
+function renderWeeklyFeel(weekly){
+  if(!weekly.length){document.getElementById('weeklyFeel').innerHTML='';return;}
+  const rows=weekly.slice(-6).reverse().map((w,i,arr)=>{const prev=arr[i+1];const eDelta=prev&&w.avg_energy!=null&&prev.avg_energy!=null?round(w.avg_energy-prev.avg_energy):null;const mDelta=prev&&w.avg_mood!=null&&prev.avg_mood!=null?round(w.avg_mood-prev.avg_mood):null;return `<tr><td>${formatWeek(w.week)}</td><td>${fmtNum(w.avg_energy)} ${trend(eDelta)}</td><td>${fmtNum(w.avg_mood)} ${trend(mDelta)}</td><td>${fmtNum(w.avg_score)}</td></tr>`;}).join('');
+  document.getElementById('weeklyFeel').innerHTML=`<article class="table-card"><div class="chart-head"><div><div class="chart-title">Weekly Feel</div><div class="chart-sub">Energy and mood compared with the prior week</div></div></div><table class="weekly-table"><thead><tr><th>Week</th><th>Energy</th><th>Mood</th><th>Readiness</th></tr></thead><tbody>${rows}</tbody></table></article>`;
+}
+function round(v){return Math.round(v*10)/10;} function fmtNum(v){return v==null?'—':Number(v).toFixed(1).replace(/\.0$/,'');}
+function trend(v){if(v==null||Math.abs(v)<.05)return '<span class="delta flat">0</span>';const cls=v>0?'good':'bad';const arrow=v>0?'↑':'↓';return `<span class="${cls}">${v>0?'+':''}${v.toFixed(1)} ${arrow}</span>`;}
+function formatWeek(iso){const d=new Date(`${iso}T12:00:00`);return `Week of ${d.toLocaleDateString(undefined,{month:'short',day:'numeric'})}`;}
 function destroyCharts(){Object.values(charts).forEach(c=>c?.destroy());Object.keys(charts).forEach(k=>delete charts[k]);}
-document.addEventListener('DOMContentLoaded', () => {
-  renderSkeleton();
-  prefetchAll();
-});
+document.addEventListener('DOMContentLoaded',prefetchAll);
 </script>
 </body>
 </html>
