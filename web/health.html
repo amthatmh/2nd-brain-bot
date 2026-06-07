@@ -284,11 +284,16 @@ function exerciseTimeContext(data,value){
   if(!points.length)return 'Latest synced; trend pending';
   if((data.range||currentRange)==='1m'){
     const weekly=weeklySums(points); const latestWeek=weekStart(points[points.length-1].date); const current=weekly.get(latestWeek)||0;
+    const currentDays=points.filter(p=>weekStart(p.date)===latestWeek).length;
     const prior=[...weekly.entries()].filter(([week])=>week!==latestWeek).map(([,sum])=>sum).filter(sum=>sum>0);
     if(!prior.length)return `${Math.round(current)} min logged this week`;
-    const avg=prior.reduce((a,b)=>a+b,0)/prior.length; const gap=Math.round(avg-current);
-    if(gap>0)return `${gap} min to match recent weekly avg this week`;
-    return `${Math.abs(gap)} min above recent weekly avg`;
+    const priorDailyAvg=prior.reduce((a,b)=>a+b,0)/prior.length/7;
+    const currentDailyAvg=currentDays>0?current/currentDays:0;
+    const gap=Math.round(priorDailyAvg-currentDailyAvg);
+    const suffix=`(${currentDays}d this wk)`;
+    if(Math.abs(gap)<1)return `On avg daily pace ${suffix}`;
+    if(gap>0)return `${gap} min/day below weekly avg ${suffix}`;
+    return `${Math.abs(gap)} min/day above weekly avg ${suffix}`;
   }
   const avg=points.reduce((sum,p)=>sum+Number(p.value),0)/points.length; const diff=Math.round(value-avg);
   if(Math.abs(diff)<1)return 'On range-day average';
@@ -350,8 +355,19 @@ function makeReadinessChart(series){
 }
 function renderWeeklyFeel(weekly){
   if(!weekly.length){document.getElementById('weeklyFeel').innerHTML='';return;}
-  const rows=weekly.slice(-6).reverse().map((w,i,arr)=>{const prev=arr[i+1];return `<tr><td>${formatWeek(w.week)}</td><td>${readinessCell(w.avg_sleep_quality,deltaFor(w,prev,'avg_sleep_quality'))}</td><td>${readinessCell(w.avg_energy,deltaFor(w,prev,'avg_energy'))}</td><td>${readinessCell(w.avg_mood,deltaFor(w,prev,'avg_mood'))}</td><td>${readinessCell(w.avg_stress,deltaFor(w,prev,'avg_stress'),true)}</td><td>${readinessCell(w.avg_soreness,deltaFor(w,prev,'avg_soreness'),true)}</td><td>${readinessCell(w.avg_score,deltaFor(w,prev,'avg_score'))}</td></tr>`;}).join('');
-  document.getElementById('weeklyFeel').innerHTML=`<article class="table-card"><div class="chart-head"><div><div class="chart-title">Weekly Readiness</div><div class="chart-sub">${readinessTrendSummary(weekly)}</div></div></div><div class="table-scroll"><table class="weekly-table"><thead><tr><th>Week</th><th>Sleep</th><th>Energy</th><th>Mood</th><th>Stress</th><th>Sore</th><th>Ready</th></tr></thead><tbody>${rows}</tbody></table></div></article>`;
+  document.getElementById('weeklyFeel').innerHTML=chartCard('weeklyReadinessChart','Weekly Readiness',readinessTrendSummary(weekly));
+  makeWeeklyReadinessChart(weekly);
+}
+function makeWeeklyReadinessChart(weekly){
+  const labels=weekly.map(w=>formatWeek(w.week)); const base=chartBase();
+  charts.weeklyReadiness=new Chart(document.getElementById('weeklyReadinessChart'),{type:'line',data:{labels,datasets:[
+    {label:'Score',data:weekly.map(w=>w.avg_score??null),borderColor:cssVar('--blue'),borderWidth:2,tension:.35,pointRadius:3},
+    {label:'Energy',data:weekly.map(w=>w.avg_energy??null),borderColor:cssVar('--green'),tension:.35,pointRadius:3},
+    {label:'Mood',data:weekly.map(w=>w.avg_mood??null),borderColor:cssVar('--yellow'),tension:.35,pointRadius:3},
+    {label:'Sleep',data:weekly.map(w=>w.avg_sleep_quality??null),borderColor:cssVar('--cyan'),tension:.35,pointRadius:3},
+    {label:'Stress',data:weekly.map(w=>w.avg_stress??null),borderColor:cssVar('--red'),tension:.35,pointRadius:3,borderDash:[4,4]},
+    {label:'Soreness',data:weekly.map(w=>w.avg_soreness??null),borderColor:cssVar('--violet'),tension:.35,pointRadius:3,borderDash:[4,4]},
+  ]},options:{...base,scales:{...base.scales,y:{...base.scales.y,suggestedMin:1,suggestedMax:5,ticks:{color:cssVar('--muted'),stepSize:1}}}}});
 }
 function deltaFor(current,prev,key){return prev&&current?.[key]!=null&&prev?.[key]!=null?round(current[key]-prev[key]):null;}
 function readinessCell(value,delta,lowerIsBetter=false){return value==null?'—':`${fmtNum(value)} ${trend(delta,lowerIsBetter)}`;}
