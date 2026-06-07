@@ -2391,7 +2391,7 @@ def _scheduler_event_listener(event) -> None:
         alert_scheduler_event(getattr(event, "job_id", "unknown"), "missed")
 
 async def post_init(app: Application) -> None:
-    global _scheduler, _steps_title_migration_ran, UV_THRESHOLD, WEEKS_HISTORY, TZ, rule_engine
+    global _scheduler, _steps_title_migration_ran, UV_THRESHOLD, WEEKS_HISTORY, rule_engine
     try:
         startup_notion_health_check()
     except RuntimeError as e:

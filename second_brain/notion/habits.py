@@ -85,7 +85,6 @@ def extract_habit_frequency(props: dict[str, Any]) -> int | None:
 
 def load_habit_cache(*, notion: Any, notion_habit_db: str) -> None:
     """Load active habits into module-level ``habit_cache``."""
-    global habit_cache
     try:
         pages = query_all(notion, notion_habit_db, filter={"property": "Active", "checkbox": {"equals": True}})
         habit_cache.clear()

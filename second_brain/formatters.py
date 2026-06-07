@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, date
 from second_brain.config import NUMBER_EMOJIS, HORIZON_LABELS, TZ
 from second_brain.notion import tasks as notion_tasks
 from second_brain import weather as wx
+from second_brain import mute as mute_helpers
 from second_brain.utils import local_today
 from second_brain.state import STATE
 
@@ -28,7 +29,7 @@ def context_emoji(context: str | None) -> str:
 def format_hybrid_digest(tasks: list[dict]) -> tuple[str, list[dict]]:
     """Main digest message in product layout: weather + Today + This Week."""
     del tasks  # counts and sections are always computed fresh
-    overdue, today_tasks, this_week, backlog = _get_tasks_by_deadline_horizon()
+    overdue, today_tasks, this_week, backlog = notion_tasks._get_tasks_by_deadline_horizon(globals().get("notion"), globals().get("NOTION_DB_ID"))
     _ = backlog
     date_str = datetime.now(TZ).strftime("%A, %B %-d")
     lines = [f"☀️ *{date_str}*", format_digest_weather_card(), ""]
@@ -109,7 +110,7 @@ def format_daily_digest(
 
 def format_week_view(view_type: str) -> tuple[str, list[dict]]:
     """Return the This Week or Backlog expanded view."""
-    _, _, this_week, backlog = _get_tasks_by_deadline_horizon()
+    _, _, this_week, backlog = notion_tasks._get_tasks_by_deadline_horizon(globals().get("notion"), globals().get("NOTION_DB_ID"))
 
     if view_type == "week":
         title = "🟠 *This Week (2–7 days)*"
@@ -448,7 +449,7 @@ def digest_location_label() -> str:
 
 def mute_status_text() -> str:
     """Human-friendly mute status line."""
-    if is_muted() and STATE.mute_until:
+    if mute_helpers.is_muted(STATE.mute_until, TZ) and STATE.mute_until:
         return f"🔕 Digests paused until {STATE.mute_until.strftime('%Y-%m-%d %H:%M %Z')}."
     return "🔔 Digests are active."
 

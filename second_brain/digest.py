@@ -246,7 +246,7 @@ def _filter_digest_tasks(tasks: list[dict], config: dict | None = None) -> list[
 
 
 async def send_digest_for_slot(bot, slot: dict) -> None:
-    global _digest_slot_sent_today, _last_daily_log_url
+    global _last_daily_log_url
     now = datetime.now(TZ)
     day_key = now.date().isoformat()
     for key in list(_digest_slot_sent_today):
