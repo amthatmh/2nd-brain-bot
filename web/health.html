@@ -184,7 +184,7 @@ function renderDashboard(data){
   renderScoreSet('activityScore',['activity'],data);
   renderMetricSet('restMetrics',restMetricKeys,data);
   renderMetricSet('activityMetrics',activityMetricKeys,data);
-  renderOverviewCharts(data); renderRestCharts(data); renderActivityCharts(data); renderWeeklyFeel(data.weekly_readiness||[]);
+  renderOverviewCharts(data); renderRestCharts(data); renderActivityCharts(data); renderWeeklyFeel(data.weekly_readiness||[],data.readiness_series||[]);
 }
 function renderScoreSet(id,keys,data){
   document.getElementById(id).innerHTML=keys.map(key=>scoreCard(key,data)).join('');
@@ -337,11 +337,11 @@ function renderActivityCharts(data){
   document.getElementById('activityCharts').innerHTML=weekly.length?chartCard('activityChart','Weekly Activity','Workout days and steps-goal days per week'):'<div class="empty">No activity data synced yet</div>';
   if(document.getElementById('activityChart')) makeActivityChart(weekly);
 }
-function makeBodyChart(m){const labels=labelsFor(m.weight,m.body_fat,m.lean_mass);charts.body=new Chart(document.getElementById('bodyChart'),{type:'line',data:{labels,datasets:[{label:'Weight kg',data:mapSeries(m.weight,labels),borderColor:cssVar('--blue'),tension:.35,yAxisID:'y'},{label:'Body Fat %',data:mapSeries(m.body_fat,labels),borderColor:cssVar('--yellow'),tension:.35,yAxisID:'y1'},{label:'Lean Mass kg',data:mapSeries(m.lean_mass,labels),borderColor:cssVar('--green'),tension:.35,yAxisID:'y'}]},options:{...chartBase(),scales:{...chartBase().scales,y1:{position:'right',ticks:{color:cssVar('--muted')},grid:{drawOnChartArea:false}}}}});}
-function makeCardioChart(m){const labels=labelsFor(m.resting_hr,m.hrv,m.vo2_max,m.blood_oxygen,m.body_temperature);charts.cardio=new Chart(document.getElementById('cardioChart'),{type:'line',data:{labels,datasets:[{label:'Resting HR',data:mapSeries(m.resting_hr,labels),borderColor:cssVar('--red'),tension:.35,yAxisID:'y'},{label:'HRV',data:mapSeries(m.hrv,labels),borderColor:cssVar('--green'),tension:.35,yAxisID:'y1'},{label:'VO2 Max',data:mapSeries(m.vo2_max,labels),borderColor:cssVar('--blue'),tension:.35,yAxisID:'y1'},{label:'Blood O₂ %',data:mapSeries(m.blood_oxygen,labels),borderColor:cssVar('--cyan'),tension:.35,yAxisID:'y1'},{label:'Body Temp °C',data:mapSeries(m.body_temperature,labels),borderColor:cssVar('--yellow'),tension:.35,yAxisID:'y1'}]},options:{...chartBase(),scales:{...chartBase().scales,y1:{position:'right',ticks:{color:cssVar('--muted')},grid:{drawOnChartArea:false}}}}});}
-function makeSleepChart(m){const labels=labelsFor(m.total_sleep,m.deep_sleep,m.rem_sleep,m.light_sleep,m.sleep_efficiency);charts.sleep=new Chart(document.getElementById('sleepChart'),{type:'line',data:{labels,datasets:[{label:'Total Sleep',data:mapSeries(m.total_sleep,labels),borderColor:cssVar('--blue'),tension:.3,pointRadius:2,yAxisID:'y'},{label:'Deep',data:mapSeries(m.deep_sleep,labels),borderColor:cssVar('--green'),tension:.3,pointRadius:2,yAxisID:'y'},{label:'REM',data:mapSeries(m.rem_sleep,labels),borderColor:cssVar('--violet'),tension:.3,pointRadius:2,yAxisID:'y'},{label:'Light',data:mapSeries(m.light_sleep,labels),borderColor:cssVar('--cyan'),tension:.3,pointRadius:2,yAxisID:'y'},{label:'Efficiency %',data:mapSeries(m.sleep_efficiency,labels),borderColor:cssVar('--yellow'),tension:.3,pointRadius:2,yAxisID:'y1'}]},options:{...chartBase(),scales:{...chartBase().scales,y:{...chartBase().scales.y,suggestedMin:0},y1:{position:'right',ticks:{color:cssVar('--muted')},grid:{drawOnChartArea:false},suggestedMin:0,suggestedMax:100}}}});}
-function makeSleepStagesChart(m){const labels=labelsFor(m.deep_sleep,m.rem_sleep,m.light_sleep,m.awake_sleep);const base=chartBase();charts.sleepStages=new Chart(document.getElementById('sleepStagesChart'),{type:'bar',data:{labels,datasets:[{label:'Deep',data:mapSeries(m.deep_sleep,labels),backgroundColor:cssVar('--green')},{label:'REM',data:mapSeries(m.rem_sleep,labels),backgroundColor:cssVar('--violet')},{label:'Light',data:mapSeries(m.light_sleep,labels),backgroundColor:cssVar('--cyan')},{label:'Awake',data:mapSeries(m.awake_sleep,labels),backgroundColor:cssVar('--red')}]},options:{...base,scales:{...base.scales,x:{...base.scales.x,stacked:true},y:{...base.scales.y,stacked:true}}}});}
-function makeBedtimeChart(m){const labels=labelsFor(m.bedtime);charts.bedtime=new Chart(document.getElementById('bedtimeChart'),{type:'line',data:{labels,datasets:[{label:'Bedtime',data:mapSeries(m.bedtime,labels),borderColor:cssVar('--yellow'),tension:.3,pointRadius:3}]},options:{...chartBase(),scales:{...chartBase().scales,y:{...chartBase().scales.y,reverse:true,min:22,max:30,ticks:{color:cssVar('--muted'),callback:v=>{const h=v>24?v-24:v;return `${Math.floor(h)}:${String(Math.round((h%1)*60)).padStart(2,'0')}`;}}}}}});}
+function makeBodyChart(m){const labels=labelsFor(m.weight,m.body_fat,m.lean_mass);charts.body=new Chart(document.getElementById('bodyChart'),{type:'line',data:{labels,datasets:[{label:'Weight kg',data:mapSeries(m.weight,labels),borderColor:cssVar('--blue'),tension:.35,yAxisID:'y'},{label:'Body Fat %',data:mapSeries(m.body_fat,labels),borderColor:cssVar('--yellow'),tension:.35,yAxisID:'y1'},{label:'Lean Mass kg',data:mapSeries(m.lean_mass,labels),borderColor:cssVar('--green'),tension:.35,yAxisID:'y'}]},options:{...chartBase(),scales:{...chartBase().scales,x:mondayXAxis(labels),y1:{position:'right',ticks:{color:cssVar('--muted')},grid:{drawOnChartArea:false}}}}});}
+function makeCardioChart(m){const labels=labelsFor(m.resting_hr,m.hrv,m.vo2_max,m.blood_oxygen,m.body_temperature);charts.cardio=new Chart(document.getElementById('cardioChart'),{type:'line',data:{labels,datasets:[{label:'Resting HR',data:mapSeries(m.resting_hr,labels),borderColor:cssVar('--red'),tension:.35,yAxisID:'y'},{label:'HRV',data:mapSeries(m.hrv,labels),borderColor:cssVar('--green'),tension:.35,yAxisID:'y1'},{label:'VO2 Max',data:mapSeries(m.vo2_max,labels),borderColor:cssVar('--blue'),tension:.35,yAxisID:'y1'},{label:'Blood O₂ %',data:mapSeries(m.blood_oxygen,labels),borderColor:cssVar('--cyan'),tension:.35,yAxisID:'y1'},{label:'Body Temp °C',data:mapSeries(m.body_temperature,labels),borderColor:cssVar('--yellow'),tension:.35,yAxisID:'y1'}]},options:{...chartBase(),scales:{...chartBase().scales,x:mondayXAxis(labels),y1:{position:'right',ticks:{color:cssVar('--muted')},grid:{drawOnChartArea:false}}}}});}
+function makeSleepChart(m){const labels=labelsFor(m.total_sleep,m.deep_sleep,m.rem_sleep,m.light_sleep,m.sleep_efficiency);charts.sleep=new Chart(document.getElementById('sleepChart'),{type:'line',data:{labels,datasets:[{label:'Total Sleep',data:mapSeries(m.total_sleep,labels),borderColor:cssVar('--blue'),tension:.3,pointRadius:2,yAxisID:'y'},{label:'Deep',data:mapSeries(m.deep_sleep,labels),borderColor:cssVar('--green'),tension:.3,pointRadius:2,yAxisID:'y'},{label:'REM',data:mapSeries(m.rem_sleep,labels),borderColor:cssVar('--violet'),tension:.3,pointRadius:2,yAxisID:'y'},{label:'Light',data:mapSeries(m.light_sleep,labels),borderColor:cssVar('--cyan'),tension:.3,pointRadius:2,yAxisID:'y'},{label:'Efficiency %',data:mapSeries(m.sleep_efficiency,labels),borderColor:cssVar('--yellow'),tension:.3,pointRadius:2,yAxisID:'y1'}]},options:{...chartBase(),scales:{...chartBase().scales,x:mondayXAxis(labels),y:{...chartBase().scales.y,suggestedMin:0},y1:{position:'right',ticks:{color:cssVar('--muted')},grid:{drawOnChartArea:false},suggestedMin:0,suggestedMax:100}}}});}
+function makeSleepStagesChart(m){const labels=labelsFor(m.deep_sleep,m.rem_sleep,m.light_sleep,m.awake_sleep);const base=chartBase();charts.sleepStages=new Chart(document.getElementById('sleepStagesChart'),{type:'bar',data:{labels,datasets:[{label:'Deep',data:mapSeries(m.deep_sleep,labels),backgroundColor:cssVar('--green')},{label:'REM',data:mapSeries(m.rem_sleep,labels),backgroundColor:cssVar('--violet')},{label:'Light',data:mapSeries(m.light_sleep,labels),backgroundColor:cssVar('--cyan')},{label:'Awake',data:mapSeries(m.awake_sleep,labels),backgroundColor:cssVar('--red')}]},options:{...base,scales:{...base.scales,x:{...mondayXAxis(labels),stacked:true},y:{...base.scales.y,stacked:true}}}});}
+function makeBedtimeChart(m){const labels=labelsFor(m.bedtime);charts.bedtime=new Chart(document.getElementById('bedtimeChart'),{type:'line',data:{labels,datasets:[{label:'Bedtime',data:mapSeries(m.bedtime,labels),borderColor:cssVar('--yellow'),tension:.3,pointRadius:3}]},options:{...chartBase(),scales:{...chartBase().scales,x:mondayXAxis(labels),y:{...chartBase().scales.y,reverse:true,min:22,max:30,ticks:{color:cssVar('--muted'),callback:v=>{const h=v>24?v-24:v;return `${Math.floor(h)}:${String(Math.round((h%1)*60)).padStart(2,'0')}`;}}}}}});}
 function makeActivityChart(weekly){const labels=weekly.map(w=>w.week);charts.activity=new Chart(document.getElementById('activityChart'),{type:'bar',data:{labels,datasets:[{label:'Workout days',data:weekly.map(w=>w.workout_days),backgroundColor:cssVar('--blue')},{label:'Steps days',data:weekly.map(w=>w.steps_days),backgroundColor:cssVar('--green')},{label:'Workout target',data:weekly.map(()=>3),type:'line',borderColor:cssVar('--yellow'),pointRadius:0,borderDash:[5,5]},{label:'Steps target',data:weekly.map(()=>7),type:'line',borderColor:cssVar('--muted'),pointRadius:0,borderDash:[3,5]}]},options:chartBase()});}
 function makeReadinessChart(series){
   const labels=series.map(p=>p.date); const base=chartBase();
@@ -352,27 +352,29 @@ function makeReadinessChart(series){
     {label:'Mood',data:series.map(p=>p.mood??null),borderColor:cssVar('--yellow'),tension:.35,pointRadius:2},
     {label:'Stress',data:series.map(p=>p.stress??null),borderColor:cssVar('--red'),tension:.35,pointRadius:2},
     {label:'Soreness',data:series.map(p=>p.soreness??null),borderColor:cssVar('--violet'),tension:.35,pointRadius:2}
-  ]},options:{...base,scales:{...base.scales,y:{...base.scales.y,suggestedMin:1,suggestedMax:5,ticks:{color:cssVar('--muted'),stepSize:1}}}}});
+  ]},options:{...base,scales:{...base.scales,x:mondayXAxis(labels),y:{...base.scales.y,suggestedMin:1,suggestedMax:5,ticks:{color:cssVar('--muted'),stepSize:1}}}}});
 }
 const _rTabs=[
-  {key:'score',label:'Score',dataKey:'avg_score',color:'--blue'},
-  {key:'energy',label:'Energy',dataKey:'avg_energy',color:'--green'},
-  {key:'mood',label:'Mood',dataKey:'avg_mood',color:'--yellow'},
-  {key:'sleep',label:'Sleep',dataKey:'avg_sleep_quality',color:'--cyan'},
-  {key:'stress',label:'Stress',dataKey:'avg_stress',color:'--red'},
-  {key:'soreness',label:'Soreness',dataKey:'avg_soreness',color:'--violet'},
+  {key:'score',label:'Score',dataKey:'score',color:'--blue'},
+  {key:'energy',label:'Energy',dataKey:'energy',color:'--green'},
+  {key:'mood',label:'Mood',dataKey:'mood',color:'--yellow'},
+  {key:'sleep',label:'Sleep',dataKey:'sleep_quality',color:'--cyan'},
+  {key:'stress',label:'Stress',dataKey:'stress',color:'--red'},
+  {key:'soreness',label:'Soreness',dataKey:'soreness',color:'--violet'},
 ];
-function renderWeeklyFeel(weekly){
-  if(!weekly.length){document.getElementById('weeklyFeel').innerHTML='';return;}
+function renderWeeklyFeel(weekly,series){
+  if(!series||!series.length){document.getElementById('weeklyFeel').innerHTML='';return;}
   const tabs=_rTabs.map((t,i)=>`<button class="rtab${i===0?' active':''}" onclick="setReadinessTab('${t.key}')">${t.label}</button>`).join('');
-  document.getElementById('weeklyFeel').innerHTML=`<article class="chart-card"><div class="chart-head"><div><div class="chart-title">Weekly Readiness</div><div class="chart-sub">${readinessTrendSummary(weekly)}</div></div><div class="readiness-tabs">${tabs}</div></div><div class="chart-wrap"><canvas id="weeklyReadinessChart"></canvas></div></article>`;
-  makeWeeklyReadinessChart(weekly);
+  document.getElementById('weeklyFeel').innerHTML=`<article class="chart-card"><div class="chart-head"><div><div class="chart-title">Readiness</div><div class="chart-sub">${readinessTrendSummary(weekly)}</div></div><div class="readiness-tabs">${tabs}</div></div><div class="chart-wrap"><canvas id="weeklyReadinessChart"></canvas></div></article>`;
+  makeWeeklyReadinessChart(series);
 }
-function makeWeeklyReadinessChart(weekly){
-  const labels=weekly.map(w=>formatWeek(w.week)); const base=chartBase();
+function fmtShortDate(iso){const d=new Date(`${iso}T12:00:00`);return d.toLocaleDateString(undefined,{month:'short',day:'numeric'});}
+function mondayXAxis(isoLabels){return {ticks:{color:cssVar('--muted'),maxRotation:0,autoSkip:false,callback:(val,i)=>{const iso=isoLabels[i];if(!iso)return null;const d=new Date(`${iso}T12:00:00`);return d.getDay()===1?fmtShortDate(iso):null;}},grid:{color:ctx=>{const iso=isoLabels[ctx.index];if(!iso)return 'transparent';const d=new Date(`${iso}T12:00:00`);return d.getDay()===1?cssVar('--border'):'transparent';},borderDash:[4,4]}};}
+function makeWeeklyReadinessChart(series){
+  const labels=series.map(p=>p.date); const base=chartBase();
   charts.weeklyReadiness=new Chart(document.getElementById('weeklyReadinessChart'),{type:'line',data:{labels,datasets:_rTabs.map((t,i)=>({
-    label:t.label,data:weekly.map(w=>w[t.dataKey]??null),borderColor:cssVar(t.color),borderWidth:2.5,tension:.35,pointRadius:3,hidden:i!==0,
-  }))},options:{...base,plugins:{...base.plugins,legend:{display:false}},scales:{...base.scales,y:{...base.scales.y,suggestedMin:1,suggestedMax:5,ticks:{color:cssVar('--muted'),stepSize:1}}}}});
+    label:t.label,data:series.map(p=>p[t.dataKey]??null),borderColor:cssVar(t.color),borderWidth:2,tension:.35,pointRadius:2,hidden:i!==0,
+  }))},options:{...base,plugins:{...base.plugins,legend:{display:false}},scales:{...base.scales,x:mondayXAxis(labels),y:{...base.scales.y,suggestedMin:1,suggestedMax:5,ticks:{color:cssVar('--muted'),stepSize:1}}}}});
 }
 function setReadinessTab(key){
   if(!charts.weeklyReadiness)return;
