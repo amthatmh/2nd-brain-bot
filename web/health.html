@@ -46,7 +46,7 @@
     .delta{font-size:.88rem}.delta.good{color:var(--green)}.delta.bad{color:var(--red)}.delta.flat{color:var(--muted)}
     .chart-card,.table-card{padding:18px}.chart-head{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-bottom:12px}.chart-sub{font-size:.84rem}.chart-wrap{height:340px}
     .empty{padding:24px;text-align:center;color:var(--muted);border:1px dashed var(--border);border-radius:var(--radius)}
-    .loading{padding:28px;color:var(--muted)}.weekly-table{width:100%;border-collapse:collapse}.weekly-table th,.weekly-table td{padding:12px 10px;border-bottom:1px solid var(--border);text-align:left}.weekly-table th{color:var(--muted);font-size:.76rem;text-transform:uppercase;letter-spacing:.08em}.weekly-table tr:last-child td{border-bottom:0}.good{color:var(--green)}.bad{color:var(--red)}
+    .loading{padding:28px;color:var(--muted)}.table-scroll{overflow-x:auto}.weekly-table{width:100%;min-width:720px;border-collapse:collapse}.weekly-table th,.weekly-table td{padding:12px 10px;border-bottom:1px solid var(--border);text-align:left}.weekly-table th{color:var(--muted);font-size:.76rem;text-transform:uppercase;letter-spacing:.08em}.weekly-table tr:last-child td{border-bottom:0}.good{color:var(--green)}.bad{color:var(--red)}
     .footer{margin:30px 0 6px;text-align:center;color:var(--muted);font-size:.86rem}.footer a{color:var(--blue);text-decoration:none}
     .skeleton{background:linear-gradient(90deg,rgba(255,255,255,.06) 25%,rgba(255,255,255,.12) 50%,rgba(255,255,255,.06) 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:8px}@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}.skeleton-card{height:160px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px}.skeleton-line{height:16px;margin-bottom:18px}.skeleton-big{height:58px;width:56%}
     @media(max-width:980px){.scores{grid-template-columns:repeat(2,1fr)}.metrics{grid-template-columns:repeat(2,1fr)}}
@@ -84,13 +84,13 @@
       </article>
       <section class="grid scores" id="overviewScores"></section>
       <section class="grid charts" id="overviewCharts"><div class="loading">Loading charts...</div></section>
+      <section id="weeklyFeel"></section>
     </section>
 
     <section class="tab-section" data-tab-section="rest">
       <section class="grid scores single" id="restScore"></section>
       <section class="grid metrics" id="restMetrics"></section>
       <section class="grid charts" id="restCharts"></section>
-      <section id="weeklyFeel"></section>
     </section>
 
     <section class="tab-section" data-tab-section="activity">
@@ -190,10 +190,22 @@ function renderScoreSet(id,keys,data){
 }
 function scoreCard(key,data){
   const s=data.scores?.[key]||{}; const info=key==='activity'?scoreInfo.activity(data.steps_threshold||s.steps_threshold||10000):scoreInfo[key];
-  const rec=s.recommendation||scoreRecommendation(key,data);
-  return `<article class="card"><div class="card-top"><div class="score-name">${scoreLabels[key]}</div><button class="info" onclick="toggleInfo(this)">ⓘ</button></div><div class="score">${s.value ?? '—'}</div><div class="desc">${s.description||'Not enough data yet'}</div>${rec?`<div class="coach">${rec}</div>`:''}<div class="explain">${info}</div></article>`;
+  const rec=key==='sleep'?scoreRecommendation(key,data):(s.recommendation||scoreRecommendation(key,data));
+  const desc=scoreDescription(key,data,s);
+  return `<article class="card"><div class="card-top"><div class="score-name">${scoreLabels[key]}</div><button class="info" onclick="toggleInfo(this)">ⓘ</button></div><div class="score">${s.value ?? '—'}</div><div class="desc">${desc}</div>${rec?`<div class="coach">${rec}</div>`:''}<div class="explain">${info}</div></article>`;
 }
 function toggleInfo(btn){btn.closest('.card').querySelector('.explain').classList.toggle('show');}
+function scoreDescription(key,data,score){
+  if(key!=='sleep')return score.description||'Not enough data yet';
+  const m=data.metrics||{}, latest=data.latest||{};
+  const total=latest.total_sleep??lastValue(m.total_sleep), deep=latest.deep_sleep??lastValue(m.deep_sleep), rem=latest.rem_sleep??lastValue(m.rem_sleep), efficiency=latest.sleep_efficiency??lastValue(m.sleep_efficiency);
+  const parts=[];
+  if(total!=null)parts.push(`Total ${sleepHours(total)}`);
+  if(deep!=null)parts.push(`Deep ${fmtNum(deep)} min`);
+  if(rem!=null)parts.push(`REM ${fmtNum(rem)} min`);
+  if(efficiency!=null)parts.push(`Efficiency ${fmtNum(efficiency)}%`);
+  return parts.join(' · ')||score.description||'Not enough data yet';
+}
 function scoreRecommendation(key,data){
   const m=data.metrics||{}, d=data.deltas||{}, latest=data.latest||{};
   const isBad=(metric,good)=>d[metric]&&d[metric].direction!=='flat'&&good!=='flat'&&d[metric].direction!==good;
@@ -214,7 +226,7 @@ function scoreRecommendation(key,data){
   }
   if(key==='sleep'){
     const total=latest.total_sleep??lastValue(m.total_sleep), deep=latest.deep_sleep??lastValue(m.deep_sleep), rem=latest.rem_sleep??lastValue(m.rem_sleep), efficiency=latest.sleep_efficiency??lastValue(m.sleep_efficiency);
-    if(total!=null&&total<420)return 'Next move: the biggest lever is more total sleep; move bedtime earlier or protect a longer sleep window.';
+    if(total!=null&&total<420)return `Next move: the biggest lever is more total sleep; protect about ${sleepHours(420-total)} more sleep opportunity.`;
     if(deep!=null&&deep<90)return 'Next move: deep sleep is the limiter; keep late alcohol, heavy meals, and hard evening training in check.';
     if(rem!=null&&rem<80)return 'Next move: REM is the limiter; prioritize consistent wake time and enough total sleep opportunity.';
     if(efficiency!=null&&efficiency<85)return 'Next move: improve efficiency with a cooler room, tighter wind-down, and fewer wake-window interruptions.';
@@ -234,13 +246,19 @@ function metricCard(key,data){
   const delta=data.deltas?.[key]; const cls=deltaClass(delta,def.good); const arrow=delta?.direction==='up'?'↑':delta?.direction==='down'?'↓':'—';
   const fallback=metricConclusion(key,value,delta,data);
   const deltaText=fallback || (delta?`${arrow} ${Math.abs(delta.value)} ${delta.unit}`:'Latest synced; trend pending');
-  return `<article class="metric"><div class="metric-name">${def.label}</div><div class="metric-value">${value ?? '—'}${value!=null&&def.unit?' <small>'+def.unit+'</small>':''}</div><div class="delta ${fallback?fallbackTone(key,value,delta):cls}">${deltaText}</div></article>`;
+  const display=metricDisplay(key,value,def.unit);
+  return `<article class="metric"><div class="metric-name">${def.label}</div><div class="metric-value">${display.value}${display.unit?` <small>${display.unit}</small>`:''}</div><div class="delta ${fallback?fallbackTone(key,value,delta):cls}">${deltaText}</div></article>`;
 }
 function deltaClass(delta,good){if(!delta||delta.direction==='flat'||good==='flat')return 'flat';return delta.direction===good?'good':'bad';}
+function metricDisplay(key,value,unit){
+  if(value==null)return {value:'—',unit:''};
+  if(key==='total_sleep')return {value:sleepHours(value),unit:''};
+  return {value,unit:unit||''};
+}
 function metricConclusion(key,value,delta,data){
   if(value==null)return '';
   const targets={total_sleep:420,deep_sleep:90,rem_sleep:80,sleep_efficiency:85};
-  if(key==='total_sleep')return value>=targets.total_sleep?'At or above 7h target':`${Math.round(targets.total_sleep-value)} min below 7h target`;
+  if(key==='total_sleep')return value>=targets.total_sleep?'At or above 7h target':`${sleepHours(targets.total_sleep-value)} below 7h target`;
   if(key==='deep_sleep')return value>=targets.deep_sleep?'At or above deep sleep target':`${Math.round(targets.deep_sleep-value)} min below deep sleep target`;
   if(key==='rem_sleep')return value>=targets.rem_sleep?'At or above REM target':`${round1(targets.rem_sleep-value)} min below REM target`;
   if(key==='light_sleep')return 'Stage context; read with total sleep';
@@ -248,7 +266,8 @@ function metricConclusion(key,value,delta,data){
   if(key==='sleep_efficiency')return value>=targets.sleep_efficiency?'Above 85% efficiency target':`${round1(targets.sleep_efficiency-value)} pts below efficiency target`;
   if(key==='blood_oxygen')return 'Recovery vital synced; watch for unusual dips';
   if(key==='body_temperature')return delta?`Trend ${delta.direction==='up'?'+':delta.direction==='down'?'-':''}${Math.abs(delta.value)} ${delta.unit}`:'Recovery vital synced; trend pending';
-  if(['exercise_time','active_energy','resting_energy','flights'].includes(key))return delta?'': 'Latest synced; trend pending';
+  if(key==='exercise_time')return exerciseTimeContext(data,value);
+  if(['active_energy','resting_energy','flights'].includes(key))return delta?'': 'Latest synced; trend pending';
   return '';
 }
 function fallbackTone(key,value,delta){
@@ -258,6 +277,32 @@ function fallbackTone(key,value,delta){
   return deltaClass(delta,metricDefs[key]?.good);
 }
 function round1(value){return Math.round(value*10)/10;}
+function ceilHalfHours(minutes){return Math.ceil((Number(minutes)/60)*2)/2;}
+function sleepHours(minutes){return `${fmtNum(ceilHalfHours(minutes))}h`;}
+function exerciseTimeContext(data,value){
+  const points=(data.metrics?.exercise_time||[]).filter(p=>p&&p.date&&Number.isFinite(Number(p.value)));
+  if(!points.length)return 'Latest synced; trend pending';
+  if((data.range||currentRange)==='1m'){
+    const weekly=weeklySums(points); const latestWeek=weekStart(points[points.length-1].date); const current=weekly.get(latestWeek)||0;
+    const prior=[...weekly.entries()].filter(([week])=>week!==latestWeek).map(([,sum])=>sum).filter(sum=>sum>0);
+    if(!prior.length)return `${Math.round(current)} min logged this week`;
+    const avg=prior.reduce((a,b)=>a+b,0)/prior.length; const gap=Math.round(avg-current);
+    if(gap>0)return `${gap} min to match recent weekly avg this week`;
+    return `${Math.abs(gap)} min above recent weekly avg`;
+  }
+  const avg=points.reduce((sum,p)=>sum+Number(p.value),0)/points.length; const diff=Math.round(value-avg);
+  if(Math.abs(diff)<1)return 'On range-day average';
+  return diff<0?`${Math.abs(diff)} min below range avg`:`${diff} min above range avg`;
+}
+function weeklySums(points){
+  const map=new Map();
+  points.forEach(p=>{const key=weekStart(p.date);map.set(key,(map.get(key)||0)+Number(p.value));});
+  return map;
+}
+function weekStart(iso){
+  const d=new Date(`${iso}T12:00:00`); const day=(d.getDay()+6)%7; d.setDate(d.getDate()-day);
+  return d.toISOString().slice(0,10);
+}
 function has(points){return Array.isArray(points)&&points.length>0;}
 function cssVar(name){return getComputedStyle(document.documentElement).getPropertyValue(name).trim();}
 function chartBase(){return {responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:cssVar('--muted'),boxWidth:10,usePointStyle:true}},tooltip:{mode:'index',intersect:false}},scales:{x:{ticks:{color:cssVar('--muted')},grid:{color:'transparent'}},y:{ticks:{color:cssVar('--muted')},grid:{color:cssVar('--border')}}}};}
@@ -266,19 +311,19 @@ function labelsFor(...series){return [...new Set(series.flatMap(s=>(s||[]).map(p
 function mapSeries(points,labels){const byDate=Object.fromEntries((points||[]).map(p=>[p.date,p.value]));return labels.map(d=>byDate[d]??null);}
 function renderOverviewCharts(data){
   const m=data.metrics||{}; let html='';
+  if(has(data.readiness_series)) html+=chartCard('readinessChart','Morning Readiness',readinessTrendSummary(data.weekly_readiness||[]));
   if(has(m.weight)||has(m.body_fat)||has(m.lean_mass)) html+=chartCard('bodyChart','Body Composition','Weight, body fat, and lean mass trends');
   if(has(m.resting_hr)||has(m.hrv)||has(m.vo2_max)||has(m.blood_oxygen)||has(m.body_temperature)) html+=chartCard('cardioChart','Cardiovascular','Resting HR, HRV, VO2 Max, blood oxygen, and body temperature');
   document.getElementById('overviewCharts').innerHTML=html||'<div class="empty">Not enough data yet for charts.</div>';
+  if(document.getElementById('readinessChart')) makeReadinessChart(data.readiness_series||[]);
   if(document.getElementById('bodyChart')) makeBodyChart(m); if(document.getElementById('cardioChart')) makeCardioChart(m);
 }
 function renderRestCharts(data){
   const m=data.metrics||{}; let html='';
-  if(has(data.readiness_series)) html+=chartCard('readinessChart','Readiness Trend','Daily readiness with weekly energy and mood');
   if(has(m.total_sleep)||has(m.deep_sleep)||has(m.rem_sleep)||has(m.light_sleep)||has(m.sleep_efficiency)) html+=chartCard('sleepChart','Sleep','Total sleep, stages, and efficiency');
   if(has(m.deep_sleep)||has(m.rem_sleep)||has(m.light_sleep)||has(m.awake_sleep)) html+=chartCard('sleepStagesChart','Sleep Stage Breakdown','Nightly deep, REM, light, and awake composition');
   if(has(m.bedtime)) html+=chartCard('bedtimeChart','Bedtime Trend','Time of night asleep began');
   document.getElementById('restCharts').innerHTML=html||'<div class="empty">No rest or sleep data synced yet</div>';
-  if(document.getElementById('readinessChart')) makeReadinessChart(data.readiness_series||[],data.weekly_readiness||[]);
   if(document.getElementById('sleepChart')) makeSleepChart(m); if(document.getElementById('sleepStagesChart')) makeSleepStagesChart(m); if(document.getElementById('bedtimeChart')) makeBedtimeChart(m);
 }
 function renderActivityCharts(data){
@@ -292,17 +337,49 @@ function makeSleepChart(m){const labels=labelsFor(m.total_sleep,m.deep_sleep,m.r
 function makeSleepStagesChart(m){const labels=labelsFor(m.deep_sleep,m.rem_sleep,m.light_sleep,m.awake_sleep);const base=chartBase();charts.sleepStages=new Chart(document.getElementById('sleepStagesChart'),{type:'bar',data:{labels,datasets:[{label:'Deep',data:mapSeries(m.deep_sleep,labels),backgroundColor:cssVar('--green')},{label:'REM',data:mapSeries(m.rem_sleep,labels),backgroundColor:cssVar('--violet')},{label:'Light',data:mapSeries(m.light_sleep,labels),backgroundColor:cssVar('--cyan')},{label:'Awake',data:mapSeries(m.awake_sleep,labels),backgroundColor:cssVar('--red')}]},options:{...base,scales:{...base.scales,x:{...base.scales.x,stacked:true},y:{...base.scales.y,stacked:true}}}});}
 function makeBedtimeChart(m){const labels=labelsFor(m.bedtime);charts.bedtime=new Chart(document.getElementById('bedtimeChart'),{type:'line',data:{labels,datasets:[{label:'Bedtime',data:mapSeries(m.bedtime,labels),borderColor:cssVar('--yellow'),tension:.3,pointRadius:3}]},options:{...chartBase(),scales:{...chartBase().scales,y:{...chartBase().scales.y,reverse:true,min:22,max:30,ticks:{color:cssVar('--muted'),callback:v=>{const h=v>24?v-24:v;return `${Math.floor(h)}:${String(Math.round((h%1)*60)).padStart(2,'0')}`;}}}}}});}
 function makeActivityChart(weekly){const labels=weekly.map(w=>w.week);charts.activity=new Chart(document.getElementById('activityChart'),{type:'bar',data:{labels,datasets:[{label:'Workout days',data:weekly.map(w=>w.workout_days),backgroundColor:cssVar('--blue')},{label:'Steps days',data:weekly.map(w=>w.steps_days),backgroundColor:cssVar('--green')},{label:'Workout target',data:weekly.map(()=>3),type:'line',borderColor:cssVar('--yellow'),pointRadius:0,borderDash:[5,5]},{label:'Steps target',data:weekly.map(()=>7),type:'line',borderColor:cssVar('--muted'),pointRadius:0,borderDash:[3,5]}]},options:chartBase()});}
-function makeReadinessChart(series,weekly){
-  const dailyLabels=series.map(p=>p.date); const weeklyByDate=Object.fromEntries(weekly.map(w=>[w.week,w]));
-  charts.readiness=new Chart(document.getElementById('readinessChart'),{type:'line',data:{labels:dailyLabels,datasets:[{label:'Readiness',data:series.map(p=>p.score??null),borderColor:cssVar('--blue'),tension:.35,pointRadius:2,yAxisID:'y'},{label:'Weekly energy',data:dailyLabels.map(d=>weeklyByDate[d]?.avg_energy??null),type:'bar',backgroundColor:'rgba(74,222,128,.45)',yAxisID:'y1'},{label:'Weekly mood',data:dailyLabels.map(d=>weeklyByDate[d]?.avg_mood??null),type:'bar',backgroundColor:'rgba(251,191,36,.45)',yAxisID:'y1'}]},options:{...chartBase(),scales:{...chartBase().scales,y:{...chartBase().scales.y,suggestedMin:0,suggestedMax:100},y1:{position:'right',ticks:{color:cssVar('--muted')},grid:{drawOnChartArea:false},suggestedMin:0,suggestedMax:5}}}});
+function makeReadinessChart(series){
+  const labels=series.map(p=>p.date); const base=chartBase();
+  charts.readiness=new Chart(document.getElementById('readinessChart'),{type:'line',data:{labels,datasets:[
+    {label:'Readiness',data:series.map(p=>p.score??null),borderColor:cssVar('--blue'),borderWidth:3,tension:.35,pointRadius:2},
+    {label:'Sleep quality',data:series.map(p=>p.sleep_quality??null),borderColor:cssVar('--cyan'),tension:.35,pointRadius:2},
+    {label:'Energy',data:series.map(p=>p.energy??null),borderColor:cssVar('--green'),tension:.35,pointRadius:2},
+    {label:'Mood',data:series.map(p=>p.mood??null),borderColor:cssVar('--yellow'),tension:.35,pointRadius:2},
+    {label:'Stress',data:series.map(p=>p.stress??null),borderColor:cssVar('--red'),tension:.35,pointRadius:2},
+    {label:'Soreness',data:series.map(p=>p.soreness??null),borderColor:cssVar('--violet'),tension:.35,pointRadius:2}
+  ]},options:{...base,scales:{...base.scales,y:{...base.scales.y,suggestedMin:1,suggestedMax:5,ticks:{color:cssVar('--muted'),stepSize:1}}}}});
 }
 function renderWeeklyFeel(weekly){
   if(!weekly.length){document.getElementById('weeklyFeel').innerHTML='';return;}
-  const rows=weekly.slice(-6).reverse().map((w,i,arr)=>{const prev=arr[i+1];const eDelta=prev&&w.avg_energy!=null&&prev.avg_energy!=null?round(w.avg_energy-prev.avg_energy):null;const mDelta=prev&&w.avg_mood!=null&&prev.avg_mood!=null?round(w.avg_mood-prev.avg_mood):null;return `<tr><td>${formatWeek(w.week)}</td><td>${fmtNum(w.avg_energy)} ${trend(eDelta)}</td><td>${fmtNum(w.avg_mood)} ${trend(mDelta)}</td><td>${fmtNum(w.avg_score)}</td></tr>`;}).join('');
-  document.getElementById('weeklyFeel').innerHTML=`<article class="table-card"><div class="chart-head"><div><div class="chart-title">Weekly Feel</div><div class="chart-sub">Energy and mood compared with the prior week</div></div></div><table class="weekly-table"><thead><tr><th>Week</th><th>Energy</th><th>Mood</th><th>Readiness</th></tr></thead><tbody>${rows}</tbody></table></article>`;
+  const rows=weekly.slice(-6).reverse().map((w,i,arr)=>{const prev=arr[i+1];return `<tr><td>${formatWeek(w.week)}</td><td>${readinessCell(w.avg_sleep_quality,deltaFor(w,prev,'avg_sleep_quality'))}</td><td>${readinessCell(w.avg_energy,deltaFor(w,prev,'avg_energy'))}</td><td>${readinessCell(w.avg_mood,deltaFor(w,prev,'avg_mood'))}</td><td>${readinessCell(w.avg_stress,deltaFor(w,prev,'avg_stress'),true)}</td><td>${readinessCell(w.avg_soreness,deltaFor(w,prev,'avg_soreness'),true)}</td><td>${readinessCell(w.avg_score,deltaFor(w,prev,'avg_score'))}</td></tr>`;}).join('');
+  document.getElementById('weeklyFeel').innerHTML=`<article class="table-card"><div class="chart-head"><div><div class="chart-title">Weekly Readiness</div><div class="chart-sub">${readinessTrendSummary(weekly)}</div></div></div><div class="table-scroll"><table class="weekly-table"><thead><tr><th>Week</th><th>Sleep</th><th>Energy</th><th>Mood</th><th>Stress</th><th>Sore</th><th>Ready</th></tr></thead><tbody>${rows}</tbody></table></div></article>`;
 }
+function deltaFor(current,prev,key){return prev&&current?.[key]!=null&&prev?.[key]!=null?round(current[key]-prev[key]):null;}
+function readinessCell(value,delta,lowerIsBetter=false){return value==null?'—':`${fmtNum(value)} ${trend(delta,lowerIsBetter)}`;}
+function readinessTrendSummary(weekly){
+  if(!weekly.length)return 'Morning readiness trend will appear after a few check-ins.';
+  const latest=weekly[weekly.length-1], prev=weekly[weekly.length-2];
+  if(!prev)return 'First readiness week captured; more history will sharpen the trend.';
+  const inputs=[
+    readinessMove('sleep quality',deltaFor(latest,prev,'avg_sleep_quality'),false),
+    readinessMove('energy',deltaFor(latest,prev,'avg_energy'),false),
+    readinessMove('mood',deltaFor(latest,prev,'avg_mood'),false),
+    readinessMove('stress',deltaFor(latest,prev,'avg_stress'),true),
+    readinessMove('soreness',deltaFor(latest,prev,'avg_soreness'),true),
+  ].filter(Boolean);
+  const improving=inputs.filter(p=>p.better).map(p=>p.label).slice(0,2);
+  const worsening=inputs.filter(p=>!p.better).map(p=>p.label).slice(0,2);
+  if(worsening.length)return `${listLabels(worsening)} ${worsening.length===1?'is':'are'} dragging readiness; ${improving.length?`${listLabels(improving)} ${improving.length===1?'is':'are'} helping.`:'prioritize recovery and sleep consistency.'}`;
+  if(improving.length)return `Readiness is trending better, led by ${listLabels(improving)}.`;
+  return 'This week is broadly steady across readiness inputs.';
+}
+function readinessMove(label,delta,lowerIsBetter){
+  if(delta==null||Math.abs(delta)<.05)return '';
+  const better=lowerIsBetter?delta<0:delta>0;
+  return {label,better};
+}
+function listLabels(labels){return labels.length>1?`${labels.slice(0,-1).join(', ')} and ${labels[labels.length-1]}`:labels[0];}
 function round(v){return Math.round(v*10)/10;} function fmtNum(v){return v==null?'—':Number(v).toFixed(1).replace(/\.0$/,'');}
-function trend(v){if(v==null||Math.abs(v)<.05)return '<span class="delta flat">0</span>';const cls=v>0?'good':'bad';const arrow=v>0?'↑':'↓';return `<span class="${cls}">${v>0?'+':''}${v.toFixed(1)} ${arrow}</span>`;}
+function trend(v,lowerIsBetter=false){if(v==null||Math.abs(v)<.05)return '<span class="delta flat">0</span>';const better=lowerIsBetter?v<0:v>0;const cls=better?'good':'bad';const arrow=v>0?'↑':'↓';return `<span class="${cls}">${v>0?'+':''}${v.toFixed(1)} ${arrow}</span>`;}
 function formatWeek(iso){const d=new Date(`${iso}T12:00:00`);return `Week of ${d.toLocaleDateString(undefined,{month:'short',day:'numeric'})}`;}
 function destroyCharts(){Object.values(charts).forEach(c=>c?.destroy());Object.keys(charts).forEach(k=>delete charts[k]);}
 document.addEventListener('DOMContentLoaded',prefetchAll);
