@@ -48,6 +48,7 @@
     .empty{padding:24px;text-align:center;color:var(--muted);border:1px dashed var(--border);border-radius:var(--radius)}
     .loading{padding:28px;color:var(--muted)}.table-scroll{overflow-x:auto}.weekly-table{width:100%;min-width:720px;border-collapse:collapse}.weekly-table th,.weekly-table td{padding:12px 10px;border-bottom:1px solid var(--border);text-align:left}.weekly-table th{color:var(--muted);font-size:.76rem;text-transform:uppercase;letter-spacing:.08em}.weekly-table tr:last-child td{border-bottom:0}.good{color:var(--green)}.bad{color:var(--red)}
     .footer{margin:30px 0 6px;text-align:center;color:var(--muted);font-size:.86rem}.footer a{color:var(--blue);text-decoration:none}
+    #weeklyFeel{margin-top:16px}.readiness-tabs{display:flex;gap:6px;flex-wrap:wrap}.rtab{border:1px solid var(--border);background:transparent;color:var(--muted);border-radius:999px;padding:4px 12px;font-size:.8rem;font-weight:700;cursor:pointer}.rtab.active{background:var(--blue);color:#fff;border-color:var(--blue)}
     .skeleton{background:linear-gradient(90deg,rgba(255,255,255,.06) 25%,rgba(255,255,255,.12) 50%,rgba(255,255,255,.06) 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:8px}@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}.skeleton-card{height:160px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px}.skeleton-line{height:16px;margin-bottom:18px}.skeleton-big{height:58px;width:56%}
     @media(max-width:980px){.scores{grid-template-columns:repeat(2,1fr)}.metrics{grid-template-columns:repeat(2,1fr)}}
     @media(max-width:620px){.app{padding:18px 10px 32px}.header{grid-template-columns:1fr auto}.updated{grid-column:1/-1;grid-row:2;justify-self:start}.title{font-size:1.8rem}.range,.tabs{width:100%;justify-content:space-between}.range button,.tabs button{flex:1;padding:10px 10px}.scores,.scores.single,.metrics{grid-template-columns:1fr}.chart-wrap{height:280px}.weekly-table{font-size:.88rem}}
@@ -353,21 +354,31 @@ function makeReadinessChart(series){
     {label:'Soreness',data:series.map(p=>p.soreness??null),borderColor:cssVar('--violet'),tension:.35,pointRadius:2}
   ]},options:{...base,scales:{...base.scales,y:{...base.scales.y,suggestedMin:1,suggestedMax:5,ticks:{color:cssVar('--muted'),stepSize:1}}}}});
 }
+const _rTabs=[
+  {key:'score',label:'Score',dataKey:'avg_score',color:'--blue'},
+  {key:'energy',label:'Energy',dataKey:'avg_energy',color:'--green'},
+  {key:'mood',label:'Mood',dataKey:'avg_mood',color:'--yellow'},
+  {key:'sleep',label:'Sleep',dataKey:'avg_sleep_quality',color:'--cyan'},
+  {key:'stress',label:'Stress',dataKey:'avg_stress',color:'--red'},
+  {key:'soreness',label:'Soreness',dataKey:'avg_soreness',color:'--violet'},
+];
 function renderWeeklyFeel(weekly){
   if(!weekly.length){document.getElementById('weeklyFeel').innerHTML='';return;}
-  document.getElementById('weeklyFeel').innerHTML=chartCard('weeklyReadinessChart','Weekly Readiness',readinessTrendSummary(weekly));
+  const tabs=_rTabs.map((t,i)=>`<button class="rtab${i===0?' active':''}" onclick="setReadinessTab('${t.key}')">${t.label}</button>`).join('');
+  document.getElementById('weeklyFeel').innerHTML=`<article class="chart-card"><div class="chart-head"><div><div class="chart-title">Weekly Readiness</div><div class="chart-sub">${readinessTrendSummary(weekly)}</div></div><div class="readiness-tabs">${tabs}</div></div><div class="chart-wrap"><canvas id="weeklyReadinessChart"></canvas></div></article>`;
   makeWeeklyReadinessChart(weekly);
 }
 function makeWeeklyReadinessChart(weekly){
   const labels=weekly.map(w=>formatWeek(w.week)); const base=chartBase();
-  charts.weeklyReadiness=new Chart(document.getElementById('weeklyReadinessChart'),{type:'line',data:{labels,datasets:[
-    {label:'Score',data:weekly.map(w=>w.avg_score??null),borderColor:cssVar('--blue'),borderWidth:2,tension:.35,pointRadius:3},
-    {label:'Energy',data:weekly.map(w=>w.avg_energy??null),borderColor:cssVar('--green'),tension:.35,pointRadius:3},
-    {label:'Mood',data:weekly.map(w=>w.avg_mood??null),borderColor:cssVar('--yellow'),tension:.35,pointRadius:3},
-    {label:'Sleep',data:weekly.map(w=>w.avg_sleep_quality??null),borderColor:cssVar('--cyan'),tension:.35,pointRadius:3},
-    {label:'Stress',data:weekly.map(w=>w.avg_stress??null),borderColor:cssVar('--red'),tension:.35,pointRadius:3,borderDash:[4,4]},
-    {label:'Soreness',data:weekly.map(w=>w.avg_soreness??null),borderColor:cssVar('--violet'),tension:.35,pointRadius:3,borderDash:[4,4]},
-  ]},options:{...base,scales:{...base.scales,y:{...base.scales.y,suggestedMin:1,suggestedMax:5,ticks:{color:cssVar('--muted'),stepSize:1}}}}});
+  charts.weeklyReadiness=new Chart(document.getElementById('weeklyReadinessChart'),{type:'line',data:{labels,datasets:_rTabs.map((t,i)=>({
+    label:t.label,data:weekly.map(w=>w[t.dataKey]??null),borderColor:cssVar(t.color),borderWidth:2.5,tension:.35,pointRadius:3,hidden:i!==0,
+  }))},options:{...base,plugins:{...base.plugins,legend:{display:false}},scales:{...base.scales,y:{...base.scales.y,suggestedMin:1,suggestedMax:5,ticks:{color:cssVar('--muted'),stepSize:1}}}}});
+}
+function setReadinessTab(key){
+  if(!charts.weeklyReadiness)return;
+  charts.weeklyReadiness.data.datasets.forEach((ds,i)=>{ds.hidden=_rTabs[i].key!==key;});
+  charts.weeklyReadiness.update();
+  document.querySelectorAll('.rtab').forEach((btn,i)=>btn.classList.toggle('active',_rTabs[i].key===key));
 }
 function deltaFor(current,prev,key){return prev&&current?.[key]!=null&&prev?.[key]!=null?round(current[key]-prev[key]):null;}
 function readinessCell(value,delta,lowerIsBetter=false){return value==null?'—':`${fmtNum(value)} ${trend(delta,lowerIsBetter)}`;}
