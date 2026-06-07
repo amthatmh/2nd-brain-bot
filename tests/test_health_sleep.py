@@ -566,7 +566,7 @@ class TestSleepDashboard(unittest.TestCase):
 
         self.assertEqual(score["value"], 100)
         self.assertNotEqual(score.get("status"), "coming_soon")
-        self.assertIn("Total 430 min", score["description"])
+        self.assertIn("Total 7.5h", score["description"])
 
 
 if __name__ == "__main__":

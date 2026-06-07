@@ -280,23 +280,27 @@ def _avg(values: list[float]) -> float | None:
 
 
 def _weekly_readiness(readiness_series: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    weeks: dict[date, dict[str, list[float]]] = defaultdict(lambda: {"score": [], "energy": [], "mood": []})
+    keys = ("score", "sleep_quality", "energy", "mood", "stress", "soreness")
+    weeks: dict[date, dict[str, list[float]]] = defaultdict(lambda: {key: [] for key in keys})
     for point in readiness_series:
         try:
             day = datetime.fromisoformat(str(point["date"])).date()
         except (KeyError, ValueError):
             continue
         week = day - timedelta(days=day.weekday())
-        for source_key, dest_key in (("score", "score"), ("energy", "energy"), ("mood", "mood")):
-            value = point.get(source_key)
+        for key in keys:
+            value = point.get(key)
             if isinstance(value, (int, float)) and math.isfinite(float(value)):
-                weeks[week][dest_key].append(float(value))
+                weeks[week][key].append(float(value))
     return [
         {
             "week": week.isoformat(),
             "avg_score": _avg(values["score"]),
+            "avg_sleep_quality": _avg(values["sleep_quality"]),
             "avg_energy": _avg(values["energy"]),
             "avg_mood": _avg(values["mood"]),
+            "avg_stress": _avg(values["stress"]),
+            "avg_soreness": _avg(values["soreness"]),
         }
         for week, values in sorted(weeks.items())
     ]
@@ -373,6 +377,18 @@ def _trend_is_worse(metrics: dict[str, list[dict[str, Any]]], key: str, positive
 
 def _plural(value: int, singular: str, plural: str | None = None) -> str:
     return singular if value == 1 else (plural or f"{singular}s")
+
+
+def _ceil_half_hours(minutes: float) -> float:
+    return math.ceil((float(minutes) / 60.0) * 2) / 2
+
+
+def _format_hours(hours: float) -> str:
+    return f"{hours:g}h"
+
+
+def _format_sleep_hours(minutes: float) -> str:
+    return _format_hours(_ceil_half_hours(minutes))
 
 
 def _body_score(metrics: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
@@ -460,7 +476,7 @@ def _sleep_score(metrics: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
     latest_efficiency = metrics["sleep_efficiency"][-1]["value"] if metrics["sleep_efficiency"] else None
     parts = []
     if latest_total is not None:
-        parts.append(f"Total {latest_total:g} min")
+        parts.append(f"Total {_format_sleep_hours(latest_total)}")
     if latest_deep is not None:
         parts.append(f"Deep {latest_deep:g} min")
     if latest_rem is not None:
@@ -468,7 +484,7 @@ def _sleep_score(metrics: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
     if latest_efficiency is not None:
         parts.append(f"Efficiency {latest_efficiency:g}%")
     if latest_total is not None and latest_total < 420:
-        recommendation = "Next move: the biggest lever is more total sleep; move bedtime earlier or protect a longer sleep window."
+        recommendation = f"Next move: the biggest lever is more total sleep; protect about {_format_sleep_hours(420 - latest_total)} more sleep opportunity."
     elif latest_deep is not None and latest_deep < 90:
         recommendation = "Next move: deep sleep is the limiter; keep late alcohol, heavy meals, and hard evening training in check."
     elif latest_rem is not None and latest_rem < 80:
