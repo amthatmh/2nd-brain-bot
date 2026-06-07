@@ -375,6 +375,8 @@ def _build_habits_data_payload(
     datetime_cls,
     steps_habit_name: str = "",
     steps_threshold: int = 10000,
+    sleep_habit_name: str = "",
+    sleep_threshold_min: int = 420,
 ) -> dict[str, Any]:
     now = datetime_cls.now(tz)
     habits_sorted = sorted(habit_cache.values(), key=lambda h: h["sort"])
@@ -395,18 +397,22 @@ def _build_habits_data_payload(
 
     logged: set[tuple[str, str]] = set()
     step_counts_by_key: dict[tuple[str, str], int] = {}
+    sleep_minutes_by_key: dict[tuple[str, str], int] = {}
     for page in results:
         p = page["properties"]
         d = p.get("Date", {}).get("date", {})
         date_str = extract_date_fn(d.get("start") if d else None)
         rels = p.get("Habit", {}).get("relation", [])
         raw_steps = p.get("Steps Count", {}).get("number")
+        raw_sleep = p.get("Total Sleep (min)", {}).get("number")
         for rel in rels:
             if date_str:
                 key = (rel["id"].replace("-", ""), date_str)
                 logged.add(key)
                 if isinstance(raw_steps, (int, float)) and raw_steps > 0:
                     step_counts_by_key[key] = int(raw_steps)
+                if isinstance(raw_sleep, (int, float)) and raw_sleep > 0:
+                    sleep_minutes_by_key[key] = int(raw_sleep)
 
     current_monday = today - timedelta(days=today.weekday())
     start_monday = start_dt - timedelta(days=start_dt.weekday())
@@ -520,6 +526,12 @@ def _build_habits_data_payload(
                 step_counts_by_key.get((pid, d), 0) for d in all_dates
             ]
             habit_entry["stepsThreshold"] = steps_threshold
+        is_sleep = sleep_habit_name and habit["name"].strip().lower() == sleep_habit_name.strip().lower()
+        if is_sleep and sleep_minutes_by_key:
+            habit_entry["sleepMinutes"] = [
+                sleep_minutes_by_key.get((pid, d), 0) for d in all_dates
+            ]
+            habit_entry["sleepThreshold"] = sleep_threshold_min
         habits_out.append(habit_entry)
 
     return {
@@ -594,6 +606,8 @@ async def _refresh_habits_data_cache(
         datetime_cls=datetime_cls,
         steps_habit_name=health_config.STEPS_HABIT_NAME,
         steps_threshold=STEPS_THRESHOLD,
+        sleep_habit_name=health_config.SLEEP_HABIT_NAME,
+        sleep_threshold_min=int(health_config.SLEEP_GOAL_HOURS * 60),
     )
     _store_habits_data_payload(payload, generated_at=datetime_cls.now(tz))
     return payload
