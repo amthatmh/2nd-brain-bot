@@ -557,6 +557,38 @@ async def handle_sleep_backfill_job(bot=None) -> dict:
     )
 
 
+async def handle_health_metrics_sync_job(bot=None) -> dict:
+    """Utility Scheduler job: alert if today's Health Metrics row is missing."""
+    import asyncio
+    from second_brain.healthtrack.metrics import _find_page_by_date
+    from second_brain.main import NOTION_HEALTH_METRICS_DB, TZ, notion
+
+    today = datetime.now(TZ).date().isoformat()
+    try:
+        page_id = await asyncio.to_thread(
+            _find_page_by_date, notion, NOTION_HEALTH_METRICS_DB, today
+        )
+    except Exception as e:
+        log.error("health_metrics_sync: Notion query failed: %s", e)
+        return {"action": "error", "date": today, "reason": str(e)}
+
+    if not page_id:
+        log.warning("health_metrics_sync: no row for %s — webhook may not have fired", today)
+        if bot:
+            try:
+                await send_system_log(
+                    bot,
+                    f"⚠️ Health Metrics: no entry for {today}\n"
+                    "Apple Health Auto Export webhook may not have fired today.",
+                )
+            except Exception as e:
+                log.warning("health_metrics_sync: alert send failed: %s", e)
+        return {"action": "missing", "date": today}
+
+    log.info("health_metrics_sync: row exists for %s (page_id=%s)", today, page_id)
+    return {"action": "ok", "date": today, "page_id": page_id}
+
+
 def register_handlers(manager: "UtilitySchedulerManager") -> None:
     """Register health tracking jobs with the Utility Scheduler Manager."""
     from second_brain.healthtrack.insights import handle_weekly_health_insight_job
@@ -567,8 +599,9 @@ def register_handlers(manager: "UtilitySchedulerManager") -> None:
     manager.register_handler("sleep_sync", handle_sleep_sync_job)
     manager.register_handler("sleep_resync", handle_sleep_resync_job)
     manager.register_handler("sleep_backfill", handle_sleep_backfill_job)
+    manager.register_handler("health_metrics_sync", handle_health_metrics_sync_job)
     manager.register_handler("weekly_health_insight", handle_weekly_health_insight_job)
     log.info(
         "healthtrack: registered scheduler handlers "
-        "(steps_sync_check, sleep_sync, sleep_resync, sleep_backfill, weekly_health_insight)"
+        "(steps_sync_check, sleep_sync, sleep_resync, sleep_backfill, health_metrics_sync, weekly_health_insight)"
     )
