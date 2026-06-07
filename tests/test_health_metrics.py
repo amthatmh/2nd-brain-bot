@@ -65,6 +65,10 @@ SNAKE_CASE_PAYLOAD = {
                 "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 14.5}],
             },
             {
+                "name": "body_temperature",
+                "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 36.7}],
+            },
+            {
                 "name": "apple_exercise_time",
                 "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 32}],
             },
@@ -118,6 +122,10 @@ HUMAN_READABLE_STANDARD_PAYLOAD = {
         {
             "name": "Respiratory Rate",
             "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 14.5}],
+        },
+        {
+            "name": "Body Temperature",
+            "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 36.7}],
         },
         {
             "name": "Apple Exercise Time",
@@ -193,6 +201,7 @@ class TestHealthMetricsParsing(unittest.TestCase):
                 "HRV (ms)": 39.0,
                 "VO2 Max": 42.1,
                 "Respiratory Rate (brpm)": 14.5,
+                "Body Temperature (°C)": 36.7,
                 "Exercise Time (min)": 32.0,
                 "Active Energy (kcal)": 512.3,
                 "Resting Energy (kcal)": 1680.4,
@@ -211,8 +220,9 @@ class TestHealthMetricsParsing(unittest.TestCase):
         self.assertEqual(values["Weight (kg)"], 76.86)
         self.assertEqual(values["Lean Body Mass (kg)"], 63.7)
         self.assertEqual(values["Resting Energy (kcal)"], 1680.4)
+        self.assertEqual(values["Body Temperature (°C)"], 36.7)
         self.assertEqual(values["Headphone Audio Exposure (dB)"], 71.2)
-        self.assertEqual(len(values), 12)
+        self.assertEqual(len(values), 13)
 
     def test_parse_maps_known_metrics_and_skips_unknown(self):
         payload = {

@@ -1585,8 +1585,9 @@ async def _cb_h_toggle(q, parts, context) -> None:
                 continue
             show_after = h.get("show_after") or ""
             if not show_after or now_hhmm >= show_after:
-                habits.append(h)
-                known_pids.add(pid)
+                if not _main().already_logged_today(pid):
+                    habits.append(h)
+                    known_pids.add(pid)
     session["habits"] = habits
     t3 = time.time()
     log.info("[PERF] Habits loaded in %.0fms", (t3 - t2) * 1000)

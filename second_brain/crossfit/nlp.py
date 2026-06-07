@@ -79,6 +79,7 @@ def _empty_workout_data(movements: Optional[List[str]] = None) -> Dict:
         "wod_name": None,
         "movement_loads": None,
         "movement_reps": None,
+        "sets_breakdown": None,
     }
 
 
@@ -157,6 +158,21 @@ def _normalise_workout_data(parsed, fallback_message: str) -> Dict:
         data["movement_reps"] = normalised_reps or None
     else:
         data["movement_reps"] = None
+    raw_breakdown = parsed.get("sets_breakdown") if isinstance(parsed, dict) else None
+    if isinstance(raw_breakdown, list) and len(raw_breakdown) > 1:
+        normalised_breakdown = []
+        for entry in raw_breakdown:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                reps = int(float(entry["reps"])) if entry.get("reps") is not None else None
+                wt = round(float(entry["weight_lbs"]), 1) if entry.get("weight_lbs") is not None else None
+                normalised_breakdown.append({"reps": reps, "weight_lbs": wt})
+            except (TypeError, ValueError, KeyError):
+                pass
+        data["sets_breakdown"] = normalised_breakdown if len(normalised_breakdown) > 1 else None
+    else:
+        data["sets_breakdown"] = None
     return data
 
 
@@ -331,11 +347,13 @@ OUTPUT FORMAT: Valid JSON object only, no explanation:
   "raw_input": "original user input" or null,
   "wod_name": "benchmark WOD name such as Fran" or null,
   "movement_loads": {{"Movement 1": load_lbs, "Movement 2": load_lbs}} or null,
-  "movement_reps": {{"Movement 1": reps_int, "Movement 2": reps_int}} or null
+  "movement_reps": {{"Movement 1": reps_int, "Movement 2": reps_int}} or null,
+  "sets_breakdown": [{{"reps": int, "weight_lbs": float}}, ...] or null
 }}
 
 movement_loads: Only set when movements have DIFFERENT loads. Map each movement name (matching "movements" array) to its load in lbs. Null when all loads are the same or only one movement.
 movement_reps: Only set when movements have DIFFERENT rep counts. Map each movement name (matching the "movements" array) to its integer rep count. Null when all reps are the same or only one movement.
+sets_breakdown: Set when the user lists the SAME single movement in multiple sets with VARYING weights or reps (comma-separated working sets). Each entry is one set: {{"reps": int, "weight_lbs": float}}. Use null when all sets have the same weight/reps (use sets+reps+weight_lbs instead) or when there are multiple distinct movements. Example: "4x235lb deadlift, 3x245lb deadlift, 2x255lb deadlift" → sets_breakdown with 3 entries. Sets/reps/weight_lbs in the root should still reflect aggregate totals or the first set.
 
 WORKOUT STRUCTURE PRESERVATION:
 - Preserve the user's original movement/rep scheme exactly in workout_structure.
@@ -358,7 +376,10 @@ Input: "7 sets of 2x 115lb hang squat clean, 2x 115lb clean pull"
 Output: {{"movements":["Hang Squat Clean","Clean Pull"],"date":null,"sets":7,"reps":2,"weight_lbs":115.0,"weight_kg":52.2,"scheme":"7x2","notes":null,"workout_structure":"7 sets of 2x 115lb hang squat clean, 2x 115lb clean pull","raw_input":"7 sets of 2x 115lb hang squat clean, 2x 115lb clean pull","wod_name":null,"movement_loads":null}}
 
 Input: "5 sets of 1x 125lb power clean, 2x 125lb hang squat clean"
-Output: {{"movements":["Power Clean","Hang Squat Clean"],"sets":5,"reps":1,"weight_lbs":125.0,"weight_kg":56.7,"scheme":"5x1","notes":null,"workout_structure":"5 sets of 1x 125lb power clean, 2x 125lb hang squat clean","raw_input":"5 sets of 1x 125lb power clean, 2x 125lb hang squat clean","wod_name":null,"movement_loads":null,"movement_reps":{{"Power Clean":1,"Hang Squat Clean":2}}}}
+Output: {{"movements":["Power Clean","Hang Squat Clean"],"sets":5,"reps":1,"weight_lbs":125.0,"weight_kg":56.7,"scheme":"5x1","notes":null,"workout_structure":"5 sets of 1x 125lb power clean, 2x 125lb hang squat clean","raw_input":"5 sets of 1x 125lb power clean, 2x 125lb hang squat clean","wod_name":null,"movement_loads":null,"movement_reps":{{"Power Clean":1,"Hang Squat Clean":2}},"sets_breakdown":null}}
+
+Input: "4x235lb deadlift, 3x245lb deadlift, 2x255lb deadlift, 4x245lb deadlift, 3x265lb deadlift, 2x265lb deadlift, 2x265lb deadlift, 2x265lb deadlift"
+Output: {{"movements":["Deadlift"],"sets":8,"reps":4,"weight_lbs":235.0,"weight_kg":106.6,"scheme":"8 sets","notes":null,"workout_structure":"4x235lb deadlift, 3x245lb deadlift, 2x255lb deadlift, 4x245lb deadlift, 3x265lb deadlift, 2x265lb deadlift, 2x265lb deadlift, 2x265lb deadlift","raw_input":"4x235lb deadlift, 3x245lb deadlift, 2x255lb deadlift, 4x245lb deadlift, 3x265lb deadlift, 2x265lb deadlift, 2x265lb deadlift, 2x265lb deadlift","wod_name":null,"movement_loads":null,"movement_reps":null,"sets_breakdown":[{{"reps":4,"weight_lbs":235.0}},{{"reps":3,"weight_lbs":245.0}},{{"reps":2,"weight_lbs":255.0}},{{"reps":4,"weight_lbs":245.0}},{{"reps":3,"weight_lbs":265.0}},{{"reps":2,"weight_lbs":265.0}},{{"reps":2,"weight_lbs":265.0}},{{"reps":2,"weight_lbs":265.0}}]}}
 """
 
     try:

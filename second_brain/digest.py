@@ -149,6 +149,7 @@ def pending_habits_for_digest(*, habit_cache: dict[str, dict], time_str: str | N
 # Digest scheduling helpers — runtime state is owned here, set by post_init in main.py.
 
 import logging
+import re
 from datetime import datetime, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -256,7 +257,10 @@ async def send_digest_for_slot(bot, slot: dict) -> None:
     if slot_key in _digest_slot_sent_today:
         log.info("Skipping duplicate digest send for slot %s (%s)", slot.get("time"), "weekday" if weekday else "weekend")
         return
+    day_prefix = f"{day_key}|{'wd' if weekday else 'we'}"
+    is_first_digest = not any(k.startswith(day_prefix) for k in _digest_slot_sent_today)
     config = await get_digest_config(slot["time"], slot["is_weekday"])
+    config = {**config, "is_first_digest": is_first_digest}
     log.info(
         "Digest slot trigger fired at %s (%s) — include_habits=%s include_feel=%s contexts=%s max_items=%s",
         slot.get("time"),
@@ -415,15 +419,29 @@ async def generate_daily_log(bot) -> dict:
     return {"action": "generated", "has_url": bool(_last_daily_log_url)}
 
 
-def _generate_digest_brief(weather_block, overdue_count, today_count, habit_count, day_str) -> str:
+def _generate_digest_brief(weather_block, overdue_count, today_count, habit_count, day_str, *, is_first_digest=True) -> str:
     try:
         from second_brain.weather import load_yesterday_weather
 
-        yesterday = load_yesterday_weather()
-        yesterday_line = (
-            f"Yesterday: {yesterday['high_c']}°C / {yesterday['low_c']}°C ({yesterday['condition']})"
-            if yesterday else "Yesterday: unavailable"
-        )
+        yesterday_line = "Yesterday: unavailable"
+        if is_first_digest:
+            yesterday = load_yesterday_weather()
+            yesterday_line = (
+                f"Yesterday: {yesterday['high_c']}°C / {yesterday['low_c']}°C ({yesterday['condition']})"
+                if yesterday else "Yesterday: unavailable"
+            )
+            weather_guidance = (
+                "Write one warm direct sentence weaving weather (and how it compares to yesterday) "
+                "into the day — help the user know what to wear and what to prioritise. "
+            )
+        else:
+            rain_match = re.search(r"Rain chance:\s*(\d+)%", weather_block or "")
+            rain_pct = rain_match.group(1) if rain_match else "unavailable"
+            yesterday_line = f"Upcoming rain probability: {rain_pct}%"
+            weather_guidance = (
+                "Write one warm direct sentence weaving weather and upcoming rain risk into the day — "
+                "help the user know what to wear and what to prioritise. "
+            )
         claude = get_claude_client()
         resp = claude.messages.create(
             model=CLAUDE_MODEL,
@@ -436,8 +454,7 @@ def _generate_digest_brief(weather_block, overdue_count, today_count, habit_coun
                 f"{yesterday_line}\n"
                 f"Tasks: {overdue_count} overdue, {today_count} due today\n"
                 f"Habits pending: {habit_count}\n\n"
-                "Write one warm direct sentence weaving weather (and how it compares to yesterday) "
-                "into the day — help the user know what to wear and what to prioritise. "
+                f"{weather_guidance}"
                 "Use Celsius for any temperatures mentioned. No greeting. No padding."
             )}],
         )
@@ -516,12 +533,14 @@ async def send_daily_digest(bot, include_habits: bool | None = None, config: dic
     include_ai_brief = True if config is None else bool(config.get("include_ai_brief", True))
     ai_brief = ""
     if include_ai_brief:
+        is_first = bool(config.get("is_first_digest", True)) if config else True
         ai_brief = _generate_digest_brief(
             weather_block=weather_block if include_weather else "",
             overdue_count=len(overdue),
             today_count=len(today_tasks),
             habit_count=len(habits),
             day_str=date_str,
+            is_first_digest=is_first,
         )
     if ai_brief:
         lines[2:2] = [f"_{ai_brief}_", ""]

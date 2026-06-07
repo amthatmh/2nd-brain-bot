@@ -845,6 +845,7 @@ def test_extract_workout_data_parses_complete_claude_payload():
         "wod_name": None,
         "movement_loads": None,
         "movement_reps": None,
+        "sets_breakdown": None,
     }
 
 
