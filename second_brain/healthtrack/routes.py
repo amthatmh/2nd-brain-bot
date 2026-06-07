@@ -110,6 +110,7 @@ _HABITS_DATA_STALE_SECONDS = 24 * 3600
 _habits_data_stale_cache: dict[str, Any] = {}
 _habits_data_refresh_task: asyncio.Task | None = None
 _HABITS_CACHE_FILENAME = "habitkit-habits-data.json"
+_habits_health_metrics_db: str = ""  # set by register_health_routes, used in all refresh calls
 
 
 def clear_habits_data_caches(*, delete_disk: bool = False) -> None:
@@ -377,6 +378,7 @@ def _build_habits_data_payload(
     steps_threshold: int = 10000,
     sleep_habit_name: str = "",
     sleep_threshold_min: int = 420,
+    health_metrics_db: str = "",
 ) -> dict[str, Any]:
     now = datetime_cls.now(tz)
     habits_sorted = sorted(habit_cache.values(), key=lambda h: h["sort"])
@@ -397,22 +399,41 @@ def _build_habits_data_payload(
 
     logged: set[tuple[str, str]] = set()
     step_counts_by_key: dict[tuple[str, str], int] = {}
-    sleep_minutes_by_key: dict[tuple[str, str], int] = {}
     for page in results:
         p = page["properties"]
         d = p.get("Date", {}).get("date", {})
         date_str = extract_date_fn(d.get("start") if d else None)
         rels = p.get("Habit", {}).get("relation", [])
         raw_steps = p.get("Steps Count", {}).get("number")
-        raw_sleep = p.get("Total Sleep (min)", {}).get("number")
         for rel in rels:
             if date_str:
                 key = (rel["id"].replace("-", ""), date_str)
                 logged.add(key)
                 if isinstance(raw_steps, (int, float)) and raw_steps > 0:
                     step_counts_by_key[key] = int(raw_steps)
-                if isinstance(raw_sleep, (int, float)) and raw_sleep > 0:
-                    sleep_minutes_by_key[key] = int(raw_sleep)
+
+    # Build sleep minutes by date from Health Metrics Log (Time in Bed hrs)
+    sleep_minutes_by_date: dict[str, int] = {}
+    if health_metrics_db and sleep_habit_name:
+        try:
+            metrics_rows = query_all_fn(
+                health_metrics_db,
+                filter={
+                    "and": [
+                        {"property": "Date", "date": {"on_or_after": start_dt.isoformat()}},
+                        {"property": "Date", "date": {"on_or_before": today.isoformat()}},
+                    ]
+                },
+            )
+            for row in metrics_rows:
+                rp = row["properties"]
+                rd = rp.get("Date", {}).get("date", {})
+                date_str = extract_date_fn(rd.get("start") if rd else None)
+                raw_hrs = rp.get("Time in Bed (hrs)", {}).get("number")
+                if date_str and isinstance(raw_hrs, (int, float)) and raw_hrs > 0:
+                    sleep_minutes_by_date[date_str] = int(raw_hrs * 60)
+        except Exception as exc:
+            log.warning("habits_data: failed to load sleep metrics: %s", exc)
 
     current_monday = today - timedelta(days=today.weekday())
     start_monday = start_dt - timedelta(days=start_dt.weekday())
@@ -527,9 +548,9 @@ def _build_habits_data_payload(
             ]
             habit_entry["stepsThreshold"] = steps_threshold
         is_sleep = sleep_habit_name and habit["name"].strip().lower() == sleep_habit_name.strip().lower()
-        if is_sleep and sleep_minutes_by_key:
+        if is_sleep and sleep_minutes_by_date:
             habit_entry["sleepMinutes"] = [
-                sleep_minutes_by_key.get((pid, d), 0) for d in all_dates
+                sleep_minutes_by_date.get(d, 0) for d in all_dates
             ]
             habit_entry["sleepThreshold"] = sleep_threshold_min
         habits_out.append(habit_entry)
@@ -592,6 +613,7 @@ async def _refresh_habits_data_cache(
     query_all_fn,
     extract_date_fn,
     datetime_cls,
+    health_metrics_db: str = "",
 ) -> dict[str, Any]:
     payload = await asyncio.to_thread(
         _build_habits_data_payload,
@@ -608,6 +630,7 @@ async def _refresh_habits_data_cache(
         steps_threshold=STEPS_THRESHOLD,
         sleep_habit_name=health_config.SLEEP_HABIT_NAME,
         sleep_threshold_min=int(health_config.SLEEP_GOAL_HOURS * 60),
+        health_metrics_db=health_metrics_db or _habits_health_metrics_db,
     )
     _store_habits_data_payload(payload, generated_at=datetime_cls.now(tz))
     return payload
@@ -687,6 +710,7 @@ async def habits_data_handler(
     query_all_fn=None,
     extract_date_fn=extract_date_only,
     datetime_cls=datetime,
+    health_metrics_db: str = "",
 ) -> web.Response:
     query_all_fn = query_all_fn or (lambda database_id, **kwargs: query_all(notion, database_id, **kwargs))
     now = datetime_cls.now(tz)
@@ -722,6 +746,7 @@ async def habits_data_handler(
                 query_all_fn=query_all_fn,
                 extract_date_fn=extract_date_fn,
                 datetime_cls=datetime_cls,
+                health_metrics_db=health_metrics_db,
             )
             return web.Response(
                 text=json.dumps(stale_payload),
@@ -741,6 +766,7 @@ async def habits_data_handler(
             query_all_fn=query_all_fn,
             extract_date_fn=extract_date_fn,
             datetime_cls=datetime_cls,
+            health_metrics_db=health_metrics_db,
         )
         return web.Response(
             text=json.dumps(payload),
@@ -885,7 +911,8 @@ def register_health_routes(
         chat_id     — MY_CHAT_ID to send threshold notifications
         health_metrics_db_id — NOTION_HEALTH_METRICS_DB env value for /api/v1/health-sync
     """
-
+    global _habits_health_metrics_db
+    _habits_health_metrics_db = health_metrics_db_id or ""
 
     async def _habits_data(request: web.Request) -> web.Response:
         return await habits_data_handler(
@@ -897,6 +924,7 @@ def register_health_routes(
             streak_db=streak_db_id,
             tz=tz,
             weeks_history=weeks_history,
+            health_metrics_db=health_metrics_db_id or "",
         )
 
     async def _log_habit(request: web.Request) -> web.Response:
