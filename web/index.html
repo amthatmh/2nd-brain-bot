@@ -404,9 +404,9 @@ function render(data) {
     if (checkBtn) {
       checkBtn.addEventListener('click', () => logHabitFromWeb(habit, checkBtn));
     }
-    const dateRows = dates.map((day, i) => ({ day, value: habit.days[i] ?? 0 }));
+    const dateRows = dates.map((day, i) => ({ day, value: habit.days[i] ?? 0, stepCount: habit.stepCounts ? (habit.stepCounts[i] ?? 0) : null }));
     const weekMap = new Map();
-    dateRows.forEach(({ day, value }) => {
+    dateRows.forEach(({ day, value, stepCount }) => {
       const d = new Date(`${day}T12:00:00`);
       if (Number.isNaN(d.getTime())) return;
       const weekStart = new Date(d);
@@ -414,7 +414,7 @@ function render(data) {
       weekStart.setDate(d.getDate() - dayOffset);
       const key = formatLocalDateKey(weekStart);
       if (!weekMap.has(key)) weekMap.set(key, new Array(7).fill(null));
-      weekMap.get(key)[dayOffset] = { day, value };
+      weekMap.get(key)[dayOffset] = { day, value, stepCount };
     });
 
     [...weekMap.keys()].sort().forEach((weekKey) => {
@@ -422,13 +422,22 @@ function render(data) {
       week.forEach((entry, dayIdx) => {
       const cell    = document.createElement('div');
       const value = entry?.value ?? 0;
+      const stepCount = entry?.stepCount ?? null;
       const cellDate = entry?.day;
       const isToday = cellDate === data.todayDate;
       const isFuture = Boolean(cellDate && data.todayDate && cellDate > data.todayDate);
-      cell.className = `cell ${value?'on':'off'} ${isToday?'today':''} ${isFuture?'future':''}`;
+      const base = `${isToday?'today':''} ${isFuture?'future':''}`;
+      if (stepCount !== null && stepCount > 0 && habit.stepsThreshold) {
+        const t = Math.min(stepCount / habit.stepsThreshold, 1.0);
+        cell.style.background = `rgba(244,123,136,${(0.12 + 0.88 * t).toFixed(2)})`;
+        cell.className = `cell ${base}`.trim();
+      } else {
+        cell.className = `cell ${value?'on':'off'} ${base}`.trim();
+      }
       if (cellDate) {
         const d = new Date(`${cellDate}T12:00:00`);
-        cell.title = `${d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})} · ${value?'✅ done':'⭕️ not done'}`;
+        const stepNote = stepCount > 0 ? ` · ${stepCount.toLocaleString()} steps` : '';
+        cell.title = `${d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})} · ${value?'✅ done':'⭕️ not done'}${stepNote}`;
       } else {
         const d = new Date(`${weekKey}T12:00:00`);
         d.setDate(d.getDate() + dayIdx);

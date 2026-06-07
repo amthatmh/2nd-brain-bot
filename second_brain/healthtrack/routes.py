@@ -373,6 +373,8 @@ def _build_habits_data_payload(
     query_all_fn,
     extract_date_fn,
     datetime_cls,
+    steps_habit_name: str = "",
+    steps_threshold: int = 10000,
 ) -> dict[str, Any]:
     now = datetime_cls.now(tz)
     habits_sorted = sorted(habit_cache.values(), key=lambda h: h["sort"])
@@ -392,14 +394,19 @@ def _build_habits_data_payload(
     )
 
     logged: set[tuple[str, str]] = set()
+    step_counts_by_key: dict[tuple[str, str], int] = {}
     for page in results:
         p = page["properties"]
         d = p.get("Date", {}).get("date", {})
         date_str = extract_date_fn(d.get("start") if d else None)
         rels = p.get("Habit", {}).get("relation", [])
+        raw_steps = p.get("Steps Count", {}).get("number")
         for rel in rels:
             if date_str:
-                logged.add((rel["id"].replace("-", ""), date_str))
+                key = (rel["id"].replace("-", ""), date_str)
+                logged.add(key)
+                if isinstance(raw_steps, (int, float)) and raw_steps > 0:
+                    step_counts_by_key[key] = int(raw_steps)
 
     current_monday = today - timedelta(days=today.weekday())
     start_monday = start_dt - timedelta(days=start_dt.weekday())
@@ -494,7 +501,7 @@ def _build_habits_data_payload(
                 break
             week_streak += 1
             expected_week = week_date - timedelta(days=7)
-        habits_out.append({
+        habit_entry: dict[str, Any] = {
             "id": habit["page_id"],
             "name": habit["name"],
             "icon": habit.get("icon"),
@@ -506,7 +513,14 @@ def _build_habits_data_payload(
             "todayDone": days[-1] == 1,
             "dayStreak": day_streak,
             "weekStreak": week_streak,
-        })
+        }
+        is_steps = steps_habit_name and habit["name"].strip().lower() == steps_habit_name.strip().lower()
+        if is_steps and step_counts_by_key:
+            habit_entry["stepCounts"] = [
+                step_counts_by_key.get((pid, d), 0) for d in all_dates
+            ]
+            habit_entry["stepsThreshold"] = steps_threshold
+        habits_out.append(habit_entry)
 
     return {
         "generated": now.isoformat(),
@@ -578,6 +592,8 @@ async def _refresh_habits_data_cache(
         query_all_fn=query_all_fn,
         extract_date_fn=extract_date_fn,
         datetime_cls=datetime_cls,
+        steps_habit_name=health_config.STEPS_HABIT_NAME,
+        steps_threshold=STEPS_THRESHOLD,
     )
     _store_habits_data_payload(payload, generated_at=datetime_cls.now(tz))
     return payload
