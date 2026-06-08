@@ -1346,11 +1346,10 @@ async def open_done_picker(message) -> None:
     await message.reply_text("Which task should be marked done?", reply_markup=kb.done_picker_keyboard(key, done_picker_map, page=0))
 
 async def open_habit_picker(message) -> None:
-    now_str = datetime.now(TZ).strftime("%H:%M")
     logged_ids = get_logged_habit_ids_today()
     pending_habits = digest_helpers.pending_habits_for_digest(
         habit_cache=habit_cache,
-        time_str=now_str,
+        time_str=None,
         already_logged_today=lambda pid: pid in logged_ids,
         is_on_pace=is_on_pace,
     )
