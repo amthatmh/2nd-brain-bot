@@ -434,7 +434,8 @@ function render(data) {
         cell.className = `cell ${base}`.trim();
       } else if (sleepMin !== null && sleepMin > 0 && habit.sleepThreshold) {
         const t = Math.min(sleepMin / habit.sleepThreshold, 1.0);
-        cell.style.background = `rgba(101,183,255,${(0.12 + 0.88 * t).toFixed(2)})`;
+        const alpha = t >= 1.0 ? 1.0 : (0.12 + 0.55 * t);
+        cell.style.background = `rgba(101,183,255,${alpha.toFixed(2)})`;
         cell.className = `cell ${base}`.trim();
       } else {
         cell.className = `cell ${value?'on':'off'} ${base}`.trim();
