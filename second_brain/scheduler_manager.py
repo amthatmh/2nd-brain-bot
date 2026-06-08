@@ -564,5 +564,5 @@ class UtilitySchedulerManager:
     def _apscheduler_id(job_key: str, page_id: str | None = None) -> str:
         if not page_id:
             return f"{_JOB_PREFIX}{job_key}"
-        suffix = page_id.replace("-", "")[:12]
+        suffix = page_id.replace("-", "")[:20]
         return f"{_JOB_PREFIX}{job_key}_{suffix}"
