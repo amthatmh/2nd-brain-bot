@@ -1683,7 +1683,24 @@ async def _cb_h_done(q, parts, context) -> None:
                 log.debug("Habit progress unavailable for %s: %s", name, progress_error)
         if failed_names:
             lines.append(f"⚠️ Couldn't log: {', '.join(failed_names)}")
-        await q.message.reply_text("\n".join(lines))
+        summary = "\n".join(lines)
+        # For digest messages, fold the summary into the existing message instead of replying
+        plain_text = q.message.text or ""
+        if "tap to log" in plain_text:
+            try:
+                original_md = q.message.text_markdown or plain_text
+                habit_idx = original_md.find("tap to log")
+                line_start = original_md.rfind("\n", 0, habit_idx) if habit_idx >= 0 else -1
+                trimmed = original_md[:line_start].rstrip() if line_start >= 0 else original_md
+                new_text = f"{trimmed}\n\n{summary}"
+                if len(new_text) <= 4000:
+                    await q.edit_message_text(new_text, parse_mode="Markdown")
+                else:
+                    await q.message.reply_text(summary)
+            except Exception:
+                await q.message.reply_text(summary)
+        else:
+            await q.message.reply_text(summary)
     elif failed_names:
         await q.message.reply_text(f"⚠️ Couldn't log: {', '.join(failed_names)}")
     else:
