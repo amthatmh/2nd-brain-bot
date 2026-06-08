@@ -433,8 +433,10 @@ function render(data) {
         cell.style.background = `rgba(244,123,136,${(0.12 + 0.88 * t).toFixed(2)})`;
         cell.className = `cell ${base}`.trim();
       } else if (sleepMin !== null && sleepMin > 0 && habit.sleepThreshold) {
-        const t = Math.min(sleepMin / habit.sleepThreshold, 1.0);
-        const alpha = t >= 1.0 ? 1.0 : (0.12 + 0.55 * t);
+        let alpha;
+        if (sleepMin >= habit.sleepThreshold) { alpha = 1.0; }
+        else if (sleepMin >= 300) { alpha = 0.60; }
+        else { alpha = 0.30; }
         cell.style.background = `rgba(101,183,255,${alpha.toFixed(2)})`;
         cell.className = `cell ${base}`.trim();
       } else {

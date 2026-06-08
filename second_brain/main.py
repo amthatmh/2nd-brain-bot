@@ -704,11 +704,11 @@ def deadline_days_to_label(days: int | None) -> str:
 # NOTION — HABIT LOG
 # ══════════════════════════════════════════════════════════════════════════════
 
-def log_habit(habit_page_id: str, habit_name: str, source: str = "📱 Telegram") -> None:
-    return _habit_log_habit(notion, NOTION_LOG_DB, habit_page_id, habit_name, source, TZ)
+def log_habit(habit_page_id: str, habit_name: str, source: str = "📱 Telegram", log_date: str | None = None) -> None:
+    return _habit_log_habit(notion, NOTION_LOG_DB, habit_page_id, habit_name, source, TZ, log_date=log_date)
 
-def already_logged_today(habit_page_id: str) -> bool:
-    return _habit_already_logged(notion, NOTION_LOG_DB, habit_page_id, TZ)
+def already_logged_today(habit_page_id: str, log_date: str | None = None) -> bool:
+    return _habit_already_logged(notion, NOTION_LOG_DB, habit_page_id, TZ, log_date=log_date)
 
 def get_logged_habit_ids_today() -> set[str]:
     return _habit_logged_ids_today(notion, NOTION_LOG_DB, TZ)

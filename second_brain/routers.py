@@ -1638,10 +1638,11 @@ async def _cb_h_done(q, parts, context) -> None:
     for habit in selected_habits:
         habit_name = habit.get("name", "Unknown")
         try:
-            if _main().already_logged_today(habit["page_id"]):
+            log_date = _late_night_log_date(habit)
+            if _main().already_logged_today(habit["page_id"], log_date=log_date):
                 logged_page_ids.add(habit["page_id"])
                 continue
-            _main().log_habit(habit["page_id"], habit_name)
+            _main().log_habit(habit["page_id"], habit_name, log_date=log_date)
             logged_page_ids.add(habit["page_id"])
             logged_names.append(habit_name)
             logged_habits.append(habit)
@@ -1709,12 +1710,24 @@ async def _cb_h_done(q, parts, context) -> None:
     return
 
 
+def _late_night_log_date(habit: dict) -> str | None:
+    """Return yesterday's date string if habit is late_night and current hour < 3, else None."""
+    if not habit.get("late_night"):
+        return None
+    now = datetime.now(TZ)
+    if now.hour < 3:
+        return (now.date() - timedelta(days=1)).isoformat()
+    return None
+
+
 async def _do_log_habit(q, habit_page_id: str) -> None:
     habit_name = next(
         (n for n, h in _habit_cache().items() if h["page_id"] == habit_page_id),
         "Unknown",
     )
-    if _main().already_logged_today(habit_page_id):
+    habit = _habit_cache().get(habit_name, {})
+    log_date = _late_night_log_date(habit)
+    if _main().already_logged_today(habit_page_id, log_date=log_date):
         try:
             await q.edit_message_text(f"✅ Already logged {habit_name} today!")
         except Exception as e:
@@ -1722,7 +1735,7 @@ async def _do_log_habit(q, habit_page_id: str) -> None:
             await q.message.reply_text(f"Already logged {habit_name} today! ✅")
         return
     try:
-        _main().log_habit(habit_page_id, habit_name)
+        _main().log_habit(habit_page_id, habit_name, log_date=log_date)
     except Exception as notion_error:
         log.error("Habit log Notion error for %s: %s", habit_name, notion_error)
         try:

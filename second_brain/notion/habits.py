@@ -107,6 +107,7 @@ def load_habit_cache(*, notion: Any, notion_habit_db: str) -> None:
             frequency_label = txt("Frequency Label")
             show_after = _parse_show_after(p, name)
             auto_only = extract_checkbox(get_property_by_name(p, "Auto Only"))
+            late_night = bool(extract_checkbox(p.get("Late Night")))
             if not frequency_label and parsed_frequency:
                 frequency_label = f"{parsed_frequency}x/week"
             page_icon = page.get("icon") or {}
@@ -119,9 +120,9 @@ def load_habit_cache(*, notion: Any, notion_habit_db: str) -> None:
                 "freq_per_week": parsed_frequency,
                 "frequency_label": frequency_label,
                 "description": txt("Description"),
-                "auto_only": auto_only,
+                "auto_only": bool(auto_only),
                 "show_after": show_after,
-                "auto_only": bool(extract_checkbox(p.get("Auto Only"))),
+                "late_night": late_night,
                 "sort": num("Sort") or 99,
             }
         log.info(
@@ -234,10 +235,10 @@ def query_tasks_by_auto_horizon(*, notion: Any, notion_db_id: str, horizons: lis
 
 def log_habit(
     notion, log_db_id: str, habit_page_id: str,
-    habit_name: str, source: str = "📱 Telegram", tz=None
+    habit_name: str, source: str = "📱 Telegram", tz=None, log_date: str | None = None
 ) -> None:
     now = datetime.now(tz) if tz is not None else datetime.now().astimezone()
-    today = now.date().isoformat()
+    today = log_date if log_date else now.date().isoformat()
     props = {
         "Entry": title_prop(habit_name),
         "Habit": {"relation": [{"id": habit_page_id}]},
@@ -261,8 +262,8 @@ def log_habit(
     log.info("Habit logged: %s on %s via %s", habit_name, today, source)
 
 
-def already_logged_today(notion, log_db_id: str, habit_page_id: str, tz) -> bool:
-    today = datetime.now(tz).date().isoformat()
+def already_logged_today(notion, log_db_id: str, habit_page_id: str, tz, log_date: str | None = None) -> bool:
+    today = log_date if log_date else datetime.now(tz).date().isoformat()
     try:
         pages = query_all(notion, log_db_id, filter={
             "and": [
