@@ -434,9 +434,9 @@ function render(data) {
         cell.className = `cell ${base}`.trim();
       } else if (sleepMin !== null && sleepMin > 0 && habit.sleepThreshold) {
         let color;
-        if (sleepMin >= habit.sleepThreshold) { color = '#1a7abf'; }
+        if (sleepMin >= habit.sleepThreshold) { color = '#27ae60'; }
         else if (sleepMin >= 360) { color = '#f5a623'; }
-        else { color = '#e05252'; }
+        else { color = '#922b21'; }
         cell.style.background = color;
         cell.className = `cell ${base}`.trim();
       } else {
