@@ -718,3 +718,19 @@ async def handle_sleep_backfill_job(bot, start_date_str: str, end_date_str: str)
             await asyncio.sleep(0.35)
 
     return {"ok": True, "results": results}
+
+
+async def handle_sleep_gap_fill_job(bot=None) -> dict:
+    """Utility Scheduler job: backfill any missing sleep rows for the past 7 days.
+
+    Runs the same logic as handle_sleep_backfill_job over a rolling 7-day
+    window (yesterday back to 7 days ago).  Catches gaps caused by missed
+    nightly scheduler runs without requiring manual API calls.
+    """
+    from second_brain.main import TZ
+
+    today = datetime.now(TZ).date()
+    start = (today - timedelta(days=7)).isoformat()
+    end = (today - timedelta(days=1)).isoformat()
+    log.info("sleep_gap_fill: backfilling %s to %s", start, end)
+    return await handle_sleep_backfill_job(bot, start, end)
