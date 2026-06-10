@@ -558,35 +558,41 @@ async def handle_sleep_backfill_job(bot=None) -> dict:
 
 
 async def handle_health_metrics_sync_job(bot=None) -> dict:
-    """Utility Scheduler job: alert if today's Health Metrics row is missing."""
+    """Utility Scheduler job: alert if yesterday's Health Metrics row is missing.
+
+    Checks yesterday rather than today because this job runs near midnight — at
+    that point the new day's first Health Auto Export hourly sync hasn't fired
+    yet, so querying today always returns no entry (false positive).  Checking
+    the just-completed day surfaces genuine outages without noise.
+    """
     import asyncio
     from second_brain.healthtrack.metrics import _find_page_by_date
     from second_brain.main import NOTION_HEALTH_METRICS_DB, TZ, notion
 
-    today = datetime.now(TZ).date().isoformat()
+    yesterday = (datetime.now(TZ) - timedelta(days=1)).date().isoformat()
     try:
         page_id = await asyncio.to_thread(
-            _find_page_by_date, notion, NOTION_HEALTH_METRICS_DB, today
+            _find_page_by_date, notion, NOTION_HEALTH_METRICS_DB, yesterday
         )
     except Exception as e:
         log.error("health_metrics_sync: Notion query failed: %s", e)
-        return {"action": "error", "date": today, "reason": str(e)}
+        return {"action": "error", "date": yesterday, "reason": str(e)}
 
     if not page_id:
-        log.warning("health_metrics_sync: no row for %s — webhook may not have fired", today)
+        log.warning("health_metrics_sync: no row for %s — webhook may not have fired", yesterday)
         if bot:
             try:
                 await send_system_log(
                     bot,
-                    f"⚠️ Health Metrics: no entry for {today}\n"
-                    "Apple Health Auto Export webhook may not have fired today.",
+                    f"⚠️ Health Metrics: no entry for {yesterday}\n"
+                    "Apple Health Auto Export webhook may not have fired yesterday.",
                 )
             except Exception as e:
                 log.warning("health_metrics_sync: alert send failed: %s", e)
-        return {"action": "missing", "date": today}
+        return {"action": "missing", "date": yesterday}
 
-    log.info("health_metrics_sync: row exists for %s (page_id=%s)", today, page_id)
-    return {"action": "ok", "date": today, "page_id": page_id}
+    log.info("health_metrics_sync: row exists for %s (page_id=%s)", yesterday, page_id)
+    return {"action": "ok", "date": yesterday, "page_id": page_id}
 
 
 def register_handlers(manager: "UtilitySchedulerManager") -> None:
