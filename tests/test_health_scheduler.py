@@ -395,6 +395,7 @@ class TestWeighJobs(IsolatedAsyncioTestCase):
         fake_sleep = SimpleNamespace(
             handle_sleep_resync_job=MagicMock(),
             handle_sleep_sync_job=MagicMock(),
+            handle_sleep_gap_fill_job=MagicMock(),
         )
         fake_insights = SimpleNamespace(handle_weekly_health_insight_job=MagicMock())
 
@@ -410,8 +411,10 @@ class TestWeighJobs(IsolatedAsyncioTestCase):
             for call in manager.register_handler.call_args_list
         }
         self.assertIn("sleep_backfill", registered)
+        self.assertIn("sleep_gap_fill", registered)
         self.assertIn("steps_sync_check", registered)
         self.assertNotIn("steps_morning_stamp", registered)
         self.assertNotIn("steps_final_stamp", registered)
         self.assertIs(registered["steps_sync_check"], fake_steps.handle_steps_sync_check)
         self.assertTrue(callable(registered["sleep_backfill"]))
+        self.assertIs(registered["sleep_gap_fill"], fake_sleep.handle_sleep_gap_fill_job)
