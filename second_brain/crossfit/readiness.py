@@ -5,13 +5,13 @@ from __future__ import annotations
 import inspect
 import logging
 import os
-from datetime import datetime
 from typing import Optional
 
 from second_brain.ai.client import VOICE_INSTRUCTION, get_claude_client
 from second_brain.config import CLAUDE_MODEL
 from second_brain.notion import notion_call
 from second_brain.notion.properties import rich_text_prop, title_prop
+from second_brain.utils import local_today
 
 log = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ async def _maybe_await(value):
 
 async def check_readiness_logged_today(notion_client, daily_readiness_db_id: Optional[str] = None) -> bool:
     """Return True if Daily Readiness has already been logged today."""
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = local_today().isoformat()
     daily_readiness_db_id = daily_readiness_db_id or os.getenv("NOTION_DAILY_READINESS_DB", "")
     if not daily_readiness_db_id or notion_client is None:
         return False
@@ -70,7 +70,7 @@ async def log_daily_readiness(
     if not daily_readiness_db_id:
         raise ValueError("NOTION_DAILY_READINESS_DB is not configured")
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = local_today().isoformat()
     properties = {
         "Name": title_prop(f"Readiness — {today}"),
         "Date": {"date": {"start": today}},
