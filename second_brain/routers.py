@@ -39,6 +39,7 @@ from second_brain.notion import notes as notion_notes
 from second_brain.config import (
     CLAUDE_MAX_TOK,
     CLAUDE_MODEL,
+    ALLOWED_CHAT_IDS,
     MY_CHAT_ID,
     NOTION_DB_ID,
     NOTION_HABIT_DB,
@@ -454,7 +455,7 @@ async def handle_message_text(
             user_id,
             _cf_pending().get(str(user_id), {}).get("stage"),
         )
-    if user_id != MY_CHAT_ID:
+    if user_id not in ALLOWED_CHAT_IDS:
         return
     text = (message.text or "").strip()
     if not text:
