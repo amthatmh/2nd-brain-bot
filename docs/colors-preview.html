@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { background: #08090f; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; font-family: Inter, sans-serif; }
+  .grid { display: flex; gap: 32px; }
+  .col { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  .swatch { width: 80px; height: 80px; border-radius: 10px; }
+  .label { color: #ccc; font-size: 13px; text-align: center; }
+  .hex { color: #888; font-size: 11px; }
+  .divider { width: 1px; background: #333; }
+  h3 { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<div style="display:flex;gap:60px;align-items:flex-start">
+  <div>
+    <h3 style="color:#888;font-size:11px;text-align:center;margin-bottom:16px">Current</h3>
+    <div class="grid" style="flex-direction:column;gap:16px">
+      <div class="col" style="flex-direction:row;gap:16px;align-items:center">
+        <div class="swatch" style="background:#27ae60"></div>
+        <div><div class="label">≥7hrs (goal)</div><div class="hex">#27ae60 · 7.3:1 ✓</div></div>
+      </div>
+      <div class="col" style="flex-direction:row;gap:16px;align-items:center">
+        <div class="swatch" style="background:#f5a623"></div>
+        <div><div class="label">6–7hrs</div><div class="hex">#f5a623 · 9.8:1 ✓</div></div>
+      </div>
+      <div class="col" style="flex-direction:row;gap:16px;align-items:center">
+        <div class="swatch" style="background:#922b21"></div>
+        <div><div class="label">&lt;6hrs</div><div class="hex">#922b21 · 2.7:1 ✗</div></div>
+      </div>
+    </div>
+  </div>
+  <div style="width:1px;background:#333;align-self:stretch"></div>
+  <div>
+    <h3 style="color:#888;font-size:11px;text-align:center;margin-bottom:16px">Suggested</h3>
+    <div class="grid" style="flex-direction:column;gap:16px">
+      <div class="col" style="flex-direction:row;gap:16px;align-items:center">
+        <div class="swatch" style="background:#27ae60"></div>
+        <div><div class="label">≥7hrs (goal)</div><div class="hex">#27ae60 · unchanged</div></div>
+      </div>
+      <div class="col" style="flex-direction:row;gap:16px;align-items:center">
+        <div class="swatch" style="background:#ffe600"></div>
+        <div><div class="label">6–7hrs option A</div><div class="hex">#ffe600 · pure yellow</div></div>
+      </div>
+      <div class="col" style="flex-direction:row;gap:16px;align-items:center">
+        <div class="swatch" style="background:#ffeb3b"></div>
+        <div><div class="label">6–7hrs option B</div><div class="hex">#ffeb3b · soft yellow</div></div>
+      </div>
+      <div class="col" style="flex-direction:row;gap:16px;align-items:center">
+        <div class="swatch" style="background:#ffd32a"></div>
+        <div><div class="label">6–7hrs option C</div><div class="hex">#ffd32a · warm yellow</div></div>
+      </div>
+      <div class="col" style="flex-direction:row;gap:16px;align-items:center">
+        <div class="swatch" style="background:#e74c3c"></div>
+        <div><div class="label">&lt;6hrs</div><div class="hex">#e74c3c · 5.3:1 ✓</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
