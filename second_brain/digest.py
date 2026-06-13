@@ -97,6 +97,7 @@ def load_digest_slots(*, rows: list[dict], logger) -> list[dict]:
         include_uvi = bool(props.get("UVI", {}).get("checkbox", False))
         include_feel = bool(props.get("Feel", {}).get("checkbox", False))
         include_log = bool(props.get("Log", {}).get("checkbox", False))
+        include_weight = bool(props.get("Weight", {}).get("checkbox", False))
 
         for is_weekday in weekday_variants:
             slot_key = (slot_time, is_weekday)
@@ -104,7 +105,7 @@ def load_digest_slots(*, rows: list[dict], logger) -> list[dict]:
                 logger.warning("Skipping duplicate digest selector slot %s (%s)", slot_time, "weekday" if is_weekday else "weekend")
                 continue
             seen_slot_keys.add(slot_key)
-            slots.append({"time": slot_time, "is_weekday": is_weekday, "include_habits": include_habits, "max_items": max_items, "contexts": contexts, "include_weather": include_weather, "include_uvi": include_uvi, "include_feel": include_feel, "include_log": include_log})
+            slots.append({"time": slot_time, "is_weekday": is_weekday, "include_habits": include_habits, "max_items": max_items, "contexts": contexts, "include_weather": include_weather, "include_uvi": include_uvi, "include_feel": include_feel, "include_log": include_log, "include_weight": include_weight})
 
     logger.info("Loaded %d digest selector slot(s) from Notion", len(slots))
     return slots
@@ -166,6 +167,8 @@ from second_brain.config import (
     CLAUDE_MODEL,
     TZ,
     NOTION_DAILY_READINESS_DB,
+    NOTION_WORKOUT_DAYS_DB,
+    NOTION_WORKOUT_LOG_DB,
 )
 from second_brain.notion.properties import query_all
 from second_brain import formatters as fmt
@@ -176,6 +179,7 @@ from second_brain.notion import habits as notion_habits
 from second_brain.notion import tasks as notion_tasks
 from second_brain.notion import daily_log as notion_daily_log
 from second_brain.crossfit.readiness import check_readiness_logged_today
+from second_brain.crossfit.notion import get_today_weight_prs
 from second_brain.error_reporting import send_system_log
 from second_brain.state import STATE
 from second_brain.utils import local_today
@@ -217,8 +221,9 @@ async def get_digest_config(slot_time: str, weekday: bool, digest_selector_db_id
                 "include_uvi": bool(slot.get("include_uvi")),
                 "include_feel": bool(slot.get("include_feel")),
                 "include_log": bool(slot.get("include_log")),
+                "include_weight": bool(slot.get("include_weight")),
             }
-    return {"contexts": None, "max_items": None, "include_habits": False, "include_weather": False, "include_uvi": False, "include_feel": False, "include_log": False}
+    return {"contexts": None, "max_items": None, "include_habits": False, "include_weather": False, "include_uvi": False, "include_feel": False, "include_log": False, "include_weight": False}
 
 
 def _filter_digest_tasks(tasks: list[dict], config: dict | None = None) -> list[dict]:
@@ -421,7 +426,7 @@ async def generate_daily_log(bot) -> dict:
 
 def _generate_digest_brief(weather_block, overdue_count, today_count, habit_count, day_str, *, is_first_digest=True) -> str:
     try:
-        from second_brain.weather import load_yesterday_weather
+        from second_brain.weather import load_yesterday_weather, fetch_remaining_day_range, fetch_weather
 
         yesterday_line = "Yesterday: unavailable"
         if is_first_digest:
@@ -442,6 +447,13 @@ def _generate_digest_brief(weather_block, overdue_count, today_count, habit_coun
                 "Write one warm direct sentence weaving weather and upcoming rain risk into the day — "
                 "help the user know what to wear and what to prioritise. "
             )
+        remaining = fetch_remaining_day_range()
+        current = fetch_weather("current")
+        if remaining and current and current.get("temp") is not None:
+            now_temp = round(float(current["temp"]))
+            remaining_line = f"Temperature now to midnight: {now_temp}°C → {remaining['low']}°C (low)"
+        else:
+            remaining_line = ""
         claude = get_claude_client()
         resp = claude.messages.create(
             model=CLAUDE_MODEL,
@@ -451,10 +463,12 @@ def _generate_digest_brief(weather_block, overdue_count, today_count, habit_coun
                 f"You are a personal secretary giving a morning brief in one sentence (max 25 words).\n\n"
                 f"Today: {day_str}\n"
                 f"Weather: {weather_block or 'unavailable'}\n"
-                f"{yesterday_line}\n"
+                + (f"{remaining_line}\n" if remaining_line else "")
+                + f"{yesterday_line}\n"
                 f"Tasks: {overdue_count} overdue, {today_count} due today\n"
                 f"Habits pending: {habit_count}\n\n"
                 f"{weather_guidance}"
+                "Always include the temperature range from now to end of day. "
                 "Use Celsius for any temperatures mentioned. No greeting. No padding."
             )}],
         )
@@ -565,6 +579,24 @@ async def send_daily_digest(bot, include_habits: bool | None = None, config: dic
             lines.append(f"{fmt.num_emoji(n)}{fmt.context_emoji(task.get('context'))} {task['name']}")
             n += 1
         lines.append("")
+
+    include_weight = bool(config.get("include_weight", False)) if config else False
+    if include_weight and _notion and NOTION_WORKOUT_DAYS_DB and NOTION_WORKOUT_LOG_DB:
+        import asyncio as _asyncio
+        weight_prs = await _asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: get_today_weight_prs(_notion, NOTION_WORKOUT_DAYS_DB, NOTION_WORKOUT_LOG_DB),
+        )
+        if weight_prs:
+            lines.append("🏋️ *Today's Strength PRs*")
+            for entry in weight_prs:
+                load = f"{entry['load_lbs']} lbs" if entry.get("load_lbs") else "BW"
+                reps = entry.get("reps") or "?"
+                sets = entry.get("sets")
+                effort = f"{sets}×{reps}" if sets and sets > 1 else f"{reps} reps"
+                date_label = f"  _({entry['date']})_" if entry.get("date") else ""
+                lines.append(f"• {entry['name']} — {load} × {effort}{date_label}")
+            lines.append("")
 
     if habits:
         lines.append("*Habits:* tap to log:")

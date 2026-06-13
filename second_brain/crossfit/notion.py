@@ -1230,6 +1230,91 @@ def get_today_workout_structure(notion, workout_days_db_id: str) -> str:
     return "\n\n".join(parts)
 
 
+def get_today_weight_prs(notion, workout_days_db_id: str, workout_log_db_id: str) -> list[dict]:
+    """Return [{name, load_lbs, sets, reps, date}] for today's Section B movements.
+
+    Queries today's Workout Days row, reads the Section B Movements relation,
+    then fetches the heaviest logged entry per movement from the workout log.
+    Returns an empty list if there are no Section B movements (e.g. Hyrox day).
+    """
+    if not notion or not workout_days_db_id or not workout_log_db_id:
+        return []
+
+    today = local_today()
+    day_name = today.strftime("%A")
+    monday = (today - timedelta(days=today.weekday())).isoformat()
+
+    try:
+        results = notion_call(
+            notion.databases.query,
+            database_id=workout_days_db_id,
+            filter={
+                "and": [
+                    {"property": "Day", "select": {"equals": day_name}},
+                    {"property": "Week Of", "date": {"equals": monday}},
+                ]
+            },
+            page_size=3,
+        ).get("results", [])
+    except Exception as e:
+        log.warning("get_today_weight_prs: workout days query failed: %s", e)
+        return []
+
+    if not results:
+        return []
+
+    row = next(
+        (r for r in results if (r.get("properties", {}).get("Track", {}).get("select") or {}).get("name") == "Performance"),
+        results[0],
+    )
+    movement_relations = row.get("properties", {}).get("Section B Movements", {}).get("relation", [])
+    if not movement_relations:
+        return []
+
+    out = []
+    for rel in movement_relations:
+        movement_id = rel.get("id")
+        if not movement_id:
+            continue
+
+        try:
+            movement_page = notion_call(notion.pages.retrieve, page_id=movement_id)
+            name = _title(movement_page.get("properties", {}))
+        except Exception as e:
+            log.warning("get_today_weight_prs: failed to fetch movement %s: %s", movement_id, e)
+            name = "Unknown"
+
+        try:
+            log_results = notion_call(
+                notion.databases.query,
+                database_id=workout_log_db_id,
+                filter={"property": "Movement", "relation": {"contains": movement_id}},
+                sorts=[{"property": "load_lbs", "direction": "descending"}],
+                page_size=1,
+            ).get("results", [])
+        except Exception as e:
+            log.warning("get_today_weight_prs: log query failed for %s: %s", name, e)
+            continue
+
+        if not log_results:
+            continue
+
+        pr_props = log_results[0].get("properties", {})
+        load = (pr_props.get("load_lbs") or {}).get("number")
+        sets_val = (pr_props.get("effort_sets") or {}).get("number")
+        reps_val = (pr_props.get("effort_reps") or {}).get("number")
+        date_val = ((pr_props.get("Date") or {}).get("date") or {}).get("start", "")
+        out.append({
+            "name": name,
+            "load_lbs": round(load) if load is not None else None,
+            "sets": int(sets_val) if sets_val is not None else None,
+            "reps": int(reps_val) if reps_val is not None else None,
+            "date": date_val,
+        })
+
+    return out
+
+
 def notion_query_wod_log_by_date(notion, wod_log_db_id: str, workout_date: str, wod_format: str | None = None) -> list[dict]:
     """Return WOD log entries matching a workout date and optional format."""
     filters = [{"property": "Date", "date": {"equals": workout_date}}]

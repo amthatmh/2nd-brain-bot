@@ -725,6 +725,47 @@ def fetch_daily_weather(days: int = 5, force_refresh: bool = False) -> list[dict
         return []
 
 
+def fetch_remaining_day_range(force_refresh: bool = False) -> dict | None:
+    """Return {high, low} in °C for 3-hour forecast slots from now to midnight.
+
+    Used by the digest weather card and AI brief to show the remaining-day
+    temperature window rather than the full-day high/low (which may have
+    already passed earlier in the day).
+    """
+    openweather_key = _openweather_key()
+    if not openweather_key or not ensure_weather_location():
+        return None
+    if not force_refresh:
+        cached = weather_cache.get("remaining_day")
+        if cached is not None:
+            return cached
+    try:
+        resp = httpx.get(
+            "https://api.openweathermap.org/data/2.5/forecast",
+            params={"lat": _loc.lat, "lon": _loc.lon, "appid": openweather_key, "units": "metric"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        rows = resp.json().get("list", [])
+        now = datetime.now(TZ)
+        today = now.date()
+        remaining = [
+            row for row in rows
+            if datetime.fromtimestamp(row["dt"], timezone.utc).astimezone(TZ).date() == today
+            and datetime.fromtimestamp(row["dt"], timezone.utc).astimezone(TZ) >= now
+        ]
+        if not remaining:
+            return None
+        highs = [r.get("main", {}).get("temp_max", r.get("main", {}).get("temp", 0)) for r in remaining]
+        lows = [r.get("main", {}).get("temp_min", r.get("main", {}).get("temp", 0)) for r in remaining]
+        result = {"high": round(max(highs)), "low": round(min(lows))}
+        weather_cache["remaining_day"] = result
+        return result
+    except Exception as e:
+        log.error("fetch_remaining_day_range failed: %s", e)
+        return None
+
+
 async def fetch_weather_cache(bot) -> None:
     _ = bot
     if not _openweather_key():
@@ -733,6 +774,7 @@ async def fetch_weather_cache(bot) -> None:
     fetch_weather("today", force_refresh=True)
     fetch_weather("tomorrow", force_refresh=True)
     fetch_daily_weather(days=5, force_refresh=True)
+    fetch_remaining_day_range(force_refresh=True)
 
 
 def uvi_emoji(uvi: float) -> str:

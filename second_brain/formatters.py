@@ -386,9 +386,15 @@ def format_digest_weather_card() -> str:
     uvi = float(today.get("uvi", 0))
     sunscreen = "Recommended if outdoors" if uvi >= 3 else "Usually optional"
     current_icon = condition_emoji(current.get("condition", "")) if current else condition_emoji(today.get("condition", ""))
+    remaining = wx.fetch_remaining_day_range()
+    now_temp = round(float(current["temp"])) if current and current.get("temp") is not None else None
+    if now_temp is not None and remaining:
+        temp_line = f"🌡️ Now {now_temp}°C → {remaining['low']}°C by midnight"
+    else:
+        temp_line = f"🌡️ {high_c}°C / {low_c}°C"
     lines = [
         f"📍 {location} · {current_icon} {condition}",
-        f"🌡️ {high_c}°C / {low_c}°C",
+        temp_line,
         f"💧 Rain chance: {rain}%",
     ]
     if _should_show_uv_guidance(uvi, sunrise_iso=today.get("sunrise"), sunset_iso=today.get("sunset")):
