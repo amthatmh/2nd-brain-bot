@@ -33,7 +33,11 @@ def parse_hhmm_env(var_name: str, default: str, logger=None) -> tuple[int, int]:
 
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-MY_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
+MY_CHAT_ID      = int(os.environ["TELEGRAM_CHAT_ID"])
+_chat_id_2_raw  = os.environ.get("TELEGRAM_CHAT_ID_2", "").strip()
+ALLOWED_CHAT_IDS: frozenset[int] = frozenset(
+    filter(None, [MY_CHAT_ID, int(_chat_id_2_raw) if _chat_id_2_raw else None])
+)
 ERROR_CHANNEL_ID_RAW = (
     os.getenv("error_channel_ID")
     or os.getenv("ERROR_CHANNEL_ID")

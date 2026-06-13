@@ -88,6 +88,7 @@ import second_brain.config as config
 from second_brain.config import (
     TELEGRAM_TOKEN,
     MY_CHAT_ID,
+    ALLOWED_CHAT_IDS,
     ALERT_CHAT_ID,
     ALERT_THREAD_ID,
     ANTHROPIC_KEY,
@@ -2724,7 +2725,7 @@ async def handle_done_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/start log_<habit> — optional Telegram deep-link fallback."""
-    if update.effective_chat.id != MY_CHAT_ID:
+    if update.effective_chat.id not in ALLOWED_CHAT_IDS:
         return
     args = context.args
     if not args or not args[0].startswith("log_"):
@@ -2763,7 +2764,7 @@ async def handle_remind_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/sync — manual catch-up trigger for core sync pipelines."""
-    if update.effective_chat.id != MY_CHAT_ID:
+    if update.effective_chat.id not in ALLOWED_CHAT_IDS:
         return
     status = await update.message.reply_text("🔄 Running sync…")
     try:
@@ -2819,20 +2820,20 @@ async def handle_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def handle_sync_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/syncstatus — show latest sync telemetry for Cinema + Steps."""
-    if update.effective_chat.id != MY_CHAT_ID:
+    if update.effective_chat.id not in ALLOWED_CHAT_IDS:
         return
     await update.message.reply_text(format_sync_status_message(sync_status), parse_mode="Markdown")
 
 async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Prompt for mute duration in days."""
-    if update.effective_chat.id != MY_CHAT_ID:
+    if update.effective_chat.id not in ALLOWED_CHAT_IDS:
         return
     context.user_data["awaiting_mute_days"] = True
     await update.message.reply_text("🔕 How many days should I pause scheduled digests?")
 
 async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Clear mute state immediately."""
-    if update.effective_chat.id != MY_CHAT_ID:
+    if update.effective_chat.id not in ALLOWED_CHAT_IDS:
         return
     STATE.mute_until = None
     _save_mute_state()
@@ -2841,7 +2842,7 @@ async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 async def cmd_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Prompt for a new weather location or parse inline /location arguments."""
-    if update.effective_chat.id != MY_CHAT_ID:
+    if update.effective_chat.id not in ALLOWED_CHAT_IDS:
         return
     location_text = " ".join(context.args or []).strip()
     if location_text:
@@ -2868,7 +2869,7 @@ async def cmd_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/weather — show current + upcoming forecast snapshot."""
-    if update.effective_chat.id != MY_CHAT_ID:
+    if update.effective_chat.id not in ALLOWED_CHAT_IDS:
         return
     try:
         weather_text = append_trip_reminders_to_text(fmt.format_weather_snapshot(), within_days=2, notion=notion, notion_trips_db=NOTION_TRIPS_DB)
@@ -2879,7 +2880,7 @@ async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def cmd_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/notes — open note capture shortcuts and show connection status."""
-    if update.effective_chat.id != MY_CHAT_ID:
+    if update.effective_chat.id not in ALLOWED_CHAT_IDS:
         return
     if NOTION_NOTES_DB:
         await update.message.reply_text("📝 Notes connected. Choose an option:", reply_markup=kb.notes_options_keyboard())
@@ -2888,19 +2889,19 @@ async def cmd_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_habits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/habits — show incomplete habits as one-tap check-ins."""
-    if update.effective_chat.id != MY_CHAT_ID:
+    if update.effective_chat.id not in ALLOWED_CHAT_IDS:
         return
     await send_daily_habits_list(context.bot)
 
 async def cmd_signoff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_chat.id != MY_CHAT_ID:
+    if update.effective_chat.id not in ALLOWED_CHAT_IDS:
         return
     note = " ".join(context.args or []).strip()
     await trigger_signoff_now(update.message, note=note or None)
 
 async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/log <cinema|movie|performance|sport> <title> at <venue> — explicit entertainment logging."""
-    if update.effective_chat.id != MY_CHAT_ID:
+    if update.effective_chat.id not in ALLOWED_CHAT_IDS:
         return
     raw = " ".join(context.args or []).strip()
     parsed = ent_log.parse_explicit_entertainment_log(f"/log {raw}")
