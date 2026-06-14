@@ -525,10 +525,12 @@ class TestSendDailyDigestHabitsIntegration(unittest.IsolatedAsyncioTestCase):
         sent = MagicMock(message_id=99)
         bot_mock.send_message = AsyncMock(return_value=sent)
 
+        import second_brain.digest as digest_mod
         with patch.object(main, "already_logged_today", return_value=False), \
             patch.object(main, "is_on_pace", return_value=False), \
             patch.object(main.notion_tasks, "get_today_and_overdue_tasks", return_value=[]), \
             patch.object(main.fmt, "format_digest_weather_card", return_value=None), \
+            patch.object(digest_mod, "_notion", MagicMock()), \
             patch("second_brain.main.datetime") as mock_dt:
             mock_dt.now.return_value = real_datetime(2026, 5, 7, 8, 0, tzinfo=main.TZ)
 
