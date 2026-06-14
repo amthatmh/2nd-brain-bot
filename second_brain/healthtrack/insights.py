@@ -139,8 +139,12 @@ def _bedtime_stddev(rows: list[dict]) -> float | None:
     return statistics.pstdev(values)
 
 
-def compute_week_stats(rows: list[dict]) -> WeekStats:
-    """Aggregate daily health rows into coach-friendly weekly metrics."""
+def compute_week_stats(rows: list[dict], workout_dates: set[str] | None = None) -> WeekStats:
+    """Aggregate daily health rows into coach-friendly weekly metrics.
+
+    workout_dates: if provided, exercise_days counts days in this set that
+    overlap with the rows' date range, ignoring Apple Health Exercise Time.
+    """
     exercise_values = [_num(row, "Exercise Time (min)") for row in rows]
     daily_readiness: list[tuple[str, float]] = []
     daily_exercise_min: list[tuple[str, float]] = []
@@ -160,6 +164,11 @@ def compute_week_stats(rows: list[dict]) -> WeekStats:
     daily_readiness.sort(key=lambda item: item[0])
     daily_exercise_min.sort(key=lambda item: item[0])
 
+    if workout_dates is not None:
+        exercise_days = sum(1 for row in rows if (d := _row_date(row)) and d.isoformat() in workout_dates)
+    else:
+        exercise_days = sum(1 for value in exercise_values if value is not None and value > 0)
+
     return WeekStats(
         avg_sleep_min=_safe_avg([_num(row, "Total Sleep (min)") for row in rows]),
         avg_deep_min=_safe_avg([_num(row, "Deep Sleep (min)") for row in rows]),
@@ -174,7 +183,7 @@ def compute_week_stats(rows: list[dict]) -> WeekStats:
         last_vo2=_latest_number(rows, "VO2 Max"),
         avg_active_energy=_safe_avg([_num(row, "Active Energy (kcal)") for row in rows]),
         avg_exercise_min=_safe_avg(exercise_values),
-        exercise_days=sum(1 for value in exercise_values if value is not None and value > 0),
+        exercise_days=exercise_days,
         latest_weight=_latest_number(rows, "Weight (kg)"),
         days_with_data=len(rows),
         daily_readiness=daily_readiness,
@@ -426,24 +435,49 @@ async def _send_health_message(bot, chat_id: int | str | None, text: str) -> Non
     await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
 
 
+def _fetch_workout_dates(notion, log_db_id: str, habit_page_id: str, start: date, end: date) -> set[str]:
+    """Return ISO date strings where the workout habit was logged in [start, end]."""
+    rows = query_all(
+        notion,
+        log_db_id,
+        filter={
+            "and": [
+                {"property": "Habit", "relation": {"contains": habit_page_id}},
+                {"property": "Date", "date": {"on_or_after": start.isoformat()}},
+                {"property": "Date", "date": {"on_or_before": end.isoformat()}},
+            ]
+        },
+    )
+    dates: set[str] = set()
+    for row in rows:
+        date_val = (row.get("properties", {}).get("Date") or {}).get("date") or {}
+        start_str = date_val.get("start")
+        if start_str:
+            dates.add(start_str[:10])
+    return dates
+
+
 async def generate_weekly_health_insight(
     bot,
     *,
     notion=None,
     metrics_db_id: str | None = None,
+    log_db_id: str | None = None,
     trips_db_id: str | None = None,
     chat_id: int | str | None = None,
     tz=None,
     claude_model: str | None = None,
     today: date | None = None,
+    workout_habit_name: str = "💪 Workout",
 ) -> dict:
     """Generate and send the weekly health insight Telegram message."""
     if notion is None or metrics_db_id is None or chat_id is None or tz is None or claude_model is None:
         from second_brain.config import CLAUDE_MODEL
-        from second_brain.main import MY_CHAT_ID, NOTION_HEALTH_METRICS_DB, NOTION_TRIPS_DB, TZ, notion as main_notion
+        from second_brain.main import MY_CHAT_ID, NOTION_HEALTH_METRICS_DB, NOTION_LOG_DB, NOTION_TRIPS_DB, TZ, notion as main_notion
 
         notion = notion or main_notion
         metrics_db_id = metrics_db_id if metrics_db_id is not None else NOTION_HEALTH_METRICS_DB
+        log_db_id = log_db_id if log_db_id is not None else NOTION_LOG_DB
         trips_db_id = trips_db_id if trips_db_id is not None else NOTION_TRIPS_DB
         chat_id = chat_id if chat_id is not None else MY_CHAT_ID
         tz = tz or TZ
@@ -461,6 +495,8 @@ async def generate_weekly_health_insight(
     week_end = local_today - timedelta(days=1)
     week_start = week_end - timedelta(days=6)
     base_start = week_end - timedelta(days=34)
+    prev_week_end = week_start - timedelta(days=1)
+    prev_week_start = prev_week_end - timedelta(days=6)
     week_label = _format_week_label(week_start, week_end)
 
     rows = await asyncio.to_thread(fetch_health_range, notion, metrics_db_id, base_start, week_end)
@@ -470,15 +506,32 @@ async def generate_weekly_health_insight(
         week_end=week_end,
         base_start=base_start,
     )
-    week_stats = compute_week_stats(week_rows)
-    baseline_stats = compute_week_stats(baseline_rows)
-    prev_week_end = week_start - timedelta(days=1)
-    prev_week_start = prev_week_end - timedelta(days=6)
+
+    workout_dates: set[str] | None = None
+    if log_db_id:
+        from second_brain.main import habit_cache
+        workout_habit = next(
+            (h for h in habit_cache.values() if h.get("name") == workout_habit_name),
+            None,
+        )
+        if workout_habit and workout_habit.get("page_id"):
+            workout_dates = await asyncio.to_thread(
+                _fetch_workout_dates,
+                notion,
+                log_db_id,
+                workout_habit["page_id"],
+                base_start,
+                week_end,
+            )
+            log.info("insights: fetched %d workout dates from habit log", len(workout_dates))
+
+    week_stats = compute_week_stats(week_rows, workout_dates)
+    baseline_stats = compute_week_stats(baseline_rows, workout_dates)
     prev_week_rows = [
         row for row in rows
         if (d := _row_date(row)) is not None and prev_week_start <= d <= prev_week_end
     ]
-    prev_week_stats = compute_week_stats(prev_week_rows)
+    prev_week_stats = compute_week_stats(prev_week_rows, workout_dates)
 
     if week_stats.days_with_data < 3:
         text = (
