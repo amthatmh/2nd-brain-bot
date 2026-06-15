@@ -74,6 +74,8 @@ GOOGLE_HEALTH_REFRESH_TOKEN = os.environ.get("GOOGLE_HEALTH_REFRESH_TOKEN", "").
 NOTION_STREAK_DB = os.environ["NOTION_STREAK_DB"]
 NOTION_ENV_DB = os.environ.get("ENV_DB_ID", "").strip()
 NOTION_BOOT_LOG_DB = os.environ.get("NOTION_BOOT_LOG_DB", "").strip()
+NOTION_WORK_SYNC_DB = os.environ.get("NOTION_WORK_SYNC_DB", "").strip()
+WORK_SYNC_OUT = os.environ.get("WORK_SYNC_OUT", "/tmp/work-sync").strip()
 
 ASANA_SYNC_INTERVAL: int = int(os.environ.get("ASANA_SYNC_INTERVAL", "60"))
 HTTP_PORT: int = int(os.environ.get("PORT", "8080"))

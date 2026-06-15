@@ -82,6 +82,7 @@ from second_brain.healthtrack.scheduler import (
     weigh_backfill_job,
     weigh_sync_job,
 )
+from second_brain.work_sync.routes import register_work_sync_routes
 import second_brain.config as _config_module
 _config_module = importlib.reload(_config_module)
 import second_brain.config as config
@@ -126,6 +127,8 @@ from second_brain.config import (
     NOTION_PHOTO_DB,
     NOTION_ENV_DB,
     NOTION_BOOT_LOG_DB,
+    NOTION_WORK_SYNC_DB,
+    WORK_SYNC_OUT,
     ASANA_SYNC_INTERVAL,
     HTTP_PORT,
     WEEKS_HISTORY,
@@ -2095,6 +2098,8 @@ async def start_http_server() -> None:
         streak_db_id=NOTION_STREAK_DB,
         weeks_history=WEEKS_HISTORY,
     )
+    from pathlib import Path as _Path
+    register_work_sync_routes(app, _Path(WORK_SYNC_OUT))
     runner = web.AppRunner(app)
     await runner.setup()
     site   = web.TCPSite(runner, "0.0.0.0", HTTP_PORT)
@@ -2239,6 +2244,13 @@ def _tracked_utility_manager_handler(job_key: str, coro_factory: Callable):
 
     return _utility_manager_dispatch_handler
 
+async def _run_work_sync_job() -> dict:
+    from pathlib import Path as _Path
+    import asyncio as _asyncio
+    from second_brain.work_sync.sync import run_sync as _run_sync
+    return await _asyncio.to_thread(_run_sync, out=_Path(WORK_SYNC_OUT), db_id=NOTION_WORK_SYNC_DB or None, notion=notion)
+
+
 def _build_utility_job_dispatch(bot) -> dict[str, Callable]:
     """
     Maps Utility Scheduler job keys to their async handler functions.
@@ -2268,6 +2280,7 @@ def _build_utility_job_dispatch(bot) -> dict[str, Callable]:
         "daily_log_generate": _utility_async_handler("daily_log_generate", lambda: generate_daily_log(bot)),
         "run_recurring_check": _utility_async_handler("run_recurring_check", lambda: run_recurring_check(bot)),
         "health_summary_refresh": _utility_async_handler("health_summary_refresh", lambda: _refresh_health_summary_job()),
+        "work_sync": _utility_async_handler("work_sync", lambda: _run_work_sync_job()),
     }
     UTILITY_JOB_DISPATCH.clear()
     UTILITY_JOB_DISPATCH.update(dispatch)
@@ -2464,6 +2477,7 @@ async def post_init(app: Application) -> None:
     _app_bot = app.bot
     await start_http_server()
     asyncio.create_task(refresh_public_dashboard_caches())
+    asyncio.create_task(_run_work_sync_job())
     scheduler = AsyncIOScheduler(timezone=TZ)
     scheduler.add_listener(_scheduler_event_listener, EVENT_JOB_ERROR | EVENT_JOB_MISSED)
     _scheduler = scheduler

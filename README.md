@@ -231,6 +231,8 @@ Telegram Update
 | `NOTION_WANTSLIST_V2_DB` | Wants list database |
 | `NOTION_PHOTO_DB` | Photo log database |
 | `NOTION_UTILITY_SCHEDULER_DB` | Notion-driven utility job scheduler database |
+| `NOTION_WORK_SYNC_DB` | Work Sync Notion DB (default: `380302e9131d80f6a1e8cc6ee930db43`) — active rows published as Markdown via HTTP |
+| `WORK_SYNC_OUT` | Directory for generated work-sync Markdown files. Default: `/tmp/work-sync`. Served at `/work-sync/{path}` |
 | `TMDB_API_KEY` | TMDB API key for cinema metadata lookup |
 | `ASANA_PAT` | Asana personal access token — enables Asana sync |
 | `ASANA_PROJECT_GID` | Asana project GID |
