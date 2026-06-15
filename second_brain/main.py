@@ -1754,7 +1754,9 @@ async def send_sunday_digest(bot):
         if not page_id:
             continue
         try:
-            habit_parts.append(f"{name}: {get_week_completion_count(page_id)}/{get_habit_frequency(page_id)}")
+            freq_label = habit.get("frequency_label") or ""
+            label_str = f" ({freq_label})" if freq_label else ""
+            habit_parts.append(f"{name}{label_str}: {get_week_completion_count(page_id)}/{get_habit_frequency(page_id)}")
         except Exception as e:
             log.debug("Sunday digest habit summary skipped for %s: %s", name, e)
     habit_summary = ", ".join(habit_parts) or "unavailable"
@@ -1769,6 +1771,7 @@ async def send_sunday_digest(bot):
                 f"{VOICE_INSTRUCTION}\n\n"
                 "Give a 2-sentence week summary from these habit completions. "
                 f"Habits this week: {habit_summary}. "
+                "Frequency label is in parentheses — use it to describe cadence accurately (e.g. don't call a weekly habit 'daily'). "
                 "Say what was consistent and what needs a curious, practical reset."
             )}],
         )
