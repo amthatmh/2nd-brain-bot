@@ -1167,6 +1167,13 @@ def create_strength_log(notion, workout_log_db_id, movement_page_id, movement_na
         props["Log"] = {"rich_text": _rich_text_chunks(raw_log)}
     if workout_day_id:
         props["Workout Structure"] = {"relation": [{"id": workout_day_id}]}
+    props = _filter_properties_for_database(
+        notion,
+        workout_log_db_id,
+        props,
+        required=("Name", "Date"),
+        context="Strength Log create",
+    )
     page = notion_call(notion.pages.create, parent={"database_id": workout_log_db_id}, properties=props)
     return page["id"]
 
