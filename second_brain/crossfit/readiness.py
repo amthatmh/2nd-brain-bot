@@ -29,9 +29,11 @@ async def check_readiness_logged_today(notion_client, daily_readiness_db_id: Opt
     today = local_today().isoformat()
     daily_readiness_db_id = daily_readiness_db_id or os.getenv("NOTION_DAILY_READINESS_DB", "")
     if not daily_readiness_db_id or notion_client is None:
+        log.debug("check_readiness_logged_today: skipping — db_id=%r client=%r", daily_readiness_db_id, notion_client)
         return False
     if _readiness_logged_cache.get(today):
         return True
+    # Primary: query by Date property
     try:
         results = await _maybe_await(
             notion_call(
@@ -41,13 +43,31 @@ async def check_readiness_logged_today(notion_client, daily_readiness_db_id: Opt
                 page_size=1,
             )
         )
-        if len(results.get("results", [])) > 0:
+        if results.get("results"):
             _readiness_logged_cache[today] = True
             return True
-        return False
+        log.debug("check_readiness_logged_today: Date filter returned 0 results for %s", today)
     except Exception as e:
-        log.error("Error checking readiness: %s", e)
-        return False
+        log.warning("check_readiness_logged_today: Date filter failed (%s) — trying title fallback", e)
+
+    # Fallback: query by page title containing today's date
+    try:
+        results = await _maybe_await(
+            notion_call(
+                notion_client.databases.query,
+                database_id=daily_readiness_db_id,
+                filter={"property": "Name", "title": {"contains": today}},
+                page_size=1,
+            )
+        )
+        if results.get("results"):
+            log.warning("check_readiness_logged_today: Date filter missed but title fallback found record for %s", today)
+            _readiness_logged_cache[today] = True
+            return True
+    except Exception as e:
+        log.error("check_readiness_logged_today: title fallback also failed for %s: %s", today, e)
+
+    return False
 
 
 async def log_daily_readiness(
