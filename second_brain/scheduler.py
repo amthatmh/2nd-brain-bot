@@ -46,6 +46,22 @@ def register_core_jobs(
     )
 
 
+def register_trip_jobs(
+    *,
+    scheduler,
+    run_packing_sync_job,
+) -> None:
+    scheduler.add_job(
+        run_packing_sync_job,
+        "interval",
+        hours=6,
+        id="packing_sync",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+
 def register_cinema_jobs(
     *,
     scheduler,

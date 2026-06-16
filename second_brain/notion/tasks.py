@@ -85,7 +85,7 @@ def _normalize_task_name(text: str) -> str:
     return s
 
 def create_task(notion: NotionClient, notion_db_id: str, name: str, deadline_days: int | None, context: str,
-                recurring: str = "None", repeat_day: str | None = None) -> tuple[str, str | None]:
+                recurring: str = "None", repeat_day: str | None = None, trip_page_id: str | None = None) -> tuple[str, str | None]:
     props = {
         "Name":      title_prop(name),
         "Deadline":  _deadline_prop(deadline_days),
@@ -95,6 +95,8 @@ def create_task(notion: NotionClient, notion_db_id: str, name: str, deadline_day
     }
     if repeat_day:
         props["Repeat Day"] = select_prop(repeat_day)
+    if trip_page_id:
+        props["Trip Ref"] = rich_text_prop(trip_page_id)
     page = notion.pages.create(parent={"database_id": notion_db_id}, properties=props)
     auto_horizon = extract_formula(page["properties"].get("Auto Horizon")) or None
     return page["id"], auto_horizon

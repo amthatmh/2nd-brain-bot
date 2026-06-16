@@ -49,11 +49,11 @@ def _trip_map(departure_date="2026-05-14", return_date="2026-05-17"):
 def test_execute_trip_saves_to_notion(monkeypatch):
     monkeypatch.setattr(trips, "NOTION_TRIPS_DB", "c57f9edb406d4368b32d23f0ea2a0c66")
     query = _Query()
-    created = {}
+    page_calls = []
 
     class _NotionPages:
         def create(self, **kwargs):
-            created.update(kwargs)
+            page_calls.append(kwargs)
             return {"id": "trip-1"}
 
     class _NotionDatabases:
@@ -86,14 +86,19 @@ def test_execute_trip_saves_to_notion(monkeypatch):
         fetch_weather=lambda _: None,
     ))
 
-    assert created["parent"]["database_id"] == "c57f9edb-406d-4368-b32d-23f0ea2a0c66"
-    assert created["properties"]["Trip"]["title"][0]["text"]["content"].startswith("Nashville TN")
-    assert created["properties"]["Purpose"] == {"multi_select": [{"name": "Work"}]}
-    assert created["properties"]["Field Work"]["rich_text"][0]["text"]["content"] == "Site Survey"
-    assert created["properties"]["Reminder Sent"] == {"checkbox": False}
+    trip_page = page_calls[0]
+    assert trip_page["parent"]["database_id"] == "c57f9edb-406d-4368-b32d-23f0ea2a0c66"
+    assert trip_page["properties"]["Trip"]["title"][0]["text"]["content"].startswith("Nashville TN")
+    assert trip_page["properties"]["Purpose"] == {"multi_select": [{"name": "Work"}]}
+    assert trip_page["properties"]["Field Work"]["rich_text"][0]["text"]["content"] == "Site Survey"
+    assert trip_page["properties"]["Reminder Sent"] == {"checkbox": False}
     assert flag["value"] is False
     assert any("Trip saved to Notion" in msg for msg in query.message.sent)
     assert any("Packing checklist added" in msg for msg in query.message.sent)
+    # Second page.create is the pre-trip to-do task
+    task_page = page_calls[1]
+    assert task_page["parent"]["database_id"] == "test-db"
+    assert "Pack for" in task_page["properties"]["Name"]["title"][0]["text"]["content"]
 
 
 def test_execute_trip_appends_native_packing_blocks(monkeypatch):
@@ -176,7 +181,7 @@ def test_execute_trip_appends_native_packing_blocks(monkeypatch):
         fetch_weather=lambda _: None,
     ))
 
-    assert len(calls["pages"]) == 1
+    assert len(calls["pages"]) == 2
     assert calls["pages"][0]["parent"] == {"database_id": "c57f9edb-406d-4368-b32d-23f0ea2a0c66"}
     assert calls["queries"] == [{"database_id": "packing-db"}]
     assert calls["appends"][0]["block_id"] == "trip-1"
@@ -204,11 +209,11 @@ def test_normalize_notion_database_id():
 def test_execute_trip_uses_field_work_types_when_present(monkeypatch):
     monkeypatch.setattr(trips, "NOTION_TRIPS_DB", "c57f9edb406d4368b32d23f0ea2a0c66")
     query = _Query()
-    created = {}
+    page_calls = []
 
     class _NotionPages:
         def create(self, **kwargs):
-            created.update(kwargs)
+            page_calls.append(kwargs)
             return {"id": "trip-1"}
 
     class _NotionDatabases:
@@ -236,18 +241,19 @@ def test_execute_trip_uses_field_work_types_when_present(monkeypatch):
         fetch_weather=lambda _: None,
     ))
 
-    assert "Field Work Types" in created["properties"]
-    assert created["properties"]["Field Work Types"]["rich_text"][0]["text"]["content"] == "Site Survey"
+    trip_props = page_calls[0]["properties"]
+    assert "Field Work Types" in trip_props
+    assert trip_props["Field Work Types"]["rich_text"][0]["text"]["content"] == "Site Survey"
 
 
 def test_execute_trip_maps_weather_flags_to_multi_select(monkeypatch):
     monkeypatch.setattr(trips, "NOTION_TRIPS_DB", "c57f9edb406d4368b32d23f0ea2a0c66")
     query = _Query()
-    created = {}
+    page_calls = []
 
     class _NotionPages:
         def create(self, **kwargs):
-            created.update(kwargs)
+            page_calls.append(kwargs)
             return {"id": "trip-1"}
 
     class _NotionDatabases:
@@ -276,7 +282,7 @@ def test_execute_trip_maps_weather_flags_to_multi_select(monkeypatch):
         fetch_weather=lambda bucket: {"condition": "Rain", "temp_high": 31, "temp_low": 4, "precip_chance": 80} if bucket == "today" else None,
     ))
 
-    tags = [item["name"] for item in created["properties"]["Weather Flags"]["multi_select"]]
+    tags = [item["name"] for item in page_calls[0]["properties"]["Weather Flags"]["multi_select"]]
     assert set(tags) == {"Rain", "Hot", "Cold"}
 
 

@@ -11,6 +11,7 @@ from typing import Callable
 from second_brain.ai.client import VOICE_INSTRUCTION, get_claude_client
 from second_brain.config import (
     CLAUDE_MODEL,
+    NOTION_DB_ID,
     NOTION_PACKING_ITEMS_DB,
     NOTION_TRIPS_DB,
 )
@@ -133,6 +134,27 @@ def _normalize_purpose_list(raw: object) -> list[str]:
     return normalized
 
 
+def _create_pre_trip_task(notion, trip: dict) -> None:
+    if not NOTION_DB_ID:
+        logger.warning("NOTION_DB_ID not set; skipping pre-trip task creation")
+        return
+    destination = trip.get("destination") or (trip.get("destinations") or ["Trip"])[0]
+    try:
+        dep = date.fromisoformat(trip["departure_date"])
+        reminder_date = dep - timedelta(days=1)
+        deadline_days = max(0, (reminder_date - date.today()).days)
+    except Exception:
+        deadline_days = 0
+    purpose_list = trip.get("purpose_list") or []
+    context = "💼 Work" if "Work" in purpose_list else "🏠 Personal"
+    from second_brain.notion.tasks import create_task
+    try:
+        create_task(notion, NOTION_DB_ID, f"Pack for {destination}", deadline_days, context, trip_page_id=trip.get("notion_page_id"))
+        logger.info("Pre-trip task created for %s (deadline_days=%d)", destination, deadline_days)
+    except Exception as exc:
+        logger.warning("Failed to create pre-trip task for %s: %s", destination, exc)
+
+
 async def execute_trip(
     key: str,
     query,
@@ -207,6 +229,7 @@ async def execute_trip(
         trip["notion_page_id"] = page_id
         if needs_weather_refresh and schedule_weather_refresh:
             schedule_weather_refresh(key, trip)
+        _create_pre_trip_task(notion, trip)
 
     blocks: list[dict] = []
     if page_id:
@@ -887,3 +910,53 @@ async def _run_trip_weather_refresh(bot) -> dict:
 
 async def handle_trip_weather_refresh(bot) -> dict:
     return await _run_trip_weather_refresh(bot)
+
+
+def sync_packing_done(*, notion=None, notion_db_id: str | None = None, notion_trips_db: str | None = None) -> int:
+    if notion is None:
+        import second_brain.main as _main
+        notion = _main.notion
+        notion_db_id = notion_db_id or _main.NOTION_DB_ID
+        notion_trips_db = notion_trips_db or _main.NOTION_TRIPS_DB
+    if not notion_db_id or not notion_trips_db:
+        return 0
+
+    from second_brain.notion.properties import extract_rich_text
+
+    try:
+        results = query_all(notion, notion_db_id, filter={
+            "and": [
+                {"property": "Done", "checkbox": {"equals": True}},
+                {"property": "Trip Ref", "rich_text": {"is_not_empty": True}},
+            ]
+        })
+    except Exception:
+        logger.debug("sync_packing_done: task query failed", exc_info=True)
+        return 0
+
+    updated = 0
+    trips_db_id = _normalize_notion_database_id(notion_trips_db) or notion_trips_db
+    for page in results:
+        trip_page_id = extract_rich_text(page["properties"].get("Trip Ref"))
+        if not trip_page_id:
+            continue
+        try:
+            trip_page = notion.pages.retrieve(page_id=trip_page_id)
+            already_done = trip_page["properties"].get("Packing Done", {}).get("checkbox", False)
+            if already_done:
+                continue
+            notion.pages.update(page_id=trip_page_id, properties={"Packing Done": {"checkbox": True}})
+            updated += 1
+            logger.info("sync_packing_done: flipped Packing Done on trip %s", trip_page_id[:8])
+        except Exception:
+            logger.warning("sync_packing_done: failed to update trip %s", trip_page_id[:8], exc_info=True)
+    return updated
+
+
+async def run_packing_sync_job(bot=None) -> None:
+    try:
+        updated = sync_packing_done()
+        if updated:
+            logger.info("sync_packing_done: %d trip(s) marked Packing Done", updated)
+    except Exception:
+        logger.warning("sync_packing_done: job failed", exc_info=True)

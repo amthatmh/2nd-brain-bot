@@ -204,6 +204,7 @@ from second_brain.trips import (
     refresh_trip_weather_job,
     _run_trip_weather_refresh,
     handle_trip_weather_refresh,
+    run_packing_sync_job,
 )
 from second_brain.handler_registry import register_core_handlers
 from second_brain.scheduler_manager import UtilitySchedulerManager
@@ -2542,6 +2543,16 @@ async def post_init(app: Application) -> None:
                       hour=9, minute=0, args=[app.bot])
     scheduler.add_job(send_monthly_habit_insight, "cron", day="last",
                       hour=20, minute=0, args=[app.bot])
+    if NOTION_TRIPS_DB:
+        scheduler.add_job(
+            run_packing_sync_job,
+            "interval",
+            hours=6,
+            id="packing_sync",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
     # ── Cinema sync — validate config before Utility Scheduler can enable it ──
     cinema_ok, cinema_problems = validate_cinema_config()
     if not cinema_ok:
