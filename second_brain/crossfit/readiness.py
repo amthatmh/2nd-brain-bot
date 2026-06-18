@@ -135,7 +135,7 @@ def low_readiness_recovery_suggestion(sleep: str, energy: str, soreness: str) ->
         soreness_score = int(soreness)
     except Exception:
         return ""
-    if sleep_score > 2 and energy_score > 2:
+    if sleep_score > 2 and energy_score > 2 and soreness_score > 2:
         return ""
     try:
         claude = get_claude_client()
@@ -144,7 +144,8 @@ def low_readiness_recovery_suggestion(sleep: str, energy: str, soreness: str) ->
             max_tokens=50,
             messages=[{"role": "user", "content": (
                 f"{VOICE_INSTRUCTION}\n\n"
-                f"Sleep: {sleep_score}/5, Energy: {energy_score}/5, Soreness: {soreness_score}/5.\n"
+                f"Sleep Quality: {sleep_score}/5, Energy: {energy_score}/5, Muscle Soreness: {soreness_score}/5.\n"
+                "Scale: 1=worst/most severe, 5=best/none. So soreness 5 means no soreness, soreness 1 means very sore.\n"
                 "One sentence: recommend full rest, active recovery, or scaled training today. Be direct."
             )}],
         )
