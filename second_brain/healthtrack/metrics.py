@@ -293,9 +293,9 @@ async def handle_health_metrics_sync(
             from second_brain.notion.habits import already_logged_today, log_habit
             habit_page_id = await asyncio.to_thread(_find_habit_page_id, notion, habit_db_id, weigh_habit_name)
             if habit_page_id:
-                logged = await asyncio.to_thread(already_logged_today, notion, log_db_id, habit_page_id, tz)
+                logged = await asyncio.to_thread(already_logged_today, notion, log_db_id, habit_page_id, tz, log_date=date_str)
                 if not logged:
-                    await asyncio.to_thread(log_habit, notion, log_db_id, habit_page_id, weigh_habit_name, "📱 Health Auto", tz)
+                    await asyncio.to_thread(log_habit, notion, log_db_id, habit_page_id, weigh_habit_name, "📱 Health Auto", tz, log_date=date_str)
                     log.info("health_metrics: logged Weigh habit for %s", date_str)
                 else:
                     log.info("health_metrics: Weigh habit already logged for %s", date_str)
