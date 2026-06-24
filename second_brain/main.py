@@ -1182,7 +1182,7 @@ async def _confirm_multi_task_batch(
 
 async def create_task_batch(message, raw_text: str, task_texts: list[str], force_create: bool = False) -> None:
     """Classify and create a task batch without a separate confirmation prompt."""
-    thinking = await message.reply_text(f"🧠 Classifying {len(task_texts)} tasks...")
+    thinking = await message.reply_text(f"🧠 Classifying {len(task_texts)} tasks...", disable_notification=True)
     try:
         overrides = infer_batch_overrides(raw_text)
         classifications = await _classify_task_texts(task_texts)
@@ -1213,7 +1213,8 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
     task_texts = split_tasks(raw_text)
     is_multi = len(task_texts) > 1
     thinking = await message.reply_text(
-        f"🧠 Classifying {len(task_texts)} tasks..." if is_multi else "🧠 Classifying..."
+        f"🧠 Classifying {len(task_texts)} tasks..." if is_multi else "🧠 Classifying...",
+        disable_notification=True,
     )
 
     if is_multi:
