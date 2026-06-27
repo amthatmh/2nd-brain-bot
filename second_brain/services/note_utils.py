@@ -23,6 +23,8 @@ def deadline_days_to_label(days: int | None) -> str:
         return "⚪ Backburner"
     if days <= 0:
         return "🔴 Today"
+    if days == 1:
+        return "🟢 Tomorrow"
     if days <= 7:
         return "🟠 This Week"
     if days <= 31:
