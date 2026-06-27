@@ -1,19 +1,19 @@
-"""Global pytest configuration that makes the suite deterministic and
-order-independent.
+"""Global pytest configuration.
 
-Hazard addressed here: frozen config values. ``second_brain.config`` reads
-required env vars at import time and freezes them into module-level constants.
-Whichever test imported config first — under its own patched environment —
-decided those values for the entire session (e.g. ``NOTION_DB_ID`` ending up
-as ``"x"`` instead of ``"test-db"``, which made test_trips fail only when it
-ran after a reload-based test). We set canonical env vars here, at conftest
-import time (pytest imports conftest before any test module), so config always
-freezes to the same values regardless of collection order.
+``second_brain.config`` reads required env vars at import time and fails hard
+if any are missing. This provides a baseline so that importing config never
+KeyErrors during local collection (CI supplies its own values via the workflow
+``env:`` block). ``setdefault`` is used so it never overrides an env that CI or
+a developer has already set — tests that need a specific value pin it on the
+module under test (e.g. via ``monkeypatch.setattr``) rather than relying on
+these defaults.
 
-(The other isolation hazard — a stale ``second_brain.notion.tasks`` reference
-held by ``second_brain.digest`` after a reload — is handled at its source in
-``tests/test_habits.py.load_main_module``, which reloads ``digest`` alongside
-``main`` so both re-bind the current module object.)
+(Two related isolation hazards are fixed at their source, not here: a stale
+``second_brain.notion.tasks`` reference held by ``second_brain.digest`` after a
+reload is handled in ``tests/test_habits.py.load_main_module`` (which reloads
+``digest`` alongside ``main``); and ``tests/test_trips.py`` pins
+``trips.NOTION_DB_ID`` directly so its assertion is independent of the frozen
+config value.)
 """
 
 import os
