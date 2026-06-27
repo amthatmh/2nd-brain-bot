@@ -48,6 +48,11 @@ def _trip_map(departure_date="2026-05-14", return_date="2026-05-17"):
 
 def test_execute_trip_saves_to_notion(monkeypatch):
     monkeypatch.setattr(trips, "NOTION_TRIPS_DB", "c57f9edb406d4368b32d23f0ea2a0c66")
+    # Pin the To-Do DB on the module so the assertion below is independent of the
+    # ambient environment. CI exports NOTION_DB_ID=x, which config freezes at
+    # import time, so relying on the env (or a conftest default) would make this
+    # test pass locally but fail on CI.
+    monkeypatch.setattr(trips, "NOTION_DB_ID", "test-db")
     query = _Query()
     page_calls = []
 

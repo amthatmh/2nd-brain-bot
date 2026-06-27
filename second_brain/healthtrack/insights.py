@@ -316,7 +316,7 @@ def build_health_insight_prompt(
     exercise_delta = _delta_str(week_stats.exercise_days, prev_week_stats.exercise_days, " days", 0)
     travel_block = ""
     travel_note = ""
-    if travel_context:
+    if isinstance(travel_context, dict):
         destinations = travel_context.get("destinations") or "Travel"
         purpose = travel_context.get("purpose") or "general travel"
         dep = travel_context.get("dep_date") or "unknown departure"
