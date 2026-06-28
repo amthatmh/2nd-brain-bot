@@ -550,7 +550,7 @@ async def _prompt_track_or_notes(message, key: str, notion, config: dict, cf_pen
     state = cf_pending.get(key, {})
     if "workout_day_id" in state:
         return False
-    tracks = await asyncio.get_event_loop().run_in_executor(
+    tracks = await asyncio.get_running_loop().run_in_executor(
         None,
         lambda: get_available_tracks_today(notion, _cf_config(config, "NOTION_WORKOUT_DAYS_DB")),
     )
@@ -1058,7 +1058,7 @@ async def handle_cf_wod_flow(message, workout_result, notion, config, cf_pending
     if not movement_names and workout_result.get("movement"):
         movement_names = [workout_result["movement"]]
     try:
-        workout_structure = await asyncio.get_event_loop().run_in_executor(
+        workout_structure = await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: get_today_workout_structure(
                 notion, _cf_config(config, "NOTION_WORKOUT_DAYS_DB")
