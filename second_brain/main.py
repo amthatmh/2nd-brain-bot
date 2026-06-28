@@ -747,17 +747,20 @@ def pending_habits_for_digest(time_str: str | None) -> list[dict]:
 async def send_daily_digest(bot, include_habits: bool | None = None, config: dict | None = None) -> None:
     old_cache = notion_habits.habit_cache
     old_datetime = digest_helpers.datetime
+    old_notion = digest_helpers._notion
     old_already_logged_today = notion_habits.already_logged_today
     old_is_on_pace = notion_habits.is_on_pace
     try:
         notion_habits.habit_cache = habit_cache
         digest_helpers.datetime = datetime
+        digest_helpers._notion = notion
         notion_habits.already_logged_today = lambda _notion, _log_db, pid, _tz: already_logged_today(pid)
         notion_habits.is_on_pace = lambda _notion, _log_db, habit, _tz: is_on_pace(habit)
         await _digest_send_daily_digest(bot, include_habits=include_habits, config=config)
     finally:
         notion_habits.habit_cache = old_cache
         digest_helpers.datetime = old_datetime
+        digest_helpers._notion = old_notion
         notion_habits.already_logged_today = old_already_logged_today
         notion_habits.is_on_pace = old_is_on_pace
 
@@ -1922,7 +1925,7 @@ async def run_asana_sync(bot) -> dict:
     """
     if not ASANA_PAT:
         return {"ok": True, "action": "disabled"}  # Sync disabled — bot still works without Asana
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     sync_status["asana"]["last_run"] = utc_now_iso()
     try:
         stats = await loop.run_in_executor(
