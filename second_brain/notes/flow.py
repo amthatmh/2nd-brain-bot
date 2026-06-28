@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime
+from datetime import datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+from second_brain.utils import local_today
 
 _URL_RE = re.compile(r"(https?://[^\s]+)")
 _RICH_TEXT_LIMIT = 2000
@@ -59,7 +61,7 @@ def create_note_payload(content: str, topic: str | None = None) -> dict:
     props: dict = {
         "Title": {"title": [{"type": "text", "text": {"content": title}}]},
         "Content": {"rich_text": content_chunks},
-        "Date Created": {"date": {"start": date.today().isoformat()}},
+        "Date Created": {"date": {"start": local_today().isoformat()}},
         "Type": {"select": {"name": note_type}},
         "Source": {"select": {"name": "📱 Telegram"}},
         "Processed": {"checkbox": False},

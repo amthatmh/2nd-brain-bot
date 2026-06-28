@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import re
-from datetime import date
 from typing import Any
 
 from second_brain.notes.flow import create_note_payload
 from second_brain.notion.properties import rich_text_prop, title_prop
+from second_brain.utils import local_today
 
 
 def fetch_note_topics_from_notion(notion, notion_notes_db: str) -> list[str]:
@@ -26,7 +26,7 @@ def fetch_note_topics_from_notion(notion, notion_notes_db: str) -> list[str]:
 
 def save_note(notion, notion_notes_db: str, title: str, url: str | None, content: str, topics: list[str], note_type: str) -> str:
     """Write a note to the 📒 Notes Notion DB. Returns page_id."""
-    today = date.today().isoformat()
+    today = local_today().isoformat()
     props: dict[str, Any] = {
         "Title": title_prop(title or "Untitled"),
         "Type": {"select": {"name": note_type}},

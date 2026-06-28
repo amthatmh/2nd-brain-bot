@@ -237,7 +237,9 @@ def log_habit(
     notion, log_db_id: str, habit_page_id: str,
     habit_name: str, source: str = "📱 Telegram", tz=None, log_date: str | None = None
 ) -> None:
-    now = datetime.now(tz) if tz is not None else datetime.now().astimezone()
+    if tz is None:
+        from second_brain.config import TZ as tz
+    now = datetime.now(tz)
     today = log_date if log_date else now.date().isoformat()
     props = {
         "Entry": title_prop(habit_name),
