@@ -356,7 +356,7 @@ async def route_classified_message_v10(message, text: str) -> None:
             else:
                 _main().log_habit(habit_pid, habit_name)
                 await thinking.edit_text(
-                    f"✅ Logged!\n\n{habit_name}\n📅 {date.today().strftime('%B %-d')}"
+                    f"✅ Logged!\n\n{habit_name}\n📅 {local_today().strftime('%B %-d')}"
                 )
                 asyncio.create_task(
                     _main().check_and_notify_weekly_goals(
