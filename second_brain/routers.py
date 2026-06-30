@@ -1940,6 +1940,24 @@ async def _cb_tdc(q, parts, context) -> None:
     return
 
 
+async def _cb_tdd(q, parts, context) -> None:
+    """Finish the To Do picker: close it with a summary of what was completed."""
+    _, key = parts
+    tasks = _main().todo_picker_map.pop(key, None)
+    if not tasks:
+        await q.edit_message_text("✅ To Do list closed.")
+        return
+    done_count = sum(1 for t in tasks if t.get("_done"))
+    remaining = len(tasks) - done_count
+    if done_count == 0:
+        await q.edit_message_text("✅ To Do list closed — nothing marked done.")
+    else:
+        await q.edit_message_text(
+            f"✅ Done — {done_count} marked complete · {remaining} still open."
+        )
+    return
+
+
 async def _cb_td(q, parts, context) -> None:
     _, key, idx_str = parts
     if key not in _main().todo_picker_map:
@@ -2204,6 +2222,7 @@ _CB_PREFIX: dict[str, CallbackHandler] = {
     "d": _cb_d,
     "h": _cb_h_horizon,
     "tdc": _cb_tdc,
+    "tdd": _cb_tdd,
     "td": _cb_td,
     "dp": _cb_dp,
     "dpp": _cb_dpp,
