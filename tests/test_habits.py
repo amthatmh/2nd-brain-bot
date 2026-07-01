@@ -64,7 +64,13 @@ REQUIRED_ENV = {
 
 
 def load_main_module():
+    # Reload digest alongside main so both re-bind the *current*
+    # second_brain.notion.tasks object. An earlier test may have re-imported
+    # that module, leaving digest holding a stale reference; without this, a
+    # patch on main.notion_tasks would not reach digest's copy and the real
+    # query would run against an unset Notion client.
     sys.modules.pop("second_brain.main", None)
+    sys.modules.pop("second_brain.digest", None)
     with patch.dict(os.environ, REQUIRED_ENV, clear=False), \
         patch("notion_client.Client", return_value=MagicMock()), \
         patch("anthropic.Anthropic", return_value=MagicMock()):

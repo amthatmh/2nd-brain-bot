@@ -3,7 +3,6 @@ from __future__ import annotations
 import itertools
 import logging
 import re
-from datetime import date
 
 import httpx
 
@@ -16,6 +15,7 @@ from second_brain.config import (
     TMDB_BASE,
 )
 from second_brain.notion.properties import rich_text_prop, title_prop
+from second_brain.utils import local_today
 
 log = logging.getLogger(__name__)
 
@@ -113,7 +113,7 @@ def create_watchlist_entry(
         "Type": {"select": {"name": media_type}},
         "Status": {"select": {"name": "Queued"}},
         "Source": {"select": {"name": "📱 Telegram"}},
-        "Added": {"date": {"start": date.today().isoformat()}},
+        "Added": {"date": {"start": local_today().isoformat()}},
     }
     if tmdb_id_str:
         props["TMDB ID"] = rich_text_prop(tmdb_id_str)
