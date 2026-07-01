@@ -22,10 +22,7 @@ REQUIRED_ENV = {
 
 
 def load_tasks_module():
-    sys.modules.pop("second_brain.notion.tasks", None)
-    with patch.dict(os.environ, REQUIRED_ENV, clear=False), \
-        patch("notion_client.Client", return_value=MagicMock()), \
-        patch("anthropic.Anthropic", return_value=MagicMock()):
+    with patch.dict(os.environ, REQUIRED_ENV, clear=False):
         return importlib.import_module("second_brain.notion.tasks")
 
 

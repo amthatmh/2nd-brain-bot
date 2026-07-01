@@ -239,24 +239,17 @@ async def process_pending_programmes(notion, bot, *, workout_program_db: str, ch
                         notion.databases.query,
                         database_id=workout_program_db,
                         filter={"property": "Processed", "checkbox": {"equals": True}},
-                        sorts=[{"property": "Week", "direction": "descending"}],
-                        page_size=10,
+                        sorts=[{"timestamp": "created_time", "direction": "descending"}],
+                        page_size=1,
                     ).get("results", [])
-                    cycle_num = next(
-                        (r.get("properties", {}).get("Cycle", {}).get("number")
-                         for r in recent_processed
-                         if r.get("properties", {}).get("Cycle", {}).get("number")),
-                        1,
-                    )
-                    cycle_rows = query_all(
-                        notion,
-                        workout_program_db,
-                        filter={"and": [
-                            {"property": "Processed", "checkbox": {"equals": True}},
-                            {"property": "Cycle", "number": {"equals": cycle_num}},
-                        ]},
-                    )
-                    week_num = len(cycle_rows) + 1
+                    if recent_processed:
+                        last_props = recent_processed[0].get("properties", {})
+                        cycle_num = last_props.get("Cycle", {}).get("number") or 1
+                        last_week_num = last_props.get("Week", {}).get("number") or 0
+                        week_num = last_week_num + 1
+                    else:
+                        cycle_num = 1
+                        week_num = 1
 
                 notion_call(
                     notion.pages.update,
