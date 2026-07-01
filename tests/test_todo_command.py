@@ -100,7 +100,7 @@ async def _async_false(*_args, **_kwargs):
     return False
 
 
-def test_todo_picker_keyboard_includes_cancel_button():
+def test_todo_picker_keyboard_includes_done_and_cancel_buttons():
     main = load_main_module()
     keyboard = main.kb.todo_picker_keyboard(
         "7",
@@ -108,9 +108,36 @@ def test_todo_picker_keyboard_includes_cancel_button():
         lambda _context: "🏠",
     )
 
-    cancel_button = keyboard.inline_keyboard[-1][0]
+    done_button, cancel_button = keyboard.inline_keyboard[-1]
+    assert done_button.text == "✅ Done"
+    assert done_button.callback_data == "tdd:7"
     assert cancel_button.text == "✖️ Cancel"
     assert cancel_button.callback_data == "tdc:7"
+
+
+def test_todo_done_callback_closes_with_summary():
+    async def run():
+        main = load_main_module()
+        main.todo_picker_map.clear()
+        main.todo_picker_map["0"] = [
+            {"name": "Pay bill", "context": "Personal", "page_id": "page-1", "_done": True},
+            {"name": "Email Sam", "context": "Work", "page_id": "page-2"},
+        ]
+        query = SimpleNamespace(data="tdd:0")
+        query.answer = AsyncMock()
+        query.edit_message_reply_markup = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update = SimpleNamespace(callback_query=query)
+
+        with patch.object(main, "handle_v10_callback", side_effect=_async_false):
+            await main.handle_callback(update, None)
+
+        assert "0" not in main.todo_picker_map
+        query.edit_message_text.assert_awaited_once_with(
+            "✅ Done — 1 marked complete · 1 still open."
+        )
+
+    asyncio.run(run())
 
 
 def test_todo_cancel_callback_dismisses_picker():
