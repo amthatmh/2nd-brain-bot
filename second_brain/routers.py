@@ -89,17 +89,19 @@ def _habit_cache() -> dict:
     return _main().habit_cache
 
 
-def _habits_from_message_markup(message) -> list[dict]:
-    """Recover the habit snapshot from the buttons currently on a message."""
+def _iter_habit_toggle_buttons(message):
+    """Yield (pid, button) for each h:toggle button on a message, in order."""
     reply_markup = getattr(message, "reply_markup", None)
     inline_keyboard = getattr(reply_markup, "inline_keyboard", None)
-    if not isinstance(inline_keyboard, list):
-        return []
-
-    ordered_ids: list[str] = []
+    # python-telegram-bot stores the keyboard as tuples of tuples, but callers
+    # may pass lists; accept either so recovery isn't silently skipped (the
+    # original list-only guard rejected the real markup and collapsed the
+    # selector to a single habit).
+    if not isinstance(inline_keyboard, (list, tuple)):
+        return
     seen: set[str] = set()
     for row in inline_keyboard:
-        if not isinstance(row, list):
+        if not isinstance(row, (list, tuple)):
             continue
         for button in row:
             callback_data = getattr(button, "callback_data", "") or ""
@@ -107,18 +109,43 @@ def _habits_from_message_markup(message) -> list[dict]:
                 continue
             pid = _main()._restore_pid(callback_data.removeprefix("h:toggle:").strip())
             if pid and pid not in seen:
-                ordered_ids.append(pid)
                 seen.add(pid)
+                yield pid, button
 
-    if not ordered_ids:
-        return []
 
-    habits_by_id = {
+def _habits_from_message_markup(message) -> list[dict]:
+    """Recover the full habit snapshot from the buttons currently on a message.
+
+    Reconstructs one entry per habit button so a lost in-memory session (e.g.
+    after a process restart between the digest and the taps) never collapses the
+    selector down to a single habit. The live habit cache supplies metadata when
+    available; otherwise a minimal {page_id, name} entry is rebuilt from the
+    button label so every habit survives the re-render regardless of cache state.
+    """
+    cache_by_id = {
         habit.get("page_id"): habit
         for habit in _habit_cache().values()
         if not habit.get("auto_only", False)
     }
-    return [habits_by_id[pid] for pid in ordered_ids if pid in habits_by_id]
+
+    habits: list[dict] = []
+    for pid, button in _iter_habit_toggle_buttons(message):
+        cached = cache_by_id.get(pid)
+        if cached is not None:
+            habits.append(cached)
+        else:
+            name = (getattr(button, "text", "") or "").removeprefix("✅ ").strip() or "Habit"
+            habits.append({"page_id": pid, "name": name})
+    return habits
+
+
+def _selected_pids_from_message_markup(message) -> set[str]:
+    """The set of habit page IDs currently shown as selected (✅) in the markup."""
+    return {
+        pid
+        for pid, button in _iter_habit_toggle_buttons(message)
+        if (getattr(button, "text", "") or "").startswith("✅ ")
+    }
 
 
 def _cf_pending() -> dict:
@@ -1575,6 +1602,16 @@ async def _cb_h_toggle(q, parts, context) -> None:
             )
             habits = [current_habit] if current_habit else []
         session["habits"] = habits
+
+        # Rehydrate prior selections from the visible ✅ markers so a session
+        # lost mid-selection doesn't reset the user's earlier picks; then apply
+        # this tap relative to what is actually shown on the keyboard.
+        selected = _selected_pids_from_message_markup(q.message)
+        if habit_page_id in selected:
+            selected.discard(habit_page_id)
+        else:
+            selected.add(habit_page_id)
+        session["selected"] = selected
 
     # Merge in any habits that became active (passed show_after) after the digest was sent
     now_hhmm = datetime.now(TZ).strftime("%H:%M")
