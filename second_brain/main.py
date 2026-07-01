@@ -901,10 +901,10 @@ def _run_capture(raw_text: str, force_create: bool = False,
                 "recurring": recurring, "page_id": page_id,
             }
 
-        page_id, auto_horizon = notion_tasks.create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
+        page_id, _ = notion_tasks.create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
         return {
             "status": "captured", "name": task_name,
-            "horizon_label": auto_horizon or horizon_label, "context": ctx,
+            "horizon_label": horizon_label, "context": ctx,
             "recurring": recurring, "page_id": page_id,
         }
     except Exception as e:
@@ -1122,7 +1122,7 @@ async def _create_task_from_classification(
                 "page_id": page_id,
             }
 
-        page_id, auto_horizon = notion_tasks.create_task(
+        page_id, _ = notion_tasks.create_task(
             notion,
             NOTION_DB_ID,
             task_name,
@@ -1135,7 +1135,7 @@ async def _create_task_from_classification(
         return {
             "status": "captured",
             "name": task_name,
-            "horizon_label": auto_horizon or horizon_label,
+            "horizon_label": horizon_label,
             "context": ctx,
             "recurring": recurring,
             "page_id": page_id,
@@ -1335,9 +1335,9 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
                 parse_mode="Markdown",
             )
         else:
-            page_id, auto_horizon = notion_tasks.create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
+            page_id, _ = notion_tasks.create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
             await thinking.edit_text(
-                f"✅ Captured!\n\n📝 {task_name}\n🕐 {auto_horizon or horizon_label}  {ctx}{recur_tag}\n\n_Saved to Notion_",
+                f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}{recur_tag}\n\n_Saved to Notion_",
                 parse_mode="Markdown",
             )
         capture_map[thinking.message_id] = {"page_id": page_id, "name": task_name}

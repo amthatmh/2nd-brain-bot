@@ -1179,7 +1179,7 @@ async def _cb_task_preview(q, parts, context) -> None:
                 parse_mode="Markdown",
             )
         else:
-            page_id, auto_horizon = notion_tasks.create_task(
+            page_id, _ = notion_tasks.create_task(
                 _notion(),
                 NOTION_DB_ID,
                 task_name,
@@ -1188,7 +1188,7 @@ async def _cb_task_preview(q, parts, context) -> None:
                 recurring=recurring,
                 repeat_day=repeat_day,
             )
-            horizon_label = auto_horizon or _main().deadline_days_to_label(deadline_days)
+            horizon_label = _main().deadline_days_to_label(deadline_days)
             await q.edit_message_text(
                 f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}\n\n_Saved to Notion_",
                 parse_mode="Markdown",
