@@ -457,10 +457,11 @@ def _normalize_strength_movements(workout_result: dict | None, workout_data: dic
     shared_load = workout_data.get("weight_lbs") if workout_data.get("weight_lbs") is not None else workout_result.get("load_lbs")
     movement_loads = workout_data.get("movement_loads") or {}
     movement_reps = workout_data.get("movement_reps") or {}
+    movement_sets = workout_data.get("movement_sets") or {}
     return [
         {
             "movement": name,
-            "sets": shared_sets,
+            "sets": movement_sets.get(name) if movement_sets.get(name) is not None else shared_sets,
             "reps": movement_reps.get(name) if movement_reps.get(name) is not None else shared_reps,
             "load_lbs": movement_loads.get(name) if movement_loads.get(name) is not None else shared_load,
         }
@@ -1616,49 +1617,64 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         created: list[str] = []
         workout_page_ids: list[str] = []
 
-        if sets_breakdown and len(sets_breakdown) > 1 and len(movements) == 1:
-            # One movement, multiple sets with varying weights/reps — log each set separately.
-            movement = movements[0]
-            movement_name = state.get("movement_name") or movement.get("movement") or state.get("movement") or "Unknown"
+        if sets_breakdown and len(sets_breakdown) > 1:
+            # One or more movements, each performed across multiple set-groups
+            # (warm-up ramp / varying working sets) — log every set-group as its
+            # own row, carrying that group's own sets/reps/load.
             existing_ids = list(state.get("movement_page_ids") or [])
-            movement_page_id = existing_ids[0] if existing_ids else state.get("movement_page_id")
-            if not movement_page_id:
-                movement_page_id = match_movement(movement_name, movement_cache)
-            if not movement_page_id:
-                log.warning("finalize: no library match for '%s' — skipped", movement_name)
-            else:
-                for set_idx, set_entry in enumerate(sets_breakdown):
-                    effort_reps = int(set_entry.get("reps") or 1)
-                    load_lbs = float(set_entry["weight_lbs"]) if set_entry.get("weight_lbs") is not None else None
-                    effort_scheme = f"1x{effort_reps}"
-                    log.info(
-                        "[CF_STATE] sets_breakdown set=%d/%d movement=%s reps=%s weight=%s date=%s",
-                        set_idx + 1, len(sets_breakdown), movement_name, effort_reps, load_lbs, workout_date,
-                    )
-                    wid = await asyncio.get_running_loop().run_in_executor(
-                        None,
-                        lambda mpid=movement_page_id, mname=movement_name, lbs=load_lbs, er=effort_reps, es=effort_scheme: create_strength_log(
-                            notion=notion,
-                            workout_log_db_id=_cf_config(config, "NOTION_WORKOUT_LOG_DB"),
-                            movement_page_id=mpid,
-                            movement_name=mname,
-                            load_lbs=lbs,
-                            effort_sets=1,
-                            effort_reps=er,
-                            is_max_attempt=state.get("is_max_attempt", False),
-                            weekly_program_page_id=weekly_program_id,
-                            cycle_page_id=state.get("cycle_page_id"),
-                            readiness=state.get("readiness"),
-                            workout_date=workout_date,
-                            effort_scheme=es,
-                            load_kg=round(lbs * 0.453592, 1) if lbs is not None else None,
-                            raw_log=raw_log if set_idx == 0 else None,
-                            workout_day_id=workout_day_id,
-                        ),
-                    )
-                    workout_page_ids.append(wid)
-                if workout_page_ids:
-                    created.append(movement_name)
+            default_name = state.get("movement_name") or (movements[0].get("movement") if movements else None) or state.get("movement") or "Unknown"
+            default_pid = existing_ids[0] if existing_ids else state.get("movement_page_id")
+            name_to_pid: dict[str, str] = {}
+            for i, m in enumerate(movements):
+                nm = (m.get("movement") or "").strip()
+                pid = m.get("page_id") or (existing_ids[i] if i < len(existing_ids) else None)
+                if nm and pid:
+                    name_to_pid[nm] = pid
+            logged_names: list[str] = []
+            for set_idx, set_entry in enumerate(sets_breakdown):
+                entry_movement = (set_entry.get("movement") or "").strip()
+                movement_name = entry_movement or default_name
+                movement_page_id = (
+                    name_to_pid.get(movement_name)
+                    or match_movement(movement_name, movement_cache)
+                    or (default_pid if not entry_movement else None)
+                )
+                if not movement_page_id:
+                    log.warning("finalize: no library match for '%s' — skipped set-group", movement_name)
+                    continue
+                effort_sets = int(set_entry.get("sets") or 1)
+                effort_reps = int(set_entry.get("reps") or 1)
+                load_lbs = float(set_entry["weight_lbs"]) if set_entry.get("weight_lbs") is not None else None
+                effort_scheme = f"{effort_sets}x{effort_reps}"
+                log.info(
+                    "[CF_STATE] sets_breakdown set=%d/%d movement=%s sets=%s reps=%s weight=%s date=%s",
+                    set_idx + 1, len(sets_breakdown), movement_name, effort_sets, effort_reps, load_lbs, workout_date,
+                )
+                wid = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda mpid=movement_page_id, mname=movement_name, lbs=load_lbs, es_sets=effort_sets, er=effort_reps, es=effort_scheme, first=(set_idx == 0): create_strength_log(
+                        notion=notion,
+                        workout_log_db_id=_cf_config(config, "NOTION_WORKOUT_LOG_DB"),
+                        movement_page_id=mpid,
+                        movement_name=mname,
+                        load_lbs=lbs,
+                        effort_sets=es_sets,
+                        effort_reps=er,
+                        is_max_attempt=state.get("is_max_attempt", False),
+                        weekly_program_page_id=weekly_program_id,
+                        cycle_page_id=state.get("cycle_page_id"),
+                        readiness=state.get("readiness"),
+                        workout_date=workout_date,
+                        effort_scheme=es,
+                        load_kg=round(lbs * 0.453592, 1) if lbs is not None else None,
+                        raw_log=raw_log if first else None,
+                        workout_day_id=workout_day_id,
+                    ),
+                )
+                workout_page_ids.append(wid)
+                if movement_name not in logged_names:
+                    logged_names.append(movement_name)
+            created.extend(logged_names)
         else:
             for idx, movement in enumerate(movements):
                 existing_ids = list(state.get("movement_page_ids") or [])
@@ -1720,9 +1736,9 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         state["last_workout_page_ids"] = workout_page_ids
         cf_pending[key] = state
         movement_summary = ", ".join(created)
-        if sets_breakdown and len(sets_breakdown) > 1 and len(movements) == 1:
-            scheme_summary = f"{len(sets_breakdown)} sets — " + ", ".join(
-                f"{s.get('reps') or 1}x{_format_lbs(s.get('weight_lbs'))}lbs" for s in sets_breakdown
+        if sets_breakdown and len(sets_breakdown) > 1:
+            scheme_summary = f"{len(sets_breakdown)} set-groups — " + ", ".join(
+                f"{s.get('sets') or 1}x{s.get('reps') or 1} {_format_lbs(s.get('weight_lbs'))}lbs" for s in sets_breakdown
             )
         else:
             scheme_summary = " | ".join(

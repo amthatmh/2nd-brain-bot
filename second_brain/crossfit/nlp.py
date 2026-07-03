@@ -79,6 +79,7 @@ def _empty_workout_data(movements: Optional[List[str]] = None) -> Dict:
         "wod_name": None,
         "movement_loads": None,
         "movement_reps": None,
+        "movement_sets": None,
         "sets_breakdown": None,
     }
 
@@ -158,6 +159,20 @@ def _normalise_workout_data(parsed, fallback_message: str) -> Dict:
         data["movement_reps"] = normalised_reps or None
     else:
         data["movement_reps"] = None
+    raw_sets = parsed.get("movement_sets") if isinstance(parsed, dict) else None
+    if isinstance(raw_sets, dict):
+        normalised_sets = {}
+        for k, v in raw_sets.items():
+            name = str(k).strip()
+            if not name:
+                continue
+            try:
+                normalised_sets[name] = int(float(v))
+            except (TypeError, ValueError):
+                pass
+        data["movement_sets"] = normalised_sets or None
+    else:
+        data["movement_sets"] = None
     raw_breakdown = parsed.get("sets_breakdown") if isinstance(parsed, dict) else None
     if isinstance(raw_breakdown, list) and len(raw_breakdown) > 1:
         normalised_breakdown = []
@@ -167,7 +182,12 @@ def _normalise_workout_data(parsed, fallback_message: str) -> Dict:
             try:
                 reps = int(float(entry["reps"])) if entry.get("reps") is not None else None
                 wt = round(float(entry["weight_lbs"]), 1) if entry.get("weight_lbs") is not None else None
-                normalised_breakdown.append({"reps": reps, "weight_lbs": wt})
+                sets = int(float(entry["sets"])) if entry.get("sets") is not None else 1
+                out_entry = {"sets": sets, "reps": reps, "weight_lbs": wt}
+                movement = str(entry.get("movement") or "").strip()
+                if movement:
+                    out_entry["movement"] = movement
+                normalised_breakdown.append(out_entry)
             except (TypeError, ValueError, KeyError):
                 pass
         data["sets_breakdown"] = normalised_breakdown if len(normalised_breakdown) > 1 else None
@@ -331,7 +351,16 @@ EXTRACTION RULES:
    - "100kg" is kilograms
    - Round converted weights to 1 decimal.
 
-5. NOTES: Additional context that is not movement/date/scheme/load.
+5. RAMP / WARM-UP SETS: When a movement is logged across multiple set-groups of
+   different weight (a warm-up ramp up to a top working set), list EVERY set-group
+   in "sets_breakdown" (see below), in the order performed, warm-ups included.
+   The root sets/reps/weight (and movement_loads/reps/sets) summarise only the TOP
+   WORKING SET (the heaviest) — never a warm-up set.
+   - "2 sets of 10x 20kg bench, 2 sets of 8x 40kg bench, 5 sets of 5x 50kg bench"
+     -> root = top set (sets 5, reps 5, 50kg/110.2lbs) AND sets_breakdown lists all
+        three groups: 2x10@44.1, 2x8@88.2, 5x5@110.2.
+
+6. NOTES: Additional context that is not movement/date/scheme/load.
 
 OUTPUT FORMAT: Valid JSON object only, no explanation:
 {{
@@ -348,12 +377,14 @@ OUTPUT FORMAT: Valid JSON object only, no explanation:
   "wod_name": "benchmark WOD name such as Fran" or null,
   "movement_loads": {{"Movement 1": load_lbs, "Movement 2": load_lbs}} or null,
   "movement_reps": {{"Movement 1": reps_int, "Movement 2": reps_int}} or null,
-  "sets_breakdown": [{{"reps": int, "weight_lbs": float}}, ...] or null
+  "movement_sets": {{"Movement 1": sets_int, "Movement 2": sets_int}} or null,
+  "sets_breakdown": [{{"movement": "Movement" (omit if only one movement), "sets": int, "reps": int, "weight_lbs": float}}, ...] or null
 }}
 
-movement_loads: Only set when movements have DIFFERENT loads. Map each movement name (matching "movements" array) to its load in lbs. Null when all loads are the same or only one movement.
-movement_reps: Only set when movements have DIFFERENT rep counts. Map each movement name (matching the "movements" array) to its integer rep count. Null when all reps are the same or only one movement.
-sets_breakdown: Set when the user lists the SAME single movement in multiple sets with VARYING weights or reps (comma-separated working sets). Each entry is one set: {{"reps": int, "weight_lbs": float}}. Use null when all sets have the same weight/reps (use sets+reps+weight_lbs instead) or when there are multiple distinct movements. Example: "4x235lb deadlift, 3x245lb deadlift, 2x255lb deadlift" → sets_breakdown with 3 entries. Sets/reps/weight_lbs in the root should still reflect aggregate totals or the first set.
+movement_loads: Only set when movements have DIFFERENT loads. Map each movement name (matching "movements" array) to its TOP working set load in lbs. Null when all loads are the same or only one movement.
+movement_reps: Only set when movements have DIFFERENT rep counts. Map each movement name (matching the "movements" array) to its integer TOP working set rep count. Null when all reps are the same or only one movement.
+movement_sets: Only set when movements have DIFFERENT set counts. Map each movement name (matching the "movements" array) to its integer set count for the TOP working set. Null when all set counts are the same or only one movement. When a movement ramps up (warm-ups then a top set), use the number of sets performed AT the top working weight.
+sets_breakdown: Set whenever a movement is performed across MULTIPLE set-groups with varying weight/reps — a warm-up ramp, comma-separated working sets, OR several movements each done across multiple set-groups. Emit ONE entry per distinct set-group, in the order performed (warm-ups included): {{"movement": name, "sets": int, "reps": int, "weight_lbs": float}}. Include "movement" on every entry when more than one movement is present (match the "movements" array); omit it when there is only one movement. "sets" is how many sets were done at that weight (e.g. "5 sets of 5x 50kg" → sets 5, reps 5). Use null only when every movement was a single uniform set-group (then use sets+reps+weight_lbs / movement_loads instead). Root sets/reps/weight_lbs and movement_loads/reps/sets should reflect the TOP working set (the heaviest), never a warm-up set.
 
 WORKOUT STRUCTURE PRESERVATION:
 - Preserve the user's original movement/rep scheme exactly in workout_structure.
@@ -379,7 +410,10 @@ Input: "5 sets of 1x 125lb power clean, 2x 125lb hang squat clean"
 Output: {{"movements":["Power Clean","Hang Squat Clean"],"sets":5,"reps":1,"weight_lbs":125.0,"weight_kg":56.7,"scheme":"5x1","notes":null,"workout_structure":"5 sets of 1x 125lb power clean, 2x 125lb hang squat clean","raw_input":"5 sets of 1x 125lb power clean, 2x 125lb hang squat clean","wod_name":null,"movement_loads":null,"movement_reps":{{"Power Clean":1,"Hang Squat Clean":2}},"sets_breakdown":null}}
 
 Input: "4x235lb deadlift, 3x245lb deadlift, 2x255lb deadlift, 4x245lb deadlift, 3x265lb deadlift, 2x265lb deadlift, 2x265lb deadlift, 2x265lb deadlift"
-Output: {{"movements":["Deadlift"],"sets":8,"reps":4,"weight_lbs":235.0,"weight_kg":106.6,"scheme":"8 sets","notes":null,"workout_structure":"4x235lb deadlift, 3x245lb deadlift, 2x255lb deadlift, 4x245lb deadlift, 3x265lb deadlift, 2x265lb deadlift, 2x265lb deadlift, 2x265lb deadlift","raw_input":"4x235lb deadlift, 3x245lb deadlift, 2x255lb deadlift, 4x245lb deadlift, 3x265lb deadlift, 2x265lb deadlift, 2x265lb deadlift, 2x265lb deadlift","wod_name":null,"movement_loads":null,"movement_reps":null,"sets_breakdown":[{{"reps":4,"weight_lbs":235.0}},{{"reps":3,"weight_lbs":245.0}},{{"reps":2,"weight_lbs":255.0}},{{"reps":4,"weight_lbs":245.0}},{{"reps":3,"weight_lbs":265.0}},{{"reps":2,"weight_lbs":265.0}},{{"reps":2,"weight_lbs":265.0}},{{"reps":2,"weight_lbs":265.0}}]}}
+Output: {{"movements":["Deadlift"],"sets":8,"reps":4,"weight_lbs":235.0,"weight_kg":106.6,"scheme":"8 sets","notes":null,"workout_structure":"4x235lb deadlift, 3x245lb deadlift, 2x255lb deadlift, 4x245lb deadlift, 3x265lb deadlift, 2x265lb deadlift, 2x265lb deadlift, 2x265lb deadlift","raw_input":"4x235lb deadlift, 3x245lb deadlift, 2x255lb deadlift, 4x245lb deadlift, 3x265lb deadlift, 2x265lb deadlift, 2x265lb deadlift, 2x265lb deadlift","wod_name":null,"movement_loads":null,"movement_reps":null,"sets_breakdown":[{{"sets":1,"reps":4,"weight_lbs":235.0}},{{"sets":1,"reps":3,"weight_lbs":245.0}},{{"sets":1,"reps":2,"weight_lbs":255.0}},{{"sets":1,"reps":4,"weight_lbs":245.0}},{{"sets":1,"reps":3,"weight_lbs":265.0}},{{"sets":1,"reps":2,"weight_lbs":265.0}},{{"sets":1,"reps":2,"weight_lbs":265.0}},{{"sets":1,"reps":2,"weight_lbs":265.0}}]}}
+
+Input: "2 sets of 10x 20kg Bench press, 2 sets of 8x 40kg benchpress, 5 sets of 5x 50kg benchpress; 2 sets of 5x 70kg back squat, 2 sets of 4x 80kg back squat, 2 sets of 3x 85kg backsquat"
+Output: {{"movements":["Bench Press","Back Squat"],"date":null,"sets":5,"reps":5,"weight_lbs":110.2,"weight_kg":50.0,"scheme":"5x5","notes":null,"workout_structure":"2 sets of 10x 20kg Bench press, 2 sets of 8x 40kg benchpress, 5 sets of 5x 50kg benchpress; 2 sets of 5x 70kg back squat, 2 sets of 4x 80kg back squat, 2 sets of 3x 85kg backsquat","raw_input":"2 sets of 10x 20kg Bench press, 2 sets of 8x 40kg benchpress, 5 sets of 5x 50kg benchpress; 2 sets of 5x 70kg back squat, 2 sets of 4x 80kg back squat, 2 sets of 3x 85kg backsquat","wod_name":null,"movement_loads":null,"movement_reps":null,"movement_sets":null,"sets_breakdown":[{{"movement":"Bench Press","sets":2,"reps":10,"weight_lbs":44.1}},{{"movement":"Bench Press","sets":2,"reps":8,"weight_lbs":88.2}},{{"movement":"Bench Press","sets":5,"reps":5,"weight_lbs":110.2}},{{"movement":"Back Squat","sets":2,"reps":5,"weight_lbs":154.3}},{{"movement":"Back Squat","sets":2,"reps":4,"weight_lbs":176.4}},{{"movement":"Back Squat","sets":2,"reps":3,"weight_lbs":187.4}}]}}
 """
 
     try:

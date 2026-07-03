@@ -1322,6 +1322,50 @@ def get_today_weight_prs(notion, workout_days_db_id: str, workout_log_db_id: str
     return out
 
 
+def get_today_workout_link(notion, workout_days_db_id: str) -> dict | None:
+    """Return {"url", "track", "day"} for today's Workout Days row, or None.
+
+    Links the digest's Strength section straight to today's workout schedule in
+    Notion. Prefers the Performance track when a day has multiple tracks, else
+    falls back to the first row (e.g. Hyrox on Thursday/Sunday).
+    """
+    if not notion or not workout_days_db_id:
+        return None
+
+    today = local_today()
+    day_name = today.strftime("%A")
+    monday = (today - timedelta(days=today.weekday())).isoformat()
+
+    try:
+        results = notion_call(
+            notion.databases.query,
+            database_id=workout_days_db_id,
+            filter={
+                "and": [
+                    {"property": "Day", "select": {"equals": day_name}},
+                    {"property": "Week Of", "date": {"equals": monday}},
+                ]
+            },
+            page_size=3,
+        ).get("results", [])
+    except Exception as e:
+        log.warning("get_today_workout_link: query failed: %s", e)
+        return None
+
+    if not results:
+        return None
+
+    row = next(
+        (r for r in results if (r.get("properties", {}).get("Track", {}).get("select") or {}).get("name") == "Performance"),
+        results[0],
+    )
+    url = row.get("url")
+    if not url:
+        return None
+    track = (row.get("properties", {}).get("Track", {}).get("select") or {}).get("name") or "Workout"
+    return {"url": url, "track": track, "day": day_name}
+
+
 def notion_query_wod_log_by_date(notion, wod_log_db_id: str, workout_date: str, wod_format: str | None = None) -> list[dict]:
     """Return WOD log entries matching a workout date and optional format."""
     filters = [{"property": "Date", "date": {"equals": workout_date}}]
