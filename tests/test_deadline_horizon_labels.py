@@ -1,6 +1,5 @@
 import importlib
 import os
-import sys
 import unittest
 from datetime import date
 from unittest.mock import MagicMock, patch
@@ -24,7 +23,12 @@ REQUIRED_ENV = {
 
 
 def load_formatters():
-    sys.modules.pop("second_brain.formatters", None)
+    # Return the canonical formatters module without popping/reimporting it.
+    # Re-executing the module registers a fresh object that desyncs the `fmt`
+    # references already bound by routers/digest/main, which breaks unrelated
+    # tests that reimport main later (order-dependent isolation leak). These
+    # tests only patch pure functions via patch.object, so the cached module
+    # is sufficient and leaves global state untouched.
     with patch.dict(os.environ, REQUIRED_ENV, clear=False), \
         patch("notion_client.Client", return_value=MagicMock()), \
         patch("anthropic.Anthropic", return_value=MagicMock()):
