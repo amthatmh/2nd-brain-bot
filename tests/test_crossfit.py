@@ -845,6 +845,7 @@ def test_extract_workout_data_parses_complete_claude_payload():
         "wod_name": None,
         "movement_loads": None,
         "movement_reps": None,
+        "movement_sets": None,
         "sets_breakdown": None,
     }
 
@@ -909,6 +910,43 @@ def test_extract_workout_data_uses_fallback_metadata_when_claude_omits_it():
     assert out["weight_lbs"] == 115.0
     assert out["weight_kg"] == 52.2
     assert out["scheme"] == "6x4"
+
+
+def test_multi_movement_ramp_keeps_per_movement_top_set():
+    """Two movements each with a warm-up ramp must not share one movement's load.
+
+    Regression for the 2026-06-27 log where Bench Press and Back Squat both
+    inherited the bench warm-up (20kg / 10 reps / 2 sets).
+    """
+    from datetime import datetime
+    from second_brain.crossfit.nlp import extract_workout_data
+    from second_brain.crossfit.handlers import _normalize_strength_movements
+
+    payload = (
+        '{"movements":["Bench Press","Back Squat"],"sets":5,"reps":5,'
+        '"weight_lbs":110.2,"weight_kg":50.0,"scheme":"5x5",'
+        '"movement_loads":{"Bench Press":110.2,"Back Squat":187.4},'
+        '"movement_reps":{"Bench Press":5,"Back Squat":3},'
+        '"movement_sets":{"Bench Press":5,"Back Squat":2}}'
+    )
+    out = asyncio.run(
+        extract_workout_data(
+            "2 sets of 10x 20kg bench, 5 sets of 5x 50kg bench; "
+            "2 sets of 3x 85kg back squat",
+            _FakeClaude(payload),
+            datetime(2026, 6, 27),
+        )
+    )
+    assert out["movement_sets"] == {"Bench Press": 5, "Back Squat": 2}
+
+    movements = _normalize_strength_movements({"movements": ["Bench Press", "Back Squat"]}, out)
+    by_name = {m["movement"]: m for m in movements}
+    assert by_name["Bench Press"]["sets"] == 5
+    assert by_name["Bench Press"]["reps"] == 5
+    assert by_name["Bench Press"]["load_lbs"] == 110.2
+    assert by_name["Back Squat"]["sets"] == 2
+    assert by_name["Back Squat"]["reps"] == 3
+    assert by_name["Back Squat"]["load_lbs"] == 187.4
 
 
 def test_create_strength_log_accepts_extracted_date_and_scheme():
@@ -3403,3 +3441,121 @@ def test_format_sub_search_result_handles_legacy_string_lists():
     assert "Good Morning" in result
     assert "Hip Hinge" in result
     assert "None set" in result
+
+
+def test_get_today_workout_link_prefers_performance():
+    from second_brain.crossfit.notion import get_today_workout_link
+
+    rows = [
+        {"id": "fit", "url": "https://notion.so/fit", "properties": {"Track": {"select": {"name": "Fitness"}}}},
+        {"id": "perf", "url": "https://notion.so/perf", "properties": {"Track": {"select": {"name": "Performance"}}}},
+    ]
+    notion = SimpleNamespace(databases=SimpleNamespace(query=lambda **kwargs: {"results": rows}))
+    link = get_today_workout_link(notion, "days")
+    assert link["url"] == "https://notion.so/perf"
+    assert link["track"] == "Performance"
+
+
+def test_get_today_workout_link_falls_back_to_hyrox():
+    from second_brain.crossfit.notion import get_today_workout_link
+
+    rows = [{"id": "hy", "url": "https://notion.so/hyrox", "properties": {"Track": {"select": {"name": "Hyrox"}}}}]
+    notion = SimpleNamespace(databases=SimpleNamespace(query=lambda **kwargs: {"results": rows}))
+    link = get_today_workout_link(notion, "days")
+    assert link["url"] == "https://notion.so/hyrox"
+    assert link["track"] == "Hyrox"
+
+
+def test_get_today_workout_link_none_when_no_rows():
+    from second_brain.crossfit.notion import get_today_workout_link
+
+    notion = SimpleNamespace(databases=SimpleNamespace(query=lambda **kwargs: {"results": []}))
+    assert get_today_workout_link(notion, "days") is None
+
+
+def test_finalize_flow_logs_row_per_setgroup_across_movements(monkeypatch):
+    """Multi-movement ramp: each set-group becomes its own strength log row.
+
+    Regression for the 2026-06-27 session (Bench + Back Squat, warm-up ramps):
+    6 set-groups → 6 rows, each with its own sets/reps/load and movement.
+    """
+    import second_brain.crossfit.handlers as handlers
+
+    created = []
+
+    async def fake_week(notion):
+        del notion
+        return "week-1"
+
+    def fake_create_strength_log(**kwargs):
+        created.append(kwargs)
+        return f"log-{len(created)}"
+
+    monkeypatch.setattr(handlers, "get_current_week_program_url", fake_week)
+    monkeypatch.setattr(handlers, "create_strength_log", fake_create_strength_log)
+
+    message = _DummyMessage()
+    pending = {
+        "123": {
+            "mode": "strength",
+            "movement_name": "Bench Press",
+            "workout_date": "2026-06-27",
+            "raw_log": "raw session",
+            "movements": [
+                {"movement": "Bench Press", "sets": 5, "reps": 5, "load_lbs": 110.2},
+                {"movement": "Back Squat", "sets": 2, "reps": 3, "load_lbs": 187.4},
+            ],
+            "movement_page_ids": ["mov-bench", "mov-squat"],
+            "sets_breakdown": [
+                {"movement": "Bench Press", "sets": 2, "reps": 10, "weight_lbs": 44.1},
+                {"movement": "Bench Press", "sets": 2, "reps": 8, "weight_lbs": 88.2},
+                {"movement": "Bench Press", "sets": 5, "reps": 5, "weight_lbs": 110.2},
+                {"movement": "Back Squat", "sets": 2, "reps": 5, "weight_lbs": 154.3},
+                {"movement": "Back Squat", "sets": 2, "reps": 4, "weight_lbs": 176.4},
+                {"movement": "Back Squat", "sets": 2, "reps": 3, "weight_lbs": 187.4},
+            ],
+        }
+    }
+
+    asyncio.run(handlers._finalize_flow(
+        message,
+        "123",
+        SimpleNamespace(),
+        {"NOTION_WORKOUT_LOG_DB": "workout-log", "NOTION_MOVEMENTS_DB": "movements", "MOVEMENT_CACHE": {}},
+        pending,
+        "form work",
+    ))
+
+    assert len(created) == 6
+    # First three rows = Bench Press ramp
+    assert [c["movement_page_id"] for c in created[:3]] == ["mov-bench"] * 3
+    assert [(c["effort_sets"], c["effort_reps"], c["load_lbs"]) for c in created[:3]] == [
+        (2, 10, 44.1), (2, 8, 88.2), (5, 5, 110.2),
+    ]
+    # Last three rows = Back Squat ramp
+    assert [c["movement_page_id"] for c in created[3:]] == ["mov-squat"] * 3
+    assert [(c["effort_sets"], c["effort_reps"], c["load_lbs"]) for c in created[3:]] == [
+        (2, 5, 154.3), (2, 4, 176.4), (2, 3, 187.4),
+    ]
+    assert all(c["workout_date"] == "2026-06-27" for c in created)
+    # raw_log only on the first row to avoid duplication
+    assert created[0]["raw_log"] == "raw session\n\nNotes: form work"
+    assert all(c["raw_log"] is None for c in created[1:])
+    assert pending["123"]["last_workout_page_ids"] == [f"log-{i}" for i in range(1, 7)]
+
+
+def test_normalise_workout_data_captures_breakdown_movement_and_sets():
+    from second_brain.crossfit.nlp import _normalise_workout_data
+
+    parsed = {
+        "movements": ["Bench Press", "Back Squat"],
+        "sets_breakdown": [
+            {"movement": "Bench Press", "sets": 2, "reps": 10, "weight_lbs": 44.1},
+            {"movement": "Back Squat", "sets": 2, "reps": 3, "weight_lbs": 187.4},
+        ],
+    }
+    out = _normalise_workout_data(parsed, "raw")
+    assert out["sets_breakdown"] == [
+        {"sets": 2, "reps": 10, "weight_lbs": 44.1, "movement": "Bench Press"},
+        {"sets": 2, "reps": 3, "weight_lbs": 187.4, "movement": "Back Squat"},
+    ]

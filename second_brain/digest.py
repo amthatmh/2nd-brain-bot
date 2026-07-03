@@ -179,7 +179,7 @@ from second_brain.notion import habits as notion_habits
 from second_brain.notion import tasks as notion_tasks
 from second_brain.notion import daily_log as notion_daily_log
 from second_brain.crossfit.readiness import check_readiness_logged_today
-from second_brain.crossfit.notion import get_today_weight_prs
+from second_brain.crossfit.notion import get_today_weight_prs, get_today_workout_link
 from second_brain.error_reporting import send_system_log
 from second_brain.state import STATE
 from second_brain.utils import local_today
@@ -586,12 +586,20 @@ async def send_daily_digest(bot, include_habits: bool | None = None, config: dic
     include_weight = bool(config.get("include_weight", False)) if config else False
     if include_weight and _notion and NOTION_WORKOUT_DAYS_DB and NOTION_WORKOUT_LOG_DB:
         import asyncio as _asyncio
-        weight_prs = await _asyncio.get_running_loop().run_in_executor(
+        _loop = _asyncio.get_running_loop()
+        workout_link = await _loop.run_in_executor(
+            None,
+            lambda: get_today_workout_link(_notion, NOTION_WORKOUT_DAYS_DB),
+        )
+        weight_prs = await _loop.run_in_executor(
             None,
             lambda: get_today_weight_prs(_notion, NOTION_WORKOUT_DAYS_DB, NOTION_WORKOUT_LOG_DB),
         )
-        if weight_prs:
-            lines.append("🏋️ *Today's Strength PRs*")
+        if workout_link or weight_prs:
+            if workout_link and workout_link.get("url"):
+                lines.append(f"🏋️ [Today's workout: {workout_link['track']}]({workout_link['url']})")
+            else:
+                lines.append("🏋️ *Today's Strength PRs*")
             for entry in weight_prs:
                 load = f"{entry['load_lbs']} lbs" if entry.get("load_lbs") else "BW"
                 reps = entry.get("reps") or "?"
