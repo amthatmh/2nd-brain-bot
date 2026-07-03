@@ -6,7 +6,7 @@ import inspect
 import logging
 import os
 import re
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 
 from utils.date_parser import parse_date
 
@@ -23,6 +23,12 @@ from second_brain.notion.properties import title_prop
 
 log = logging.getLogger(__name__)
 logger = log
+
+
+def _notion_page_url(page_id: str | None) -> str | None:
+    if not page_id:
+        return None
+    return f"https://www.notion.so/{page_id.replace('-', '')}"
 
 
 def _chain_keyboard(next_step: str) -> InlineKeyboardMarkup:
@@ -1749,15 +1755,20 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         first_load = movements[0].get("load_lbs") if movements else None
         notes_line = f"📝 Notes: {notes}\n" if notes and notes.strip() else ""
         weight_line = f"⚖️ Weight: {_format_lbs(first_load) + 'lbs' if first_load else 'BW'}\n" if len(movements) == 1 and not sets_breakdown else ""
-        state["stage"] = "awaiting_feel"
-        cf_pending[key] = state
-        await message.reply_text(
+        confirmation_base = (
             f"✅ Strength logged!\n\n"
             f"🏋️ {movement_summary}\n"
             f"📅 Date: {workout_date}\n"
             f"📊 Scheme: {scheme_summary}\n"
             f"{weight_line}"
             f"{notes_line}"
+        ).rstrip("\n")
+        state["confirmation_base"] = confirmation_base
+        state["notion_page_url"] = _notion_page_url(state.get("last_workout_page_id"))
+        state["stage"] = "awaiting_feel"
+        cf_pending[key] = state
+        await message.reply_text(
+            f"{confirmation_base}\n"
             f"_Saved to Notion_\n\n"
             f"💬 How did that session feel?",
             parse_mode="Markdown",
@@ -1891,8 +1902,9 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         confirmation_lines.append(f"⚖️ Scale: {_rx_scaled_label(state.get('rx_scaled'))}")
         if scaling_notes and scaling_notes.strip():
             confirmation_lines.append(f"📝 Notes: {scaling_notes.strip()}")
-        confirmation_lines.append("_Saved to Notion_")
-        confirmation_lines.append("\n💬 How did that session feel?")
+        confirmation_base = "\n".join(confirmation_lines)
+        state["confirmation_base"] = confirmation_base
+        state["notion_page_url"] = _notion_page_url(wod_page_id)
         state["stage"] = "awaiting_feel"
         cf_pending[key] = state
         rx_msg_id = state.get("_rx_scaled_msg_id")
@@ -1903,7 +1915,7 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
             except Exception:
                 pass
         await message.reply_text(
-            "\n".join(confirmation_lines),
+            f"{confirmation_base}\n_Saved to Notion_\n\n💬 How did that session feel?",
             parse_mode="Markdown",
             reply_markup=session_feel_keyboard(key),
         )
@@ -2589,7 +2601,17 @@ async def _cf_feel(q, parts, claude, notion, config, cf_pending) -> None:
         chain = list(state.get("session_chain") or [])
         origin = state.get("session_origin")
         cf_pending.pop(key, None)
-        await q.edit_message_text(f"✅ Session feel logged: {rating}/5", parse_mode="Markdown")
+        confirmation_base = state.get("confirmation_base")
+        if confirmation_base:
+            notion_url = state.get("notion_page_url")
+            link_line = f"[🔗 View in Notion]({notion_url})" if notion_url else "_Saved to Notion_"
+            await q.edit_message_text(
+                f"{confirmation_base}\n💬 Session feel: {rating}/5\n\n{link_line}",
+                parse_mode="Markdown",
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+            )
+        else:
+            await q.edit_message_text(f"✅ Session feel logged: {rating}/5", parse_mode="Markdown")
         if mode == "strength" and "c" in chain:
             cf_pending[key] = {"session_chain": chain, "session_origin": origin}
             await q.message.reply_text("🏆 Did you do Section C (WOD) today?", reply_markup=_chain_keyboard("c"))

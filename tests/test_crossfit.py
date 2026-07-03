@@ -1538,7 +1538,11 @@ def test_wod_for_time_result_is_captured_before_rx_and_logged(monkeypatch):
     asyncio.run(handlers.handle_cf_callback(q, ["cf", "feel", "4", key], None, SimpleNamespace(), {"NOTION_WOD_LOG_DB": "wod"}, cf_pending))
 
     assert key not in cf_pending
-    assert q.edits[-1][0] == "✅ Session feel logged: 4/5"
+    final_text = q.edits[-1][0]
+    assert "WOD logged" in final_text
+    assert "💬 Session feel: 4/5" in final_text
+    assert "[🔗 View in Notion](https://www.notion.so/wodlog)" in final_text
+    assert "✅ Session feel logged" not in final_text
 
 
 def test_wod_format_callback_prompts_result_before_rx_when_movements_exist():
