@@ -48,13 +48,14 @@ def _trip_map(departure_date="2026-05-14", return_date="2026-05-17"):
 
 def test_execute_trip_saves_to_notion(monkeypatch):
     monkeypatch.setattr(trips, "NOTION_TRIPS_DB", "c57f9edb406d4368b32d23f0ea2a0c66")
+    monkeypatch.setattr(trips, "NOTION_DB_ID", "test-db")
     query = _Query()
     page_calls = []
 
     class _NotionPages:
         def create(self, **kwargs):
             page_calls.append(kwargs)
-            return {"id": "trip-1"}
+            return {"id": "trip-1", "properties": {}}
 
     class _NotionDatabases:
         def retrieve(self, **kwargs):

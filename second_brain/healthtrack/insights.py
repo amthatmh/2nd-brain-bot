@@ -22,6 +22,7 @@ from second_brain.notion.properties import (
     get_property_by_name,
     query_all,
 )
+from second_brain.utils import local_today
 
 log = logging.getLogger(__name__)
 
@@ -306,7 +307,7 @@ def build_health_insight_prompt(
     if prev_week_stats is None:
         prev_week_stats = compute_week_stats([])
     week_label = str(week_label or "this week")
-    as_of_date = as_of_date or date.today().isoformat()
+    as_of_date = as_of_date or local_today().isoformat()
     daily_readiness_str = ", ".join(
         f"{day} {value:.1f}" for day, value in week_stats.daily_readiness
     ) or "no data"
@@ -316,7 +317,7 @@ def build_health_insight_prompt(
     exercise_delta = _delta_str(week_stats.exercise_days, prev_week_stats.exercise_days, " days", 0)
     travel_block = ""
     travel_note = ""
-    if travel_context:
+    if isinstance(travel_context, dict):
         destinations = travel_context.get("destinations") or "Travel"
         purpose = travel_context.get("purpose") or "general travel"
         dep = travel_context.get("dep_date") or "unknown departure"

@@ -6,9 +6,26 @@ from second_brain.notion import tasks as notion_tasks
 from second_brain import weather as wx
 from second_brain import mute as mute_helpers
 from second_brain.utils import local_today
+from second_brain.services.note_utils import deadline_days_to_label
 from second_brain.state import STATE
 
 log = logging.getLogger(__name__)
+
+
+def _horizon_from_deadline(deadline: str | None) -> str:
+    """Derive a horizon label from a task's deadline date.
+
+    The Notion `Auto Horizon` formula mislabels next-day deadlines as
+    "🔴 Today" in the evening (it compares a midnight date to now()), so we
+    compute the label from the actual date against the app timezone instead.
+    """
+    if not deadline:
+        return "⚪ Backburner"
+    try:
+        d = date.fromisoformat(deadline[:10])
+    except ValueError:
+        return "⚪ Backburner"
+    return deadline_days_to_label((d - local_today()).days)
 
 
 def num_emoji(n: int) -> str:
@@ -74,8 +91,8 @@ def format_daily_digest(
         return f"☀️ *{date_str}*\n\nAll clear — no tasks or habits pending right now! 🎉", []
 
     today_str = local_today().isoformat()
-    overdue = [t for t in tasks if t["deadline"] and t["deadline"] < today_str]
-    today_now = [t for t in tasks if t["auto_horizon"] == "🔴 Today" and t not in overdue]
+    overdue = [t for t in tasks if t["deadline"] and t["deadline"][:10] < today_str]
+    today_now = [t for t in tasks if (t.get("deadline") or "")[:10] == today_str and t not in overdue]
     carryover = [t for t in tasks if t not in overdue and t not in today_now]
 
     lines, ordered, n = [f"☀️ *{date_str}*"], [], 1
@@ -100,7 +117,7 @@ def format_daily_digest(
     if carryover:
         lines.append("🔁 *Carry-over (still open)*")
         for t in carryover:
-            lines.append(f"{num_emoji(n)}{context_emoji(t.get('context'))} {t['name']} · {t['auto_horizon']}")
+            lines.append(f"{num_emoji(n)}{context_emoji(t.get('context'))} {t['name']} · {_horizon_from_deadline(t.get('deadline'))}")
             ordered.append(t); n += 1
         lines.append("")
 
@@ -182,7 +199,7 @@ def format_reminder_snapshot(notion_client=None, notion_db_id: str | None = None
             t for t in all_tasks
             if t.get("deadline")
             and today_str <= t["deadline"] <= five_day_cutoff
-            and (t.get("auto_horizon") == "🔴 Today" or is_personal(t))
+            and ((t.get("deadline") or "")[:10] == today_str or is_personal(t))
         ]
         week_focus = sorted(
             week_focus,
@@ -207,7 +224,7 @@ def format_reminder_snapshot(notion_client=None, notion_db_id: str | None = None
     else:
         for idx, task in enumerate(ordered[:limit], start=1):
             deadline = f" · due {task['deadline']}" if task.get("deadline") else ""
-            lines.append(f"{num_emoji(idx)} {task['name']}  {task['context']} · {task['auto_horizon']}{deadline}")
+            lines.append(f"{num_emoji(idx)} {task['name']}  {task['context']} · {_horizon_from_deadline(task.get('deadline'))}{deadline}")
         if len(ordered) > limit:
             lines.append(f"\n…and *{len(ordered) - limit}* more.")
 

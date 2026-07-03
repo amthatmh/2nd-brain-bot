@@ -16,6 +16,7 @@ from second_brain.config import (
     NOTION_TRIPS_DB,
 )
 from second_brain.error_reporting import send_system_log
+from second_brain.utils import local_today
 from second_brain.notion import notion_call
 from second_brain.notion.properties import (
     extract_multi_select,
@@ -43,7 +44,7 @@ def format_trip_dates(dep: str, ret: str) -> str:
 
 
 def parse_trip_message(text: str, claude) -> dict:
-    prompt = f"""Extract trip details from this message. Today is {date.today().isoformat()}.
+    prompt = f"""Extract trip details from this message. Today is {local_today().isoformat()}.
 
 Message: \"{text}\"
 
@@ -142,7 +143,7 @@ def _create_pre_trip_task(notion, trip: dict) -> None:
     try:
         dep = date.fromisoformat(trip["departure_date"])
         reminder_date = dep - timedelta(days=1)
-        deadline_days = max(0, (reminder_date - date.today()).days)
+        deadline_days = max(0, (reminder_date - local_today()).days)
     except Exception:
         deadline_days = 0
     purpose_list = trip.get("purpose_list") or []
@@ -179,7 +180,7 @@ async def execute_trip(
 
     needs_weather_refresh = False
     try:
-        days_until_departure = (date.fromisoformat(trip["departure_date"]) - date.today()).days
+        days_until_departure = (date.fromisoformat(trip["departure_date"]) - local_today()).days
     except Exception:
         logger.debug("Could not parse departure_date for trip; defaulting to 0 days", exc_info=True)
         days_until_departure = 0
@@ -483,7 +484,7 @@ def _is_departure_within_forecast_window(
         departure = date.fromisoformat(departure_date)
     except ValueError:
         return True
-    today = today or date.today()
+    today = today or local_today()
     days_until_departure = (departure - today).days
     return days_until_departure <= lookahead_days
 
@@ -498,7 +499,7 @@ def refresh_upcoming_trip_weather(
     database_id = _normalize_notion_database_id(notion_trips_db) or notion_trips_db
     if not database_id or not fetch_trip_weather_range:
         return 0
-    today = date.today()
+    today = local_today()
     upper = today + timedelta(days=lookahead_days)
     try:
         rows = query_all(
@@ -529,7 +530,7 @@ def refresh_upcoming_trip_weather(
         if not dep or not ret or not destination:
             continue
         # Skip if return date already passed
-        if ret and date.fromisoformat(ret) < date.today():
+        if ret and date.fromisoformat(ret) < local_today():
             continue
         summary, flags = _build_trip_weather_summary(
             dep,
@@ -723,7 +724,7 @@ def get_upcoming_trips_needing_reminder(within_days: int = 2, *, notion=None, no
     if not notion_trips_db:
         return []
 
-    today = date.today()
+    today = local_today()
     cutoff_date = (today + timedelta(days=within_days)).isoformat()
 
     try:

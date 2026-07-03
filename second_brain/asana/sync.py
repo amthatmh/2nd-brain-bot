@@ -19,6 +19,15 @@ v9.2 changes:
 - New required parameter `asana_workspace_gid` for my_tasks mode.
 - Module-level cache of UTL GIDs keyed by workspace, so we only look up
   the User Task List once per process.
+
+v9.3 changes:
+- Reassignment handling. A task reassigned away from the PAT owner drops out
+  of the my_tasks feed (and may be removed from the project in project mode),
+  which previously left the orphaned Notion row in the To-Do forever. We now
+  archive such rows — but only after a targeted per-task fetch positively
+  confirms the task still exists and is no longer assigned to us, so transient
+  feed misses can never cause data loss (the trap that disabled archive_orphans).
+- Module-level cache of the PAT owner's user GID (/users/me).
 """
 
 import json
@@ -173,6 +182,31 @@ class GidCache:
         log.info("GID cache rebuilt: %d mappings", len(fresh))
 
 
+def _active_gid_page_map(notion, database_id: str) -> dict[str, dict[str, Any]]:
+    """
+    Map {asana_gid -> full Notion page} for rows that are NOT done and carry an
+    Asana Task ID. This is the candidate set for the reassignment sweep: we only
+    scrutinise live tasks, so completed rows that legitimately age out of the
+    90-day Asana window are never re-checked.
+    """
+    fresh: dict[str, dict[str, Any]] = {}
+    for page in query_all(
+        notion,
+        database_id,
+        filter={
+            "and": [
+                {"property": "Asana Task ID", "rich_text": {"is_not_empty": True}},
+                {"property": "Done", "checkbox": {"equals": False}},
+            ]
+        },
+        page_size=100,
+    ):
+        gid = _read_rich_text(page, "Asana Task ID")
+        if gid:
+            fresh[gid] = page
+    return fresh
+
+
 # Module-level singleton — shared across all reconcile() calls in the process.
 _cache = GidCache()
 _failed_pages: dict[str, dict[str, Any]] = {}
@@ -219,9 +253,32 @@ def _clear_failed_page(page_id: str) -> None:
 _utl_cache: dict[str, str] = {}
 _utl_cache_lock = threading.Lock()
 
+# Cache of the PAT owner's user GID, keyed by token. "me" never changes for a
+# given token, so this is safe for the process lifetime. Used to decide whether
+# a task is still assigned to us when reconciling reassignments.
+_me_gid_cache: dict[str, str] = {}
+_me_gid_lock = threading.Lock()
+
 
 def _looks_like_gid(value: str) -> bool:
     return bool(re.fullmatch(r"\d+", (value or "").strip()))
+
+
+def _get_me_gid(token: str) -> str:
+    """Look up (and cache) the GID of the user that owns the PAT."""
+    with _me_gid_lock:
+        cached = _me_gid_cache.get(token)
+        if cached:
+            return cached
+
+    payload = _asana_request("/users/me", token, query={"opt_fields": "gid"})
+    gid = (payload.get("data") or {}).get("gid")
+    if not gid:
+        raise AsanaSyncError("Asana /users/me returned no gid")
+
+    with _me_gid_lock:
+        _me_gid_cache[token] = gid
+    return gid
 
 
 def _get_user_task_list_gid(workspace_gid: str, token: str) -> str:
@@ -409,6 +466,22 @@ def _asana_fetch_single_task(
 
     tasks = payload.get("data") or []
     return tasks[0] if tasks else None
+
+
+def _asana_fetch_task_assignee(gid: str, token: str) -> str | None:
+    """
+    Fetch the current assignee GID for a single task.
+
+    Returns the assignee's GID, or None if the task is unassigned. Raises
+    (HTTPError 404 for a deleted/inaccessible task, AsanaSyncError on transient
+    failure) — callers treat any raise as "don't touch", so absence or ambiguity
+    never triggers archival.
+    """
+    payload = _asana_request(f"/tasks/{gid}", token, query={"opt_fields": "assignee.gid"})
+    assignee = (payload.get("data") or {}).get("assignee")
+    if isinstance(assignee, dict):
+        return assignee.get("gid")
+    return None
 
 
 def _asana_update_task(gid: str, token: str, fields: dict[str, Any]) -> dict[str, Any]:
@@ -650,7 +723,7 @@ def reconcile(
     if source_mode == "my_tasks" and not asana_workspace_gid:
         raise AsanaSyncError("ASANA_WORKSPACE_GID is missing for source_mode=my_tasks")
 
-    stats = {"created": 0, "a2n": 0, "n2a": 0, "deleted": 0, "skipped": 0, "deferred_pages": 0, "failed_queue_size": 0}
+    stats = {"created": 0, "a2n": 0, "n2a": 0, "deleted": 0, "reassigned": 0, "skipped": 0, "deferred_pages": 0, "failed_queue_size": 0}
 
     # ── Cache trigger 1 & 2: rebuild on startup or periodic safety net ──
     if _cache.stale():
@@ -733,6 +806,54 @@ def reconcile(
             except Exception:
                 log.exception("Failed N→A update for GID %s", gid)
                 _queue_failed_page(page_id, "n2a_update_failed")
+
+    # ── Reassignment sweep ──
+    # A task reassigned away from the PAT owner vanishes from the my_tasks feed
+    # (and, in project mode, may be removed from the project). Such a row used
+    # to linger in the To-Do forever. We now archive it — but ONLY after a
+    # targeted per-task fetch positively confirms the task still exists and is
+    # no longer assigned to us. A task that is merely missing from the feed
+    # transiently still comes back as assigned-to-us here, so it is left alone;
+    # a deleted task raises (404) and is also left alone. This is the safe
+    # inverse of the disabled blanket archive_orphans path.
+    try:
+        my_gid = _get_me_gid(asana_token)
+    except Exception:
+        log.exception("Could not resolve Asana 'me' GID; skipping reassignment sweep")
+        my_gid = None
+
+    if my_gid:
+        for gid, page in _active_gid_page_map(notion, notion_db_id).items():
+            if gid in asana_by_gid:
+                continue  # still in the feed — handled by the main loop above
+            page_id = page["id"]
+            if _should_defer_page(page_id):
+                stats["deferred_pages"] += 1
+                continue
+            if page.get("archived"):
+                _cache.drop(gid)
+                continue
+            if not _should_sync_to_asana(page):
+                continue
+            try:
+                assignee_gid = _asana_fetch_task_assignee(gid, asana_token)
+            except Exception:
+                # 404 (deleted) or transient error — never archive on ambiguity.
+                continue
+            if assignee_gid == my_gid:
+                continue  # still ours, just transiently absent from the feed
+            try:
+                notion.pages.update(page_id=page_id, archived=True)
+                _cache.drop(gid)
+                _clear_failed_page(page_id)
+                stats["reassigned"] += 1
+                log.info(
+                    "Archived reassigned task gid=%s page=%s new_assignee=%s",
+                    gid, page_id, assignee_gid or "unassigned",
+                )
+            except Exception:
+                log.exception("Failed to archive reassigned task gid=%s", gid)
+                _queue_failed_page(page_id, "reassign_archive_failed")
 
     # ── Safety: do not archive "missing" rows automatically ──
     # In practice, feed scoping/filtering differences can make valid tasks

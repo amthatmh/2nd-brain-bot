@@ -747,17 +747,20 @@ def pending_habits_for_digest(time_str: str | None) -> list[dict]:
 async def send_daily_digest(bot, include_habits: bool | None = None, config: dict | None = None) -> None:
     old_cache = notion_habits.habit_cache
     old_datetime = digest_helpers.datetime
+    old_notion = digest_helpers._notion
     old_already_logged_today = notion_habits.already_logged_today
     old_is_on_pace = notion_habits.is_on_pace
     try:
         notion_habits.habit_cache = habit_cache
         digest_helpers.datetime = datetime
+        digest_helpers._notion = notion
         notion_habits.already_logged_today = lambda _notion, _log_db, pid, _tz: already_logged_today(pid)
         notion_habits.is_on_pace = lambda _notion, _log_db, habit, _tz: is_on_pace(habit)
         await _digest_send_daily_digest(bot, include_habits=include_habits, config=config)
     finally:
         notion_habits.habit_cache = old_cache
         digest_helpers.datetime = old_datetime
+        digest_helpers._notion = old_notion
         notion_habits.already_logged_today = old_already_logged_today
         notion_habits.is_on_pace = old_is_on_pace
 
@@ -898,10 +901,10 @@ def _run_capture(raw_text: str, force_create: bool = False,
                 "recurring": recurring, "page_id": page_id,
             }
 
-        page_id, auto_horizon = notion_tasks.create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
+        page_id, _ = notion_tasks.create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
         return {
             "status": "captured", "name": task_name,
-            "horizon_label": auto_horizon or horizon_label, "context": ctx,
+            "horizon_label": horizon_label, "context": ctx,
             "recurring": recurring, "page_id": page_id,
         }
     except Exception as e:
@@ -1119,7 +1122,7 @@ async def _create_task_from_classification(
                 "page_id": page_id,
             }
 
-        page_id, auto_horizon = notion_tasks.create_task(
+        page_id, _ = notion_tasks.create_task(
             notion,
             NOTION_DB_ID,
             task_name,
@@ -1132,7 +1135,7 @@ async def _create_task_from_classification(
         return {
             "status": "captured",
             "name": task_name,
-            "horizon_label": auto_horizon or horizon_label,
+            "horizon_label": horizon_label,
             "context": ctx,
             "recurring": recurring,
             "page_id": page_id,
@@ -1182,7 +1185,7 @@ async def _confirm_multi_task_batch(
 
 async def create_task_batch(message, raw_text: str, task_texts: list[str], force_create: bool = False) -> None:
     """Classify and create a task batch without a separate confirmation prompt."""
-    thinking = await message.reply_text(f"🧠 Classifying {len(task_texts)} tasks...")
+    thinking = await message.reply_text(f"🧠 Classifying {len(task_texts)} tasks...", disable_notification=True)
     try:
         overrides = infer_batch_overrides(raw_text)
         classifications = await _classify_task_texts(task_texts)
@@ -1213,7 +1216,8 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
     task_texts = split_tasks(raw_text)
     is_multi = len(task_texts) > 1
     thinking = await message.reply_text(
-        f"🧠 Classifying {len(task_texts)} tasks..." if is_multi else "🧠 Classifying..."
+        f"🧠 Classifying {len(task_texts)} tasks..." if is_multi else "🧠 Classifying...",
+        disable_notification=True,
     )
 
     if is_multi:
@@ -1331,9 +1335,9 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
                 parse_mode="Markdown",
             )
         else:
-            page_id, auto_horizon = notion_tasks.create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
+            page_id, _ = notion_tasks.create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
             await thinking.edit_text(
-                f"✅ Captured!\n\n📝 {task_name}\n🕐 {auto_horizon or horizon_label}  {ctx}{recur_tag}\n\n_Saved to Notion_",
+                f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}{recur_tag}\n\n_Saved to Notion_",
                 parse_mode="Markdown",
             )
         capture_map[thinking.message_id] = {"page_id": page_id, "name": task_name}
@@ -1922,7 +1926,7 @@ async def run_asana_sync(bot) -> dict:
     """
     if not ASANA_PAT:
         return {"ok": True, "action": "disabled"}  # Sync disabled — bot still works without Asana
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     sync_status["asana"]["last_run"] = utc_now_iso()
     try:
         stats = await loop.run_in_executor(

@@ -286,6 +286,89 @@ class TestHealthMetricsUpsert(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Date", notion.pages.update.call_args.kwargs["properties"])
 
 
+class TestHealthMetricsWeighHabitLogging(unittest.IsolatedAsyncioTestCase):
+    """Verify Weigh habit is logged against the measurement date, not today's date."""
+
+    def _make_notion(self, *, page_exists: bool = False):
+        notion = MagicMock()
+        # First query: name lookup; second query: date fallback
+        notion.databases.query.side_effect = [{"results": []}, {"results": []}]
+        notion.pages.create.return_value = {"id": "new-page"}
+        return notion
+
+    async def test_weigh_habit_logged_with_measurement_date(self):
+        notion = self._make_notion()
+        with (
+            patch("second_brain.healthtrack.metrics._find_habit_page_id", return_value="habit-page") as _find,
+            patch("second_brain.notion.habits.already_logged_today", return_value=False) as already,
+            patch("second_brain.notion.habits.log_habit") as log_h,
+        ):
+            await handle_health_metrics_sync(
+                body=PAYLOAD,
+                notion=notion,
+                metrics_db_id="metrics-db",
+                tz=ZoneInfo("UTC"),
+                habit_db_id="habit-db",
+                log_db_id="log-db",
+                weigh_habit_name="Weigh",
+            )
+
+        # already_logged_today must be called with log_date matching the payload date
+        already.assert_called_once()
+        self.assertEqual(already.call_args.kwargs.get("log_date"), "2026-05-09")
+
+        # log_habit must be called with log_date matching the payload date
+        log_h.assert_called_once()
+        self.assertEqual(log_h.call_args.kwargs.get("log_date"), "2026-05-09")
+
+    async def test_weigh_habit_skipped_when_already_logged_for_measurement_date(self):
+        notion = self._make_notion()
+        with (
+            patch("second_brain.healthtrack.metrics._find_habit_page_id", return_value="habit-page"),
+            patch("second_brain.notion.habits.already_logged_today", return_value=True) as already,
+            patch("second_brain.notion.habits.log_habit") as log_h,
+        ):
+            await handle_health_metrics_sync(
+                body=PAYLOAD,
+                notion=notion,
+                metrics_db_id="metrics-db",
+                tz=ZoneInfo("UTC"),
+                habit_db_id="habit-db",
+                log_db_id="log-db",
+                weigh_habit_name="Weigh",
+            )
+
+        already.assert_called_once()
+        log_h.assert_not_called()
+
+    async def test_weigh_habit_not_logged_when_no_weight_in_payload(self):
+        no_weight_payload = {
+            "data": [
+                {
+                    "name": "Heart Rate Variability",
+                    "data": [{"date": "2026-05-09 21:00:00 +0000", "qty": 39.0}],
+                }
+            ]
+        }
+        notion = self._make_notion()
+        with (
+            patch("second_brain.healthtrack.metrics._find_habit_page_id", return_value="habit-page") as _find,
+            patch("second_brain.notion.habits.log_habit") as log_h,
+        ):
+            await handle_health_metrics_sync(
+                body=no_weight_payload,
+                notion=notion,
+                metrics_db_id="metrics-db",
+                tz=ZoneInfo("UTC"),
+                habit_db_id="habit-db",
+                log_db_id="log-db",
+                weigh_habit_name="Weigh",
+            )
+
+        _find.assert_not_called()
+        log_h.assert_not_called()
+
+
 class TestHealthMetricsRoute(unittest.IsolatedAsyncioTestCase):
     async def test_health_sync_step_only_payload_still_writes_steps(self):
         app = web.Application()

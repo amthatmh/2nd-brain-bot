@@ -483,6 +483,9 @@ async def send_daily_digest(bot, include_habits: bool | None = None, config: dic
     if mute_helpers.is_muted(STATE.mute_until, TZ):
         log.info("Daily digest skipped (muted)")
         return
+    if _notion is None:
+        log.warning("Daily digest skipped: Notion client not initialised")
+        return
     tasks = _filter_digest_tasks(notion_tasks.get_today_and_overdue_tasks(_notion, NOTION_DB_ID, limit=None), config=config)
     today = local_today()
     overdue = [t for t in tasks if (d := notion_tasks._parse_deadline(t.get("deadline"))) is not None and d < today]
