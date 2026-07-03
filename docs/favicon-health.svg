@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="heartGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff7a63"/>
+      <stop offset="1" stop-color="#e0466b"/>
+    </linearGradient>
+    <linearGradient id="checkGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7a94b"/>
+      <stop offset="1" stop-color="#f5871f"/>
+    </linearGradient>
+  </defs>
+
+  <!-- rounded card background -->
+  <rect x="16" y="16" width="480" height="480" rx="120" fill="#241519"/>
+
+  <!-- heart outline -->
+  <path d="M256 400
+           C120 312 96 232 96 184
+           C96 132 136 100 180 100
+           C214 100 240 122 256 150
+           C272 122 298 100 332 100
+           C376 100 416 132 416 184
+           C416 232 392 312 256 400 Z"
+        fill="none" stroke="url(#heartGrad)" stroke-width="34"
+        stroke-linejoin="round"/>
+
+  <!-- ECG pulse line -->
+  <path d="M150 250 L235 250 L258 205 L286 300 L312 250 L360 250"
+        fill="none" stroke="url(#heartGrad)" stroke-width="20"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- check mark -->
+  <path d="M300 322 L344 366 L432 268"
+        fill="none" stroke="url(#checkGrad)" stroke-width="40"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
