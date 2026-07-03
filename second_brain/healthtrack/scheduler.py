@@ -598,6 +598,7 @@ async def handle_health_metrics_sync_job(bot=None) -> dict:
 def register_handlers(manager: "UtilitySchedulerManager") -> None:
     """Register health tracking jobs with the Utility Scheduler Manager."""
     from second_brain.healthtrack.insights import handle_weekly_health_insight_job
+    from second_brain.healthtrack.recovery import handle_recovery_alert_job
     from second_brain.healthtrack.sleep import (
         handle_sleep_gap_fill_job,
         handle_sleep_resync_job,
@@ -612,7 +613,8 @@ def register_handlers(manager: "UtilitySchedulerManager") -> None:
     manager.register_handler("sleep_gap_fill", handle_sleep_gap_fill_job)
     manager.register_handler("health_metrics_sync", handle_health_metrics_sync_job)
     manager.register_handler("weekly_health_insight", handle_weekly_health_insight_job)
+    manager.register_handler("recovery_alert", handle_recovery_alert_job)
     log.info(
         "healthtrack: registered scheduler handlers "
-        "(steps_sync_check, sleep_sync, sleep_resync, sleep_backfill, sleep_gap_fill, health_metrics_sync, weekly_health_insight)"
+        "(steps_sync_check, sleep_sync, sleep_resync, sleep_backfill, sleep_gap_fill, health_metrics_sync, weekly_health_insight, recovery_alert)"
     )
