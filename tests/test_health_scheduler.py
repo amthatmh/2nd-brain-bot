@@ -398,11 +398,13 @@ class TestWeighJobs(IsolatedAsyncioTestCase):
             handle_sleep_gap_fill_job=MagicMock(),
         )
         fake_insights = SimpleNamespace(handle_weekly_health_insight_job=MagicMock())
+        fake_recovery = SimpleNamespace(handle_recovery_alert_job=MagicMock())
 
         with patch.dict("sys.modules", {
             "second_brain.healthtrack.steps": fake_steps,
             "second_brain.healthtrack.sleep": fake_sleep,
             "second_brain.healthtrack.insights": fake_insights,
+            "second_brain.healthtrack.recovery": fake_recovery,
         }):
             register_handlers(manager)
 
@@ -418,3 +420,4 @@ class TestWeighJobs(IsolatedAsyncioTestCase):
         self.assertIs(registered["steps_sync_check"], fake_steps.handle_steps_sync_check)
         self.assertTrue(callable(registered["sleep_backfill"]))
         self.assertIs(registered["sleep_gap_fill"], fake_sleep.handle_sleep_gap_fill_job)
+        self.assertIs(registered["recovery_alert"], fake_recovery.handle_recovery_alert_job)
