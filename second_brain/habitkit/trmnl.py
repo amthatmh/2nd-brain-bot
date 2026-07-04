@@ -59,6 +59,19 @@ def _range_label(window: list[str]) -> str:
     return f"{_MONTH_ABBR[start.month]} {start.day} – {_MONTH_ABBR[end.month]} {end.day}"
 
 
+def _sleep_state(minutes: int, threshold: int) -> int:
+    """3-state dot for the Sleep habit from actual sleep minutes.
+
+    1 = full (met the goal), 2 = partial (within 1h below goal, i.e. 6-7h when
+    the goal is 7h — rendered grey), 0 = missed (more than 1h short, or no data).
+    """
+    if minutes >= threshold:
+        return 1
+    if minutes >= threshold - 60:
+        return 2
+    return 0
+
+
 def build_habit_card_payload(habits_data: dict, today: date) -> dict:
     """Reduce the HabitKit rollup to the past-7-days habit card payload.
 
@@ -75,13 +88,20 @@ def build_habit_card_payload(habits_data: dict, today: date) -> dict:
     for habit in habits_data.get("habits", []):
         if not habit.get("trmnl"):
             continue
-        days = (habit.get("days") or [])[-WINDOW_DAYS:]
+        # Sleep is dot-graded from actual hours (1 full / 2 partial 6-7h / 0 missed);
+        # every other habit stays binary done/missed from the habit log.
+        sleep_minutes = habit.get("sleepMinutes")
+        if sleep_minutes:
+            threshold = habit.get("sleepThreshold") or 420
+            days = [_sleep_state(m, threshold) for m in sleep_minutes[-WINDOW_DAYS:]]
+        else:
+            days = (habit.get("days") or [])[-WINDOW_DAYS:]
         habits_out.append(
             {
                 "name": _clean_name(habit.get("name")),
                 "icon": habit.get("icon"),
                 "days": days,
-                "done": sum(1 for d in days if d),
+                "done": sum(1 for d in days if d == 1),
                 "streak": habit.get("dayStreak", 0),
                 "today_done": bool(habit.get("todayDone")),
             }

@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from datetime import date
 
-from second_brain.habitkit.trmnl import _clean_name, build_habit_card_payload
+from second_brain.habitkit.trmnl import _clean_name, _sleep_state, build_habit_card_payload
 
 
 class TestCleanName(unittest.TestCase):
@@ -46,6 +46,28 @@ def _habit(name, days, trmnl=True, icon="💪", streak=0, today_done=False):
         "dayStreak": streak,
         "todayDone": today_done,
     }
+
+
+class TestSleepDotGrading(unittest.TestCase):
+    def test_sleep_state_thresholds(self):
+        self.assertEqual(_sleep_state(430, 420), 1)  # met goal
+        self.assertEqual(_sleep_state(420, 420), 1)  # exactly goal
+        self.assertEqual(_sleep_state(400, 420), 2)  # 6-7h -> partial
+        self.assertEqual(_sleep_state(360, 420), 2)  # exactly 6h -> partial
+        self.assertEqual(_sleep_state(359, 420), 0)  # >1h short -> missed
+        self.assertEqual(_sleep_state(0, 420), 0)
+
+    def test_sleep_habit_dots_graded_from_minutes(self):
+        sleep = _habit("Sleep", [1] * 8)  # log days ignored once minutes present
+        sleep["sleepMinutes"] = [430, 400, 350, 420, 380, 300, 415, 440]
+        sleep["sleepThreshold"] = 420
+        p = build_habit_card_payload(_habits_data([sleep]), TODAY)
+        # last 7 minutes -> [400,350,420,380,300,415,440]
+        self.assertEqual(p["habits"][0]["days"], [2, 0, 1, 2, 0, 2, 1])
+
+    def test_non_sleep_habit_stays_binary(self):
+        p = build_habit_card_payload(_habits_data([_habit("Workout", [1, 0, 1, 0, 1, 1, 1, 0])]), TODAY)
+        self.assertEqual(set(p["habits"][0]["days"]) <= {0, 1}, True)
 
 
 class TestBuildHabitCardPayload(unittest.TestCase):
