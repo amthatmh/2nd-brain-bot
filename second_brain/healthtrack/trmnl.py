@@ -131,6 +131,29 @@ def _arrow(delta: float | None) -> str:
     return "↑" if delta > 0 else "↓"
 
 
+def _card_recommendation(workout_gap: int, steps_gap: int, today: date) -> str:
+    """Day-aware next-move line: frame the gap against the days left this week.
+
+    The dashboard's own recommendation ("add 3 step days") ignores how much of
+    the week is left — nonsense on a Saturday. Here we cap each gap to the days
+    remaining (including today) so the advice stays achievable.
+    """
+    remaining = 7 - today.weekday()  # Mon=7 ... Sat=2, Sun=1
+    if workout_gap <= 0 and steps_gap <= 0:
+        return "On track — keep it going."
+
+    parts: list[str] = []
+    if workout_gap > 0:
+        n = min(workout_gap, remaining)
+        parts.append(f"{n} workout" if n == 1 else f"{n} workouts")
+    if steps_gap > 0:
+        n = min(steps_gap, remaining)
+        parts.append("steps daily" if n >= remaining else f"{n} step days")
+
+    days = f"{remaining} day" if remaining == 1 else f"{remaining} days"
+    return f"{days} left: {' + '.join(parts)}."
+
+
 def build_card_payload(
     dashboard: dict[str, Any],
     flag: Any,
@@ -163,6 +186,9 @@ def build_card_payload(
     hrv_delta = _pct_delta(flag.today_hrv, getattr(w7, "mean_hrv", None))
     rhr_delta = _pct_delta(flag.today_rhr, getattr(w7, "mean_rhr", None))
 
+    # total_sleep is stored in minutes; the card shows hours.
+    sleep_avg_min = _avg_last7(metrics.get("total_sleep"))
+    sleep_avg_hours = sleep_avg_min / 60 if sleep_avg_min is not None else None
     sleep_avg = _avg_last7(metrics.get("total_sleep"))
 
     return {
@@ -177,6 +203,7 @@ def build_card_payload(
         "activity": {
             "score": activity.get("value"),
             "desc": activity.get("description", ""),
+            "recommendation": _card_recommendation(workout_gap, steps_gap, today),
             "recommendation": activity.get("recommendation", ""),
         },
         "steps": {
@@ -196,6 +223,8 @@ def build_card_payload(
             "arrow": _arrow(rhr_delta),
         },
         "sleep": {
+            "avg7_hours": round(sleep_avg_hours, 2) if sleep_avg_hours is not None else None,
+            "arrow": _arrow(_pct_delta(sleep_avg_hours, 7.0)),
             "avg7_hours": round(sleep_avg, 2) if sleep_avg is not None else None,
             "arrow": _arrow(_pct_delta(sleep_avg, 7.0)),
         },
