@@ -5,7 +5,21 @@ from __future__ import annotations
 import unittest
 from datetime import date
 
-from second_brain.habitkit.trmnl import build_habit_card_payload
+from second_brain.habitkit.trmnl import _clean_name, build_habit_card_payload
+
+
+class TestCleanName(unittest.TestCase):
+    def test_strips_leading_emoji(self):
+        self.assertEqual(_clean_name("💊💊 Allergy Meds"), "Allergy Meds")
+        self.assertEqual(_clean_name("💪💪 Workout"), "Workout")
+
+    def test_keeps_plain_names(self):
+        self.assertEqual(_clean_name("Water2L"), "Water2L")
+        self.assertEqual(_clean_name("Handstand+PushUp"), "Handstand+PushUp")
+
+    def test_handles_empty(self):
+        self.assertEqual(_clean_name(None), "")
+        self.assertEqual(_clean_name(""), "")
 
 TODAY = date(2026, 7, 5)  # a Sunday
 
