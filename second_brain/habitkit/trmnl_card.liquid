@@ -30,7 +30,7 @@
     {% for h in day_headers %}
       <div style="width:44px;text-align:center;">{% if forloop.last %}TODAY{% endif %}</div>
     {% endfor %}
-    <div style="width:60px;text-align:center;">STREAK</div>
+    <div style="width:60px;text-align:center;margin-left:14px;border-left:2px solid #000;">STREAK</div>
   </div>
 
   <!-- Habit rows -->
@@ -41,7 +41,7 @@
         {% for d in habit.days %}
           <div style="width:44px;text-align:center;font-size:24px;line-height:1;">{% if d == 1 %}●{% else %}○{% endif %}</div>
         {% endfor %}
-        <div style="width:60px;text-align:center;font-size:26px;font-weight:800;">{{ habit.streak }}</div>
+        <div style="width:60px;text-align:center;font-size:26px;font-weight:800;margin-left:14px;border-left:2px solid #000;">{{ habit.streak }}</div>
       </div>
     {% endfor %}
   </div>
