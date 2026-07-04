@@ -10,10 +10,13 @@ from types import SimpleNamespace
 from second_brain.healthtrack.trmnl import (
     StepSummary,
     Verdict,
+    _card_recommendation,
     build_card_payload,
     compute_verdict,
     summarize_steps,
 )
+
+SATURDAY = date(2026, 7, 4)  # weekday 5 -> 2 days left in the week
 
 TODAY = date(2026, 7, 3)  # a Friday
 
@@ -127,6 +130,26 @@ class TestSummarizeSteps(unittest.TestCase):
         self.assertEqual(s.today, 1500)
 
 
+class TestCardRecommendation(unittest.TestCase):
+    def test_caps_step_gap_to_days_left(self):
+        # Saturday, 4/7 step days, gap 3 -> only 2 days left, so "steps daily".
+        rec = _card_recommendation(workout_gap=0, steps_gap=3, today=SATURDAY)
+        self.assertEqual(rec, "2 days left: steps daily.")
+
+    def test_partial_step_gap_reads_count(self):
+        # Friday (3 days left), gap of 2 -> achievable, shown as count.
+        rec = _card_recommendation(workout_gap=0, steps_gap=2, today=TODAY)
+        self.assertEqual(rec, "3 days left: 2 step days.")
+
+    def test_workout_singular(self):
+        rec = _card_recommendation(workout_gap=1, steps_gap=0, today=SATURDAY)
+        self.assertIn("1 workout", rec)
+        self.assertNotIn("workouts", rec)
+
+    def test_on_track_when_no_gap(self):
+        self.assertEqual(_card_recommendation(0, 0, SATURDAY), "On track — keep it going.")
+
+
 class TestBuildCardPayload(unittest.TestCase):
     def _dashboard(self, workout_days=2, steps_days=5, prev_workout=1):
         return {
@@ -157,6 +180,12 @@ class TestBuildCardPayload(unittest.TestCase):
         self.assertEqual(p["hrv"]["arrow"], "↓")
         self.assertEqual(p["rhr"]["arrow"], "↑")
         self.assertEqual(p["hrv"]["value"], 60)
+
+    def test_sleep_minutes_converted_to_hours(self):
+        d = self._dashboard()
+        d["metrics"]["total_sleep"] = [{"date": f"2026-07-0{i}", "value": 420} for i in range(1, 4)]
+        p = build_card_payload(d, _flag("none"), StepSummary(1, 1, 1), TODAY)
+        self.assertEqual(p["sleep"]["avg7_hours"], 7.0)
 
     def test_missing_metrics_degrade_gracefully(self):
         p = build_card_payload({"scores": {}, "weekly_activity": [], "metrics": {}}, _flag("no_data", today_hrv=None, today_rhr=None), StepSummary(0, 0, 0), TODAY)
