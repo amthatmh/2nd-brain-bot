@@ -427,12 +427,18 @@ STATE.claude_activity_today = []
 _habit_selections: dict[int, dict[str, object]] = {}
 _HABIT_SELECTION_TTL_SECONDS = 18 * 60 * 60
 
-def _store_habit_selection_session(message_id: int, habits: list[dict], selected: set[str] | None = None) -> None:
-    """Cache habit button state for a rendered Telegram message."""
+def _store_habit_selection_session(message_id: int, habits: list[dict], selected: set[str] | None = None, log_date: str | None = None) -> None:
+    """Cache habit button state for a rendered Telegram message.
+
+    ``log_date`` overrides the completion date used when the selection is
+    logged; the yesterday catch-up passes yesterday's date so late check-offs
+    land on the day they actually happened.
+    """
     _habit_selections[message_id] = {
         "selected": selected or set(),
         "habits": habits,
         "created_at": time.time(),
+        "log_date": log_date,
     }
 
 def _habit_selection_session(message_id: int) -> dict[str, object]:
@@ -442,8 +448,9 @@ def _habit_selection_session(message_id: int) -> dict[str, object]:
         session.setdefault("selected", set())
         session.setdefault("habits", [])
         session.setdefault("created_at", time.time())
+        session.setdefault("log_date", None)
         return session
-    session = {"selected": set(), "habits": [], "created_at": time.time()}
+    session = {"selected": set(), "habits": [], "created_at": time.time(), "log_date": None}
     _habit_selections[message_id] = session
     return session
 

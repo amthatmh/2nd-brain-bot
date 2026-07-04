@@ -147,6 +147,29 @@ def pending_habits_for_digest(*, habit_cache: dict[str, dict], time_str: str | N
         pending.append(habit)
     return pending
 
+
+def pending_habits_for_date(*, habit_cache: dict[str, dict], already_logged, is_on_pace) -> list[dict]:
+    """Return active habits with no completion for a specific past date.
+
+    Mirrors ``pending_habits_for_digest`` but without Show After time-of-day
+    gating — the target day has fully elapsed, so every non-auto habit is
+    eligible. ``already_logged`` should check completion for the target date;
+    ``is_on_pace`` still suppresses habits whose weekly target is already met so
+    the catch-up does not nag about days that were legitimately skipped.
+    """
+
+    habits = [habit for habit in habit_cache.values() if not habit.get("auto_only")]
+
+    pending: list[dict] = []
+    for habit in sorted(habits, key=lambda h: h["sort"]):
+        pid = habit["page_id"]
+        if already_logged(pid):
+            continue
+        if is_on_pace(habit):
+            continue
+        pending.append(habit)
+    return pending
+
 # Digest scheduling helpers — runtime state is owned here, set by post_init in main.py.
 
 import logging
@@ -293,6 +316,11 @@ async def send_digest_for_slot(bot, slot: dict) -> None:
         include_habits=bool(config.get("include_habits")),
         config={**config, "slot_name": f"{slot.get('time')} ({'weekday' if slot.get('is_weekday') else 'weekend'})"},
     )
+    if is_first_digest and config.get("include_habits"):
+        try:
+            await send_yesterday_habit_catchup(bot)
+        except Exception as e:
+            log.warning("Yesterday habit catch-up failed for slot %s: %s", slot.get("time"), e)
     alert_digest_sent(f"{slot.get('time')} ({'weekday' if slot.get('is_weekday') else 'weekend'})")
     _digest_slot_sent_today.add(slot_key)
 
@@ -642,6 +670,54 @@ async def send_daily_digest(bot, include_habits: bool | None = None, config: dic
 
     if _last_daily_log_url:
         _last_daily_log_url = ""
+
+
+async def send_yesterday_habit_catchup(bot) -> None:
+    """Ask about habits left unchecked yesterday and let the user log them late.
+
+    Sent as a follow-up to the first morning digest. Buttons reuse the standard
+    multi-select habit keyboard, but the selection session carries yesterday's
+    date so tapping *Done* logs the completions against yesterday rather than
+    today (e.g. you took magnesium before bed and forgot to check it off).
+    """
+    if mute_helpers.is_muted(STATE.mute_until, TZ):
+        log.info("Yesterday habit catch-up skipped (muted)")
+        return
+    if _notion is None:
+        log.warning("Yesterday habit catch-up skipped: Notion client not initialised")
+        return
+
+    yesterday = (datetime.now(TZ) - timedelta(days=1)).date().isoformat()
+    pending = [
+        h
+        for h in pending_habits_for_date(
+            habit_cache=notion_habits.habit_cache,
+            already_logged=lambda pid: notion_habits.already_logged_today(
+                _notion, NOTION_LOG_DB, pid, TZ, log_date=yesterday
+            ),
+            is_on_pace=lambda habit: notion_habits.is_on_pace(_notion, NOTION_LOG_DB, habit, TZ),
+        )
+        if (h.get("name") or "").strip().lower()
+        != health_config.STEPS_HABIT_NAME.strip().lower()
+    ]
+    if not pending:
+        log.info("Yesterday habit catch-up: nothing pending for %s", yesterday)
+        return
+
+    day_label = (datetime.now(TZ) - timedelta(days=1)).strftime("%A")
+    text = (
+        f"🌙 *Yesterday's habits* — did you do any of these {day_label} "
+        "and forget to check? Tap to log:"
+    )
+    sent = await bot.send_message(
+        chat_id=MY_CHAT_ID,
+        text=text,
+        parse_mode="Markdown",
+        reply_markup=kb.habit_buttons(pending, "yesterday", selected=set()),
+    )
+    if _store_habit_session_fn:
+        _store_habit_session_fn(sent.message_id, pending, log_date=yesterday)
+    log.info("Yesterday habit catch-up sent — %d habits (date=%s)", len(pending), yesterday)
 
 
 def manual_digest_config_now(slots: list[dict], now_dt: datetime, is_weekday: bool) -> dict | None:
