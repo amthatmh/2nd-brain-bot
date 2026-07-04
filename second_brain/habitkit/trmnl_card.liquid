@@ -24,12 +24,12 @@
   {% else %}
 
   <!-- Column headers: weekday initials over the dot grid -->
-  <div style="display:flex;align-items:center;padding:8px 0 4px;font-size:13px;color:#888;">
+  <div style="display:flex;align-items:center;padding:8px 0 4px;font-size:13px;color:#333;letter-spacing:1px;">
     <div style="flex:1;"></div>
     {% for h in day_headers %}
-      <div style="width:44px;text-align:center;{% if forloop.last %}font-weight:700;color:#000;{% endif %}">{{ h }}</div>
+      <div style="width:44px;text-align:center;{% if forloop.last %}font-weight:700;{% endif %}">{{ h }}</div>
     {% endfor %}
-    <div style="width:52px;text-align:center;">🔥</div>
+    <div style="width:60px;text-align:center;font-size:11px;">STREAK</div>
   </div>
 
   <!-- Habit rows -->
@@ -37,13 +37,12 @@
     {% for habit in habits %}
       <div style="display:flex;align-items:center;flex:1;border-top:1px solid #ccc;">
         <div style="flex:1;display:flex;align-items:center;overflow:hidden;white-space:nowrap;">
-          <span style="font-size:24px;width:34px;">{% if habit.icon %}{{ habit.icon }}{% else %}•{% endif %}</span>
           <span style="font-size:22px;font-weight:600;overflow:hidden;text-overflow:ellipsis;">{{ habit.name }}</span>
         </div>
         {% for d in habit.days %}
           <div style="width:44px;text-align:center;font-size:26px;line-height:1;">{% if d == 1 %}●{% else %}○{% endif %}</div>
         {% endfor %}
-        <div style="width:52px;text-align:center;font-size:22px;font-weight:700;">{{ habit.streak }}</div>
+        <div style="width:60px;text-align:center;font-size:22px;font-weight:700;">{{ habit.streak }}</div>
       </div>
     {% endfor %}
   </div>
