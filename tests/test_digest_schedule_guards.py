@@ -366,7 +366,10 @@ class TestDailyDigestHabits(unittest.IsolatedAsyncioTestCase):
 class TestTripReminderIntegration(unittest.IsolatedAsyncioTestCase):
     def test_get_upcoming_trips_needing_reminder_filters_and_extracts_details(self):
         main = load_main_module()
-        today = main.date.today()
+        # Use the app-timezone date the production code compares against
+        # (local_today), not date.today() (UTC), so days_until stays exact at
+        # UTC/timezone boundaries.
+        today = main.local_today()
         dep = today + main.timedelta(days=1)
         ret = today + main.timedelta(days=3)
         captured = {}
