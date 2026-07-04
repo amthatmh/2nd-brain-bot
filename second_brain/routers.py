@@ -1576,11 +1576,14 @@ async def _cb_h_toggle(q, parts, context) -> None:
     log.info("[PERF] Toggle logic in %.0fms", (t2 - t1) * 1000)
 
     text = q.message.text or q.message.caption or ""
-    check_type = (
-        "evening"
-        if "Evening check-in" in text
-        else "manual" if "Which habit" in text else "morning"
-    )
+    if "Evening check-in" in text:
+        check_type = "evening"
+    elif "Which habit" in text:
+        check_type = "manual"
+    elif "Yesterday's habits" in text:
+        check_type = "yesterday"
+    else:
+        check_type = "morning"
     recovered_from_markup = False
     habits = session.get("habits", [])
     if not isinstance(habits, list) or not habits:
@@ -1613,10 +1616,12 @@ async def _cb_h_toggle(q, parts, context) -> None:
             selected.add(habit_page_id)
         session["selected"] = selected
 
-    # Merge in any habits that became active (passed show_after) after the digest was sent
+    # Merge in any habits that became active (passed show_after) after the digest was sent.
+    # Skipped for the yesterday catch-up, which is scoped to a fixed past date and
+    # must not absorb habits that only became due today.
     now_hhmm = datetime.now(TZ).strftime("%H:%M")
     known_pids = {h.get("page_id") for h in habits}
-    if not recovered_from_markup:
+    if not recovered_from_markup and check_type != "yesterday":
         for h in sorted(_habit_cache().values(), key=lambda h: h.get("sort", 0)):
             pid = h.get("page_id")
             if pid in known_pids or h.get("auto_only", False):
@@ -1669,6 +1674,7 @@ async def _cb_h_done(q, parts, context) -> None:
         if h["page_id"] in selected_ids and not h.get("auto_only", False)
     ]
     selected_habits.sort(key=lambda h: h.get("sort") or 0)
+    session_log_date = _main()._habit_selection_session(message_id).get("log_date")
     logged_names: list[str] = []
     failed_names: list[str] = []
     logged_habits: list[dict] = []
@@ -1676,7 +1682,7 @@ async def _cb_h_done(q, parts, context) -> None:
     for habit in selected_habits:
         habit_name = habit.get("name", "Unknown")
         try:
-            log_date = _late_night_log_date(habit)
+            log_date = session_log_date or _late_night_log_date(habit)
             if _main().already_logged_today(habit["page_id"], log_date=log_date):
                 logged_page_ids.add(habit["page_id"])
                 continue

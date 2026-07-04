@@ -189,6 +189,7 @@ def build_card_payload(
     # total_sleep is stored in minutes; the card shows hours.
     sleep_avg_min = _avg_last7(metrics.get("total_sleep"))
     sleep_avg_hours = sleep_avg_min / 60 if sleep_avg_min is not None else None
+    sleep_avg = _avg_last7(metrics.get("total_sleep"))
 
     return {
         "generated_at": dashboard.get("generated_at"),
@@ -203,6 +204,7 @@ def build_card_payload(
             "score": activity.get("value"),
             "desc": activity.get("description", ""),
             "recommendation": _card_recommendation(workout_gap, steps_gap, today),
+            "recommendation": activity.get("recommendation", ""),
         },
         "steps": {
             "today": steps.today,
@@ -223,6 +225,8 @@ def build_card_payload(
         "sleep": {
             "avg7_hours": round(sleep_avg_hours, 2) if sleep_avg_hours is not None else None,
             "arrow": _arrow(_pct_delta(sleep_avg_hours, 7.0)),
+            "avg7_hours": round(sleep_avg, 2) if sleep_avg is not None else None,
+            "arrow": _arrow(_pct_delta(sleep_avg, 7.0)),
         },
     }
 
