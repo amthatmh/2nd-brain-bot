@@ -4,27 +4,28 @@
   Polled JSON keys are available as top-level Liquid variables:
     range_label  day_headers[7]  count
     habits[]{name,icon,days[7],done,streak,today_done}
-  800x480, 1-bit e-ink. One habit per row, past 7 days left->right (today = last
-  column). Filled dot = done, open dot = missed. Rows share the day columns so a
-  weekday reads straight down.
+  800x480, TRUE 1-bit e-ink: black + white only, no grey. Deliberately sparse:
+  one habit per row = name, seven day dots (filled = done, open = missed, today
+  is the rightmost), and the current streak. No weekday letters, no separators,
+  no icons — the panel is small and low-contrast, so less is more.
 {% endcomment %}
 
 <div style="width:800px;height:480px;background:#fff;color:#000;font-family:'Helvetica Neue',Arial,sans-serif;box-sizing:border-box;padding:22px;display:flex;flex-direction:column;">
 
   <!-- Title -->
   <div style="display:flex;align-items:baseline;border-bottom:3px solid #000;padding-bottom:8px;">
-    <div style="font-size:30px;font-weight:700;letter-spacing:2px;">HABITS</div>
-    <div style="margin-left:auto;font-size:16px;color:#555;">Past 7 days · {{ range_label }}</div>
+    <div style="font-size:32px;font-weight:800;letter-spacing:2px;">HABITS</div>
+    <div style="margin-left:auto;font-size:16px;font-weight:600;">Past 7 days · {{ range_label }}</div>
   </div>
 
   {% if count == 0 %}
-    <div style="flex:1;display:flex;align-items:center;justify-content:center;font-size:22px;color:#555;">
+    <div style="flex:1;display:flex;align-items:center;justify-content:center;font-size:22px;">
       No habits flagged for TRMNL. Tick the “TRMNL” box in Notion.
     </div>
   {% else %}
 
-  <!-- Column headers: only the last (rightmost) dot column is labelled TODAY -->
-  <div style="display:flex;align-items:center;padding:8px 0 4px;font-size:11px;font-weight:700;color:#333;letter-spacing:1px;">
+  <!-- Header: only the last dot column (today) + streak are labelled -->
+  <div style="display:flex;align-items:center;padding:10px 0 2px;font-size:11px;font-weight:700;letter-spacing:1px;">
     <div style="flex:1;"></div>
     {% for h in day_headers %}
       <div style="width:44px;text-align:center;">{% if forloop.last %}TODAY{% endif %}</div>
@@ -35,14 +36,12 @@
   <!-- Habit rows -->
   <div style="flex:1;display:flex;flex-direction:column;">
     {% for habit in habits %}
-      <div style="display:flex;align-items:center;flex:1;border-top:1px solid #ccc;">
-        <div style="flex:1;display:flex;align-items:center;overflow:hidden;white-space:nowrap;">
-          <span style="font-size:22px;font-weight:600;overflow:hidden;text-overflow:ellipsis;">{{ habit.name }}</span>
-        </div>
+      <div style="display:flex;align-items:center;flex:1;">
+        <div style="flex:1;font-size:24px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ habit.name }}</div>
         {% for d in habit.days %}
-          <div style="width:44px;text-align:center;font-size:26px;line-height:1;">{% if d == 1 %}●{% else %}○{% endif %}</div>
+          <div style="width:44px;text-align:center;font-size:24px;line-height:1;">{% if d == 1 %}●{% else %}○{% endif %}</div>
         {% endfor %}
-        <div style="width:60px;text-align:center;font-size:22px;font-weight:700;">{{ habit.streak }}</div>
+        <div style="width:60px;text-align:center;font-size:26px;font-weight:800;">{{ habit.streak }}</div>
       </div>
     {% endfor %}
   </div>
