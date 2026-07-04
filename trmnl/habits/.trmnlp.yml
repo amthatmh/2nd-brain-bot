@@ -1,0 +1,4 @@
+# Local dev config for `trmnlp serve` (preview). Not uploaded to TRMNL.
+watch:
+  - src
+  - .trmnlp.yml

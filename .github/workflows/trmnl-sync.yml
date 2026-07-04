@@ -1,0 +1,40 @@
+name: TRMNL sync
+
+# Keeps the TRMNL private-plugin markup in trmnl/*/src/full.liquid in sync with
+# the live plugins. Lints on every PR; pushes on merge to main. A plugin is
+# skipped until its src/settings.yml has an `id` (hydrate via `trmnlp pull`),
+# so this never creates duplicate plugins.
+
+on:
+  push:
+    branches: [main]
+    paths: ['trmnl/**', '.github/workflows/trmnl-sync.yml']
+  pull_request:
+    paths: ['trmnl/**', '.github/workflows/trmnl-sync.yml']
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        plugin: [health, habits]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+      - run: gem install trmnl_preview
+      - name: Lint ${{ matrix.plugin }}
+        working-directory: trmnl/${{ matrix.plugin }}
+        run: trmnlp lint
+      - name: Push ${{ matrix.plugin }}
+        if: github.ref == 'refs/heads/main'
+        working-directory: trmnl/${{ matrix.plugin }}
+        env:
+          TRMNL_API_KEY: ${{ secrets.TRMNL_API_KEY }}
+        run: |
+          if grep -qE '^id:[[:space:]]*[^[:space:]]' src/settings.yml; then
+            trmnlp push --force
+          else
+            echo "::warning::${{ matrix.plugin }}: src/settings.yml has no id — skipping push. Hydrate with 'trmnlp pull'."
+          fi
