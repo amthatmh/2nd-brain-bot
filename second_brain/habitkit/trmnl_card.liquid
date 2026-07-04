@@ -23,13 +23,13 @@
     </div>
   {% else %}
 
-  <!-- Column headers: weekday initials over the dot grid -->
-  <div style="display:flex;align-items:center;padding:8px 0 4px;font-size:13px;color:#333;letter-spacing:1px;">
+  <!-- Column headers: only the last (rightmost) dot column is labelled TODAY -->
+  <div style="display:flex;align-items:center;padding:8px 0 4px;font-size:11px;font-weight:700;color:#333;letter-spacing:1px;">
     <div style="flex:1;"></div>
     {% for h in day_headers %}
-      <div style="width:44px;text-align:center;{% if forloop.last %}font-weight:700;{% endif %}">{{ h }}</div>
+      <div style="width:44px;text-align:center;">{% if forloop.last %}TODAY{% endif %}</div>
     {% endfor %}
-    <div style="width:60px;text-align:center;font-size:11px;">STREAK</div>
+    <div style="width:60px;text-align:center;">STREAK</div>
   </div>
 
   <!-- Habit rows -->
