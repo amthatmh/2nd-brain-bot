@@ -1,0 +1,13 @@
+# Placeholder — hydrate this from your live plugin before enabling sync.
+#
+#   cd trmnl/health
+#   trmnlp pull            # requires `id` below + `trmnlp login`
+#
+# `trmnlp pull` fills in name / strategy / polling_url / polling_headers /
+# refresh_rate from the live plugin so `trmnlp push` does NOT clobber your
+# polling config. Until `id` is set, the GitHub Action skips this plugin.
+#
+# Find the id: Plugins > Health Dashboard (Plugin UUID in the right panel),
+# or run `trmnlp clone health <id>` once and copy its settings.yml here.
+id:
+framework_version: latest
