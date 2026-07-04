@@ -15,11 +15,23 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import date
 
 from aiohttp import web
 
 log = logging.getLogger(__name__)
+
+# Habit names carry a leading emoji in Notion (e.g. "💊💊 Allergy Meds"); emoji
+# don't render legibly on the small 1-bit panel, so strip any leading non-word
+# prefix and show plain text.
+_NAME_PREFIX = re.compile(r"^[^0-9A-Za-z]+")
+
+
+def _clean_name(name: str | None) -> str:
+    if not name:
+        return ""
+    return _NAME_PREFIX.sub("", name).strip()
 
 # Monday-first weekday initials for the column headers.
 _DAY_LETTER = ["M", "T", "W", "T", "F", "S", "S"]
@@ -66,7 +78,7 @@ def build_habit_card_payload(habits_data: dict, today: date) -> dict:
         days = (habit.get("days") or [])[-WINDOW_DAYS:]
         habits_out.append(
             {
-                "name": habit.get("name"),
+                "name": _clean_name(habit.get("name")),
                 "icon": habit.get("icon"),
                 "days": days,
                 "done": sum(1 for d in days if d),
