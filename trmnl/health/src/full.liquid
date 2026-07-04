@@ -1,7 +1,6 @@
 {% comment %}
-  TRMNL health coaching card. Source of truth — synced to TRMNL by trmnlp.
-  Data source: GET /trmnl/health?token=... (polling).
-  800x480, TRUE 1-bit e-ink: black + white only.
+  TRMNL health coaching card. Data: GET /trmnl/health (polling). 800x480.
+  Layout via inline styles; muted text via framework text--gray-N.
 {% endcomment %}
 
 {% assign lvl = verdict.level %}
@@ -25,39 +24,40 @@
   <div style="display:flex;flex:1;">
 
     <div style="width:250px;border-right:3px solid #000;padding-right:20px;">
-      <div style="font-size:14px;letter-spacing:3px;font-weight:700;">ACTIVITY SCORE</div>
+      <div class="text--gray-30" style="font-size:14px;letter-spacing:3px;font-weight:700;">ACTIVITY SCORE</div>
       <div style="font-size:120px;font-weight:800;line-height:1.1;">
-        {% if activity.score %}{{ activity.score }}{% else %}--{% endif %}<span style="font-size:30px;font-weight:700;">/100</span>
+        {% if activity.score %}{{ activity.score }}{% else %}--{% endif %}<span class="text--gray-45" style="font-size:30px;font-weight:700;">/100</span>
       </div>
       <div style="font-size:18px;font-weight:600;margin-top:6px;">{{ activity.desc }}</div>
-      <div style="font-size:16px;margin-top:10px;">{{ activity.recommendation }}</div>
+      <div class="text--gray-30" style="font-size:16px;margin-top:10px;">{{ activity.recommendation }}</div>
     </div>
 
     <div style="flex:1;padding-left:24px;display:flex;flex-direction:column;">
 
-      <div style="font-size:13px;letter-spacing:2px;font-weight:700;">STEPS</div>
+      <div class="text--gray-30" style="font-size:13px;letter-spacing:2px;font-weight:700;">STEPS</div>
       <div style="display:flex;justify-content:space-between;margin:4px 0 12px;">
-        <div><div style="font-size:12px;font-weight:700;letter-spacing:1px;">TODAY</div><div style="font-size:44px;font-weight:800;">{{ steps.today }}</div></div>
-        <div><div style="font-size:12px;font-weight:700;letter-spacing:1px;">7-DAY AVG</div><div style="font-size:44px;font-weight:800;">{{ steps.avg7 }}</div></div>
-        <div><div style="font-size:12px;font-weight:700;letter-spacing:1px;">THIS WEEK</div><div style="font-size:44px;font-weight:800;">
+        <div><div class="text--gray-30" style="font-size:12px;font-weight:700;letter-spacing:1px;">TODAY</div><div style="font-size:44px;font-weight:800;">{{ steps.today }}</div></div>
+        <div><div class="text--gray-30" style="font-size:12px;font-weight:700;letter-spacing:1px;">7-DAY AVG</div><div style="font-size:44px;font-weight:800;">{{ steps.avg7 }}</div></div>
+        <div><div class="text--gray-30" style="font-size:12px;font-weight:700;letter-spacing:1px;">THIS WEEK</div><div style="font-size:44px;font-weight:800;">
           {% if steps.week_total >= 10000 %}{{ steps.week_total | divided_by: 1000 }}k{% else %}{{ steps.week_total }}{% endif %}
         </div></div>
       </div>
 
       <div style="display:flex;justify-content:space-between;border-top:2px solid #000;padding-top:10px;">
-        <div><div style="font-size:13px;letter-spacing:2px;font-weight:700;">WORKOUTS</div>
+        <div><div class="text--gray-30" style="font-size:13px;letter-spacing:2px;font-weight:700;">WORKOUTS</div>
           <div style="font-size:28px;font-weight:800;">{{ workouts.done }}/{{ workouts.target }} {{ workouts.trend }}</div></div>
-        <div><div style="font-size:13px;letter-spacing:2px;font-weight:700;">HRV</div>
-          <div style="font-size:28px;font-weight:800;">{% if hrv.value %}{{ hrv.value }} <span style="font-size:16px;font-weight:600;">{{ hrv.delta_pct }}%{{ hrv.arrow }}</span>{% else %}--{% endif %}</div></div>
-        <div><div style="font-size:13px;letter-spacing:2px;font-weight:700;">RHR</div>
-          <div style="font-size:28px;font-weight:800;">{% if rhr.value %}{{ rhr.value }} <span style="font-size:16px;font-weight:600;">{{ rhr.arrow }}</span>{% else %}--{% endif %}</div></div>
+        <div><div class="text--gray-30" style="font-size:13px;letter-spacing:2px;font-weight:700;">HRV</div>
+          <div style="font-size:28px;font-weight:800;">{% if hrv.value %}{{ hrv.value }} <span class="text--gray-40" style="font-size:16px;font-weight:600;">{{ hrv.delta_pct }}%{{ hrv.arrow }}</span>{% else %}--{% endif %}</div></div>
+        <div><div class="text--gray-30" style="font-size:13px;letter-spacing:2px;font-weight:700;">RHR</div>
+          <div style="font-size:28px;font-weight:800;">{% if rhr.value %}{{ rhr.value }} <span class="text--gray-40" style="font-size:16px;font-weight:600;">{{ rhr.arrow }}</span>{% else %}--{% endif %}</div></div>
       </div>
 
       <div style="margin-top:auto;border-top:2px solid #000;padding-top:10px;">
-        <span style="font-size:13px;letter-spacing:2px;font-weight:700;">SLEEP · 7-DAY AVG</span>
+        <span class="text--gray-30" style="font-size:13px;letter-spacing:2px;font-weight:700;">SLEEP · 7-DAY AVG</span>
         <span style="font-size:24px;font-weight:800;margin-left:10px;">
-          {% if sleep.avg7_hours %}{% assign sh = sleep.avg7_hours | floor %}{% assign sm = sleep.avg7_hours | minus: sh | times: 60 | round %}{{ sh }}h {{ sm }}m {{ sleep.arrow }} <span style="font-size:15px;font-weight:600;">/ 7h goal</span>{% else %}no data{% endif %}
+          {% if sleep.avg7_hours %}{% assign sh = sleep.avg7_hours | floor %}{% assign sm = sleep.avg7_hours | minus: sh | times: 60 | round %}{{ sh }}h {{ sm }}m {{ sleep.arrow }}{% else %}no data{% endif %}
         </span>
+        <span class="text--gray-45" style="font-size:15px;font-weight:600;">/ 7h goal</span>
       </div>
 
     </div>
