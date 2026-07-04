@@ -203,7 +203,6 @@ def build_card_payload(
             "score": activity.get("value"),
             "desc": activity.get("description", ""),
             "recommendation": _card_recommendation(workout_gap, steps_gap, today),
-            "recommendation": activity.get("recommendation", ""),
         },
         "steps": {
             "today": steps.today,

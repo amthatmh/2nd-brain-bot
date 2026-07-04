@@ -169,6 +169,9 @@ class TestBuildCardPayload(unittest.TestCase):
         self.assertEqual(p["steps"]["avg7"], 7321)
         self.assertEqual(p["activity"]["score"], 68)
         self.assertEqual(p["day_label"], "Fri · Day 5/7")
+        # Recommendation must be the day-aware line, not the dashboard passthrough.
+        self.assertIn("days left", p["activity"]["recommendation"])
+        self.assertNotIn("Next move", p["activity"]["recommendation"])
 
     def test_verdict_rest_overrides_activity_gap(self):
         p = build_card_payload(self._dashboard(workout_days=0, steps_days=0), _flag("both"), StepSummary(0, 0, 0), TODAY)
