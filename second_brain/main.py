@@ -219,6 +219,8 @@ from second_brain.healthtrack.dashboard import (
     prewarm_health_dashboard_cache,
     refresh_health_summary_cache,
 )
+from second_brain.healthtrack.trmnl import create_trmnl_health_handler
+from second_brain.habitkit.trmnl import create_trmnl_habits_handler
 from second_brain.services import task_parsing as task_parsing_service
 from second_brain.services import note_utils as note_utils_service
 from second_brain.handlers.commands import CommandHandlers
@@ -2090,6 +2092,17 @@ async def start_http_server() -> None:
             model=CLAUDE_MODEL,
         ),
     )
+    app.router.add_get(
+        "/trmnl/health",
+        create_trmnl_health_handler(
+            notion=notion,
+            health_metrics_db_id=NOTION_HEALTH_METRICS_DB,
+            habit_log_db_id=NOTION_LOG_DB,
+            readiness_db_id=NOTION_DAILY_READINESS_DB,
+            tz=TZ,
+        ),
+    )
+    app.router.add_get("/trmnl/habits", create_trmnl_habits_handler(tz=TZ))
     app.router.add_get("/health", lambda r: web.Response(text="ok"))
     register_health_routes(
         app,

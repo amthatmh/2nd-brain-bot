@@ -540,6 +540,7 @@ def _build_habits_data_payload(
             "todayDone": days[-1] == 1,
             "dayStreak": day_streak,
             "weekStreak": week_streak,
+            "trmnl": bool(habit.get("trmnl")),
         }
         is_steps = steps_habit_name and habit["name"].strip().lower() == steps_habit_name.strip().lower()
         if is_steps and step_counts_by_key:

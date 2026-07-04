@@ -108,6 +108,7 @@ def load_habit_cache(*, notion: Any, notion_habit_db: str) -> None:
             show_after = _parse_show_after(p, name)
             auto_only = extract_checkbox(get_property_by_name(p, "Auto Only"))
             late_night = bool(extract_checkbox(p.get("Late Night")))
+            trmnl = bool(extract_checkbox(get_property_by_name(p, "TRMNL")))
             if not frequency_label and parsed_frequency:
                 frequency_label = f"{parsed_frequency}x/week"
             page_icon = page.get("icon") or {}
@@ -123,6 +124,7 @@ def load_habit_cache(*, notion: Any, notion_habit_db: str) -> None:
                 "auto_only": bool(auto_only),
                 "show_after": show_after,
                 "late_night": late_night,
+                "trmnl": trmnl,
                 "sort": num("Sort") or 99,
             }
         log.info(
