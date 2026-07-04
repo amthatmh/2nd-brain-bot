@@ -9,5 +9,5 @@
 #
 # Find the id: Plugins > Habits Kit (Plugin UUID in the right panel),
 # or run `trmnlp clone habits <id>` once and copy its settings.yml here.
-id:
+id: 36ebb73f-3a15-457a-852a-ec965963abec
 framework_version: latest
