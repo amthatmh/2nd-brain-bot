@@ -201,6 +201,39 @@ def _rating_keyboard(stashed_page_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([buttons])
 
 
+def _letterboxd_loc_keyboard(stashed_page_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🎬 Cinema", callback_data=f"watchloc:{stashed_page_id}:cinema"),
+        InlineKeyboardButton("🏠 Home", callback_data=f"watchloc:{stashed_page_id}:home"),
+    ]])
+
+
+async def send_letterboxd_prompt(bot, chat_id: int, item: dict) -> None:
+    """Ask where a newly-pulled Letterboxd film was watched (cinema vs home)."""
+    stashed = _main()._stash_pid(item["page_id"])
+    year = f" ({item['year']})" if item.get("year") else ""
+    rewatch = " · rewatch" if item.get("rewatch") else ""
+    await bot.send_message(
+        chat_id=chat_id,
+        text=(
+            f"🎬 New from Letterboxd\n\n*{item['title']}*{year}\n"
+            f"📅 {item.get('watched_date', '')}{rewatch}\n\nWhere did you watch it?"
+        ),
+        parse_mode="Markdown",
+        reply_markup=_letterboxd_loc_keyboard(stashed),
+    )
+
+
+async def _prompt_letterboxd_rating(message, page_id: str, chat_id: int | None) -> None:
+    """Follow the location step with a rating-confirm using the −3..3 keyboard."""
+    if chat_id is not None:
+        ent_log.pending_entertainment_rating_map[chat_id] = {"page_id": page_id, "log_type": "cinema"}
+    stashed = _main()._stash_pid(page_id)
+    await message.reply_text(
+        "⭐ Confirm rating (-3 to 3):", reply_markup=_rating_keyboard(stashed)
+    )
+
+
 async def _maybe_prompt_entertainment_rating(
     message,
     payload: dict,
@@ -789,6 +822,51 @@ async def handle_message_text(
                 page_id,
                 log_type,
             )
+        return
+
+    pending_lb_venue = ent_log.pending_letterboxd_venue_map.get(update.effective_chat.id)
+    if pending_lb_venue:
+        page_id = pending_lb_venue.get("page_id")
+        ent_log.pending_letterboxd_venue_map.pop(update.effective_chat.id, None)
+        raw = text.strip()
+        schema = ent_log.entertainment_schemas.get("cinema") or {}
+        seat, auditorium = ent_log._extract_cinema_visit_details(raw)
+        venue_text = ent_log._strip_cinema_structured_notes(raw) or raw
+        venue = ent_log._resolve_known_cinema_venue(_notion(), venue_text, schema)
+
+        props: dict = {}
+        venue_prop = ent_log._pick_exact_prop(schema, "select", ["Venue", "Place", "Location"])
+        if venue and venue_prop:
+            props[venue_prop] = {"select": {"name": venue}}
+        seat_prop = ent_log._pick_exact_prop(schema, "rich_text", ["Seat"])
+        if seat and seat_prop:
+            props[seat_prop] = {"rich_text": [{"text": {"content": seat}}]}
+        aud_prop = ent_log._pick_exact_prop(schema, "number", ["Auditorium"])
+        if auditorium is not None and aud_prop:
+            props[aud_prop] = {"number": auditorium}
+
+        if page_id and props:
+            try:
+                _main().notion_call(_notion().pages.update, page_id=page_id, properties=props)
+                await message.reply_text(
+                    f"🎬 Venue set: *{venue or venue_text}*\n_Saved to Notion_",
+                    parse_mode="Markdown",
+                )
+            except Exception as e:
+                log.error("Letterboxd venue update error: %s", e)
+                notes_prop = ent_log._pick_prop(schema, "rich_text", ["Notes", "Comment", "Details"])
+                if page_id and notes_prop:
+                    try:
+                        _main().notion_call(
+                            _notion().pages.update,
+                            page_id=page_id,
+                            properties={notes_prop: {"rich_text": [{"text": {"content": f"Venue: {venue_text}"}}]}},
+                        )
+                    except Exception:
+                        log.debug("Letterboxd venue Notes fallback failed", exc_info=True)
+                await message.reply_text("⚠️ Couldn't set that Venue option — noted it in Notes instead.")
+
+        await _prompt_letterboxd_rating(message, page_id, update.effective_chat.id)
         return
 
     # ── Weekly programme parsing is Notion-driven (15-minute poller) ──
@@ -1890,6 +1968,29 @@ async def _cb_rate(q, parts, context) -> None:
     return
 
 
+async def _cb_watchloc(q, parts, context) -> None:
+    """Cinema/Home choice for a Letterboxd-pulled film."""
+    page_id = _main()._restore_pid(parts[1])
+    where = parts[2] if len(parts) > 2 else "home"
+    chat = getattr(q.message, "chat", None)
+    chat_id = getattr(chat, "id", getattr(q.message, "chat_id", None))
+
+    if not page_id:
+        await q.edit_message_text("⚠️ This prompt expired — set it in Notion.")
+        return
+
+    if where == "cinema":
+        if chat_id is not None:
+            ent_log.pending_letterboxd_venue_map[chat_id] = {"page_id": page_id}
+        await q.edit_message_text(
+            "🎬 Cinema — reply with the venue (add seat/auditorium if you like)."
+        )
+        return
+
+    await q.edit_message_text("🏠 Logged as home viewing.")
+    await _prompt_letterboxd_rating(q.message, page_id, chat_id)
+
+
 async def _cb_el(q, parts, context) -> None:
     _, key, action = parts
     entry = STATE.pending_map.pop(key, None)
@@ -2261,6 +2362,7 @@ _CB_PREFIX: dict[str, CallbackHandler] = {
     "notes_start": _cb_notes_start,
     "hpag": _cb_hpag,
     "rate": _cb_rate,
+    "watchloc": _cb_watchloc,
     "el": _cb_el,
     "d": _cb_d,
     "h": _cb_h_horizon,

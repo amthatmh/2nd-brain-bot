@@ -1980,6 +1980,31 @@ async def run_cinema_sync(bot, *, force: bool = False) -> dict[str, int | str]:
     sync_status["cinema"]["stats"] = result
     return result
 
+
+async def run_letterboxd_poll(bot) -> dict:
+    """Pull new Letterboxd diary watches into the Cinema Log and prompt for each."""
+    from second_brain.cinema.config import LETTERBOXD_RSS_URL
+    from second_brain.cinema.letterboxd import poll_letterboxd
+    from second_brain import routers
+
+    result = await poll_letterboxd(
+        notion=notion,
+        cinema_db_id=NOTION_CINEMA_LOG_DB,
+        env_db_id=NOTION_ENV_DB,
+        rss_url=LETTERBOXD_RSS_URL,
+    )
+    for item in result.get("new_items", []):
+        try:
+            await routers.send_letterboxd_prompt(bot, MY_CHAT_ID, item)
+        except Exception:
+            log.exception("letterboxd: failed to send prompt for %s", item.get("title"))
+
+    status = sync_status.setdefault("letterboxd", {})
+    status["last_run"] = utc_now_iso()
+    status["ok"] = result.get("action") != "error"
+    status["stats"] = {k: v for k, v in result.items() if k != "new_items"}
+    return result
+
 # ══════════════════════════════════════════════════════════════════════════════
 # /habits-data JSON ENDPOINT
 # ══════════════════════════════════════════════════════════════════════════════
