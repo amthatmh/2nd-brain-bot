@@ -46,6 +46,14 @@ async def handle_cinema_sync(bot=None) -> dict:
     return await run_cinema_sync(bot)
 
 
+@track_job_execution("letterboxd_poll")
+async def handle_letterboxd_poll(bot=None) -> dict:
+    """Utility Scheduler job wrapper for the Letterboxd RSS poller."""
+    from second_brain.main import run_letterboxd_poll
+
+    return await run_letterboxd_poll(bot)
+
+
 @track_job_execution("process_pending_programmes")
 async def handle_process_pending_programmes(bot=None) -> dict:
     """Utility Scheduler job wrapper for pending CrossFit programme processing."""
@@ -84,7 +92,8 @@ def register_daily_log_handlers(manager: "UtilitySchedulerManager") -> None:
 def register_cinema_handlers(manager: "UtilitySchedulerManager") -> None:
     """Register cinema jobs with the Utility Scheduler Manager."""
     manager.register_handler("cinema_sync", handle_cinema_sync)
-    log.info("cinema: registered scheduler handlers (cinema_sync)")
+    manager.register_handler("letterboxd_poll", handle_letterboxd_poll)
+    log.info("cinema: registered scheduler handlers (cinema_sync, letterboxd_poll)")
 
 
 def register_tasks_handlers(manager: "UtilitySchedulerManager") -> None:

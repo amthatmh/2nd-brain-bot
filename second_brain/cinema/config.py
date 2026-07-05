@@ -12,6 +12,14 @@ TMDB_API_KEY = (
 CINEMA_SYNC_HOUR = int(os.environ.get("CINEMA_SYNC_HOUR", "23"))
 CINEMA_SYNC_MINUTE = int(os.environ.get("CINEMA_SYNC_MINUTE", "30"))
 
+# Letterboxd RSS poller: pulls the member's diary feed into the Cinema Log.
+LETTERBOXD_USER = os.environ.get("LETTERBOXD_USER", "").strip()
+LETTERBOXD_RSS_URL = (
+    os.environ.get("LETTERBOXD_RSS_URL")
+    or (f"https://letterboxd.com/{LETTERBOXD_USER}/rss/" if LETTERBOXD_USER else "")
+).strip()
+LETTERBOXD_POLL_MINUTES = int(os.environ.get("LETTERBOXD_POLL_MINUTES", "60"))
+
 
 def validate_config() -> tuple[bool, list[str]]:
     """Return whether cinema sync config is valid and any problems."""
