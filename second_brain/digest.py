@@ -98,6 +98,7 @@ def load_digest_slots(*, rows: list[dict], logger) -> list[dict]:
         include_feel = bool(props.get("Feel", {}).get("checkbox", False))
         include_log = bool(props.get("Log", {}).get("checkbox", False))
         include_weight = bool(props.get("Weight", {}).get("checkbox", False))
+        night_review = bool(props.get("Night review", {}).get("checkbox", False))
 
         for is_weekday in weekday_variants:
             slot_key = (slot_time, is_weekday)
@@ -105,7 +106,7 @@ def load_digest_slots(*, rows: list[dict], logger) -> list[dict]:
                 logger.warning("Skipping duplicate digest selector slot %s (%s)", slot_time, "weekday" if is_weekday else "weekend")
                 continue
             seen_slot_keys.add(slot_key)
-            slots.append({"time": slot_time, "is_weekday": is_weekday, "include_habits": include_habits, "max_items": max_items, "contexts": contexts, "include_weather": include_weather, "include_uvi": include_uvi, "include_feel": include_feel, "include_log": include_log, "include_weight": include_weight})
+            slots.append({"time": slot_time, "is_weekday": is_weekday, "include_habits": include_habits, "max_items": max_items, "contexts": contexts, "include_weather": include_weather, "include_uvi": include_uvi, "include_feel": include_feel, "include_log": include_log, "include_weight": include_weight, "night_review": night_review})
 
     logger.info("Loaded %d digest selector slot(s) from Notion", len(slots))
     return slots
@@ -233,7 +234,7 @@ async def get_digest_config(slot_time: str, weekday: bool, digest_selector_db_id
         slots = load_digest_slots(rows=rows, logger=log)
     except Exception as e:
         log.error("Failed to read digest config for %s (%s): %s", slot_time, "weekday" if weekday else "weekend", e)
-        return {"contexts": None, "max_items": None, "include_habits": False, "include_weather": False, "include_uvi": False, "include_feel": False, "include_log": False}
+        return {"contexts": None, "max_items": None, "include_habits": False, "include_weather": False, "include_uvi": False, "include_feel": False, "include_log": False, "night_review": False}
     for slot in slots:
         if slot.get("time") == slot_time and bool(slot.get("is_weekday")) == bool(weekday):
             return {
@@ -245,8 +246,9 @@ async def get_digest_config(slot_time: str, weekday: bool, digest_selector_db_id
                 "include_feel": bool(slot.get("include_feel")),
                 "include_log": bool(slot.get("include_log")),
                 "include_weight": bool(slot.get("include_weight")),
+                "night_review": bool(slot.get("night_review")),
             }
-    return {"contexts": None, "max_items": None, "include_habits": False, "include_weather": False, "include_uvi": False, "include_feel": False, "include_log": False, "include_weight": False}
+    return {"contexts": None, "max_items": None, "include_habits": False, "include_weather": False, "include_uvi": False, "include_feel": False, "include_log": False, "include_weight": False, "night_review": False}
 
 
 def _filter_digest_tasks(tasks: list[dict], config: dict | None = None) -> list[dict]:
@@ -316,7 +318,7 @@ async def send_digest_for_slot(bot, slot: dict) -> None:
         include_habits=bool(config.get("include_habits")),
         config={**config, "slot_name": f"{slot.get('time')} ({'weekday' if slot.get('is_weekday') else 'weekend'})"},
     )
-    if is_first_digest and config.get("include_habits"):
+    if config.get("night_review"):
         try:
             await send_yesterday_habit_catchup(bot)
         except Exception as e:
@@ -673,12 +675,14 @@ async def send_daily_digest(bot, include_habits: bool | None = None, config: dic
 
 
 async def send_yesterday_habit_catchup(bot) -> None:
-    """Ask about habits left unchecked yesterday and let the user log them late.
+    """Ask about Late Night habits left unchecked yesterday and let the user log them late.
 
-    Sent as a follow-up to the first morning digest. Buttons reuse the standard
-    multi-select habit keyboard, but the selection session carries yesterday's
-    date so tapping *Done* logs the completions against yesterday rather than
-    today (e.g. you took magnesium before bed and forgot to check it off).
+    Sent as a follow-up to digest slots with *Night review* checked in the
+    Digest Selector. Only habits with the *Late Night* checkbox in the Habits
+    List are included — those are the ones typically done right before bed and
+    forgotten (e.g. magnesium). Buttons reuse the standard multi-select habit
+    keyboard, but the selection session carries yesterday's date so tapping
+    *Done* logs the completions against yesterday rather than today.
     """
     if mute_helpers.is_muted(STATE.mute_until, TZ):
         log.info("Yesterday habit catch-up skipped (muted)")
@@ -688,18 +692,18 @@ async def send_yesterday_habit_catchup(bot) -> None:
         return
 
     yesterday = (datetime.now(TZ) - timedelta(days=1)).date().isoformat()
-    pending = [
-        h
-        for h in pending_habits_for_date(
-            habit_cache=notion_habits.habit_cache,
-            already_logged=lambda pid: notion_habits.already_logged_today(
-                _notion, NOTION_LOG_DB, pid, TZ, log_date=yesterday
-            ),
-            is_on_pace=lambda habit: notion_habits.is_on_pace(_notion, NOTION_LOG_DB, habit, TZ),
-        )
-        if (h.get("name") or "").strip().lower()
-        != health_config.STEPS_HABIT_NAME.strip().lower()
-    ]
+    late_night_cache = {
+        name: habit
+        for name, habit in notion_habits.habit_cache.items()
+        if habit.get("late_night")
+    }
+    pending = pending_habits_for_date(
+        habit_cache=late_night_cache,
+        already_logged=lambda pid: notion_habits.already_logged_today(
+            _notion, NOTION_LOG_DB, pid, TZ, log_date=yesterday
+        ),
+        is_on_pace=lambda habit: notion_habits.is_on_pace(_notion, NOTION_LOG_DB, habit, TZ),
+    )
     if not pending:
         log.info("Yesterday habit catch-up: nothing pending for %s", yesterday)
         return

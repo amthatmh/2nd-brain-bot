@@ -598,7 +598,7 @@ class TestYesterdayHabitCatchup(unittest.IsolatedAsyncioTestCase):
 
         page_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
         notion_habits.habit_cache = {
-            "Magnesium": {"page_id": page_id, "name": "Magnesium", "sort": 1},
+            "Magnesium": {"page_id": page_id, "name": "Magnesium", "sort": 1, "late_night": True},
         }
         digest._notion = MagicMock()
         digest._store_habit_session_fn = main._store_habit_selection_session
@@ -630,7 +630,7 @@ class TestYesterdayHabitCatchup(unittest.IsolatedAsyncioTestCase):
         from second_brain.notion import habits as notion_habits
 
         notion_habits.habit_cache = {
-            "Read": {"page_id": "r", "name": "Read", "sort": 1},
+            "Read": {"page_id": "r", "name": "Read", "sort": 1, "late_night": True},
         }
         digest._notion = MagicMock()
 
@@ -638,6 +638,59 @@ class TestYesterdayHabitCatchup(unittest.IsolatedAsyncioTestCase):
         bot.send_message = AsyncMock()
 
         with patch.object(notion_habits, "already_logged_today", return_value=True), \
+            patch.object(notion_habits, "is_on_pace", return_value=False):
+            await digest.send_yesterday_habit_catchup(bot)
+
+        bot.send_message.assert_not_awaited()
+
+    async def test_only_late_night_habits_included(self):
+        main = load_main_module()
+        from second_brain import digest
+        from second_brain.notion import habits as notion_habits
+
+        notion_habits.habit_cache = {
+            "Magnesium": {"page_id": "m", "name": "Magnesium", "sort": 1, "late_night": True},
+            "Workout": {"page_id": "w", "name": "Workout", "sort": 2, "late_night": True},
+            "Stretching": {"page_id": "s", "name": "Stretching", "sort": 3, "late_night": False},
+            "Water2L": {"page_id": "wa", "name": "Water2L", "sort": 4},
+        }
+        digest._notion = MagicMock()
+        digest._store_habit_session_fn = main._store_habit_selection_session
+
+        bot = MagicMock()
+        sent = MagicMock(message_id=556)
+        bot.send_message = AsyncMock(return_value=sent)
+
+        with patch.object(notion_habits, "already_logged_today", return_value=False), \
+            patch.object(notion_habits, "is_on_pace", return_value=False):
+            await digest.send_yesterday_habit_catchup(bot)
+
+        bot.send_message.assert_awaited_once()
+        call_kwargs = bot.send_message.await_args.kwargs
+        labels = [
+            button.text
+            for row in call_kwargs["reply_markup"].inline_keyboard
+            for button in row
+        ]
+        self.assertIn("Magnesium", labels)
+        self.assertIn("Workout", labels)
+        self.assertNotIn("Stretching", labels)
+        self.assertNotIn("Water2L", labels)
+
+    async def test_no_message_when_no_late_night_habits_exist(self):
+        load_main_module()
+        from second_brain import digest
+        from second_brain.notion import habits as notion_habits
+
+        notion_habits.habit_cache = {
+            "Stretching": {"page_id": "s", "name": "Stretching", "sort": 1},
+        }
+        digest._notion = MagicMock()
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+
+        with patch.object(notion_habits, "already_logged_today", return_value=False), \
             patch.object(notion_habits, "is_on_pace", return_value=False):
             await digest.send_yesterday_habit_catchup(bot)
 

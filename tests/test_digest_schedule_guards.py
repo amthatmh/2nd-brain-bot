@@ -61,6 +61,68 @@ class TestDigestScheduleGuards(unittest.IsolatedAsyncioTestCase):
         mock_cfg.assert_not_called()
         mock_send.assert_not_called()
 
+    async def test_send_digest_for_slot_sends_catchup_only_for_night_review_slots(self):
+        main = load_main_module()
+        now = main.datetime.now(main.TZ)
+        weekday = now.weekday() < 5
+        slot = {"time": "08:15", "is_weekday": weekday, "include_habits": True}
+        base_config = {
+            "contexts": None,
+            "max_items": None,
+            "include_habits": True,
+            "include_weather": False,
+            "include_uvi": False,
+            "include_feel": False,
+            "include_log": False,
+            "include_weight": False,
+        }
+
+        for night_review, expect_catchup in ((True, True), (False, False)):
+            with self.subTest(night_review=night_review):
+                main.digest_helpers._digest_slot_sent_today.clear()
+                config = {**base_config, "night_review": night_review}
+                with patch.object(main.digest_helpers, "get_digest_config", AsyncMock(return_value=config)), \
+                    patch.object(main.digest_helpers, "send_daily_digest", AsyncMock()) as mock_send, \
+                    patch.object(main.digest_helpers, "send_yesterday_habit_catchup", AsyncMock()) as mock_catchup, \
+                    patch.object(main.digest_helpers, "alert_digest_sent", MagicMock()):
+                    await main.send_digest_for_slot(MagicMock(), slot)
+
+                mock_send.assert_awaited_once()
+                if expect_catchup:
+                    mock_catchup.assert_awaited_once()
+                else:
+                    mock_catchup.assert_not_awaited()
+
+    async def test_night_review_catchup_not_gated_on_first_digest(self):
+        main = load_main_module()
+        now = main.datetime.now(main.TZ)
+        weekday = now.weekday() < 5
+        day_type = "wd" if weekday else "we"
+        slot = {"time": "20:30", "is_weekday": weekday, "include_habits": True}
+        config = {
+            "contexts": None,
+            "max_items": None,
+            "include_habits": True,
+            "include_weather": False,
+            "include_uvi": False,
+            "include_feel": False,
+            "include_log": False,
+            "include_weight": False,
+            "night_review": True,
+        }
+
+        # An earlier slot already went out today, so this is NOT the first digest.
+        main.digest_helpers._digest_slot_sent_today.clear()
+        main.digest_helpers._digest_slot_sent_today.add(f"{now.date().isoformat()}|{day_type}|08:15")
+
+        with patch.object(main.digest_helpers, "get_digest_config", AsyncMock(return_value=config)), \
+            patch.object(main.digest_helpers, "send_daily_digest", AsyncMock()), \
+            patch.object(main.digest_helpers, "send_yesterday_habit_catchup", AsyncMock()) as mock_catchup, \
+            patch.object(main.digest_helpers, "alert_digest_sent", MagicMock()):
+            await main.send_digest_for_slot(MagicMock(), slot)
+
+        mock_catchup.assert_awaited_once()
+
 
 class TestDigestSelectorDedupe(unittest.TestCase):
     def test_load_digest_slots_dedupes_duplicate_time_and_day(self):
@@ -85,6 +147,27 @@ class TestDigestSelectorDedupe(unittest.TestCase):
         self.assertEqual(slots[0]["time"], "08:15")
         self.assertTrue(slots[0]["is_weekday"])
         self.assertTrue(slots[0]["include_feel"])
+
+    def test_load_digest_slots_parses_night_review_checkbox(self):
+        main = load_main_module()
+
+        def row(time_text: str, night_review: bool):
+            return {
+                "properties": {
+                    "Time": {"rich_text": [{"plain_text": time_text}]},
+                    "Weekday/Weekend": {"select": {"name": "Weekday"}},
+                    "Habits": {"checkbox": True},
+                    "Night review": {"checkbox": night_review},
+                }
+            }
+
+        slots = main.digest_helpers.load_digest_slots(
+            rows=[row("08:15", True), row("09:00", False), ], logger=MagicMock()
+        )
+
+        by_time = {slot["time"]: slot for slot in slots}
+        self.assertTrue(by_time["08:15"]["night_review"])
+        self.assertFalse(by_time["09:00"]["night_review"])
 
     def test_load_digest_slots_uses_none_when_no_contexts_are_checked(self):
         main = load_main_module()
