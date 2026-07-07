@@ -7,12 +7,10 @@ import json
 import re
 import importlib
 import logging
-import calendar
-import subprocess
 import time
 import urllib.parse
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from collections import defaultdict
 from pathlib import Path
 from typing import Callable
@@ -33,9 +31,6 @@ from telegram.helpers import escape_markdown as _escape_markdown_v2
 from telegram.ext import (
     Application,
     CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    filters,
     ContextTypes,
 )
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
@@ -45,13 +40,9 @@ from notion_client import Client as NotionClient
 from second_brain.asana.sync import (
     reconcile,
     AsanaSyncError,
-    validate_notion_schema,
-    startup_smoke_test,
 )
-from second_brain.cinema.sync import sync_cinema_log_to_notion
 from second_brain.cinema.config import (
     CINEMA_DB_ID,
-    FAVE_DB_ID,
     TMDB_API_KEY,
     validate_config as validate_cinema_config,
 )
@@ -59,7 +50,6 @@ from second_brain.sync_telemetry import init_sync_status, utc_now_iso, format_sy
 from second_brain.error_reporting import send_system_log, telegram_error_location
 from second_brain.notion import notes as notion_notes
 from second_brain.digest import manual_digest_config_now as _manual_digest_config_now_fn
-from second_brain.notion import daily_log as notion_daily_log
 from second_brain.notes.flow import (
     ordered_topics,
     note_topics_keyboard,
@@ -92,7 +82,6 @@ from second_brain.config import (
     ALLOWED_CHAT_IDS,
     ALERT_CHAT_ID,
     ALERT_THREAD_ID,
-    ANTHROPIC_KEY,
     NOTION_TOKEN,
     NOTION_DB_ID,
     NOTION_HABIT_DB,
@@ -106,14 +95,11 @@ from second_brain.config import (
     NOTION_NOTES_DB,
     NOTION_DIGEST_SELECTOR_DB,
     NOTION_UTILITY_SCHEDULER_DB,
-    NOTION_DAILY_LOG_DB,
-    NOTION_PACKING_ITEMS_DB,
     NOTION_TRIPS_DB,
     OPENWEATHER_KEY,
     WEATHER_LOCATION,
     TZ,
     CLAUDE_MODEL,
-    CLAUDE_MAX_TOK,
     CLAUDE_PARSE_MAX_TOKENS,
     NOTION_MOVEMENTS_DB,
     NOTION_WORKOUT_PROGRAM_DB,
@@ -133,8 +119,6 @@ from second_brain.config import (
     HTTP_PORT,
     WEEKS_HISTORY,
     APP_VERSION,
-    UV_THRESHOLD,
-    TMDB_BASE,
     FEATURES,
     UTILITY_SCHEDULER_RELOAD_MINUTES,
     ASANA_PAT,
@@ -150,7 +134,6 @@ from second_brain.notion.properties import (
     extract_rich_text,
     extract_title,
     query_all,
-    rich_text_prop,
     title_prop,
 )
 from second_brain.notion import habits as notion_habits
@@ -172,37 +155,24 @@ from second_brain import keyboards as kb
 from second_brain import formatters as fmt
 from second_brain import digest as digest_helpers
 from second_brain import mute as mute_helpers
-from second_brain.utils import _safe_user_error, get_current_monday, next_weekday, parse_time_to_minutes
+from second_brain.utils import _safe_user_error, get_current_monday, next_weekday
 from second_brain.digest import (
-    get_digest_config,
     _filter_digest_tasks,
-    send_digest_for_slot,
-    _queue_missed_slots_for_today,
     build_digest_schedule,
     rebuild_digest_schedule_job,
     refresh_digest_schedule_job,
     generate_daily_log,
+    send_digest_for_slot,
     send_daily_digest as _digest_send_daily_digest,
 )
 from second_brain import palette as palette_helpers
 from second_brain import weather as wx
-from second_brain import watchlist as wl
 from second_brain import trips as trips_mod
 from second_brain.trips import (
     handle_trip_command,
-    fetch_weather,
-    weather_triggered_items,
-    _scheduler_run_datetime,
-    schedule_weather_refresh,
-    run_weather_refresh,
     cmd_refreshweather,
     get_upcoming_trips_needing_reminder,
-    mark_trip_reminder_sent,
-    format_trip_reminder_block,
     append_trip_reminders_to_text,
-    update_trip_weather_job,
-    refresh_trip_weather_job,
-    _run_trip_weather_refresh,
     handle_trip_weather_refresh,
     run_packing_sync_job,
 )
@@ -211,7 +181,6 @@ from second_brain.scheduler_manager import UtilitySchedulerManager
 from second_brain.rules.engine import RuleEngine
 from second_brain.state import STATE
 from second_brain.utils import ExpiringDict, local_today
-from second_brain.http_utils import cors_headers
 from second_brain.healthtrack.dashboard import (
     create_health_dashboard_handler,
     create_health_summary_handler,
@@ -228,39 +197,25 @@ from second_brain.handlers.admin_commands import test_alert_command, test_channe
 from second_brain.monitoring import track_job_execution
 from second_brain.boot import git_sha as _git_sha
 
-from second_brain.monitoring.metrics import generate_weekly_summary
 from utils.date_parser import parse_date
 from utils.alert_handlers import (
-    alert_digest_sent,
     alert_scheduler_event,
     alert_startup,
 )
 
-from second_brain.crossfit.classify import classify_workout_message
 from second_brain.crossfit.handlers import (
     MOVEMENTS_CACHE,
-    handle_cf_callback,
-    handle_cf_prs_reply,
-    handle_cf_strength_flow,
-    handle_cf_text_reply,
-    handle_cf_upload_programme,
-    handle_cf_wod_flow,
     reload_movement_library,
 )
 from second_brain.crossfit.keyboards import crossfit_submenu_keyboard
 from second_brain.crossfit.readiness import check_readiness_logged_today
-from second_brain.crossfit.notion import parse_weekly_program_text, save_programme_from_notion_row, this_monday
 from second_brain.entertainment import log as ent_log
 from second_brain.entertainment.handlers import (
-    _entertainment_rule_entry_data,
     handle_entertainment_log as _ent_handle_log,
-    _maybe_prompt_explicit_venue,
-    load_entertainment_schemas,
 )
 from second_brain.routers import (
     handle_message_text,
     handle_callback,
-    route_classified_message_v10,
     _prompt_entertainment_notes_or_rating,
 )
 handle_entertainment_log = _ent_handle_log
@@ -2311,8 +2266,6 @@ def _build_utility_job_dispatch(bot) -> dict[str, Callable]:
     Each value must be an async callable that accepts no arguments (bot is
     captured via closure).
     """
-    from second_brain.healthtrack.sleep import handle_sleep_sync_job
-
     dispatch = {
         "digest_schedule_rebuild": _utility_async_handler("digest_schedule_rebuild", lambda: rebuild_digest_schedule_job(bot, digest_helpers._scheduler)),
         "digest_schedule_refresh": _utility_async_handler("digest_schedule_refresh", lambda: refresh_digest_schedule_job(bot, digest_helpers._scheduler)),
