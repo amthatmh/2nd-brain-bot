@@ -224,13 +224,26 @@ async def send_letterboxd_prompt(bot, chat_id: int, item: dict) -> None:
     )
 
 
+def _film_title(page_id: str) -> str:
+    """Best-effort read of the Film title so prompts can name the row."""
+    try:
+        page = _main().notion_call(_notion().pages.retrieve, page_id=page_id)
+        arr = page.get("properties", {}).get("Film", {}).get("title", [])
+        return "".join(c.get("plain_text", "") for c in arr).strip()
+    except Exception:
+        log.debug("Could not read film title for %s", page_id, exc_info=True)
+        return ""
+
+
 async def _prompt_letterboxd_rating(message, page_id: str, chat_id: int | None) -> None:
     """Follow the location step with a rating-confirm using the −3..3 keyboard."""
     if chat_id is not None:
         ent_log.pending_entertainment_rating_map[chat_id] = {"page_id": page_id, "log_type": "cinema"}
     stashed = _main()._stash_pid(page_id)
+    title = _film_title(page_id)
+    prompt = f"⭐ *{title}* — confirm rating (-3 to 3):" if title else "⭐ Confirm rating (-3 to 3):"
     await message.reply_text(
-        "⭐ Confirm rating (-3 to 3):", reply_markup=_rating_keyboard(stashed)
+        prompt, parse_mode="Markdown", reply_markup=_rating_keyboard(stashed)
     )
 
 
@@ -1979,15 +1992,19 @@ async def _cb_watchloc(q, parts, context) -> None:
         await q.edit_message_text("⚠️ This prompt expired — set it in Notion.")
         return
 
+    title = _film_title(page_id)
+    label = f"*{title}* — " if title else ""
+
     if where == "cinema":
         if chat_id is not None:
             ent_log.pending_letterboxd_venue_map[chat_id] = {"page_id": page_id}
         await q.edit_message_text(
-            "🎬 Cinema — reply with the venue (add seat/auditorium if you like)."
+            f"🎬 {label}reply with the venue (add seat/auditorium if you like).",
+            parse_mode="Markdown",
         )
         return
 
-    await q.edit_message_text("🏠 Logged as home viewing.")
+    await q.edit_message_text(f"🏠 {label}logged as home viewing.", parse_mode="Markdown")
     await _prompt_letterboxd_rating(q.message, page_id, chat_id)
 
 
