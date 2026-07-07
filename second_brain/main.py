@@ -2514,6 +2514,7 @@ async def post_init(app: Application) -> None:
         id="cleanup_pending_task_interactions",
         replace_existing=True,
         max_instances=1,
+        misfire_grace_time=120,
     )
     scheduler.add_job(
         cleanup_expired_batches,
@@ -2567,6 +2568,7 @@ async def post_init(app: Application) -> None:
             replace_existing=True,
             max_instances=1,
             coalesce=True,
+            misfire_grace_time=600,
         )
     # ── Cinema sync — validate config before Utility Scheduler can enable it ──
     cinema_ok, cinema_problems = validate_cinema_config()
@@ -2677,6 +2679,7 @@ async def post_init(app: Application) -> None:
         id="digest_schedule_refresh",
         replace_existing=True,
         max_instances=1,
+        misfire_grace_time=300,
     )
 
     utility_scheduler_status = "enabled" if NOTION_UTILITY_SCHEDULER_DB else "disabled"
