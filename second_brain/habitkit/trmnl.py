@@ -12,6 +12,7 @@ card payload — is a pure function so it can be unit tested without Notion.
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -131,7 +132,7 @@ def create_trmnl_habits_handler(*, tz):
         token = os.environ.get("TRMNL_HABITS_TOKEN", "").strip()
         if not token:
             return web.json_response({"error": "not_configured"}, status=503)
-        if request.rel_url.query.get("token") != token:
+        if not hmac.compare_digest(request.rel_url.query.get("token") or "", token):
             return web.json_response({"error": "forbidden"}, status=403)
 
         habits_data = STATE.habits_data_cache.get("payload")

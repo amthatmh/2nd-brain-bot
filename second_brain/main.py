@@ -2057,28 +2057,26 @@ async def _record_steps_sync_result(result: dict) -> None:
 
 async def start_http_server() -> None:
     app    = web.Application()
-    app.router.add_get(
-        "/api/health-dashboard",
-        create_health_dashboard_handler(
-            notion=notion,
-            health_metrics_db_id=NOTION_HEALTH_METRICS_DB,
-            habit_log_db_id=NOTION_LOG_DB,
-            readiness_db_id=NOTION_DAILY_READINESS_DB,
-            tz=TZ,
-        ),
+    _health_dashboard_handler = create_health_dashboard_handler(
+        notion=notion,
+        health_metrics_db_id=NOTION_HEALTH_METRICS_DB,
+        habit_log_db_id=NOTION_LOG_DB,
+        readiness_db_id=NOTION_DAILY_READINESS_DB,
+        tz=TZ,
     )
-    app.router.add_get(
-        "/api/health-summary",
-        create_health_summary_handler(
-            notion=notion,
-            health_metrics_db_id=NOTION_HEALTH_METRICS_DB,
-            habit_log_db_id=NOTION_LOG_DB,
-            readiness_db_id=NOTION_DAILY_READINESS_DB,
-            tz=TZ,
-            claude=get_claude_client(),
-            model=CLAUDE_MODEL,
-        ),
+    app.router.add_get("/api/health-dashboard", _health_dashboard_handler)
+    app.router.add_options("/api/health-dashboard", _health_dashboard_handler)
+    _health_summary_handler = create_health_summary_handler(
+        notion=notion,
+        health_metrics_db_id=NOTION_HEALTH_METRICS_DB,
+        habit_log_db_id=NOTION_LOG_DB,
+        readiness_db_id=NOTION_DAILY_READINESS_DB,
+        tz=TZ,
+        claude=get_claude_client(),
+        model=CLAUDE_MODEL,
     )
+    app.router.add_get("/api/health-summary", _health_summary_handler)
+    app.router.add_options("/api/health-summary", _health_summary_handler)
     app.router.add_get(
         "/trmnl/health",
         create_trmnl_health_handler(
