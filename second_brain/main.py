@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Second Brain — Telegram bot entry point and handler wiring."""
+"""Second Brain — Telegram bot entry point and handler wiring.
+
+Note: routers.py reaches back into this module at runtime via `_main().<name>`
+to avoid circular imports. Several imports below have no bare-name reference
+in this file and look dead to pyflakes, but deleting them breaks routers.py
+at call time. Before removing an "unused" import here, grep for
+`_main().<name>` (and `main_module.<name>`) across second_brain/ first.
+"""
 
 import asyncio
 import os
@@ -175,12 +182,13 @@ from second_brain.trips import (
     append_trip_reminders_to_text,
     handle_trip_weather_refresh,
     run_packing_sync_job,
+    schedule_weather_refresh,
 )
 from second_brain.handler_registry import register_core_handlers
 from second_brain.scheduler_manager import UtilitySchedulerManager
 from second_brain.rules.engine import RuleEngine
 from second_brain.state import STATE
-from second_brain.utils import ExpiringDict, local_today
+from second_brain.utils import ExpiringDict, local_today, reply_notion_error
 from second_brain.healthtrack.dashboard import (
     create_health_dashboard_handler,
     create_health_summary_handler,
@@ -203,13 +211,20 @@ from utils.alert_handlers import (
     alert_startup,
 )
 
+from second_brain.crossfit.classify import classify_workout_message
 from second_brain.crossfit.handlers import (
     MOVEMENTS_CACHE,
+    handle_cf_callback,
+    handle_cf_prs_reply,
+    handle_cf_strength_flow,
+    handle_cf_text_reply,
+    handle_cf_wod_flow,
     reload_movement_library,
 )
 from second_brain.crossfit.keyboards import crossfit_submenu_keyboard
 from second_brain.crossfit.readiness import check_readiness_logged_today
 from second_brain.entertainment import log as ent_log
+from second_brain.entertainment.log import _entertainment_save_error_text
 from second_brain.entertainment.handlers import (
     handle_entertainment_log as _ent_handle_log,
 )
