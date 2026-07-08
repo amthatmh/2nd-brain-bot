@@ -1765,7 +1765,7 @@ async def _cb_h_done(q, parts, context) -> None:
         if h["page_id"] in selected_ids and not h.get("auto_only", False)
     ]
     selected_habits.sort(key=lambda h: h.get("sort") or 0)
-    session_log_date = _main()._habit_selection_session(message_id).get("log_date")
+    session_log_date = _main()._habit_selection_session(message_id).get("log_date") or _yesterday_catchup_log_date(q.message)
     logged_names: list[str] = []
     failed_names: list[str] = []
     logged_habits: list[dict] = []
@@ -1843,6 +1843,24 @@ async def _cb_h_done(q, parts, context) -> None:
         await q.message.reply_text("✅ Already logged today.")
     await q.answer()
     return
+
+
+def _yesterday_catchup_log_date(message) -> str | None:
+    """Recover the yesterday catch-up target date from the message itself.
+
+    The catch-up selection session carries log_date, but sessions live in
+    process memory only — a redeploy between the morning prompt and the tap
+    wipes it, and the rebuilt session would silently log against today. The
+    prompt text identifies the message as a catch-up, and its send date minus
+    one day is the day the prompt was asking about.
+    """
+    text = message.text or message.caption or ""
+    if "Yesterday's habits" not in text:
+        return None
+    sent = getattr(message, "date", None)
+    if sent is None:
+        return None
+    return (sent.astimezone(TZ).date() - timedelta(days=1)).isoformat()
 
 
 def _late_night_log_date(habit: dict) -> str | None:

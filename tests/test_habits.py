@@ -731,6 +731,48 @@ class TestYesterdayHabitDoneLogsForYesterday(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mock_log.call_args.args[0], page_id)
         self.assertEqual(mock_log.call_args.kwargs.get("log_date"), "2026-07-03")
 
+    async def test_done_recovers_log_date_from_message_when_session_lost(self):
+        """A redeploy wipes the in-memory session (and its log_date); the done
+        handler must recover the target date from the catch-up message itself
+        instead of silently logging against today."""
+        main = load_main_module()
+        import second_brain.routers as routers
+        from datetime import datetime, timezone
+
+        page_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        main.habit_cache = {"Magnesium": {"page_id": page_id, "name": "Magnesium", "sort": 1}}
+        # Session rebuilt after restart: selection present, log_date lost.
+        main._store_habit_selection_session(
+            778, list(main.habit_cache.values()), selected={page_id}, log_date=None
+        )
+
+        sent_at = datetime(2026, 7, 7, 13, 15, tzinfo=timezone.utc)  # morning local time
+        expected_date = (sent_at.astimezone(routers.TZ).date() - routers.timedelta(days=1)).isoformat()
+
+        query = MagicMock()
+        query.message = MagicMock(
+            message_id=778,
+            text="🌙 Yesterday's habits — did you do any of these Monday? Tap to log:",
+            date=sent_at,
+        )
+        query.edit_message_reply_markup = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        query.message.reply_text = AsyncMock()
+        query.answer = AsyncMock()
+
+        context = MagicMock()
+
+        with patch.object(main, "already_logged_today", return_value=False), \
+            patch.object(main, "log_habit") as mock_log, \
+            patch.object(main, "check_and_notify_weekly_goals", new=AsyncMock(return_value=set())), \
+            patch.object(main, "get_week_completion_count", return_value=1), \
+            patch.object(main, "get_habit_frequency", return_value=7):
+            await routers._cb_h_done(query, ["h", "done"], context)
+
+        mock_log.assert_called_once()
+        self.assertEqual(mock_log.call_args.args[0], page_id)
+        self.assertEqual(mock_log.call_args.kwargs.get("log_date"), expected_date)
+
 
 if __name__ == "__main__":
     unittest.main()
