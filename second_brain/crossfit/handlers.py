@@ -475,6 +475,25 @@ def _normalize_strength_movements(workout_result: dict | None, workout_data: dic
     ]
 
 
+def _is_shared_scheme_complex(movements: list[dict], raw_log: str | None) -> bool:
+    """True when a "+"-joined complex shares one scheme across every movement.
+
+    Such a complex ("5 sets of 2x power clean + 2x split jerk") is one training
+    piece and logs as a single row tagging all movements. Distinct pieces —
+    different sets/reps/load, or comma/line-separated section parts — stay as
+    one row per movement.
+    """
+    if len(movements) < 2 or "+" not in (raw_log or ""):
+        return False
+    first = movements[0]
+    return all(
+        m.get("sets") == first.get("sets")
+        and m.get("reps") == first.get("reps")
+        and m.get("load_lbs") == first.get("load_lbs")
+        for m in movements[1:]
+    )
+
+
 def _has_complete_strength_metadata(state: dict) -> bool:
     return all(
         state.get(field) is not None
@@ -1681,6 +1700,63 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 if movement_name not in logged_names:
                     logged_names.append(movement_name)
             created.extend(logged_names)
+        elif _is_shared_scheme_complex(movements, state.get("raw_log")):
+            # A "+"-joined complex with one shared scheme (e.g. "5 sets of
+            # 2x 105lb power clean + 2x 105lb split jerk") is one training
+            # piece: log a single row tagging every movement. Per-movement PR
+            # history still works because queries filter on the relation.
+            existing_ids = list(state.get("movement_page_ids") or [])
+            page_ids: list[str] = []
+            names: list[str] = []
+            for idx, movement in enumerate(movements):
+                movement_name = movement.get("movement") or state.get("movement_name") or "Unknown"
+                movement_page_id = existing_ids[idx] if idx < len(existing_ids) else None
+                if not movement_page_id:
+                    movement_page_id = match_movement(movement_name, movement_cache)
+                if not movement_page_id:
+                    log.warning("finalize: no library match for '%s' — skipped", movement_name)
+                    continue
+                page_ids.append(movement_page_id)
+                names.append(movement_name)
+            if page_ids:
+                first = movements[0]
+                effort_sets = int(first.get("sets") or 1)
+                effort_reps = int(first.get("reps") or 1)
+                load_lbs = first.get("load_lbs")
+                if load_lbs is None and not first.get("bodyweight"):
+                    load_lbs = state.get("weight_lbs") if state.get("weight_lbs") is not None else state.get("load_lbs")
+                load_lbs = float(load_lbs) if load_lbs is not None else None
+                effort_scheme = f"{effort_sets}x{effort_reps}"
+                complex_name = " + ".join(names)
+                log.info(
+                    "[CF_STATE] complex movement=%s sets=%s reps=%s weight=%s date=%s",
+                    complex_name, effort_sets, effort_reps, load_lbs, workout_date,
+                )
+                workout_page_id = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda: create_strength_log(
+                        notion=notion,
+                        workout_log_db_id=_cf_config(config, "NOTION_WORKOUT_LOG_DB"),
+                        movement_page_id=page_ids,
+                        movement_name=complex_name,
+                        load_lbs=load_lbs,
+                        effort_sets=effort_sets,
+                        effort_reps=effort_reps,
+                        is_max_attempt=state.get("is_max_attempt", False),
+                        weekly_program_page_id=weekly_program_id,
+                        cycle_page_id=state.get("cycle_page_id"),
+                        readiness=state.get("readiness"),
+                        workout_date=workout_date,
+                        effort_scheme=effort_scheme,
+                        load_kg=state.get("weight_kg"),
+                        raw_log=raw_log,
+                        workout_day_id=workout_day_id,
+                    ),
+                )
+                workout_page_ids.append(workout_page_id)
+                created.append(complex_name)
+                # Collapse to one entry so the scheme summary prints once.
+                movements = [{**first, "movement": complex_name}]
         else:
             for idx, movement in enumerate(movements):
                 existing_ids = list(state.get("movement_page_ids") or [])
