@@ -132,6 +132,25 @@ def test_classify_workout_message_short_text_not_programme():
 
 
 
+def test_classify_complex_leading_sets_prefix_distributes_to_all_movements():
+    # Claude misparse: split jerk got sets=1 because "5 sets of" only preceded power clean
+    c = _FakeClaude('{"type":"strength","confidence":"high","movement":"Power Clean","movements":[{"movement":"Power Clean","sets":5,"reps":2,"load_lbs":105},{"movement":"Split Jerk","sets":1,"reps":2,"load_lbs":105}],"load_lbs":105,"load_kg":null,"sets":5,"reps":2,"is_max_attempt":false,"wod_name":null,"format":null,"duration_mins":null,"partner":false}')
+
+    out = classify_workout_message("5 sets of 2x 105lb power clean + 2x 105lb split jerk", c, "model", 1000)
+
+    assert out["movements"][0]["sets"] == 5
+    assert out["movements"][1]["sets"] == 5
+
+
+def test_classify_complex_explicit_per_movement_sets_not_overridden():
+    # Both movements carry their own "sets of" prefix — no inheritance should occur
+    c = _FakeClaude('{"type":"strength","confidence":"high","movement":"Push Press","movements":[{"movement":"Push Press","sets":4,"reps":3,"load_lbs":105},{"movement":"Push Jerk","sets":1,"reps":5,"load_lbs":105}],"load_lbs":105,"load_kg":null,"sets":4,"reps":3,"is_max_attempt":false,"wod_name":null,"format":null,"duration_mins":null,"partner":false}')
+
+    out = classify_workout_message("4 sets of 3x105 lb push press + 1 set of 5x105lb push jerk", c, "model", 1000)
+
+    assert out["movements"][1]["sets"] == 1
+
+
 def test_classify_strength_message_preserves_per_movement_fields():
     c = _FakeClaude('{"type":"strength","confidence":"high","movement":"Push Press","movements":[{"movement":"Push Press","sets":4,"reps":3,"load_lbs":105},{"movement":"Push Jerk","sets":4,"reps":5,"load_lbs":105}],"load_lbs":105,"load_kg":null,"sets":4,"reps":3,"is_max_attempt":false,"wod_name":null,"format":null,"duration_mins":null,"partner":false}')
 
