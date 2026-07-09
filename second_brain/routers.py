@@ -1836,13 +1836,21 @@ async def _cb_h_done(q, parts, context) -> None:
             except Exception:
                 await q.message.reply_text(summary)
         else:
-            await q.message.reply_text(summary)
+            await _replace_habit_prompt(q, summary)
     elif failed_names:
-        await q.message.reply_text(f"⚠️ Couldn't log: {', '.join(failed_names)}")
+        await _replace_habit_prompt(q, f"⚠️ Couldn't log: {', '.join(failed_names)}")
     else:
-        await q.message.reply_text("✅ Already logged today.")
+        await _replace_habit_prompt(q, "✅ Already logged today.")
     await q.answer()
     return
+
+
+async def _replace_habit_prompt(q, text: str) -> None:
+    """Fold the outcome into the "Which habit did you complete?" prompt instead of adding a message."""
+    try:
+        await q.edit_message_text(text)
+    except Exception:
+        await q.message.reply_text(text)
 
 
 def _yesterday_catchup_log_date(message) -> str | None:
