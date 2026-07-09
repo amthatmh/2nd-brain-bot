@@ -2225,6 +2225,14 @@ async def _cf_track(q, parts, claude, notion, config, cf_pending) -> None:
     match = next((t for t in tracks if t["track"] == track_name), None)
     state["workout_day_id"] = match["page_id"] if match else None
     cf_pending[key] = state
+    try:
+        await q.edit_message_text(
+            f"Which track did you train today? {_markdown_bold_value(track_name)}",
+            parse_mode="Markdown",
+            reply_markup=None,
+        )
+    except Exception:
+        log.debug("Could not fold track answer into prompt", exc_info=True)
     movement_id = state.get("movement_page_id")
     movement_name = state.get("movement", "")
     if movement_id and state.get("mode") == "strength":

@@ -731,6 +731,38 @@ class TestYesterdayHabitDoneLogsForYesterday(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mock_log.call_args.args[0], page_id)
         self.assertEqual(mock_log.call_args.kwargs.get("log_date"), "2026-07-03")
 
+    async def test_done_folds_summary_into_prompt_message(self):
+        """Manual "Which habit did you complete?" prompt is edited into the
+        logged summary instead of leaving the prompt + a new reply bubble."""
+        main = load_main_module()
+        import second_brain.routers as routers
+
+        page_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        main.habit_cache = {"Workout": {"page_id": page_id, "name": "Workout", "sort": 1}}
+        main._store_habit_selection_session(
+            779, list(main.habit_cache.values()), selected={page_id}, log_date=None
+        )
+
+        query = MagicMock()
+        query.message = MagicMock(message_id=779, text="🏃 Which habit did you complete?")
+        query.edit_message_reply_markup = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        query.message.reply_text = AsyncMock()
+        query.answer = AsyncMock()
+
+        context = MagicMock()
+
+        with patch.object(main, "already_logged_today", return_value=False), \
+            patch.object(main, "log_habit"), \
+            patch.object(main, "check_and_notify_weekly_goals", new=AsyncMock(return_value=set())), \
+            patch.object(main, "get_week_completion_count", return_value=1), \
+            patch.object(main, "get_habit_frequency", return_value=7):
+            await routers._cb_h_done(query, ["h", "done"], context)
+
+        query.edit_message_text.assert_awaited_once()
+        self.assertIn("✅ Logged: Workout", query.edit_message_text.await_args.args[0])
+        query.message.reply_text.assert_not_awaited()
+
     async def test_done_recovers_log_date_from_message_when_session_lost(self):
         """A redeploy wipes the in-memory session (and its log_date); the done
         handler must recover the target date from the catch-up message itself
