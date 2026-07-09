@@ -182,6 +182,31 @@ def parse_programme_text(text: str) -> dict | None:
     }
 
 
+_COMPLEX_SETS_PREFIX_RE = re.compile(r"^\s*(\d+)\s*sets?\s+of\b", re.I)
+
+
+def _distribute_complex_sets(text: str, result: dict, movements: list) -> None:
+    """A leading "N sets of" on a "+"-joined complex applies to every movement.
+
+    Claude sometimes only attaches the set count to the first movement, leaving
+    the rest at sets=1 (the "no set prefix" default). When the message has one
+    leading set-count prefix and no further "sets of" phrases, inherit it.
+    """
+    if result.get("type") != "strength" or "+" not in text or len(movements) < 2:
+        return
+    match = _COMPLEX_SETS_PREFIX_RE.match(text)
+    if not match:
+        return
+    if len(re.findall(r"\bsets?\s+of\b", text, re.I)) > 1:
+        return
+    n = int(match.group(1))
+    if n == 1:
+        return
+    for movement in movements:
+        if isinstance(movement, dict) and (movement.get("sets") or 1) == 1:
+            movement["sets"] = n
+
+
 def classify_workout_message(text: str, claude_client, model: str, max_tokens: int) -> dict:
     # Fast-path: long text with day headings is always a programme
     if len(text) > 400 and any(day in text for day in DAY_NAMES):
@@ -242,6 +267,9 @@ Parsing rules for sets/reps/load:
   (ambiguous without unit — treat N as sets, M as reps)
 - "4 sets of 5x105lb" → sets=4, reps=5, load_lbs=105
 - Patterns like "N sets of MxLOAD unit" always mean: sets=N, reps=M, load=LOAD
+- A leading "N sets of" prefix applies to EVERY movement in a "+"-joined complex, not just the first:
+  "5 sets of 2x 105lb power clean + 2x 105lb split jerk" → both movements get sets=5, reps=2, load_lbs=105
+  (each set of the complex contains both movements; a movement after "+" without its own "sets of" prefix inherits the leading set count)
 - "touch n go" or "TNG" prefix does not affect sets/reps/load parsing.
 
 CONDITIONING extraction rules:
@@ -276,6 +304,7 @@ Return ONLY valid JSON with fields exactly as requested:
     if not movements and result.get("movement"):
         movements = [result["movement"]]
     result["movements"] = movements
+    _distribute_complex_sets(text, result, movements)
     if result.get("type") == "strength" and movements and isinstance(movements[0], dict):
         first = movements[0]
         result["movement"] = first.get("movement") or result.get("movement")
