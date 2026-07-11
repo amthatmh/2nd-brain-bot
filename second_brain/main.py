@@ -221,6 +221,7 @@ from second_brain.healthtrack.dashboard import (
 )
 from second_brain.healthtrack.trmnl import create_trmnl_health_handler
 from second_brain.habitkit.trmnl import create_trmnl_habits_handler
+from second_brain.crossfit.trmnl import create_trmnl_workout_handler
 from second_brain.services import task_parsing as task_parsing_service
 from second_brain.services import note_utils as note_utils_service
 from second_brain.handlers.commands import CommandHandlers
@@ -2110,6 +2111,14 @@ async def start_http_server() -> None:
         ),
     )
     app.router.add_get("/trmnl/habits", create_trmnl_habits_handler(tz=TZ))
+    app.router.add_get(
+        "/trmnl/workout",
+        create_trmnl_workout_handler(
+            notion=notion,
+            workout_days_db_id=NOTION_WORKOUT_DAYS_DB,
+            tz=TZ,
+        ),
+    )
     app.router.add_get("/health", lambda r: web.Response(text="ok"))
     register_health_routes(
         app,
