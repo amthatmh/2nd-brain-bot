@@ -55,6 +55,22 @@ class TestCfCallbackDispatch(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("123", cf_pending)
         q.edit_message_text.assert_awaited_once_with("✅ Session complete.", reply_markup=None)
 
+    async def test_track_selection_folds_answer_into_prompt(self):
+        import second_brain.crossfit.handlers as handlers
+        from second_brain.crossfit.handlers import handle_cf_callback
+
+        q = self._query("cf:track:123:Performance")
+        cf_pending = {"123": {"mode": "wod", "available_tracks": [{"track": "Performance", "page_id": "day-1"}]}}
+        await handle_cf_callback(q, ["cf", "track", "123", "Performance"], MagicMock(), MagicMock(), {}, cf_pending)
+        q.edit_message_text.assert_awaited_once_with(
+            "Which track did you train today? *Performance*",
+            parse_mode="Markdown",
+            reply_markup=None,
+        )
+        self.assertEqual(cf_pending["123"]["workout_day_id"], "day-1")
+        # WOD flow continues with the format prompt as a fresh message
+        q.message.reply_text.assert_awaited_once()
+
     async def test_log_strength_routes_to_strength_flow(self):
         from second_brain.crossfit.handlers import handle_cf_callback
 

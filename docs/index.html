@@ -222,6 +222,19 @@ const API_URL     = `${API_BASE}/habits-data`;
 const LOG_API_URL = `${API_BASE}/log-habit`;
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
+function getHabitSecret() {
+  let secret = localStorage.getItem('habitkit_secret');
+  if (!secret) {
+    secret = window.prompt('Enter dashboard passphrase:') || '';
+    if (secret) localStorage.setItem('habitkit_secret', secret);
+  }
+  return secret;
+}
+
+function clearHabitSecret() {
+  localStorage.removeItem('habitkit_secret');
+}
+
 async function fetchWithTimeout(url, options = {}, timeoutMs = 20000) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -260,9 +273,13 @@ async function logHabitFromWeb(habit, triggerEl) {
   try {
     const res = await fetchWithTimeout(LOG_API_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Habit-Secret': getHabitSecret() },
       body: JSON.stringify({ habitId: habit.id }),
     });
+    if (res.status === 401) {
+      clearHabitSecret();
+      throw new Error('Wrong passphrase — reload to try again.');
+    }
     const payload = await res.json().catch(() => ({}));
     if (!res.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${res.status}`);
     triggerEl.textContent = '✅';
@@ -309,7 +326,14 @@ async function loadData() {
   try {
     renderSkeleton();
     const url = `${API_URL}?t=${Date.now()}`;
-    const res  = await fetchWithTimeout(url, { cache: 'no-store' }, 15000);
+    const res  = await fetchWithTimeout(url, {
+      cache: 'no-store',
+      headers: { 'X-Habit-Secret': getHabitSecret() },
+    }, 15000);
+    if (res.status === 401) {
+      clearHabitSecret();
+      throw new Error('Wrong passphrase — reload to try again.');
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     render(data);

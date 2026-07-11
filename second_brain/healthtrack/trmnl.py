@@ -115,7 +115,7 @@ _DAY_ABBR = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 def _avg_last7(series: list[dict[str, Any]] | None) -> float | None:
     """Mean of the ``value`` field over the last 7 dated points, or None."""
-    points = [p.get("value") for p in (series or []) if p.get("value") is not None]
+    points = [float(v) for p in (series or []) if (v := p.get("value")) is not None]
     tail = points[-7:]
     return sum(tail) / len(tail) if tail else None
 
@@ -204,7 +204,6 @@ def build_card_payload(
             "score": activity.get("value"),
             "desc": activity.get("description", ""),
             "recommendation": _card_recommendation(workout_gap, steps_gap, today),
-            "recommendation": activity.get("recommendation", ""),
         },
         "steps": {
             "today": steps.today,

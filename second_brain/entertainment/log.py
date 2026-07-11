@@ -28,6 +28,7 @@ entertainment_schemas: dict[str, dict] = {}
 pending_sport_competition_map: dict[int, dict] = {}
 pending_entertainment_rating_map: dict[int, dict] = {}
 pending_entertainment_notes_map: dict[int, dict] = {}
+pending_letterboxd_venue_map: dict[int, dict] = {}
 
 
 def _cleanup_extracted_text(text: str | None) -> str:

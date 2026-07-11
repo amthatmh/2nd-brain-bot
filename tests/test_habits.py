@@ -598,7 +598,7 @@ class TestYesterdayHabitCatchup(unittest.IsolatedAsyncioTestCase):
 
         page_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
         notion_habits.habit_cache = {
-            "Magnesium": {"page_id": page_id, "name": "Magnesium", "sort": 1},
+            "Magnesium": {"page_id": page_id, "name": "Magnesium", "sort": 1, "late_night": True},
         }
         digest._notion = MagicMock()
         digest._store_habit_session_fn = main._store_habit_selection_session
@@ -630,7 +630,7 @@ class TestYesterdayHabitCatchup(unittest.IsolatedAsyncioTestCase):
         from second_brain.notion import habits as notion_habits
 
         notion_habits.habit_cache = {
-            "Read": {"page_id": "r", "name": "Read", "sort": 1},
+            "Read": {"page_id": "r", "name": "Read", "sort": 1, "late_night": True},
         }
         digest._notion = MagicMock()
 
@@ -638,6 +638,59 @@ class TestYesterdayHabitCatchup(unittest.IsolatedAsyncioTestCase):
         bot.send_message = AsyncMock()
 
         with patch.object(notion_habits, "already_logged_today", return_value=True), \
+            patch.object(notion_habits, "is_on_pace", return_value=False):
+            await digest.send_yesterday_habit_catchup(bot)
+
+        bot.send_message.assert_not_awaited()
+
+    async def test_only_late_night_habits_included(self):
+        main = load_main_module()
+        from second_brain import digest
+        from second_brain.notion import habits as notion_habits
+
+        notion_habits.habit_cache = {
+            "Magnesium": {"page_id": "m", "name": "Magnesium", "sort": 1, "late_night": True},
+            "Workout": {"page_id": "w", "name": "Workout", "sort": 2, "late_night": True},
+            "Stretching": {"page_id": "s", "name": "Stretching", "sort": 3, "late_night": False},
+            "Water2L": {"page_id": "wa", "name": "Water2L", "sort": 4},
+        }
+        digest._notion = MagicMock()
+        digest._store_habit_session_fn = main._store_habit_selection_session
+
+        bot = MagicMock()
+        sent = MagicMock(message_id=556)
+        bot.send_message = AsyncMock(return_value=sent)
+
+        with patch.object(notion_habits, "already_logged_today", return_value=False), \
+            patch.object(notion_habits, "is_on_pace", return_value=False):
+            await digest.send_yesterday_habit_catchup(bot)
+
+        bot.send_message.assert_awaited_once()
+        call_kwargs = bot.send_message.await_args.kwargs
+        labels = [
+            button.text
+            for row in call_kwargs["reply_markup"].inline_keyboard
+            for button in row
+        ]
+        self.assertIn("Magnesium", labels)
+        self.assertIn("Workout", labels)
+        self.assertNotIn("Stretching", labels)
+        self.assertNotIn("Water2L", labels)
+
+    async def test_no_message_when_no_late_night_habits_exist(self):
+        load_main_module()
+        from second_brain import digest
+        from second_brain.notion import habits as notion_habits
+
+        notion_habits.habit_cache = {
+            "Stretching": {"page_id": "s", "name": "Stretching", "sort": 1},
+        }
+        digest._notion = MagicMock()
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+
+        with patch.object(notion_habits, "already_logged_today", return_value=False), \
             patch.object(notion_habits, "is_on_pace", return_value=False):
             await digest.send_yesterday_habit_catchup(bot)
 
@@ -677,6 +730,80 @@ class TestYesterdayHabitDoneLogsForYesterday(unittest.IsolatedAsyncioTestCase):
         mock_log.assert_called_once()
         self.assertEqual(mock_log.call_args.args[0], page_id)
         self.assertEqual(mock_log.call_args.kwargs.get("log_date"), "2026-07-03")
+
+    async def test_done_folds_summary_into_prompt_message(self):
+        """Manual "Which habit did you complete?" prompt is edited into the
+        logged summary instead of leaving the prompt + a new reply bubble."""
+        main = load_main_module()
+        import second_brain.routers as routers
+
+        page_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        main.habit_cache = {"Workout": {"page_id": page_id, "name": "Workout", "sort": 1}}
+        main._store_habit_selection_session(
+            779, list(main.habit_cache.values()), selected={page_id}, log_date=None
+        )
+
+        query = MagicMock()
+        query.message = MagicMock(message_id=779, text="🏃 Which habit did you complete?")
+        query.edit_message_reply_markup = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        query.message.reply_text = AsyncMock()
+        query.answer = AsyncMock()
+
+        context = MagicMock()
+
+        with patch.object(main, "already_logged_today", return_value=False), \
+            patch.object(main, "log_habit"), \
+            patch.object(main, "check_and_notify_weekly_goals", new=AsyncMock(return_value=set())), \
+            patch.object(main, "get_week_completion_count", return_value=1), \
+            patch.object(main, "get_habit_frequency", return_value=7):
+            await routers._cb_h_done(query, ["h", "done"], context)
+
+        query.edit_message_text.assert_awaited_once()
+        self.assertIn("✅ Logged: Workout", query.edit_message_text.await_args.args[0])
+        query.message.reply_text.assert_not_awaited()
+
+    async def test_done_recovers_log_date_from_message_when_session_lost(self):
+        """A redeploy wipes the in-memory session (and its log_date); the done
+        handler must recover the target date from the catch-up message itself
+        instead of silently logging against today."""
+        main = load_main_module()
+        import second_brain.routers as routers
+        from datetime import datetime, timezone
+
+        page_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        main.habit_cache = {"Magnesium": {"page_id": page_id, "name": "Magnesium", "sort": 1}}
+        # Session rebuilt after restart: selection present, log_date lost.
+        main._store_habit_selection_session(
+            778, list(main.habit_cache.values()), selected={page_id}, log_date=None
+        )
+
+        sent_at = datetime(2026, 7, 7, 13, 15, tzinfo=timezone.utc)  # morning local time
+        expected_date = (sent_at.astimezone(routers.TZ).date() - routers.timedelta(days=1)).isoformat()
+
+        query = MagicMock()
+        query.message = MagicMock(
+            message_id=778,
+            text="🌙 Yesterday's habits — did you do any of these Monday? Tap to log:",
+            date=sent_at,
+        )
+        query.edit_message_reply_markup = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        query.message.reply_text = AsyncMock()
+        query.answer = AsyncMock()
+
+        context = MagicMock()
+
+        with patch.object(main, "already_logged_today", return_value=False), \
+            patch.object(main, "log_habit") as mock_log, \
+            patch.object(main, "check_and_notify_weekly_goals", new=AsyncMock(return_value=set())), \
+            patch.object(main, "get_week_completion_count", return_value=1), \
+            patch.object(main, "get_habit_frequency", return_value=7):
+            await routers._cb_h_done(query, ["h", "done"], context)
+
+        mock_log.assert_called_once()
+        self.assertEqual(mock_log.call_args.args[0], page_id)
+        self.assertEqual(mock_log.call_args.kwargs.get("log_date"), expected_date)
 
 
 if __name__ == "__main__":

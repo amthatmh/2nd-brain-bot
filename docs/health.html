@@ -107,6 +107,15 @@
   </main>
 <script>
 const API_BASE = 'https://worker-production-d366.up.railway.app';
+function getHabitSecret() {
+  let secret = localStorage.getItem('habitkit_secret');
+  if (!secret) {
+    secret = window.prompt('Enter dashboard passphrase:') || '';
+    if (secret) localStorage.setItem('habitkit_secret', secret);
+  }
+  return secret;
+}
+function clearHabitSecret() { localStorage.removeItem('habitkit_secret'); }
 const RANGES = ['1m', '3m', '6m', 'all'];
 const cache = {};
 const charts = {};
@@ -147,13 +156,15 @@ async function fetchWithTimeout(url, options={}, timeoutMs=5000){
   finally{clearTimeout(timeout);}
 }
 async function fetchHealthRange(range){
-  const res=await fetchWithTimeout(`${API_BASE}/api/health-dashboard?range=${range}`,{},5000);
+  const res=await fetchWithTimeout(`${API_BASE}/api/health-dashboard?range=${range}`,{headers:{'X-Habit-Secret':getHabitSecret()}},5000);
+  if(res.status===401){clearHabitSecret();throw new Error('Wrong passphrase — reload to try again.');}
   const data=await res.json(); if(!res.ok) throw new Error(data.message||`HTTP ${res.status}`);
   cache[range]=data; return data;
 }
 async function fetchSummary(){
   try{
-    const res=await fetchWithTimeout(`${API_BASE}/api/health-summary`,{},7000);
+    const res=await fetchWithTimeout(`${API_BASE}/api/health-summary`,{headers:{'X-Habit-Secret':getHabitSecret()}},7000);
+    if(res.status===401){clearHabitSecret();return;}
     const data=await res.json(); if(!res.ok||!data.summary) return;
     document.getElementById('summaryText').textContent=data.summary;
     document.getElementById('summaryCard').hidden=false;

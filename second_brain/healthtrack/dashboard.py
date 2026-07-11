@@ -7,6 +7,7 @@ responses in memory so browser reloads do not hit Notion every time.
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import math
@@ -20,6 +21,7 @@ from typing import Any
 
 from aiohttp import web
 
+from second_brain.healthtrack.config import HABIT_DASHBOARD_ORIGIN, HABIT_DASHBOARD_SECRET
 from second_brain.http_utils import cors_headers
 from second_brain.notion import notion_call
 
@@ -886,6 +888,17 @@ def create_health_summary_handler(
         raise RuntimeError("NOTION_HABIT_LOG_DB/NOTION_LOG_DB is required for /api/health-summary")
 
     async def health_summary_handler(request: web.Request) -> web.Response:
+        if request.method == "OPTIONS":
+            return web.Response(status=204, headers=cors_headers(extra_allow_headers="Content-Type, X-Habit-Secret", allow_origin=HABIT_DASHBOARD_ORIGIN))
+        if HABIT_DASHBOARD_SECRET:
+            incoming_secret = request.headers.get("X-Habit-Secret", "").strip()
+            if not hmac.compare_digest(incoming_secret, HABIT_DASHBOARD_SECRET):
+                return web.json_response(
+                    {"error": "unauthorized", "message": "Invalid or missing X-Habit-Secret"},
+                    status=401,
+                    headers=cors_headers(extra_allow_headers="Content-Type, X-Habit-Secret", allow_origin=HABIT_DASHBOARD_ORIGIN),
+                )
+
         now = datetime.now(tz)
         cached = _health_dashboard_cache.get("summary")
         if not cached:
@@ -897,7 +910,7 @@ def create_health_summary_handler(
             return web.Response(
                 text=json.dumps(cached["payload"]),
                 content_type="application/json",
-                headers={**cors_headers(), "X-Second-Brain-Cache": "fresh" if age < _HEALTH_CACHE_TTL_SECONDS else "stale"},
+                headers={**cors_headers(allow_origin=HABIT_DASHBOARD_ORIGIN), "X-Second-Brain-Cache": "fresh" if age < _HEALTH_CACHE_TTL_SECONDS else "stale"},
             )
 
         try:
@@ -913,14 +926,14 @@ def create_health_summary_handler(
             return web.Response(
                 text=json.dumps(payload),
                 content_type="application/json",
-                headers={**cors_headers(), "X-Second-Brain-Cache": "miss"},
+                headers={**cors_headers(allow_origin=HABIT_DASHBOARD_ORIGIN), "X-Second-Brain-Cache": "miss"},
             )
         except Exception as exc:  # noqa: BLE001 - frontend hides this card gracefully.
             log.warning("/api/health-summary error: %s", exc)
             return web.json_response(
                 {"error": "summary_unavailable", "message": str(exc)},
                 status=503,
-                headers=cors_headers(),
+                headers=cors_headers(allow_origin=HABIT_DASHBOARD_ORIGIN),
             )
 
     return health_summary_handler
@@ -933,12 +946,23 @@ def create_health_dashboard_handler(*, notion, health_metrics_db_id: str, habit_
         raise RuntimeError("NOTION_HABIT_LOG_DB/NOTION_LOG_DB is required for /api/health-dashboard")
 
     async def health_dashboard_handler(request: web.Request) -> web.Response:
+        if request.method == "OPTIONS":
+            return web.Response(status=204, headers=cors_headers(extra_allow_headers="Content-Type, X-Habit-Secret", allow_origin=HABIT_DASHBOARD_ORIGIN))
+        if HABIT_DASHBOARD_SECRET:
+            incoming_secret = request.headers.get("X-Habit-Secret", "").strip()
+            if not hmac.compare_digest(incoming_secret, HABIT_DASHBOARD_SECRET):
+                return web.json_response(
+                    {"error": "unauthorized", "message": "Invalid or missing X-Habit-Secret"},
+                    status=401,
+                    headers=cors_headers(extra_allow_headers="Content-Type, X-Habit-Secret", allow_origin=HABIT_DASHBOARD_ORIGIN),
+                )
+
         range_value = request.rel_url.query.get("range", "1m").lower()
         if range_value not in VALID_RANGES:
             return web.json_response(
                 {"error": "invalid_range", "message": "range must be one of 1m, 3m, 6m, all"},
                 status=400,
-                headers=cors_headers(),
+                headers=cors_headers(allow_origin=HABIT_DASHBOARD_ORIGIN),
             )
 
         now = datetime.now(tz)
@@ -951,7 +975,7 @@ def create_health_dashboard_handler(*, notion, health_metrics_db_id: str, habit_
             return web.Response(
                 text=json.dumps(cached["payload"]),
                 content_type="application/json",
-                headers={**cors_headers(), "X-Second-Brain-Cache": "fresh"},
+                headers={**cors_headers(allow_origin=HABIT_DASHBOARD_ORIGIN), "X-Second-Brain-Cache": "fresh"},
             )
 
         if cached and age is not None and age < _HEALTH_STALE_SECONDS:
@@ -966,7 +990,7 @@ def create_health_dashboard_handler(*, notion, health_metrics_db_id: str, habit_
             return web.Response(
                 text=json.dumps(cached["payload"]),
                 content_type="application/json",
-                headers={**cors_headers(), "X-Second-Brain-Cache": "stale-refreshing"},
+                headers={**cors_headers(allow_origin=HABIT_DASHBOARD_ORIGIN), "X-Second-Brain-Cache": "stale-refreshing"},
             )
 
         try:
@@ -981,14 +1005,14 @@ def create_health_dashboard_handler(*, notion, health_metrics_db_id: str, habit_
             return web.Response(
                 text=json.dumps(payload),
                 content_type="application/json",
-                headers={**cors_headers(), "X-Second-Brain-Cache": "miss"},
+                headers={**cors_headers(allow_origin=HABIT_DASHBOARD_ORIGIN), "X-Second-Brain-Cache": "miss"},
             )
         except Exception as exc:  # noqa: BLE001 - HTTP handler returns JSON errors.
             log.exception("/api/health-dashboard error: %s", exc)
             return web.json_response(
                 {"error": "notion_api_failure", "message": str(exc)},
                 status=500,
-                headers=cors_headers(),
+                headers=cors_headers(allow_origin=HABIT_DASHBOARD_ORIGIN),
             )
 
     return health_dashboard_handler

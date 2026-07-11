@@ -132,6 +132,25 @@ def test_classify_workout_message_short_text_not_programme():
 
 
 
+def test_classify_complex_leading_sets_prefix_distributes_to_all_movements():
+    # Claude misparse: split jerk got sets=1 because "5 sets of" only preceded power clean
+    c = _FakeClaude('{"type":"strength","confidence":"high","movement":"Power Clean","movements":[{"movement":"Power Clean","sets":5,"reps":2,"load_lbs":105},{"movement":"Split Jerk","sets":1,"reps":2,"load_lbs":105}],"load_lbs":105,"load_kg":null,"sets":5,"reps":2,"is_max_attempt":false,"wod_name":null,"format":null,"duration_mins":null,"partner":false}')
+
+    out = classify_workout_message("5 sets of 2x 105lb power clean + 2x 105lb split jerk", c, "model", 1000)
+
+    assert out["movements"][0]["sets"] == 5
+    assert out["movements"][1]["sets"] == 5
+
+
+def test_classify_complex_explicit_per_movement_sets_not_overridden():
+    # Both movements carry their own "sets of" prefix — no inheritance should occur
+    c = _FakeClaude('{"type":"strength","confidence":"high","movement":"Push Press","movements":[{"movement":"Push Press","sets":4,"reps":3,"load_lbs":105},{"movement":"Push Jerk","sets":1,"reps":5,"load_lbs":105}],"load_lbs":105,"load_kg":null,"sets":4,"reps":3,"is_max_attempt":false,"wod_name":null,"format":null,"duration_mins":null,"partner":false}')
+
+    out = classify_workout_message("4 sets of 3x105 lb push press + 1 set of 5x105lb push jerk", c, "model", 1000)
+
+    assert out["movements"][1]["sets"] == 1
+
+
 def test_classify_strength_message_preserves_per_movement_fields():
     c = _FakeClaude('{"type":"strength","confidence":"high","movement":"Push Press","movements":[{"movement":"Push Press","sets":4,"reps":3,"load_lbs":105},{"movement":"Push Jerk","sets":4,"reps":5,"load_lbs":105}],"load_lbs":105,"load_kg":null,"sets":4,"reps":3,"is_max_attempt":false,"wod_name":null,"format":null,"duration_mins":null,"partner":false}')
 
@@ -1197,6 +1216,103 @@ def test_finalize_flow_creates_one_strength_log_per_movement(monkeypatch):
     assert pending["123"]["last_workout_page_ids"] == ["log-1", "log-2"]
     assert "Push Press, Push Jerk" in message.replies[-1][0]
     assert "4x3 105 lbs | 4x5 105 lbs" in message.replies[-1][0]
+
+
+def test_finalize_flow_shared_scheme_complex_logs_single_row_tagging_all_movements(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    created = []
+
+    async def fake_week(notion):
+        del notion
+        return "week-1"
+
+    def fake_create_strength_log(**kwargs):
+        created.append(kwargs)
+        return f"log-{len(created)}"
+
+    monkeypatch.setattr(handlers, "get_current_week_program_url", fake_week)
+    monkeypatch.setattr(handlers, "create_strength_log", fake_create_strength_log)
+
+    message = _DummyMessage()
+    pending = {
+        "123": {
+            "mode": "strength",
+            "movement_page_ids": ["mov-power-clean", "mov-split-jerk"],
+            "movement_page_id": "mov-power-clean",
+            "movement_name": "Power Clean",
+            "workout_date": "2026-07-08",
+            "raw_log": "5 sets of 2x 105lb power clean + 2x 105lb split jerk",
+            "movements": [
+                {"movement": "Power Clean", "sets": 5, "reps": 2, "load_lbs": 105},
+                {"movement": "Split Jerk", "sets": 5, "reps": 2, "load_lbs": 105},
+            ],
+        }
+    }
+
+    asyncio.run(handlers._finalize_flow(
+        message,
+        "123",
+        SimpleNamespace(),
+        {"NOTION_WORKOUT_LOG_DB": "workout-log", "NOTION_MOVEMENTS_DB": "movements"},
+        pending,
+        None,
+    ))
+
+    assert len(created) == 1
+    assert created[0]["movement_page_id"] == ["mov-power-clean", "mov-split-jerk"]
+    assert created[0]["movement_name"] == "Power Clean + Split Jerk"
+    assert created[0]["effort_sets"] == 5
+    assert created[0]["effort_reps"] == 2
+    assert created[0]["load_lbs"] == 105.0
+    assert "Power Clean + Split Jerk" in message.replies[-1][0]
+    assert message.replies[-1][0].count("5x2") == 1
+
+
+def test_finalize_flow_plus_joined_but_different_scheme_stays_two_rows(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    created = []
+
+    async def fake_week(notion):
+        del notion
+        return "week-1"
+
+    def fake_create_strength_log(**kwargs):
+        created.append(kwargs)
+        return f"log-{len(created)}"
+
+    monkeypatch.setattr(handlers, "get_current_week_program_url", fake_week)
+    monkeypatch.setattr(handlers, "create_strength_log", fake_create_strength_log)
+
+    message = _DummyMessage()
+    pending = {
+        "123": {
+            "mode": "strength",
+            "movement_page_ids": ["mov-power-clean", "mov-split-jerk"],
+            "movement_page_id": "mov-power-clean",
+            "movement_name": "Power Clean",
+            "workout_date": "2026-07-08",
+            "raw_log": "5 sets of 1x 105lb power clean + 2x 105lb split jerk",
+            "movements": [
+                {"movement": "Power Clean", "sets": 5, "reps": 1, "load_lbs": 105},
+                {"movement": "Split Jerk", "sets": 5, "reps": 2, "load_lbs": 105},
+            ],
+        }
+    }
+
+    asyncio.run(handlers._finalize_flow(
+        message,
+        "123",
+        SimpleNamespace(),
+        {"NOTION_WORKOUT_LOG_DB": "workout-log", "NOTION_MOVEMENTS_DB": "movements"},
+        pending,
+        None,
+    ))
+
+    assert len(created) == 2
+    assert created[0]["movement_page_id"] == "mov-power-clean"
+    assert created[1]["movement_page_id"] == "mov-split-jerk"
 
 
 def test_strength_flow_disambiguates_slash_date_before_notes(monkeypatch):

@@ -1,0 +1,60 @@
+{% comment %}
+  TRMNL habit tracker card. Data: GET /trmnl/habits (polling). 800x480.
+  Layout via inline styles; muted text uses TRMNL 2-bit-safe gray tokens.
+  Dots: ● done, ○ missed. Sleep is dot-graded: gray ● = 6-7h (partial).
+{% endcomment %}
+
+{% assign card_habits = habits %}
+{% assign card_day_headers = day_headers %}
+{% assign card_range_label = range_label %}
+
+{% if card_habits == blank and data.habits != blank %}
+  {% assign card_habits = data.habits %}
+  {% assign card_day_headers = data.day_headers %}
+  {% assign card_range_label = data.range_label %}
+{% elsif card_habits == blank and response.habits != blank %}
+  {% assign card_habits = response.habits %}
+  {% assign card_day_headers = response.day_headers %}
+  {% assign card_range_label = response.range_label %}
+{% elsif card_habits == blank and body.habits != blank %}
+  {% assign card_habits = body.habits %}
+  {% assign card_day_headers = body.day_headers %}
+  {% assign card_range_label = body.range_label %}
+{% endif %}
+{% assign card_habit_count = card_habits | size %}
+
+<div style="width:800px;height:480px;background:#fff;color:#000;font-family:'Helvetica Neue',Arial,sans-serif;box-sizing:border-box;padding:22px;display:flex;flex-direction:column;">
+
+  <div style="display:flex;align-items:baseline;border-bottom:3px solid #000;padding-bottom:8px;">
+    <div style="font-size:32px;font-weight:800;letter-spacing:2px;">HABITS</div>
+    <div class="text--gray-55" style="margin-left:auto;font-size:16px;font-weight:600;">Past 7 days · {{ card_range_label }}</div>
+  </div>
+
+  {% if card_habit_count == 0 %}
+    <div style="flex:1;display:flex;align-items:center;justify-content:center;font-size:22px;">
+      No habits flagged for TRMNL. Tick the “TRMNL” box in Notion.
+    </div>
+  {% else %}
+
+  <div class="text--gray-55" style="display:flex;align-items:center;padding:10px 0 2px;font-size:11px;font-weight:700;letter-spacing:1px;">
+    <div style="flex:1;"></div>
+    {% for h in card_day_headers %}
+      <div style="width:44px;text-align:center;">{% if forloop.last %}TODAY{% endif %}</div>
+    {% endfor %}
+    <div style="width:60px;text-align:center;margin-left:14px;border-left:2px solid #000;">STREAK</div>
+  </div>
+
+  <div style="flex:1;display:flex;flex-direction:column;">
+    {% for habit in card_habits %}
+      <div style="display:flex;align-items:center;flex:1;">
+        <div style="flex:1;font-size:24px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ habit.name }}</div>
+        {% for d in habit.days %}
+          <div style="width:44px;text-align:center;font-size:24px;line-height:1;">{% if d == 1 %}●{% elsif d == 2 %}<span class="text--gray-55">●</span>{% else %}○{% endif %}</div>
+        {% endfor %}
+        <div style="width:60px;text-align:center;font-size:26px;font-weight:800;margin-left:14px;border-left:2px solid #000;">{{ habit.streak }}</div>
+      </div>
+    {% endfor %}
+  </div>
+
+  {% endif %}
+</div>

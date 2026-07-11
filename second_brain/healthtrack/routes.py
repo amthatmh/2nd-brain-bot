@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hmac
 import inspect
 import json
 import logging
@@ -76,6 +77,8 @@ from aiohttp import web
 
 from second_brain.healthtrack import config as health_config
 from second_brain.healthtrack.config import (
+    HABIT_DASHBOARD_ORIGIN,
+    HABIT_DASHBOARD_SECRET,
     STEPS_SOURCE_LABEL,
     STEPS_THRESHOLD,
     STEPS_WRITE_INTRADAY_BELOW_THRESHOLD,
@@ -713,6 +716,19 @@ async def habits_data_handler(
     datetime_cls=datetime,
     health_metrics_db: str = "",
 ) -> web.Response:
+    if request.method == "OPTIONS":
+        return web.Response(status=204, headers=cors_headers(extra_allow_headers="Content-Type, X-Habit-Secret", allow_origin=HABIT_DASHBOARD_ORIGIN))
+
+    if HABIT_DASHBOARD_SECRET:
+        incoming_secret = request.headers.get("X-Habit-Secret", "").strip()
+        if not hmac.compare_digest(incoming_secret, HABIT_DASHBOARD_SECRET):
+            return web.Response(
+                status=401,
+                text=json.dumps({"ok": False, "error": "Invalid or missing X-Habit-Secret"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Habit-Secret", allow_origin=HABIT_DASHBOARD_ORIGIN),
+            )
+
     query_all_fn = query_all_fn or (lambda database_id, **kwargs: query_all(notion, database_id, **kwargs))
     now = datetime_cls.now(tz)
 
@@ -720,7 +736,7 @@ async def habits_data_handler(
         return web.Response(
             text=json.dumps(STATE.habits_data_cache["payload"]),
             content_type="application/json",
-            headers={**cors_headers(), "X-Second-Brain-Cache": "fresh"},
+            headers={**cors_headers(allow_origin=HABIT_DASHBOARD_ORIGIN), "X-Second-Brain-Cache": "fresh"},
         )
 
     disk_payload = _load_habits_data_payload_from_disk(now=now, datetime_cls=datetime_cls)
@@ -728,7 +744,7 @@ async def habits_data_handler(
         return web.Response(
             text=json.dumps(disk_payload),
             content_type="application/json",
-            headers={**cors_headers(), "X-Second-Brain-Cache": "disk-fresh"},
+            headers={**cors_headers(allow_origin=HABIT_DASHBOARD_ORIGIN), "X-Second-Brain-Cache": "disk-fresh"},
         )
 
     stale_payload = _habits_data_stale_cache.get("payload")
@@ -752,7 +768,7 @@ async def habits_data_handler(
             return web.Response(
                 text=json.dumps(stale_payload),
                 content_type="application/json",
-                headers={**cors_headers(), "X-Second-Brain-Cache": "stale-refreshing"},
+                headers={**cors_headers(allow_origin=HABIT_DASHBOARD_ORIGIN), "X-Second-Brain-Cache": "stale-refreshing"},
             )
 
     try:
@@ -772,11 +788,11 @@ async def habits_data_handler(
         return web.Response(
             text=json.dumps(payload),
             content_type="application/json",
-            headers={**cors_headers(), "X-Second-Brain-Cache": "miss"},
+            headers={**cors_headers(allow_origin=HABIT_DASHBOARD_ORIGIN), "X-Second-Brain-Cache": "miss"},
         )
     except Exception as e:
         log.error("/habits-data error: %s", e)
-        return web.Response(status=500, text=str(e), headers=cors_headers())
+        return web.Response(status=500, text=str(e), headers=cors_headers(allow_origin=HABIT_DASHBOARD_ORIGIN))
 
 
 async def log_habit_http_handler(
@@ -791,7 +807,17 @@ async def log_habit_http_handler(
     weeks_history: int,
 ) -> web.Response:
     if request.method == "OPTIONS":
-        return web.Response(status=204, headers=cors_headers())
+        return web.Response(status=204, headers=cors_headers(extra_allow_headers="Content-Type, X-Habit-Secret", allow_origin=HABIT_DASHBOARD_ORIGIN))
+
+    if HABIT_DASHBOARD_SECRET:
+        incoming_secret = request.headers.get("X-Habit-Secret", "").strip()
+        if not hmac.compare_digest(incoming_secret, HABIT_DASHBOARD_SECRET):
+            return web.Response(
+                status=401,
+                text=json.dumps({"ok": False, "error": "Invalid or missing X-Habit-Secret"}),
+                content_type="application/json",
+                headers=cors_headers(extra_allow_headers="Content-Type, X-Habit-Secret", allow_origin=HABIT_DASHBOARD_ORIGIN),
+            )
 
     try:
         body = await request.json()
@@ -801,7 +827,7 @@ async def log_habit_http_handler(
                 status=400,
                 text=json.dumps({"ok": False, "error": "habitId is required"}),
                 content_type="application/json",
-                headers=cors_headers(),
+                headers=cors_headers(allow_origin=HABIT_DASHBOARD_ORIGIN),
             )
 
         normalized_habit_id = habit_id.replace("-", "")
@@ -819,7 +845,7 @@ async def log_habit_http_handler(
                 status=404,
                 text=json.dumps({"ok": False, "error": "Habit not found"}),
                 content_type="application/json",
-                headers=cors_headers(),
+                headers=cors_headers(allow_origin=HABIT_DASHBOARD_ORIGIN),
             )
 
         if await asyncio.to_thread(already_logged_today, notion, log_db, matched["page_id"], tz):
@@ -840,7 +866,7 @@ async def log_habit_http_handler(
             return web.Response(
                 text=json.dumps({"ok": True, "alreadyLogged": True, "habitName": matched["name"]}),
                 content_type="application/json",
-                headers=cors_headers(),
+                headers=cors_headers(allow_origin=HABIT_DASHBOARD_ORIGIN),
             )
 
         await asyncio.to_thread(
@@ -869,7 +895,7 @@ async def log_habit_http_handler(
         return web.Response(
             text=json.dumps({"ok": True, "alreadyLogged": False, "habitName": matched["name"]}),
             content_type="application/json",
-            headers=cors_headers(),
+            headers=cors_headers(allow_origin=HABIT_DASHBOARD_ORIGIN),
         )
     except Exception as e:
         log.error("/log-habit error: %s", e)
@@ -877,7 +903,7 @@ async def log_habit_http_handler(
             status=500,
             text=json.dumps({"ok": False, "error": str(e)}),
             content_type="application/json",
-            headers=cors_headers(),
+            headers=cors_headers(allow_origin=HABIT_DASHBOARD_ORIGIN),
         )
 
 
@@ -1027,7 +1053,7 @@ def register_health_routes(
                 headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
             )
 
-        if WEBHOOK_SECRET and incoming_secret != WEBHOOK_SECRET:
+        if WEBHOOK_SECRET and not hmac.compare_digest(incoming_secret, WEBHOOK_SECRET):
             log.warning("steps_sync: invalid secret")
             _record_steps_webhook(request, status="unauthorized")
             return web.Response(
@@ -1112,7 +1138,7 @@ def register_health_routes(
                 headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
             )
 
-        if WEBHOOK_SECRET and incoming_secret != WEBHOOK_SECRET:
+        if WEBHOOK_SECRET and not hmac.compare_digest(incoming_secret, WEBHOOK_SECRET):
             log.warning("health_sync: invalid secret")
             return web.Response(
                 status=401,
@@ -1260,7 +1286,7 @@ def register_health_routes(
                 headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
             )
 
-        if WEBHOOK_SECRET and incoming_secret != WEBHOOK_SECRET:
+        if WEBHOOK_SECRET and not hmac.compare_digest(incoming_secret, WEBHOOK_SECRET):
             log.warning("steps_backfill: invalid secret")
             return web.Response(
                 status=401,
@@ -1415,7 +1441,7 @@ def register_health_routes(
                 headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
             )
 
-        if WEBHOOK_SECRET and incoming_secret != WEBHOOK_SECRET:
+        if WEBHOOK_SECRET and not hmac.compare_digest(incoming_secret, WEBHOOK_SECRET):
             log.warning("sleep_backfill: invalid secret")
             return web.Response(
                 status=401,
@@ -1494,7 +1520,7 @@ def register_health_routes(
                 content_type="application/json",
                 headers=cors_headers(extra_allow_headers="Content-Type, X-Health-Secret"),
             )
-        if WEBHOOK_SECRET and incoming_secret != WEBHOOK_SECRET:
+        if WEBHOOK_SECRET and not hmac.compare_digest(incoming_secret, WEBHOOK_SECRET):
             return web.Response(
                 status=401,
                 text=json.dumps({"ok": False, "error": "Invalid X-Health-Secret"}),
@@ -1598,6 +1624,7 @@ def register_health_routes(
         )
 
     app.router.add_get("/habits-data", _habits_data)
+    app.router.add_options("/habits-data", _habits_data)
     app.router.add_post("/log-habit", _log_habit)
     app.router.add_options("/log-habit", _log_habit)
     app.router.add_post("/api/v1/steps-sync", steps_sync_handler)
