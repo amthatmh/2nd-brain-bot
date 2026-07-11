@@ -14,6 +14,7 @@ Notion.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -115,33 +116,45 @@ def _rich_text(props: dict, key: str) -> str:
 
 
 def create_trmnl_workout_handler(*, notion, workout_days_db_id: str, tz):
-    """Token-guarded JSON endpoint that TRMNL polls for the workout card."""
+    """Token-guarded JSON endpoint that TRMNL polls for the workout card.
+
+    Today's row rarely changes between polls, so the built payload is cached
+    in ``STATE.workout_card_cache`` per calendar day (30 min TTL) to avoid
+    hitting Notion on every device refresh.
+    """
     from datetime import datetime
+
+    from second_brain.state import STATE
 
     async def handler(request: web.Request) -> web.Response:
         token = os.environ.get("TRMNL_WORKOUT_TOKEN", "").strip()
         if not token:
             return web.json_response({"error": "not_configured"}, status=503)
-        if request.rel_url.query.get("token") != token:
+        if not hmac.compare_digest(request.rel_url.query.get("token") or "", token):
             return web.json_response({"error": "forbidden"}, status=403)
         if not workout_days_db_id:
             return web.json_response({"error": "missing_db"}, status=503)
 
         today = datetime.now(tz).date()
-        try:
-            row = await asyncio.to_thread(_fetch_today_row, notion, workout_days_db_id, today)
-        except Exception as exc:  # noqa: BLE001 - HTTP handler returns JSON errors.
-            log.exception("/trmnl/workout error: %s", exc)
-            return web.json_response({"error": "build_failure", "message": str(exc)}, status=500)
+        cache_key = today.isoformat()
+        payload = STATE.workout_card_cache.get(cache_key)
+        if payload is None:
+            try:
+                row = await asyncio.to_thread(_fetch_today_row, notion, workout_days_db_id, today)
+            except Exception as exc:  # noqa: BLE001 - HTTP handler returns JSON errors.
+                log.exception("/trmnl/workout error: %s", exc)
+                return web.json_response({"error": "build_failure", "message": str(exc)}, status=500)
 
-        props = (row or {}).get("properties", {})
-        track = (props.get("Track", {}).get("select") or {}).get("name")
-        payload = build_workout_card_payload(
-            today,
-            track,
-            _rich_text(props, "Section B"),
-            _rich_text(props, "Section C"),
-        )
+            props = (row or {}).get("properties", {})
+            track = (props.get("Track", {}).get("select") or {}).get("name")
+            payload = build_workout_card_payload(
+                today,
+                track,
+                _rich_text(props, "Section B"),
+                _rich_text(props, "Section C"),
+            )
+            STATE.workout_card_cache[cache_key] = payload
+
         return web.Response(text=json.dumps(payload), content_type="application/json")
 
     return handler

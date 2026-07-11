@@ -13,6 +13,7 @@ pure functions so they can be unit tested without Notion.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -274,7 +275,7 @@ def create_trmnl_health_handler(
         token = os.environ.get("TRMNL_HEALTH_TOKEN", "").strip()
         if not token:
             return web.json_response({"error": "not_configured"}, status=503)
-        if request.rel_url.query.get("token") != token:
+        if not hmac.compare_digest(request.rel_url.query.get("token") or "", token):
             return web.json_response({"error": "forbidden"}, status=403)
         if not health_metrics_db_id or not habit_log_db_id:
             return web.json_response({"error": "missing_db"}, status=503)
