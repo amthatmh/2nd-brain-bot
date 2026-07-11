@@ -286,7 +286,7 @@ def test_fetch_multi_day_forecast_buckets_three_hour_rows(monkeypatch):
     assert rows is not None
     assert len(rows) == 2
     assert rows[0]["temp_high"] == 20
-    assert rows[0]["precip_chance"] == 60
+    assert rows[0]["precip_chance"] == 35
 
 
 def test_palette_digest_view_includes_weather_card():

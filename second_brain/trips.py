@@ -509,10 +509,6 @@ def refresh_upcoming_trip_weather(
                 "and": [
                     {"property": "Departure Date", "date": {"on_or_after": today.isoformat()}},
                     {"property": "Departure Date", "date": {"on_or_before": upper.isoformat()}},
-                    {"or": [
-                        {"property": "Weather Summary", "rich_text": {"equals": WEATHER_PLACEHOLDER_SUMMARY}},
-                        {"property": "Weather Summary", "rich_text": {"is_empty": True}},
-                    ]},
                 ]
             },
             page_size=50,
@@ -529,6 +525,9 @@ def refresh_upcoming_trip_weather(
         destination = dest_parts[0].get("plain_text", "").strip() if dest_parts else ""
         if not dep or not ret or not destination:
             continue
+        existing_parts = props.get("Weather Summary", {}).get("rich_text", [])
+        existing_summary = existing_parts[0].get("plain_text", "").strip() if existing_parts else ""
+        first_fill = existing_summary in {"", WEATHER_PLACEHOLDER_SUMMARY}
         # Skip if return date already passed
         if ret and date.fromisoformat(ret) < local_today():
             continue
@@ -539,6 +538,8 @@ def refresh_upcoming_trip_weather(
             fetch_weather=None,
             fetch_trip_weather_range=fetch_trip_weather_range,
         )
+        if not summary:
+            continue
         payload = _adapt_trip_properties_to_schema(
             notion,
             database_id,
@@ -555,7 +556,7 @@ def refresh_upcoming_trip_weather(
         try:
             notion.pages.update(page_id=row["id"], properties=payload)
             updated += 1
-            if summary and summary != WEATHER_PLACEHOLDER_SUMMARY:
+            if first_fill and summary != WEATHER_PLACEHOLDER_SUMMARY:
                 try:
                     import asyncio
                     from second_brain.main import app, MY_CHAT_ID

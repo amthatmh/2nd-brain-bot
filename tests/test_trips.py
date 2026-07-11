@@ -363,12 +363,11 @@ def test_refresh_upcoming_trip_weather_updates_rows():
     )
     assert count == 1
     assert updated_pages
-    assert query_calls[0]["filter"]["and"][-1] == {
-        "or": [
-            {"property": "Weather Summary", "rich_text": {"equals": trips.WEATHER_PLACEHOLDER_SUMMARY}},
-            {"property": "Weather Summary", "rich_text": {"is_empty": True}},
-        ]
-    }
+    # No Weather Summary filter: trips inside the window refresh every run
+    assert query_calls[0]["filter"]["and"] == [
+        {"property": "Departure Date", "date": {"on_or_after": date.today().isoformat()}},
+        {"property": "Departure Date", "date": {"on_or_before": (date.today() + timedelta(days=5)).isoformat()}},
+    ]
 
 
 def test_build_packing_blocks_queries_all_items_and_returns_native_blocks(monkeypatch):

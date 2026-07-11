@@ -495,7 +495,7 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
             pops = [r.get("pop", 0) for r in bucket]
             conds = [(r.get("weather") or [{}])[0].get("main", "Unknown") for r in bucket]
             mode_condition = max(set(conds), key=conds.count)
-            result = {"temp_high": round(max(highs)), "temp_low": round(min(lows)), "condition": mode_condition, "precip_chance": int(round(max(pops) * 100))}
+            result = {"temp_high": round(max(highs)), "temp_low": round(min(lows)), "condition": mode_condition, "precip_chance": int(round(sum(pops) / len(pops) * 100))}
         weather_cache[forecast_type] = result
         return result
     except Exception as e:
@@ -566,7 +566,8 @@ def _forecast_rows_for_coordinates(lat: float, lon: float, *, num_days: int, sta
                     "label": day.strftime("%a %b %-d"),
                     "temp_high": round(max(item["highs"])) if item["highs"] else None,
                     "temp_low": round(min(item["lows"])) if item["lows"] else None,
-                    "precip_chance": int(round(max(item["pops"]) * 100)) if item["pops"] else 0,
+                    # mean, not max: max turns one stormy 3h slot into "100% rain" for the day
+                    "precip_chance": int(round(sum(item["pops"]) / len(item["pops"]) * 100)) if item["pops"] else 0,
                     "condition": max(set(conds), key=conds.count),
                     "description": max(set(descriptions), key=descriptions.count).title(),
                     "wind_speed_max": round(max(item["winds"]), 1) if item["winds"] else 0,
