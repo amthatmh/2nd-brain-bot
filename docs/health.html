@@ -103,7 +103,7 @@
       <section class="grid charts" id="activityCharts"></section>
     </section>
 
-    <footer class="footer">Data from Apple Health via Auto Export · Fitbit sleep · Withings scale · <a href="/">HabitKit dashboard</a></footer>
+    <footer class="footer">Data from Apple Health via Auto Export · Fitbit sleep · Withings scale · <a href="index.html">HabitKit dashboard</a></footer>
   </main>
 <script>
 const API_BASE = 'https://worker-production-d366.up.railway.app';
@@ -211,6 +211,7 @@ function scoreCard(key,data){
 }
 function toggleInfo(btn){btn.closest('.card').querySelector('.explain').classList.toggle('show');}
 function scoreDescription(key,data,score){
+  if(key==='cardio')return cardioDescription(data)||score.description||'Not enough data yet';
   if(key!=='sleep')return score.description||'Not enough data yet';
   const m=data.metrics||{}, latest=data.latest||{};
   const total=latest.total_sleep??lastValue(m.total_sleep), deep=latest.deep_sleep??lastValue(m.deep_sleep), rem=latest.rem_sleep??lastValue(m.rem_sleep), efficiency=latest.sleep_efficiency??lastValue(m.sleep_efficiency);
@@ -220,6 +221,17 @@ function scoreDescription(key,data,score){
   if(rem!=null)parts.push(`REM ${fmtNum(rem)} min`);
   if(efficiency!=null)parts.push(`Efficiency ${fmtNum(efficiency)}%`);
   return parts.join(' · ')||score.description||'Not enough data yet';
+}
+function cardioDescription(data){
+  const m=data.metrics||{}, latest=data.latest||{}, deltas=data.deltas||{};
+  const part=(label,key,unit)=>{
+    const value=latest[key]??lastValue(m[key]);
+    if(value==null)return null;
+    const delta=deltas[key];
+    const change=delta&&delta.direction!=='flat'?` ${delta.direction==='up'?'↑':'↓'}${Math.abs(delta.value)}`:'';
+    return `${label} ${fmtNum(value)}${unit?` ${unit}`:''}${change}`;
+  };
+  return [part('RHR','resting_hr','bpm'),part('HRV','hrv','ms'),part('VO2 Max','vo2_max','')].filter(Boolean).join(' · ');
 }
 function scoreRecommendation(key,data){
   const m=data.metrics||{}, d=data.deltas||{}, latest=data.latest||{};
