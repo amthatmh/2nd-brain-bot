@@ -973,6 +973,32 @@ async def handle_message_text(
             context.user_data["awaiting_note_capture"] = None
         return
 
+    awaiting_task_capture = context.user_data.get("awaiting_task_capture")
+    if awaiting_task_capture:
+        context.user_data["awaiting_task_capture"] = None
+        try:
+            classifications = await _main()._classify_task_texts([text])
+            result = await _main()._create_task_from_classification(
+                text, classifications[0], awaiting_task_capture, None, False
+            )
+        except Exception as e:
+            log.error("fn=handle_message_text event=task_quick_add_failed err=%s", e)
+            await message.reply_text("⚠️ Couldn't save that task.")
+            return
+        if result.get("status") == "captured":
+            await message.reply_text(
+                f"✅ Captured!\n\n📝 {result['name']}\n🕐 {result.get('horizon_label', '')}  {result.get('context', '')}\n\n_Saved to Notion_",
+                parse_mode="Markdown",
+            )
+        elif result.get("status") == "duplicate":
+            dup = result.get("duplicate") or {}
+            await message.reply_text(
+                f"⚠️ Already on your list:\n\n📝 {dup.get('name', '')}\n🕐 {dup.get('auto_horizon', '')}  {dup.get('context', '')}"
+            )
+        else:
+            await message.reply_text("⚠️ Couldn't save that task.")
+        return
+
         # note: <text or url> — explicit inline command
     match_note = re.match(r"note:\s*(.+)$", text, re.IGNORECASE)
     if match_note:
@@ -2107,6 +2133,14 @@ async def _cb_tdd(q, parts, context) -> None:
     return
 
 
+async def _cb_tda(q, parts, context) -> None:
+    """Quick-add a task from the To Do picker: pick context, then send the text."""
+    ctx = "💼 Work" if parts[1] == "work" else "🏠 Personal"
+    context.user_data["awaiting_task_capture"] = ctx
+    await q.message.reply_text(f"➕ Send the task to add to {ctx}.")
+    return
+
+
 async def _cb_td(q, parts, context) -> None:
     _, key, idx_str = parts
     if key not in _main().todo_picker_map:
@@ -2366,6 +2400,7 @@ _CB_PREFIX: dict[str, CallbackHandler] = {
     "h": _cb_h_horizon,
     "tdc": _cb_tdc,
     "tdd": _cb_tdd,
+    "tda": _cb_tda,
     "td": _cb_td,
     "dp": _cb_dp,
     "dpp": _cb_dpp,

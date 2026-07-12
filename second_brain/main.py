@@ -124,6 +124,7 @@ from second_brain.config import (
     WORK_SYNC_OUT,
     ASANA_SYNC_INTERVAL,
     HTTP_PORT,
+    DEFAULT_TASK_DEADLINE_DAYS,
     WEEKS_HISTORY,
     APP_VERSION,
     UTILITY_SCHEDULER_RELOAD_MINUTES,
@@ -992,6 +993,8 @@ async def _create_task_from_classification(
         explicit_deadline = infer_deadline_override(raw_text)
         if explicit_deadline is not None:
             deadline_days = explicit_deadline
+        if deadline_days is None:
+            deadline_days = DEFAULT_TASK_DEADLINE_DAYS
         horizon_label = deadline_days_to_label(deadline_days)
 
         if not force_create:
@@ -1141,6 +1144,8 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
         explicit_deadline = infer_deadline_override(raw_text)
         if explicit_deadline is not None:
             deadline_days = explicit_deadline
+        if deadline_days is None:
+            deadline_days = DEFAULT_TASK_DEADLINE_DAYS
         horizon_label = deadline_days_to_label(deadline_days)
     except Exception as e:
         log.error("Claude error: %s", e)

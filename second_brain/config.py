@@ -112,6 +112,9 @@ NOTION_DAILY_READINESS_DB = os.environ.get("NOTION_DAILY_READINESS_DB", "")
 
 PENDING_TTL = timedelta(hours=1)
 
+# Tasks captured without any stated deadline default to due this many days out.
+DEFAULT_TASK_DEADLINE_DAYS = 7
+
 HORIZON_DEADLINE_OFFSETS = {"t": 0, "w": 6, "m": 30, "b": None}
 HORIZON_LABELS = {
     "t": "🔴 Today",
