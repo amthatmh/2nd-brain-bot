@@ -140,7 +140,6 @@ from second_brain.notion.properties import (
     extract_rich_text,
     extract_title,
     query_all,
-    title_prop,
 )
 from second_brain.notion import habits as notion_habits
 from second_brain.notion.habits import (
@@ -155,7 +154,6 @@ from second_brain.notion.habits import (
     is_on_pace as _habit_is_on_pace,
     record_weekly_streaks,
 )
-from second_brain.notion.tasks import next_repeat_day_date
 from second_brain.notion import tasks as notion_tasks
 from second_brain import keyboards as kb
 from second_brain import formatters as fmt
@@ -481,10 +479,6 @@ TOPIC_OPTIONS = [
     "💪 Health", "🏢 LEED", "✅ WELL", "💡 Ideas", "📚 Research",
 ]
 _URL_RE = re.compile(r"https?://[^\s\)\]>\"']+", re.IGNORECASE)
-
-def _has_explicit_personal_or_work_context(text: str) -> bool:
-    lower = (text or "").lower()
-    return bool(re.search(r"\b(personal|work)\b|🏠|💼", lower))
 
 def _load_bot_state() -> dict:
     try:
@@ -848,12 +842,6 @@ def _run_capture(raw_text: str, force_create: bool = False,
         ai_ctx        = result.get("context", "🏠 Personal")
         kw_overrides  = infer_batch_overrides(raw_text)
         ctx           = context_override or kw_overrides.get("context") or ai_ctx
-        recurring, repeat_day = _recurring_fields_from_classification(result)
-        target_date = next_repeat_day_date(recurring, repeat_day)
-        if target_date is not None:
-            computed_days = (target_date - local_today()).days
-            if deadline_days is None or (deadline_days <= 0 and computed_days > 0):
-                deadline_days = computed_days
         if deadline_override is not None:
             deadline_days = deadline_override
         explicit_deadline = infer_deadline_override(raw_text)
@@ -870,21 +858,11 @@ def _run_capture(raw_text: str, force_create: bool = False,
             return {"status": "duplicate", "name": task_name, "duplicate": dup}
 
     try:
-        if recurring != "None":
-            page_id, first_deadline = _create_recurring_task_template_and_first_instance(
-                task_name, ctx, recurring, repeat_day
-            )
-            return {
-                "status": "captured", "name": task_name,
-                "horizon_label": first_deadline.strftime("%b %d"), "context": ctx,
-                "recurring": recurring, "page_id": page_id,
-            }
-
-        page_id, _ = notion_tasks.create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
+        page_id, _ = notion_tasks.create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx)
         return {
             "status": "captured", "name": task_name,
             "horizon_label": horizon_label, "context": ctx,
-            "recurring": recurring, "page_id": page_id,
+            "page_id": page_id,
         }
     except Exception as e:
         log.error("Notion error for '%s': %s", task_name, e)
@@ -973,8 +951,7 @@ def _restore_pid(pid: str) -> str:
 
 async def complete_task_by_page_id(message, page_id: str, name: str) -> None:
     notion_tasks.mark_done(notion, page_id)
-    suffix = "\n↻ Recurring — next instance managed by Notion" if notion_tasks.handle_done_recurring(notion, NOTION_DB_ID, page_id) else ""
-    await message.reply_text(f"✅ Done: {name}{suffix}")
+    await message.reply_text(f"✅ Done: {name}")
 
 async def _classify_task_texts(task_texts: list[str]) -> list[dict]:
     """Classify multiple task texts concurrently."""
@@ -998,62 +975,6 @@ async def _classify_task_texts(task_texts: list[str]) -> list[dict]:
         for task_text in task_texts
     ])
 
-def _recurring_fields_from_classification(classification: dict) -> tuple[str, str | None]:
-    recurring_type = classification.get("recurring_type")
-    recurring_map = {
-        "daily": "🔁 Daily",
-        "weekly": "📅 Weekly",
-        "monthly": "🗓️ Monthly",
-    }
-    recurring = recurring_map.get(recurring_type, classification.get("recurring", "None") or "None")
-    repeat_day = classification.get("repeat_day")
-    return recurring, repeat_day
-
-
-def _create_recurring_task_template_and_first_instance(
-    task_name: str,
-    ctx: str,
-    recurring: str,
-    repeat_day: str | None,
-) -> tuple[str, date]:
-    props = {
-        "Name": title_prop(task_name),
-        "Context": {"select": {"name": ctx}},
-        "Recurring": {"select": {"name": recurring}},
-        "Is Template": {"checkbox": True},
-        "Source": {"select": {"name": "📱 Telegram"}},
-    }
-    if repeat_day:
-        props["Repeat Day"] = {"select": {"name": repeat_day}}
-
-    template_id = notion.pages.create(
-        parent={"database_id": NOTION_DB_ID},
-        properties=props,
-    )["id"]
-
-    template_dict = {
-        "page_id": template_id,
-        "name": task_name,
-        "context": ctx,
-        "recurring": recurring,
-        "repeat_day": repeat_day,
-        "deadline": None,
-        "recurrence_pattern": None,
-    }
-    first_deadline = notion_tasks.calculate_next_deadline(
-        template_dict,
-        from_date=notion_tasks.local_today(),
-    )
-    notion_tasks.spawn_recurring_instance(
-        notion,
-        NOTION_DB_ID,
-        template_dict,
-        next_deadline=first_deadline,
-        source="📱 Telegram",
-    )
-    return template_id, first_deadline
-
-
 async def _create_task_from_classification(
     raw_text: str,
     classification: dict,
@@ -1066,12 +987,6 @@ async def _create_task_from_classification(
         task_name = classification.get("task_name") or raw_text
         deadline_days = classification.get("deadline_days")
         ctx = context_override or classification.get("context", "🏠 Personal")
-        recurring, repeat_day = _recurring_fields_from_classification(classification)
-        target_date = next_repeat_day_date(recurring, repeat_day)
-        if target_date is not None:
-            computed_days = (target_date - local_today()).days
-            if deadline_days is None or (deadline_days <= 0 and computed_days > 0):
-                deadline_days = computed_days
         if deadline_override is not None:
             deadline_days = deadline_override
         explicit_deadline = infer_deadline_override(raw_text)
@@ -1084,31 +999,12 @@ async def _create_task_from_classification(
             if dup:
                 return {"status": "duplicate", "name": task_name, "duplicate": dup}
 
-        if recurring != "None":
-            page_id, first_deadline = _create_recurring_task_template_and_first_instance(
-                task_name,
-                ctx,
-                recurring,
-                repeat_day,
-            )
-            capture_map[page_id] = {"page_id": page_id, "name": task_name}
-            return {
-                "status": "captured",
-                "name": task_name,
-                "horizon_label": first_deadline.strftime("%b %d"),
-                "context": ctx,
-                "recurring": recurring,
-                "page_id": page_id,
-            }
-
         page_id, _ = notion_tasks.create_task(
             notion,
             NOTION_DB_ID,
             task_name,
             deadline_days,
             ctx,
-            recurring=recurring,
-            repeat_day=repeat_day,
         )
         capture_map[page_id] = {"page_id": page_id, "name": task_name}
         return {
@@ -1116,7 +1012,6 @@ async def _create_task_from_classification(
             "name": task_name,
             "horizon_label": horizon_label,
             "context": ctx,
-            "recurring": recurring,
             "page_id": page_id,
         }
     except Exception as e:
@@ -1243,12 +1138,6 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
         deadline_days = result.get("deadline_days")
         ctx           = result.get("context", "🏠 Personal")
         confidence    = result.get("confidence", "low")
-        recurring, repeat_day = _recurring_fields_from_classification(result)
-        target_date = next_repeat_day_date(recurring, repeat_day)
-        if target_date is not None:
-            computed_days = (target_date - local_today()).days
-            if deadline_days is None or (deadline_days <= 0 and computed_days > 0):
-                deadline_days = computed_days
         explicit_deadline = infer_deadline_override(raw_text)
         if explicit_deadline is not None:
             deadline_days = explicit_deadline
@@ -1257,14 +1146,6 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
         log.error("Claude error: %s", e)
         await thinking.edit_text("⚠️ Couldn't classify that. Try rephrasing?")
         return
-
-    needs_context_clarification = (
-        recurring != "None"
-        and not _has_explicit_personal_or_work_context(raw_text)
-    )
-
-    if needs_context_clarification:
-        ctx = "🏠 Personal"
 
     if not force_create:
         dup = notion_tasks.find_duplicate_active_task(notion, NOTION_DB_ID, task_name)
@@ -1275,22 +1156,17 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
             )
             return
 
-    recur_tag = f"\n🔁 {recurring}" if recurring != "None" else ""
-
     if confidence != "high":
         preview_map[thinking.message_id] = {
             "task_name": task_name,
             "deadline_days": deadline_days,
             "context": ctx,
-            "recurring": recurring,
-            "repeat_day": repeat_day,
         }
         await thinking.edit_text(
             "📋 *Preview* (confirm to save)\n\n"
             f"*Task:* {task_name}\n"
             f"*Deadline:* {horizon_label}\n"
-            f"*Context:* {ctx}\n"
-            f"*Recurring:* {recurring}",
+            f"*Context:* {ctx}",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("💾 Save", callback_data=f"save_task:{thinking.message_id}"),
@@ -1300,25 +1176,11 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
         return
 
     try:
-        if recurring != "None":
-            page_id, first_deadline = _create_recurring_task_template_and_first_instance(
-                task_name,
-                ctx,
-                recurring,
-                repeat_day,
-            )
-            await thinking.edit_text(
-                f"✅ Recurring task created: {task_name}\n"
-                f"📅 Pattern: {recurring}\n"
-                f"🗓️ First due: {first_deadline.strftime('%b %d')}",
-                parse_mode="Markdown",
-            )
-        else:
-            page_id, _ = notion_tasks.create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
-            await thinking.edit_text(
-                f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}{recur_tag}\n\n_Saved to Notion_",
-                parse_mode="Markdown",
-            )
+        page_id, _ = notion_tasks.create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx)
+        await thinking.edit_text(
+            f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}\n\n_Saved to Notion_",
+            parse_mode="Markdown",
+        )
         capture_map[thinking.message_id] = {"page_id": page_id, "name": task_name}
     except Exception as e:
         log.error("Notion error: %s", e)
