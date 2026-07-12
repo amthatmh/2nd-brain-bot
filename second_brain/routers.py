@@ -973,6 +973,32 @@ async def handle_message_text(
             context.user_data["awaiting_note_capture"] = None
         return
 
+    awaiting_task_capture = context.user_data.get("awaiting_task_capture")
+    if awaiting_task_capture:
+        context.user_data["awaiting_task_capture"] = None
+        try:
+            classifications = await _main()._classify_task_texts([text])
+            result = await _main()._create_task_from_classification(
+                text, classifications[0], awaiting_task_capture, None, False
+            )
+        except Exception as e:
+            log.error("fn=handle_message_text event=task_quick_add_failed err=%s", e)
+            await message.reply_text("⚠️ Couldn't save that task.")
+            return
+        if result.get("status") == "captured":
+            await message.reply_text(
+                f"✅ Captured!\n\n📝 {result['name']}\n🕐 {result.get('horizon_label', '')}  {result.get('context', '')}\n\n_Saved to Notion_",
+                parse_mode="Markdown",
+            )
+        elif result.get("status") == "duplicate":
+            dup = result.get("duplicate") or {}
+            await message.reply_text(
+                f"⚠️ Already on your list:\n\n📝 {dup.get('name', '')}\n🕐 {dup.get('auto_horizon', '')}  {dup.get('context', '')}"
+            )
+        else:
+            await message.reply_text("⚠️ Couldn't save that task.")
+        return
+
         # note: <text or url> — explicit inline command
     match_note = re.match(r"note:\s*(.+)$", text, re.IGNORECASE)
     if match_note:
@@ -1084,12 +1110,7 @@ async def handle_message_text(
                     pid = items[n - 1]["page_id"]
                     name = items[n - 1]["name"]
                     _main().notion_tasks.mark_done(_notion(), pid)
-                    suffix = (
-                        " ↻ next queued"
-                        if _main().notion_tasks.handle_done_recurring(_notion(), NOTION_DB_ID, pid)
-                        else ""
-                    )
-                    done_names.append(f"{name}{suffix}")
+                    done_names.append(name)
         elif message.reply_to_message:
             replied_text = (
                 message.reply_to_message.text or message.reply_to_message.caption or ""
@@ -1103,12 +1124,7 @@ async def handle_message_text(
                     pid = task["page_id"]
                     name = task["name"]
                     _main().notion_tasks.mark_done(_notion(), pid)
-                    suffix = (
-                        " ↻ next queued"
-                        if _main().notion_tasks.handle_done_recurring(_notion(), NOTION_DB_ID, pid)
-                        else ""
-                    )
-                    done_names.append(f"{name}{suffix}")
+                    done_names.append(name)
 
         if done_names:
             msg = "Marked done:\n" + "\n".join(f"✅ {n}" for n in done_names)
@@ -1280,46 +1296,23 @@ async def _cb_task_preview(q, parts, context) -> None:
     task_name = entry.get("task_name") or "Untitled task"
     deadline_days = entry.get("deadline_days")
     ctx = entry.get("context", "🏠 Personal")
-    recurring = entry.get("recurring", "None") or "None"
-    repeat_day = entry.get("repeat_day")
     try:
-        if recurring != "None":
-            page_id, first_deadline = _main()._create_recurring_task_template_and_first_instance(
-                task_name,
-                ctx,
-                recurring,
-                repeat_day,
-            )
-            await q.edit_message_text(
-                f"✅ Recurring task created: {task_name}\n"
-                f"📅 Pattern: {recurring}\n"
-                f"🗓️ First due: {first_deadline.strftime('%b %d')}",
-                parse_mode="Markdown",
-            )
-        else:
-            page_id, _ = notion_tasks.create_task(
-                _notion(),
-                NOTION_DB_ID,
-                task_name,
-                deadline_days,
-                ctx,
-                recurring=recurring,
-                repeat_day=repeat_day,
-            )
-            horizon_label = _main().deadline_days_to_label(deadline_days)
-            await q.edit_message_text(
-                f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}\n\n_Saved to Notion_",
-                parse_mode="Markdown",
-            )
+        page_id, _ = notion_tasks.create_task(
+            _notion(),
+            NOTION_DB_ID,
+            task_name,
+            deadline_days,
+            ctx,
+        )
+        horizon_label = _main().deadline_days_to_label(deadline_days)
+        await q.edit_message_text(
+            f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}\n\n_Saved to Notion_",
+            parse_mode="Markdown",
+        )
     except Exception as e:
         log.error("Notion error for preview task '%s': %s", task_name, e)
         await q.edit_message_text("⚠️ Preview confirmed but couldn't write to Notion.")
         return
-    recur_tag = f"\n🔁 {recurring}" if recurring != "None" else ""
-    await q.edit_message_text(
-        f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}{recur_tag}\n\n_Saved to Notion_",
-        parse_mode="Markdown",
-    )
     STATE.capture_map[q.message.message_id] = {"page_id": page_id, "name": task_name}
     return
 
@@ -2095,12 +2088,7 @@ async def _cb_d(q, parts, context) -> None:
     page_id = _main()._restore_pid(parts[1])
     try:
         _main().notion_tasks.mark_done(_notion(), page_id)
-        suffix = (
-            "\n↻ Next instance will be generated by the recurring batch job"
-            if _main().notion_tasks.handle_done_recurring(_notion(), NOTION_DB_ID, page_id)
-            else ""
-        )
-        await q.edit_message_text(f"✅ Marked as done!{suffix}")
+        await q.edit_message_text("✅ Marked as done!")
     except Exception as e:
         log.error("Notion done error: %s", e)
         await q.edit_message_text("⚠️ Couldn't update Notion.")
@@ -2145,6 +2133,14 @@ async def _cb_tdd(q, parts, context) -> None:
     return
 
 
+async def _cb_tda(q, parts, context) -> None:
+    """Quick-add a task from the To Do picker: pick context, then send the text."""
+    ctx = "💼 Work" if parts[1] == "work" else "🏠 Personal"
+    context.user_data["awaiting_task_capture"] = ctx
+    await q.message.reply_text(f"➕ Send the task to add to {ctx}.")
+    return
+
+
 async def _cb_td(q, parts, context) -> None:
     _, key, idx_str = parts
     if key not in _main().todo_picker_map:
@@ -2164,7 +2160,6 @@ async def _cb_td(q, parts, context) -> None:
         return
     try:
         _main().notion_tasks.mark_done(_notion(), task["page_id"])
-        _main().notion_tasks.handle_done_recurring(_notion(), NOTION_DB_ID, task["page_id"])
         task["_done"] = True
     except Exception as e:
         log.error("To do picker error: %s", e)
@@ -2196,12 +2191,7 @@ async def _cb_dp(q, parts, context) -> None:
     try:
         task = STATE.done_picker_map[key][int(idx_str)]
         _main().notion_tasks.mark_done(_notion(), task["page_id"])
-        suffix = (
-            "\n↻ Next instance will be generated by the recurring batch job"
-            if _main().notion_tasks.handle_done_recurring(_notion(), NOTION_DB_ID, task["page_id"])
-            else ""
-        )
-        await q.edit_message_text(f"✅ Done: {task['name']}{suffix}")
+        await q.edit_message_text(f"✅ Done: {task['name']}")
     except Exception as e:
         log.error("Done picker error: %s", e)
         await q.edit_message_text("⚠️ Couldn't mark that task done.")
@@ -2295,7 +2285,6 @@ async def _cb_qp(q, parts, context) -> None:
             task = tasks[idx]
             try:
                 _main().notion_tasks.mark_done(_notion(), task["page_id"])
-                _main().notion_tasks.handle_done_recurring(_notion(), NOTION_DB_ID, task["page_id"])
                 done_indices.add(idx)
                 context.user_data["palette_done_indices"] = done_indices
             except Exception as e:
@@ -2411,6 +2400,7 @@ _CB_PREFIX: dict[str, CallbackHandler] = {
     "h": _cb_h_horizon,
     "tdc": _cb_tdc,
     "tdd": _cb_tdd,
+    "tda": _cb_tda,
     "td": _cb_td,
     "dp": _cb_dp,
     "dpp": _cb_dpp,

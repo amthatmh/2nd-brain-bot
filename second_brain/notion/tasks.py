@@ -1,8 +1,6 @@
 """Task-related Notion helpers."""
 
 import re
-import calendar
-import json
 from datetime import date, datetime, timedelta
 
 from notion_client import Client as NotionClient
@@ -13,7 +11,6 @@ from second_brain.notion.properties import (
     checkbox_filter,
     extract_date,
     extract_formula,
-    extract_rich_text,
     extract_select,
     extract_title,
     query_all,
@@ -85,16 +82,13 @@ def _normalize_task_name(text: str) -> str:
     return s
 
 def create_task(notion: NotionClient, notion_db_id: str, name: str, deadline_days: int | None, context: str,
-                recurring: str = "None", repeat_day: str | None = None, trip_page_id: str | None = None) -> tuple[str, str | None]:
+                trip_page_id: str | None = None) -> tuple[str, str | None]:
     props = {
         "Name":      title_prop(name),
         "Deadline":  _deadline_prop(deadline_days),
         "Context":   select_prop(context),
         "Source":    select_prop("📱 Telegram"),
-        "Recurring": select_prop(recurring),
     }
-    if repeat_day:
-        props["Repeat Day"] = select_prop(repeat_day)
     if trip_page_id:
         props["Trip Ref"] = rich_text_prop(trip_page_id)
     page = notion.pages.create(parent={"database_id": notion_db_id}, properties=props)
@@ -117,11 +111,6 @@ def set_deadline_from_horizon_code(notion: NotionClient, page_id: str, code: str
 
 def set_focus(notion: NotionClient, page_id: str, focused: bool) -> None:
     notion.pages.update(page_id=page_id, properties={"Focus": {"checkbox": focused}})
-
-
-def set_last_generated(notion: NotionClient, page_id: str, d: date) -> None:
-    notion.pages.update(page_id=page_id, properties={"Last Generated": {"date": {"start": d.isoformat()}}})
-
 
 
 def get_all_active_tasks(notion: NotionClient, notion_db_id: str) -> list[dict]:
@@ -273,213 +262,3 @@ def recover_digest_items_from_text(notion: NotionClient, notion_db_id: str, text
         if matched:
             recovered[n] = matched
     return recovered
-
-REPEAT_DAY_TO_WEEKDAY = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
-REPEAT_DAY_TO_MONTHDAY = {
-    "1st": 1, "2nd": 2, "3rd": 3, "4th": 4, "5th": 5,
-    "6th": 6, "7th": 7, "8th": 8, "9th": 9, "10th": 10,
-    "11th": 11, "12th": 12, "13th": 13, "14th": 14, "15th": 15,
-    "16th": 16, "17th": 17, "18th": 18, "19th": 19, "20th": 20,
-    "21st": 21, "22nd": 22, "23rd": 23, "24th": 24, "25th": 25,
-    "26th": 26, "27th": 27, "28th": 28, "29th": 29, "30th": 30,
-    "31st": 31, "Last": -1,
-}
-
-
-def next_repeat_day_date(
-    recurring: str,
-    repeat_day: str | None,
-    today: date | None = None,
-    *,
-    anchor: date | None = None,
-) -> date | None:
-    """Resolve the next occurrence date for weekly/monthly/quarterly repeat settings."""
-    if not repeat_day:
-        return None
-    today = today or local_today()
-
-    if recurring == "📅 Weekly" and repeat_day in REPEAT_DAY_TO_WEEKDAY:
-        weekday = REPEAT_DAY_TO_WEEKDAY[repeat_day]
-        days_ahead = (weekday - today.weekday()) % 7
-        if days_ahead == 0:
-            days_ahead = 7
-        return today + timedelta(days=days_ahead)
-
-    if recurring == "🗓️ Monthly":
-        for month_offset in (0, 1):
-            year = today.year + ((today.month - 1 + month_offset) // 12)
-            month = ((today.month - 1 + month_offset) % 12) + 1
-            month_last_day = calendar.monthrange(year, month)[1]
-            if repeat_day == "Last":
-                target_day = month_last_day
-            else:
-                day_value = REPEAT_DAY_TO_MONTHDAY.get(repeat_day)
-                if day_value is None:
-                    return None
-                target_day = min(day_value, month_last_day)
-            target = date(year, month, target_day)
-            if target >= today:
-                return target
-        return None
-
-    if recurring == "📆 Quarterly":
-        if repeat_day != "Last" and repeat_day not in REPEAT_DAY_TO_MONTHDAY:
-            return None
-        if anchor:
-            quarter_cycle = (anchor.month - 1) % 3
-        else:
-            quarter_cycle = (today.month - 1) % 3
-
-        for months_ahead in range(0, 16):
-            year = today.year + ((today.month - 1 + months_ahead) // 12)
-            month = ((today.month - 1 + months_ahead) % 12) + 1
-            if (month - 1) % 3 != quarter_cycle:
-                continue
-            month_last_day = calendar.monthrange(year, month)[1]
-            if repeat_day == "Last":
-                target_day = month_last_day
-            else:
-                day_value = REPEAT_DAY_TO_MONTHDAY.get(repeat_day)
-                if day_value is None:
-                    return None
-                target_day = min(day_value, month_last_day)
-            target = date(year, month, target_day)
-            if target >= today:
-                return target
-        return None
-
-    return None
-
-
-def calculate_next_deadline(template: dict, from_date: date | None = None) -> date:
-    """
-    Calculate the next deadline for a recurring task based on its pattern.
-
-    Args:
-        template: Task template dict with 'recurring', 'repeat_day', 'recurrence_pattern'
-        from_date: Reference date (default: today). Next occurrence calculated from this.
-
-    Returns:
-        Next deadline as date object
-    """
-    # TEST CASES (run these manually after implementation):
-    # 1. Daily: local_today() → local_today() + 1 day
-    # 2. Weekly Mon: If today is Wed (weekday 2), next Mon is +5 days
-    # 3. Monthly 1st: May 15 → June 1
-    # 4. Monthly Last: May 15 → May 31 (last day of May)
-    # 5. Monthly 15th in Feb (only 28 days): Feb 20 → Mar 15
-    # 6. Weekly Sun from Sat: Sat → Sun (+1 day)
-    # 7. Weekly Sun from Sun: Sun → next Sun (+7 days, not +0)
-    if from_date is None:
-        from_date = local_today()
-
-    recurring = template.get("recurring", "None")
-    repeat_day = template.get("repeat_day")
-    pattern_json = template.get("recurrence_pattern")
-
-    if recurring == "🔁 Daily":
-        return from_date + timedelta(days=1)
-
-    if recurring == "📅 Weekly":
-        if not repeat_day or repeat_day not in REPEAT_DAY_TO_WEEKDAY:
-            return from_date + timedelta(days=7)
-
-        target_weekday = REPEAT_DAY_TO_WEEKDAY[repeat_day]
-        current_weekday = from_date.weekday()
-        days_ahead = (target_weekday - current_weekday) % 7
-        if days_ahead == 0:
-            days_ahead = 7
-        return from_date + timedelta(days=days_ahead)
-
-    if recurring == "🗓️ Monthly":
-        if not repeat_day:
-            next_month = from_date.replace(day=1) + timedelta(days=32)
-            return next_month.replace(day=1)
-
-        target_day = REPEAT_DAY_TO_MONTHDAY.get(repeat_day)
-        if target_day is None:
-            return from_date + timedelta(days=30)
-
-        if target_day == -1:
-            this_month_last_day = calendar.monthrange(from_date.year, from_date.month)[1]
-            if from_date.day < this_month_last_day:
-                return from_date.replace(day=this_month_last_day)
-            next_month = from_date.replace(day=1) + timedelta(days=32)
-            next_month_first = next_month.replace(day=1)
-            last_day = calendar.monthrange(next_month_first.year, next_month_first.month)[1]
-            return next_month_first.replace(day=last_day)
-
-        try:
-            this_month_last_day = calendar.monthrange(from_date.year, from_date.month)[1]
-            clamped_day = min(target_day, this_month_last_day)
-            if clamped_day > from_date.day:
-                return from_date.replace(day=clamped_day)
-
-            next_month = from_date.replace(day=1) + timedelta(days=32)
-            next_month_first = next_month.replace(day=1)
-            next_month_last_day = calendar.monthrange(next_month_first.year, next_month_first.month)[1]
-            clamped_next = min(target_day, next_month_last_day)
-            return next_month_first.replace(day=clamped_next)
-        except ValueError:
-            return from_date + timedelta(days=30)
-
-    if pattern_json:
-        try:
-            json.loads(pattern_json)
-            return from_date + timedelta(days=7)
-        except (json.JSONDecodeError, KeyError):
-            pass
-
-    return from_date + timedelta(days=7)
-
-
-def spawn_recurring_instance(
-    notion: NotionClient,
-    notion_db_id: str,
-    template: dict,
-    next_deadline: date | None = None,
-    source: str = "✏️ Manual",
-) -> str:
-    """
-    Create a new recurring task instance from a template.
-
-    Args:
-        notion: Notion client.
-        notion_db_id: To-Do database ID.
-        template: Template dict with task metadata.
-        next_deadline: Pre-calculated deadline; when omitted, calculate from template.
-        source: Source select value for the new instance. Defaults to manual; pass
-            "📱 Telegram" for bot-captured tasks.
-
-    Returns:
-        Page ID of the created instance.
-    """
-    if next_deadline is None:
-        ref_date = _parse_deadline(template.get("deadline")) or local_today()
-        next_deadline = calculate_next_deadline(template, from_date=ref_date)
-
-    page = notion.pages.create(
-        parent={"database_id": notion_db_id},
-        properties={
-            "Name": title_prop(template["name"]),
-            "Deadline": {"date": {"start": next_deadline.isoformat()}},
-            "Context": {"select": {"name": template["context"]}},
-            "Source": {"select": {"name": source}},
-            "Recurring Parent ID": rich_text_prop(template["page_id"]),
-        },
-    )
-    set_last_generated(notion, template["page_id"], local_today())
-    return page["id"]
-
-
-def handle_done_recurring(notion: NotionClient, notion_db_id: str, page_id: str) -> bool:
-    """Return whether a completed page is part of recurring flow.
-
-    Next instances are created by Notion's native repeating database
-    templates, so this deliberately does not spawn anything.
-    """
-    result = notion.pages.retrieve(page_id=page_id)
-    p = result["properties"]
-    recurring = extract_select(p.get("Recurring")) or "None"
-    parent_id = extract_rich_text(p.get("Recurring Parent ID"))
-    return recurring != "None" or bool(parent_id)

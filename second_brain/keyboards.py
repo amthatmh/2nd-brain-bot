@@ -94,6 +94,10 @@ def todo_picker_keyboard(key: str, todo_picker_map: dict[str, list[dict]], conte
         label = f"{context_emoji_fn(task.get('context'))} {task.get('name', 'Untitled')}"
         rows.append([InlineKeyboardButton(label, callback_data=f"td:{key}:{idx}")])
     rows.append([
+        InlineKeyboardButton("➕ 🏠 Personal", callback_data="tda:personal"),
+        InlineKeyboardButton("➕ 💼 Work", callback_data="tda:work"),
+    ])
+    rows.append([
         InlineKeyboardButton("✅ Done", callback_data=f"tdd:{key}"),
         InlineKeyboardButton("✖️ Cancel", callback_data=f"tdc:{key}"),
     ])

@@ -80,7 +80,6 @@ def test_todo_callback_rerenders_remaining_picker_with_keyboard_module_helpers()
 
         with patch.object(main, "handle_v10_callback", side_effect=_async_false), \
             patch.object(main.notion_tasks, "mark_done") as mark_done, \
-            patch.object(main.notion_tasks, "handle_done_recurring", return_value=False), \
             patch.object(main.kb, "todo_picker_keyboard", return_value=keyboard) as keyboard_mock, \
             patch.object(main.fmt, "context_emoji", return_value="🏠") as emoji_mock:
             await main.handle_callback(update, None)
