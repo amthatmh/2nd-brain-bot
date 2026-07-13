@@ -18,16 +18,14 @@ NOTION_ENV_DB = os.environ.get("ENV_DB_ID", "").strip()
 
 
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY", "").strip() or os.environ.get("OPENWEATHER_API_KEY", "").strip()
-log.info("weather module loaded: OPENWEATHER_KEY present=%s", bool(OPENWEATHER_KEY))
+
+
 def _openweather_key() -> str:
-    import os as _os
-    result = (
-        _os.environ.get("OPENWEATHER_KEY", "").strip()
-        or _os.environ.get("OPENWEATHER_API_KEY", "").strip()
+    return (
+        os.environ.get("OPENWEATHER_KEY", "").strip()
+        or os.environ.get("OPENWEATHER_API_KEY", "").strip()
         or _CONFIG_OPENWEATHER_KEY
     )
-    log.info("_openweather_key: resolved key_present=%s", bool(result))
-    return result
 
 def _resolve_state_dir() -> Path:
     override = os.environ.get("BOT_STATE_DIR", "").strip()
@@ -473,7 +471,6 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
                 "temp": round(data.get("main", {}).get("temp", 0)),
                 "feels_like": round(data.get("main", {}).get("feels_like", 0)),
                 "condition": (data.get("weather") or [{}])[0].get("main", "Unknown"),
-                "precip_chance": int(round((data.get("pop") or 0) * 100)),
                 "sunrise": datetime.fromtimestamp(sunrise_ts, timezone.utc).astimezone(TZ).isoformat() if sunrise_ts else None,
                 "sunset": datetime.fromtimestamp(sunset_ts, timezone.utc).astimezone(TZ).isoformat() if sunset_ts else None,
             }
@@ -505,11 +502,8 @@ def fetch_weather(forecast_type: str = "current", force_refresh: bool = False) -
 
 def _forecast_rows_for_coordinates(lat: float, lon: float, *, num_days: int, start_date: date | None = None, end_date: date | None = None) -> list[dict]:
     """Fetch and bucket OpenWeather 5-day/3-hour forecast rows for coordinates."""
-    import os as _os
-    _key = _os.environ.get("OPENWEATHER_KEY", "").strip() or OPENWEATHER_KEY
-    log.info("_forecast_rows_for_coordinates: key_present=%s num_days=%d start=%s end=%s", bool(_key), num_days, start_date, end_date)
+    _key = _openweather_key()
     if not _key or num_days <= 0:
-        log.warning("_forecast_rows_for_coordinates: early exit key_present=%s num_days=%d", bool(_key), num_days)
         return []
     try:
         resp = httpx.get(
@@ -523,20 +517,11 @@ def _forecast_rows_for_coordinates(lat: float, lon: float, *, num_days: int, sta
         return []
     try:
         rows = resp.json().get("list", [])
-        log.info(
-            "_forecast_rows_for_coordinates: API returned %d slots for lat=%s lon=%s start=%s end=%s",
-            len(rows),
-            lat,
-            lon,
-            start_date,
-            end_date,
-        )
         today = datetime.now(TZ).date()
         if start_date is None:
             start_date = today
         if end_date is None:
             end_date = start_date + timedelta(days=num_days - 1)
-        log.info("_forecast_rows_for_coordinates: filtering for %s to %s", start_date, end_date)
 
         buckets: dict[date, dict] = {}
         for row in rows:
@@ -553,7 +538,6 @@ def _forecast_rows_for_coordinates(lat: float, lon: float, *, num_days: int, sta
             weather_item = (row.get("weather") or [{}])[0]
             item["conds"].append(weather_item.get("main", "Unknown"))
             item["descriptions"].append(weather_item.get("description", "Unknown"))
-        log.info("_forecast_rows_for_coordinates: bucketed %d days: %s", len(buckets), sorted(buckets))
 
         out: list[dict] = []
         for day in sorted(buckets)[:num_days]:
@@ -573,7 +557,6 @@ def _forecast_rows_for_coordinates(lat: float, lon: float, *, num_days: int, sta
                     "wind_speed_max": round(max(item["winds"]), 1) if item["winds"] else 0,
                 }
             )
-        log.info("_forecast_rows_for_coordinates: returning %d day rows", len(out))
         return out
     except Exception as e:
         log.error("_forecast_rows_for_coordinates: processing failed lat=%s lon=%s: %s", lat, lon, e)
@@ -610,7 +593,6 @@ def fetch_trip_weather_range(departure_date: str, return_date: str, destination:
         geo = httpx.get("https://api.openweathermap.org/geo/1.0/direct", params={"q": destination, "limit": 1, "appid": key}, timeout=10)
         geo.raise_for_status()
         places = geo.json()
-        log.info("fetch_trip_weather_range: geo json response for %r: %s", destination, places)
         if not places:
             # Retry with US appended — OWM geo API struggles with "City, ST" abbreviations
             cleaned = re.sub(r",?\s*[A-Z]{2}$", "", destination).strip()
@@ -642,15 +624,8 @@ def fetch_trip_weather_range(departure_date: str, return_date: str, destination:
         lon = places[0].get("lon")
         if lat is None or lon is None:
             return []
-        log.info("fetch_trip_weather_range: geo resolved %s → lat=%s lon=%s", destination, lat, lon)
-        log.info("fetch_trip_weather_range: resolved %s → lat=%s lon=%s, calling forecast", destination, lat, lon)
-        try:
-            result = _forecast_rows_for_coordinates(float(lat), float(lon), num_days=(end - start).days + 1, start_date=start, end_date=end)
-            log.info("fetch_trip_weather_range: got %d rows for %s", len(result), destination)
-            return result
-        except Exception as e:
-            log.error("fetch_trip_weather_range: _forecast_rows_for_coordinates failed for %s: %s", destination, e, exc_info=True)
-            return []
+        log.info("fetch_trip_weather_range: resolved %s → lat=%s lon=%s", destination, lat, lon)
+        return _forecast_rows_for_coordinates(float(lat), float(lon), num_days=(end - start).days + 1, start_date=start, end_date=end)
     except Exception as e:
         log.warning("Trip weather fetch failed for %s: %s", destination, e)
         return []
@@ -717,6 +692,13 @@ def fetch_daily_weather(days: int = 5, force_refresh: bool = False) -> list[dict
                     "sunset": datetime.fromtimestamp(item.get("sunset", 0), timezone.utc).astimezone(TZ).isoformat() if item.get("sunset") else None,
                 }
             )
+        # One Call's daily pop behaves like a max over the day (one stormy hour → "100%"),
+        # so overwrite with the mean-of-3h-slots number the digest and trip paths use.
+        slot_rows = _forecast_rows_for_coordinates(float(_loc.lat), float(_loc.lon), num_days=len(rows))
+        slot_precip = {r["date"]: r["precip_chance"] for r in slot_rows}
+        for row in rows:
+            if row["date"] in slot_precip:
+                row["precip_chance"] = slot_precip[row["date"]]
         weather_cache["daily"] = rows
         return rows[:days]
     except Exception as e:
@@ -787,4 +769,3 @@ def uvi_emoji(uvi: float) -> str:
     if uvi >= 3:
         return "🟡"
     return "🟢"
-    log.debug("Weather cache refreshed")

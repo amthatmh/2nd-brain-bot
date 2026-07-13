@@ -209,12 +209,74 @@ def test_fetch_daily_weather_reuses_cached_one_call_data(monkeypatch):
     monkeypatch.setattr(wx.httpx, "get", fake_get)
 
     digest_today = wx.fetch_daily_weather(days=1)
+    calls_after_first_fetch = len(calls)
     weather_five_days = wx.fetch_daily_weather(days=5)
 
-    assert len(calls) == 1
+    assert len(calls) == calls_after_first_fetch
     assert len(digest_today) == 1
     assert len(weather_five_days) == 5
     assert weather_five_days[0] == digest_today[0]
+
+
+def test_fetch_daily_weather_precip_uses_mean_of_three_hour_slots(monkeypatch):
+    monkeypatch.setattr(wx, "OPENWEATHER_KEY", "test-openweather-key")
+    wx._loc.lat = 41.88
+    wx._loc.lon = -87.63
+    wx.clear_weather_cache()
+    today = datetime.now(wx.TZ).date()
+
+    class FakeOneCallResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            noon = datetime.combine(today, datetime.min.time(), tzinfo=wx.TZ).replace(hour=12)
+            return {
+                "daily": [
+                    {
+                        "dt": int(noon.astimezone(timezone.utc).timestamp()) + (86400 * i),
+                        "temp": {"max": 40, "min": 28},
+                        "weather": [{"main": "Rain", "description": "light rain"}],
+                        "pop": 1.0,
+                        "uvi": 11,
+                    }
+                    for i in range(5)
+                ]
+            }
+
+    class FakeForecastResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            rows = []
+            for day_offset in range(5):
+                for hour, pop in [(9, 0.2), (15, 0.4)]:
+                    dt = datetime.combine(
+                        today + timedelta(days=day_offset),
+                        datetime.min.time(),
+                        tzinfo=wx.TZ,
+                    ).replace(hour=hour)
+                    rows.append(
+                        {
+                            "dt": int(dt.astimezone(timezone.utc).timestamp()),
+                            "main": {"temp_max": 40, "temp_min": 28},
+                            "pop": pop,
+                            "weather": [{"main": "Rain", "description": "light rain"}],
+                        }
+                    )
+            return {"list": rows}
+
+    def fake_get(url, *args, **kwargs):
+        return FakeOneCallResponse() if "onecall" in url else FakeForecastResponse()
+
+    monkeypatch.setattr(wx.httpx, "get", fake_get)
+
+    rows = wx.fetch_daily_weather(days=5)
+
+    assert len(rows) == 5
+    # mean of the 0.2/0.4 slot pops, not One Call's daily pop of 1.0
+    assert all(row["precip_chance"] == 30 for row in rows)
 
 
 def test_today_weather_snapshot_preserves_yesterday_reference(monkeypatch, tmp_path):
