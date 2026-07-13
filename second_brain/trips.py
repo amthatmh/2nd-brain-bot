@@ -923,13 +923,11 @@ def sync_packing_done(*, notion=None, notion_db_id: str | None = None, notion_tr
     if not notion_db_id or not notion_trips_db:
         return 0
 
-    from second_brain.notion.properties import extract_rich_text
-
     try:
         results = query_all(notion, notion_db_id, filter={
             "and": [
                 {"property": "Done", "checkbox": {"equals": True}},
-                {"property": "Trip Ref", "rich_text": {"is_not_empty": True}},
+                {"property": "Trip", "relation": {"is_not_empty": True}},
             ]
         })
     except Exception:
@@ -939,7 +937,8 @@ def sync_packing_done(*, notion=None, notion_db_id: str | None = None, notion_tr
     updated = 0
     trips_db_id = _normalize_notion_database_id(notion_trips_db) or notion_trips_db
     for page in results:
-        trip_page_id = extract_rich_text(page["properties"].get("Trip Ref"))
+        trip_relation = page["properties"].get("Trip", {}).get("relation", [])
+        trip_page_id = trip_relation[0]["id"] if trip_relation else None
         if not trip_page_id:
             continue
         try:

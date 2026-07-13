@@ -14,7 +14,6 @@ from second_brain.notion.properties import (
     extract_select,
     extract_title,
     query_all,
-    rich_text_prop,
     select_prop,
     title_prop,
 )
@@ -90,7 +89,7 @@ def create_task(notion: NotionClient, notion_db_id: str, name: str, deadline_day
         "Source":    select_prop("📱 Telegram"),
     }
     if trip_page_id:
-        props["Trip Ref"] = rich_text_prop(trip_page_id)
+        props["Trip"] = {"relation": [{"id": trip_page_id}]}
     page = notion.pages.create(parent={"database_id": notion_db_id}, properties=props)
     auto_horizon = extract_formula(page["properties"].get("Auto Horizon")) or None
     return page["id"], auto_horizon
