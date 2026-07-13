@@ -74,11 +74,6 @@ from second_brain.healthtrack.steps import (
     backfill_steps_state_from_notion,
     migrate_steps_entry_titles,
 )
-from second_brain.healthtrack.scheduler import (
-    check_and_create_steps_entry,
-    weigh_backfill_job,
-    weigh_sync_job,
-)
 from second_brain.work_sync.routes import register_work_sync_routes
 import second_brain.config as _config_module
 _config_module = importlib.reload(_config_module)
@@ -178,7 +173,6 @@ from second_brain.trips import (
     cmd_refreshweather,
     get_upcoming_trips_needing_reminder,
     append_trip_reminders_to_text,
-    handle_trip_weather_refresh,
     run_packing_sync_job,
     schedule_weather_refresh,
 )
@@ -830,44 +824,6 @@ def get_and_clear_claude_activity() -> list[str]:
 # ══════════════════════════════════════════════════════════════════════════════
 # BATCH CAPTURE
 # ══════════════════════════════════════════════════════════════════════════════
-
-def _run_capture(raw_text: str, force_create: bool = False,
-                 context_override: str | None = None,
-                 deadline_override: int | None = None) -> dict:
-    try:
-        habit_names = list(habit_cache.keys())
-        today = local_today()
-        result        = ai_classify.classify_message(claude, CLAUDE_MODEL, raw_text, habit_names, bool(NOTION_WATCHLIST_DB), bool(NOTION_WANTSLIST_V2_DB), bool(NOTION_PHOTO_DB), bool(NOTION_NOTES_DB), today)
-        task_name     = result.get("task_name") or raw_text
-        deadline_days = result.get("deadline_days")
-        ai_ctx        = result.get("context", "🏠 Personal")
-        kw_overrides  = infer_batch_overrides(raw_text)
-        ctx           = context_override or kw_overrides.get("context") or ai_ctx
-        if deadline_override is not None:
-            deadline_days = deadline_override
-        explicit_deadline = infer_deadline_override(raw_text)
-        if explicit_deadline is not None:
-            deadline_days = explicit_deadline
-        horizon_label = deadline_days_to_label(deadline_days)
-    except Exception as e:
-        log.error("Claude error for '%s': %s", raw_text, e)
-        return {"status": "error", "name": raw_text, "error": str(e)}
-
-    if not force_create:
-        dup = notion_tasks.find_duplicate_active_task(notion, NOTION_DB_ID, task_name)
-        if dup:
-            return {"status": "duplicate", "name": task_name, "duplicate": dup}
-
-    try:
-        page_id, _ = notion_tasks.create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx)
-        return {
-            "status": "captured", "name": task_name,
-            "horizon_label": horizon_label, "context": ctx,
-            "page_id": page_id,
-        }
-    except Exception as e:
-        log.error("Notion error for '%s': %s", task_name, e)
-        return {"status": "error", "name": task_name, "error": str(e)}
 
 async def refresh_quick_actions_keyboard(message) -> None:
     """Force-refresh the reply keyboard to replace legacy layouts (e.g. old Mute button)."""
@@ -2026,31 +1982,6 @@ async def process_pending_programmes(bot) -> None:
     from second_brain.crossfit.weekly_program import process_pending_programmes as _impl
     await _impl(notion, bot, workout_program_db=NOTION_WORKOUT_PROGRAM_DB, chat_id=MY_CHAT_ID)
 
-async def _run_steps_sync_check_dispatch(bot) -> dict:
-    result = await check_and_create_steps_entry(
-        notion=notion,
-        habit_db_id=NOTION_HABIT_DB,
-        log_db_id=NOTION_LOG_DB,
-        habit_name=health_config.STEPS_HABIT_NAME,
-        tz=TZ,
-        bot=bot,
-        chat_id=MY_CHAT_ID,
-    )
-    sync_status["steps"]["last_run"] = utc_now_iso()
-    sync_status["steps"]["ok"] = bool(result.get("ok"))
-    sync_status["steps"]["error"] = None if result.get("ok") else result.get("reason")
-    sync_status["steps"]["stats"] = result
-    return result
-
-UTILITY_JOB_DISPATCH: dict[str, Callable] = {}
-
-def _utility_async_handler(job_key: str, coro_factory: Callable):
-    @track_job_execution(job_key)
-    async def _utility_dispatch_handler() -> object:
-        return await coro_factory()
-
-    return _utility_dispatch_handler
-
 def _tracked_utility_manager_handler(job_key: str, coro_factory: Callable):
     @track_job_execution(job_key)
     async def _utility_manager_dispatch_handler(bot) -> object:
@@ -2064,135 +1995,6 @@ async def _run_work_sync_job() -> dict:
     from second_brain.work_sync.sync import run_sync as _run_sync
     return await _asyncio.to_thread(_run_sync, out=_Path(WORK_SYNC_OUT), db_id=NOTION_WORK_SYNC_DB or None, notion=notion)
 
-
-def _build_utility_job_dispatch(bot) -> dict[str, Callable]:
-    """
-    Maps Utility Scheduler job keys to their async handler functions.
-    Add new job keys here as new features are added.
-    Each value must be an async callable that accepts no arguments (bot is
-    captured via closure).
-    """
-    dispatch = {
-        "digest_schedule_rebuild": _utility_async_handler("digest_schedule_rebuild", lambda: rebuild_digest_schedule_job(bot, digest_helpers._scheduler)),
-        "digest_schedule_refresh": _utility_async_handler("digest_schedule_refresh", lambda: refresh_digest_schedule_job(bot, digest_helpers._scheduler)),
-        "weather_cache_refresh": _utility_async_handler("weather_cache_refresh", lambda: wx.fetch_weather_cache(bot)),
-        "trip_weather_refresh": _utility_async_handler("trip_weather_refresh", lambda: handle_trip_weather_refresh(bot)),
-        "process_pending_programmes": _utility_async_handler("process_pending_programmes", lambda: process_pending_programmes(bot)),
-        "cinema_sync": _utility_async_handler("cinema_sync", lambda: run_cinema_sync(bot)),
-        "asana_sync": _utility_async_handler("asana_sync", lambda: run_asana_sync(bot)),
-        "steps_sync_check": _utility_async_handler("steps_sync_check", lambda: _run_steps_sync_check_dispatch(bot)),
-        "weigh_sync": _utility_async_handler(
-            "weigh_sync",
-            lambda: weigh_sync_job(notion, NOTION_LOG_DB, NOTION_HEALTH_METRICS_DB, habit_cache, TZ),
-        ),
-        "weigh_backfill": _utility_async_handler(
-            "weigh_backfill",
-            lambda: weigh_backfill_job(notion, NOTION_LOG_DB, NOTION_HEALTH_METRICS_DB, habit_cache, TZ),
-        ),
-        "daily_log_generate": _utility_async_handler("daily_log_generate", lambda: generate_daily_log(bot)),
-        "run_recurring_check": _utility_async_handler("run_recurring_check", lambda: run_recurring_check(bot)),
-        "health_summary_refresh": _utility_async_handler("health_summary_refresh", lambda: _refresh_health_summary_job()),
-        "work_sync": _utility_async_handler("work_sync", lambda: _run_work_sync_job()),
-    }
-    UTILITY_JOB_DISPATCH.clear()
-    UTILITY_JOB_DISPATCH.update(dispatch)
-    return dispatch
-
-def load_and_register_utility_jobs(scheduler, bot) -> int:
-    """
-    Reads NOTION_UTILITY_SCHEDULER_DB and registers all active jobs with
-    APScheduler. Returns count of jobs registered.
-    Unknown job keys are logged as warnings (not errors) to avoid blocking startup.
-    Writes Last Status = 'ok' / 'unknown_job' and Last Loaded At back to Notion.
-    """
-    if not NOTION_UTILITY_SCHEDULER_DB:
-        log.warning("NOTION_UTILITY_SCHEDULER_DB not set — utility scheduler disabled")
-        return 0
-
-    dispatch = _build_utility_job_dispatch(bot)
-    rows = notion_query_all(NOTION_UTILITY_SCHEDULER_DB)
-    registered = 0
-
-    for row in rows:
-        props = row.get("properties", {})
-        page_id = row["id"]
-
-        active = bool(props.get("Active", {}).get("checkbox", False))
-        if not active:
-            continue
-
-        job_key_parts = props.get("Job Key", {}).get("title", [])
-        job_key = "".join(p.get("plain_text", "") for p in job_key_parts).strip()
-        if not job_key:
-            continue
-
-        if job_key not in dispatch:
-            log.warning("Utility Scheduler: unknown job key '%s' — skipping", job_key)
-            _update_utility_job_status(notion, page_id, "unknown_job", None)
-            continue
-
-        handler = dispatch[job_key]
-        trigger_type = (props.get("Trigger Type", {}).get("select") or {}).get("name", "").lower()
-
-        try:
-            if trigger_type == "interval":
-                interval_seconds = props.get("Interval Seconds", {}).get("number")
-                interval_minutes = props.get("Interval Minutes", {}).get("number")
-                interval_hours = props.get("Interval Hours", {}).get("number")
-                max_instances = int((props.get("Max Instances", {}).get("number") or 1))
-                misfire_grace = int((props.get("Misfire Grace Seconds", {}).get("number") or 300))
-                coalesce = bool(props.get("Coalesce", {}).get("checkbox", True))
-                kwargs = dict(max_instances=max_instances, misfire_grace_time=misfire_grace, coalesce=coalesce)
-                if interval_seconds:
-                    scheduler.add_job(handler, "interval", seconds=int(interval_seconds), id=job_key, replace_existing=True, **kwargs)
-                elif interval_minutes:
-                    scheduler.add_job(handler, "interval", minutes=int(interval_minutes), id=job_key, replace_existing=True, **kwargs)
-                elif interval_hours:
-                    scheduler.add_job(handler, "interval", hours=int(interval_hours), id=job_key, replace_existing=True, **kwargs)
-                else:
-                    log.warning("Utility Scheduler: interval job '%s' has no interval value", job_key)
-                    continue
-
-            elif trigger_type == "cron":
-                cron_day = (props.get("Cron Day Of Week", {}).get("select") or {}).get("name") or None
-                cron_hour = props.get("Cron Hour", {}).get("number")
-                cron_minute = props.get("Cron Minute", {}).get("number")
-                max_instances = int((props.get("Max Instances", {}).get("number") or 1))
-                misfire_grace = int((props.get("Misfire Grace Seconds", {}).get("number") or 300))
-                coalesce = bool(props.get("Coalesce", {}).get("checkbox", True))
-                kwargs = dict(max_instances=max_instances, misfire_grace_time=misfire_grace, coalesce=coalesce)
-                cron_kwargs = {}
-                if cron_day:
-                    cron_kwargs["day_of_week"] = cron_day
-                if cron_hour is not None:
-                    cron_kwargs["hour"] = int(cron_hour)
-                if cron_minute is not None:
-                    cron_kwargs["minute"] = int(cron_minute)
-                scheduler.add_job(handler, "cron", id=job_key, replace_existing=True, **cron_kwargs, **kwargs)
-
-            else:
-                log.warning("Utility Scheduler: unknown trigger type '%s' for job '%s'", trigger_type, job_key)
-                continue
-
-            _update_utility_job_status(notion, page_id, "ok", datetime.now(TZ).isoformat())
-            registered += 1
-            log.info("Utility Scheduler: registered job '%s' (%s)", job_key, trigger_type)
-
-        except Exception as e:
-            log.error("Utility Scheduler: failed to register job '%s': %s", job_key, e)
-            _update_utility_job_status(notion, page_id, f"error: {str(e)[:80]}", None)
-
-    log.info("Utility Scheduler: %d jobs registered", registered)
-    return registered
-
-def _update_utility_job_status(notion, page_id: str, status: str, loaded_at: str | None) -> None:
-    try:
-        props = {"Last Status": {"select": {"name": status}}}
-        if loaded_at:
-            props["Last Loaded At"] = {"date": {"start": loaded_at}}
-        notion.pages.update(page_id=page_id, properties=props)
-    except Exception as e:
-        log.warning("Could not update utility job status for %s: %s", page_id, e)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STARTUP

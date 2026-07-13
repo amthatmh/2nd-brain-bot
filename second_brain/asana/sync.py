@@ -586,7 +586,6 @@ def _build_notion_create_props(task: dict[str, Any]) -> dict[str, Any]:
         "Deadline":          _notion_date(task.get("due_on")),
         "Context":           {"select": {"name": _infer_context_from_asana(task)}},
         "Done":              {"checkbox": bool(task.get("completed"))},
-        "Recurring":         {"select": {"name": "None"}},
         "Asana Task ID":     _notion_rich_text(task["gid"]),
         "Asana URL":         {"url": task.get("permalink_url")},
         "Asana Modified At": _notion_rich_text(task.get("modified_at")),
@@ -647,14 +646,6 @@ def _stamp_notion_after_reverse_write(page_id: str, asana_modified_at: str | Non
 def _should_sync_to_asana(notion_page: dict) -> bool:
     """Determine if a Notion task should sync to Asana."""
     props = notion_page.get("properties", {})
-
-    is_template = props.get("Is Template", {}).get("checkbox", False)
-    if is_template:
-        return False
-
-    parent_id = props.get("Recurring Parent ID", {}).get("rich_text", [])
-    if parent_id:
-        return False
 
     manual_source = props.get("Manual Source", {}).get("checkbox", False)
     if manual_source:
@@ -910,7 +901,6 @@ def startup_smoke_test(
             properties={
                 "Name": _notion_title(smoke_name),
                 "Done": {"checkbox": False},
-                "Recurring": {"select": {"name": "None"}},
                 "Asana Task ID": _notion_rich_text(f"{smoke_gid}::smoke::{marker}"),
                 "Asana URL": {"url": sample_task.get("permalink_url") if sample_task else None},
                 "Asana Modified At": _notion_rich_text(sample_task.get("modified_at") if sample_task else None),
