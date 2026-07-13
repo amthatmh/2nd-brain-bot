@@ -2334,23 +2334,27 @@ async def post_init(app: Application) -> None:
     # Register digest cron jobs only. Do not queue missed digest slots on startup;
     # restarting the bot should not send an immediate digest.
     build_digest_schedule(scheduler, app.bot)
-    scheduler.add_job(send_friday_reflection, "cron", day_of_week="fri",
-                      hour=18, minute=0, args=[app.bot])
-    scheduler.add_job(send_sunday_digest, "cron", day_of_week="sun",
-                      hour=9, minute=0, args=[app.bot])
-    scheduler.add_job(send_monthly_habit_insight, "cron", day="last",
-                      hour=20, minute=0, args=[app.bot])
-    if NOTION_TRIPS_DB:
-        scheduler.add_job(
-            run_packing_sync_job,
-            "interval",
-            hours=6,
-            id="packing_sync",
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=600,
-        )
+    if not NOTION_UTILITY_SCHEDULER_DB:
+        # Fallback schedule when the Utility Scheduler DB isn't configured.
+        # With the DB set, these jobs are managed by their Notion rows instead
+        # (friday_reflection, sunday_digest, monthly_habit_insight, packing_sync).
+        scheduler.add_job(send_friday_reflection, "cron", day_of_week="fri",
+                          hour=18, minute=0, args=[app.bot])
+        scheduler.add_job(send_sunday_digest, "cron", day_of_week="sun",
+                          hour=9, minute=0, args=[app.bot])
+        scheduler.add_job(send_monthly_habit_insight, "cron", day="last",
+                          hour=20, minute=0, args=[app.bot])
+        if NOTION_TRIPS_DB:
+            scheduler.add_job(
+                run_packing_sync_job,
+                "interval",
+                hours=6,
+                id="packing_sync",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=600,
+            )
     # ── Cinema sync — validate config before Utility Scheduler can enable it ──
     cinema_ok, cinema_problems = validate_cinema_config()
     if not cinema_ok:
@@ -2423,6 +2427,34 @@ async def post_init(app: Application) -> None:
             _tracked_utility_manager_handler(
                 "health_summary_refresh",
                 lambda bot: _refresh_health_summary_job(),
+            ),
+        )
+        utility_manager.register_handler(
+            "friday_reflection",
+            _tracked_utility_manager_handler(
+                "friday_reflection",
+                lambda bot: send_friday_reflection(bot),
+            ),
+        )
+        utility_manager.register_handler(
+            "sunday_digest",
+            _tracked_utility_manager_handler(
+                "sunday_digest",
+                lambda bot: send_sunday_digest(bot),
+            ),
+        )
+        utility_manager.register_handler(
+            "monthly_habit_insight",
+            _tracked_utility_manager_handler(
+                "monthly_habit_insight",
+                lambda bot: send_monthly_habit_insight(bot),
+            ),
+        )
+        utility_manager.register_handler(
+            "packing_sync",
+            _tracked_utility_manager_handler(
+                "packing_sync",
+                lambda bot: run_packing_sync_job(bot),
             ),
         )
 

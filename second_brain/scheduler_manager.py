@@ -387,6 +387,7 @@ class UtilitySchedulerManager:
             "interval_minutes": interval_minutes,
             "interval_hours": interval_hours,
             "cron_day_of_week": self._extract_text(props.get("Cron Day Of Week", {})),
+            "cron_day": self._extract_text(props.get("Cron Day", {})),
             "cron_hour": self._extract_int_from_text_or_number(props.get("Cron Hour", {})),
             "cron_minute": self._extract_int_from_text_or_number(props.get("Cron Minute", {})),
             "run_on_start": self._extract_checkbox(props.get("Run On Startup", {}), default=False),
@@ -424,6 +425,9 @@ class UtilitySchedulerManager:
         kwargs: dict[str, Any] = {}
         if config.get("cron_day_of_week"):
             kwargs["day_of_week"] = config["cron_day_of_week"]
+        if config.get("cron_day"):
+            # Day of month; APScheduler accepts numbers or expressions like "last".
+            kwargs["day"] = config["cron_day"]
 
         cron_hour = config.get("cron_hour")
         if cron_hour is not None:
