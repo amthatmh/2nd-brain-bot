@@ -249,7 +249,13 @@ function scoreRecommendation(key,data){
     return weak.length?`Next move: ${weak.join(', ')} ${weak.length===1?'needs':'need'} recovery attention; protect sleep, hydration, easy Zone 2, and avoid stacking hard days.`:'Next move: keep aerobic work steady and do not let recovery slide.';
   }
   if(key==='activity'){
-    const weekly=data.weekly_activity||[]; const w=weekly[weekly.length-1]||{}; const workoutGap=Math.max(3-(w.workout_days||0),0); const stepsGap=Math.max(7-(w.steps_days||0),0);
+    // Look up the current week by its Monday date: weeks with no completed
+    // rows are absent, so the last entry can be a stale previous week.
+    const weekly=data.weekly_activity||[];
+    const now=new Date(); const monday=new Date(now); monday.setDate(now.getDate()-((now.getDay()+6)%7));
+    const mondayIso=`${monday.getFullYear()}-${String(monday.getMonth()+1).padStart(2,'0')}-${String(monday.getDate()).padStart(2,'0')}`;
+    const w=weekly.find(x=>x.week===mondayIso)||{};
+    const workoutGap=Math.max(3-(w.workout_days||0),0); const stepsGap=Math.max(7-(w.steps_days||0),0);
     if(workoutGap&&stepsGap)return `Next move: add ${workoutGap} ${plural(workoutGap,'workout day')} and ${stepsGap} ${plural(stepsGap,'step day','steps days')} to hit the weekly targets.`;
     if(workoutGap)return `Next move: add ${workoutGap} ${plural(workoutGap,'workout day')} to reach the 3-day training target.`;
     if(stepsGap)return `Next move: add ${stepsGap} ${plural(stepsGap,'step day','steps days')} to complete the movement streak.`;

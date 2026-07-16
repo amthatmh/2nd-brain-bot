@@ -522,7 +522,22 @@ def _weekly_activity(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _activity_score(weekly: list[dict[str, Any]]) -> dict[str, Any]:
+def current_week_entry(weekly: list[dict[str, Any]], week_start: date) -> dict[str, Any]:
+    """Return the entry for the week starting ``week_start``, or an empty week.
+
+    ``_weekly_activity`` only emits weeks that have at least one completed
+    habit row, so early in a quiet week the current week is absent entirely.
+    Positional ``weekly[-1]`` then silently reads LAST week's totals as "this
+    week" — the current week must be selected by date, defaulting to zeros.
+    """
+    iso = week_start.isoformat()
+    for entry in weekly:
+        if entry.get("week") == iso:
+            return entry
+    return {"week": iso, "workout_days": 0, "steps_days": 0}
+
+
+def _activity_score(weekly: list[dict[str, Any]], week_start: date | None = None) -> dict[str, Any]:
     if not weekly:
         return {"value": None, "status": "no_data", "description": "No activity data yet"}
     avg_workouts = sum(w["workout_days"] for w in weekly) / len(weekly)
@@ -532,7 +547,7 @@ def _activity_score(weekly: list[dict[str, Any]]) -> dict[str, Any]:
     # Activity Score formula weights workout consistency at 60% and steps goal
     # completion at 40%: ((workout_pct * 0.6) + (steps_pct * 0.4)) * 100.
     value = round(((workout_pct * 0.6) + (steps_pct * 0.4)) * 100)
-    latest = weekly[-1]
+    latest = current_week_entry(weekly, week_start) if week_start else weekly[-1]
     workout_gap = max(3 - latest["workout_days"], 0)
     steps_gap = max(7 - latest["steps_days"], 0)
     if workout_gap and steps_gap:
@@ -617,6 +632,8 @@ def build_dashboard_payload(
     readiness_rows = _fetch_readiness_rows(notion, readiness_db_id, start, end)
     metrics = _build_metrics(health_rows)
     weekly = _weekly_activity(habit_rows)
+    # end == today in the app timezone; anchor "this week" to its Monday.
+    current_week_start = end - timedelta(days=end.weekday())
     readiness_series = _build_readiness_series(readiness_rows)
     weekly_readiness = _weekly_readiness(readiness_series)
 
@@ -624,7 +641,7 @@ def build_dashboard_payload(
     scores = {
         "body": _body_score(metrics) if has_any_health_data else {"value": None, "status": "no_data", "description": "No body data in this range"},
         "cardio": _cardio_score(metrics) if has_any_health_data else {"value": None, "status": "no_data", "description": "No cardio data in this range"},
-        "activity": _activity_score(weekly),
+        "activity": _activity_score(weekly, current_week_start),
         "sleep": _sleep_score(metrics) if has_any_health_data else {"value": None, "status": "no_data", "description": "No sleep data in this range"},
     }
 
