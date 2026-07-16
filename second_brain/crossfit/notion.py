@@ -313,7 +313,9 @@ MOVEMENT_ALIAS_MAP = [
     (r"(db|dumbbell)\s+overhead\s+(walking\s+)?lunge", "Overhead Carry"),
     (r"(db|dumbbell)\s+goblet\s+(walking\s+)?lunge", "Lunge"),
     (r"double\s+(kb|kettlebell)\s+hang\s+clean[\s\w]*jerk", "Kettlebell Clean"),
-    (r"hang\s+clean\s+and\s+jerk", "Clean & Jerk"),
+    # Combination movements: any clean variant + jerk is the single combined
+    # "Clean & Jerk" library movement (a squat clean & jerk IS a full C&J).
+    (r"\bcleans?\s*(?:and|&|\+|n)\s*jerks?", "Clean & Jerk"),
     (r"box\s+jump\s+over", "Box Jump"),
     (r"burpee\s+broad\s+jump", "Burpee"),
     (r"line[\s-]facing\s+burpee", "Burpee"),
