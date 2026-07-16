@@ -329,6 +329,8 @@ EXTRACTION RULES:
    - Standardize "hang squat clean" and "hang clean squat" -> "Hang Squat Clean"
    - When user says "hang clean" or "hang cleans" without specifying variation, default to "Hang Power Clean".
    - Only return "Hang Squat Clean" if the user explicitly says "squat".
+   - Combination movements stay ONE movement: "squat clean & jerk", "squat clean and jerks",
+     "clean and jerk", "power clean + jerk" -> "Clean & Jerk" (never split into two movements).
 
 2. DATE: Parse date references relative to TODAY.
    - "on 5/6" -> use the current year unless another year is stated
