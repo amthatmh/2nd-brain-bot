@@ -172,7 +172,13 @@ def build_card_payload(
     weekly = dashboard.get("weekly_activity") or []
     metrics = dashboard.get("metrics", {}) or {}
 
-    latest_week = weekly[-1] if weekly else {"workout_days": 0, "steps_days": 0}
+    # Select this week and last week BY DATE, not position: _weekly_activity
+    # omits weeks with no completed rows, so on a quiet Monday ``weekly[-1]``
+    # is last week's finished totals masquerading as "this week".
+    from second_brain.healthtrack.dashboard import current_week_entry
+
+    week_start = today - timedelta(days=today.weekday())
+    latest_week = current_week_entry(weekly, week_start)
     workout_days = latest_week.get("workout_days", 0)
     steps_days = latest_week.get("steps_days", 0)
     workout_gap = max(WORKOUT_TARGET - workout_days, 0)
@@ -180,7 +186,8 @@ def build_card_payload(
 
     verdict = compute_verdict(flag.severity, workout_gap, steps_gap)
 
-    prev_workout = weekly[-2].get("workout_days", 0) if len(weekly) >= 2 else workout_days
+    prev_entry = current_week_entry(weekly, week_start - timedelta(days=7))
+    prev_workout = prev_entry.get("workout_days", 0) if weekly else workout_days
     workout_trend = _arrow(workout_days - prev_workout)
 
     w7 = flag.windows.get(7) if getattr(flag, "windows", None) else None
