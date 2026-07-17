@@ -243,8 +243,7 @@ def format_batch_summary(results: list[dict]) -> str:
         lines.append("✅ Captured!")
         for (horizon, ctx), items in groups.items():
             for r in items:
-                recur_tag = f"  _{r['recurring']}_" if r.get("recurring", "None") != "None" else ""
-                lines.append(f"📝 {r['name']}{recur_tag}")
+                lines.append(f"📝 {r['name']}")
             lines.append(f"🕐 {horizon}  {ctx}  · _Saved to Notion_")
             lines.append("")
     if duplicates:

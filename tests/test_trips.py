@@ -363,12 +363,14 @@ def test_refresh_upcoming_trip_weather_updates_rows():
     )
     assert count == 1
     assert updated_pages
-    assert query_calls[0]["filter"]["and"][-1] == {
-        "or": [
-            {"property": "Weather Summary", "rich_text": {"equals": trips.WEATHER_PLACEHOLDER_SUMMARY}},
-            {"property": "Weather Summary", "rich_text": {"is_empty": True}},
-        ]
-    }
+    # No Weather Summary filter: trips inside the window refresh every run
+    # Use the same clock as trips.py (local_today, app TZ) — date.today() flakes
+    # on CI runners whose UTC date differs from the app timezone's date.
+    today = trips.local_today()
+    assert query_calls[0]["filter"]["and"] == [
+        {"property": "Departure Date", "date": {"on_or_after": today.isoformat()}},
+        {"property": "Departure Date", "date": {"on_or_before": (today + timedelta(days=5)).isoformat()}},
+    ]
 
 
 def test_build_packing_blocks_queries_all_items_and_returns_native_blocks(monkeypatch):

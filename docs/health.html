@@ -47,7 +47,10 @@
     .metric{padding:16px;min-height:116px}.metric-name{color:var(--muted);font-size:.74rem;letter-spacing:.08em;text-transform:uppercase;font-weight:800}
     .metric-value{font-size:1.85rem;font-weight:800;margin:10px 0 5px}.metric-value small{font-size:.8rem;color:var(--muted)}
     .delta{font-size:.88rem}.delta.good{color:var(--green)}.delta.bad{color:var(--red)}.delta.flat{color:var(--muted)}
-    .chart-card,.table-card{padding:18px}.chart-head{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-bottom:12px}.chart-sub{font-size:.84rem}.chart-wrap{height:340px}
+    .chart-card,.table-card{padding:18px}.chart-head{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-bottom:12px;flex-wrap:wrap}.chart-sub{font-size:.84rem}.chart-wrap{height:340px}
+    .chart-range{display:inline-flex;gap:4px;padding:4px;background:var(--surface-2);border:1px solid var(--border);border-radius:999px}
+    .chart-range button{border:0;border-radius:999px;padding:4px 10px;font-size:.74rem;font-weight:750;color:var(--muted);background:transparent;cursor:pointer}
+    .chart-range button.active{background:var(--blue);color:#fff}
     .empty{padding:24px;text-align:center;color:var(--muted);border:1px dashed var(--border);border-radius:var(--radius)}
     .loading{padding:28px;color:var(--muted)}.table-scroll{overflow-x:auto}.weekly-table{width:100%;min-width:720px;border-collapse:collapse}.weekly-table th,.weekly-table td{padding:12px 10px;border-bottom:1px solid var(--border);text-align:left}.weekly-table th{color:var(--muted);font-size:.76rem;text-transform:uppercase;letter-spacing:.08em}.weekly-table tr:last-child td{border-bottom:0}.good{color:var(--green)}.bad{color:var(--red)}
     .footer{margin:30px 0 6px;text-align:center;color:var(--muted);font-size:.86rem}.footer a{color:var(--blue);text-decoration:none}
@@ -192,6 +195,7 @@ function showErrorState(msg){
 }
 function renderDashboard(data){
   document.getElementById('lastUpdated').textContent=data.generated_at?`Updated ${new Date(data.generated_at).toLocaleString()}`:'Updated just now';
+  Object.keys(chartRanges).forEach(k=>delete chartRanges[k]);
   destroyCharts();
   renderScoreSet('overviewScores',['body','cardio','activity','sleep'],data);
   renderScoreSet('restScore',['sleep'],data);
@@ -211,6 +215,7 @@ function scoreCard(key,data){
 }
 function toggleInfo(btn){btn.closest('.card').querySelector('.explain').classList.toggle('show');}
 function scoreDescription(key,data,score){
+  if(key==='cardio')return cardioDescription(data)||score.description||'Not enough data yet';
   if(key!=='sleep')return score.description||'Not enough data yet';
   const m=data.metrics||{}, latest=data.latest||{};
   const total=latest.total_sleep??lastValue(m.total_sleep), deep=latest.deep_sleep??lastValue(m.deep_sleep), rem=latest.rem_sleep??lastValue(m.rem_sleep), efficiency=latest.sleep_efficiency??lastValue(m.sleep_efficiency);
@@ -220,6 +225,17 @@ function scoreDescription(key,data,score){
   if(rem!=null)parts.push(`REM ${fmtNum(rem)} min`);
   if(efficiency!=null)parts.push(`Efficiency ${fmtNum(efficiency)}%`);
   return parts.join(' · ')||score.description||'Not enough data yet';
+}
+function cardioDescription(data){
+  const m=data.metrics||{}, latest=data.latest||{}, deltas=data.deltas||{};
+  const part=(label,key,unit)=>{
+    const value=latest[key]??lastValue(m[key]);
+    if(value==null)return null;
+    const delta=deltas[key];
+    const change=delta&&delta.direction!=='flat'?` ${delta.direction==='up'?'↑':'↓'}${Math.abs(delta.value)}`:'';
+    return `${label} ${fmtNum(value)}${unit?` ${unit}`:''}${change}`;
+  };
+  return [part('RHR','resting_hr','bpm'),part('HRV','hrv','ms'),part('VO2 Max','vo2_max','')].filter(Boolean).join(' · ');
 }
 function scoreRecommendation(key,data){
   const m=data.metrics||{}, d=data.deltas||{}, latest=data.latest||{};
@@ -233,7 +249,13 @@ function scoreRecommendation(key,data){
     return weak.length?`Next move: ${weak.join(', ')} ${weak.length===1?'needs':'need'} recovery attention; protect sleep, hydration, easy Zone 2, and avoid stacking hard days.`:'Next move: keep aerobic work steady and do not let recovery slide.';
   }
   if(key==='activity'){
-    const weekly=data.weekly_activity||[]; const w=weekly[weekly.length-1]||{}; const workoutGap=Math.max(3-(w.workout_days||0),0); const stepsGap=Math.max(7-(w.steps_days||0),0);
+    // Look up the current week by its Monday date: weeks with no completed
+    // rows are absent, so the last entry can be a stale previous week.
+    const weekly=data.weekly_activity||[];
+    const now=new Date(); const monday=new Date(now); monday.setDate(now.getDate()-((now.getDay()+6)%7));
+    const mondayIso=`${monday.getFullYear()}-${String(monday.getMonth()+1).padStart(2,'0')}-${String(monday.getDate()).padStart(2,'0')}`;
+    const w=weekly.find(x=>x.week===mondayIso)||{};
+    const workoutGap=Math.max(3-(w.workout_days||0),0); const stepsGap=Math.max(7-(w.steps_days||0),0);
     if(workoutGap&&stepsGap)return `Next move: add ${workoutGap} ${plural(workoutGap,'workout day')} and ${stepsGap} ${plural(stepsGap,'step day','steps days')} to hit the weekly targets.`;
     if(workoutGap)return `Next move: add ${workoutGap} ${plural(workoutGap,'workout day')} to reach the 3-day training target.`;
     if(stepsGap)return `Next move: add ${stepsGap} ${plural(stepsGap,'step day','steps days')} to complete the movement streak.`;
@@ -326,7 +348,37 @@ function weekStart(iso){
 function has(points){return Array.isArray(points)&&points.length>0;}
 function cssVar(name){return getComputedStyle(document.documentElement).getPropertyValue(name).trim();}
 function chartBase(){return {responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:cssVar('--muted'),boxWidth:10,usePointStyle:true}},tooltip:{mode:'index',intersect:false}},scales:{x:{ticks:{color:cssVar('--muted')},grid:{color:'transparent'}},y:{ticks:{color:cssVar('--muted')},grid:{color:cssVar('--border')}}}};}
-function chartCard(id,title,sub){return `<article class="chart-card"><div class="chart-head"><div><div class="chart-title">${title}</div><div class="chart-sub">${sub}</div></div></div><div class="chart-wrap"><canvas id="${id}"></canvas></div></article>`;}
+function chartCard(id,title,sub){return `<article class="chart-card"><div class="chart-head"><div><div class="chart-title">${title}</div><div class="chart-sub">${sub}</div></div>${chartRangePills(id)}</div><div class="chart-wrap"><canvas id="${id}"></canvas></div></article>`;}
+const chartRanges = {};
+function chartRangePills(id){
+  const active=chartRanges[id]||currentRange;
+  return `<nav class="chart-range" data-chart="${id}" aria-label="Chart time range">${RANGES.map(r=>`<button class="${active===r?'active':''}" data-range="${r}" onclick="setChartRange('${id}','${r}')">${r==='all'?'All':r.toUpperCase()}</button>`).join('')}</nav>`;
+}
+const chartDefs={
+  readinessChart:{key:'readiness',make:d=>makeReadinessChart(d.readiness_series||[])},
+  bodyChart:{key:'body',make:d=>makeBodyChart(d.metrics||{})},
+  cardioChart:{key:'cardio',make:d=>makeCardioChart(d.metrics||{})},
+  sleepChart:{key:'sleep',make:d=>makeSleepChart(d.metrics||{})},
+  sleepStagesChart:{key:'sleepStages',make:d=>makeSleepStagesChart(d.metrics||{})},
+  bedtimeChart:{key:'bedtime',make:d=>makeBedtimeChart(d.metrics||{})},
+  activityChart:{key:'activity',make:d=>makeActivityChart(d.weekly_activity||[])},
+  weeklyReadinessChart:{key:'weeklyReadiness',make:d=>{
+    const activeTab=document.querySelector('.rtab.active');
+    const tabKey=activeTab?_rTabs[[...document.querySelectorAll('.rtab')].indexOf(activeTab)]?.key:'score';
+    makeWeeklyReadinessChart(d.readiness_series||[]);
+    if(tabKey)setReadinessTab(tabKey);
+  }},
+};
+async function setChartRange(id,range){
+  const def=chartDefs[id]; if(!def)return;
+  chartRanges[id]=range;
+  const nav=document.querySelector(`.chart-range[data-chart="${id}"]`);
+  if(nav)nav.querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.range===range));
+  let data=cache[range];
+  if(!data){try{data=await fetchHealthRange(range);}catch(err){console.error(err);return;}}
+  charts[def.key]?.destroy(); delete charts[def.key];
+  def.make(data);
+}
 function labelsFor(...series){return [...new Set(series.flatMap(s=>(s||[]).map(p=>p.date)))].sort();}
 function mapSeries(points,labels){const byDate=Object.fromEntries((points||[]).map(p=>[p.date,p.value]));return labels.map(d=>byDate[d]??null);}
 function renderOverviewCharts(data){
@@ -379,7 +431,7 @@ const _rTabs=[
 function renderWeeklyFeel(weekly,series){
   if(!series||!series.length){document.getElementById('weeklyFeel').innerHTML='';return;}
   const tabs=_rTabs.map((t,i)=>`<button class="rtab${i===0?' active':''}" onclick="setReadinessTab('${t.key}')">${t.label}</button>`).join('');
-  document.getElementById('weeklyFeel').innerHTML=`<article class="chart-card"><div class="chart-head"><div><div class="chart-title">Readiness</div><div class="chart-sub">${readinessTrendSummary(weekly)}</div></div><div class="readiness-tabs">${tabs}</div></div><div class="chart-wrap"><canvas id="weeklyReadinessChart"></canvas></div></article>`;
+  document.getElementById('weeklyFeel').innerHTML=`<article class="chart-card"><div class="chart-head"><div><div class="chart-title">Readiness</div><div class="chart-sub">${readinessTrendSummary(weekly)}</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><div class="readiness-tabs">${tabs}</div>${chartRangePills('weeklyReadinessChart')}</div></div><div class="chart-wrap"><canvas id="weeklyReadinessChart"></canvas></div></article>`;
   makeWeeklyReadinessChart(series);
 }
 function fmtShortDate(iso){const d=new Date(`${iso}T12:00:00`);return d.toLocaleDateString(undefined,{month:'short',day:'numeric'});}

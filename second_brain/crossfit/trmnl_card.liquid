@@ -1,0 +1,65 @@
+{% comment %}
+  TRMNL daily workout card — paste into the private plugin's "Full" markup tab.
+  Data source: GET /trmnl/workout?token=... (polling strategy).
+  Polled JSON keys are available as top-level Liquid variables:
+    found  day_label  date_label  track
+    section_b{lines[],notes[]}  section_c{lines[],notes[]}
+  800x480, 1-bit e-ink. Section B (strength) left, Section C (conditioning)
+  right. Training notes render smaller and grey under each section.
+{% endcomment %}
+
+<div style="width:800px;height:480px;background:#fff;color:#000;font-family:'Helvetica Neue',Arial,sans-serif;box-sizing:border-box;padding:22px;display:flex;flex-direction:column;">
+
+  <!-- Title -->
+  <div style="display:flex;align-items:baseline;border-bottom:3px solid #000;padding-bottom:8px;">
+    <div style="font-size:30px;font-weight:700;letter-spacing:2px;">{{ day_label }}</div>
+    <div style="margin-left:12px;font-size:16px;color:#555;">{{ track }}</div>
+    <div style="margin-left:auto;font-size:16px;color:#555;">{{ date_label }}</div>
+  </div>
+
+  {% if found != true %}
+    <div style="flex:1;display:flex;align-items:center;justify-content:center;font-size:22px;color:#555;">
+      No workout programmed for today.
+    </div>
+  {% else %}
+
+  <div style="flex:1;display:flex;gap:24px;padding-top:12px;min-height:0;">
+
+    <!-- Section B -->
+    <div style="flex:1;display:flex;flex-direction:column;min-width:0;">
+      <div style="font-size:14px;font-weight:700;letter-spacing:2px;border-bottom:1px solid #000;padding-bottom:4px;">SECTION B — STRENGTH</div>
+      <div style="padding-top:8px;">
+        {% for line in section_b.lines %}
+          <div style="font-size:19px;font-weight:600;line-height:1.35;">{{ line }}</div>
+        {% endfor %}
+      </div>
+      {% if section_b.notes.size > 0 %}
+        <div style="margin-top:auto;padding-top:10px;">
+          {% for note in section_b.notes %}
+            <div style="font-size:14px;color:#444;line-height:1.4;">– {{ note }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    </div>
+
+    <!-- Section C -->
+    <div style="flex:1;display:flex;flex-direction:column;min-width:0;border-left:1px solid #ccc;padding-left:24px;">
+      <div style="font-size:14px;font-weight:700;letter-spacing:2px;border-bottom:1px solid #000;padding-bottom:4px;">SECTION C — CONDITIONING</div>
+      <div style="padding-top:8px;">
+        {% for line in section_c.lines %}
+          <div style="font-size:19px;font-weight:600;line-height:1.35;">{{ line }}</div>
+        {% endfor %}
+      </div>
+      {% if section_c.notes.size > 0 %}
+        <div style="margin-top:auto;padding-top:10px;">
+          {% for note in section_c.notes %}
+            <div style="font-size:14px;color:#444;line-height:1.4;">– {{ note }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    </div>
+
+  </div>
+
+  {% endif %}
+</div>

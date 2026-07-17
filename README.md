@@ -251,6 +251,9 @@ Telegram Update
 | `HEALTH_STEPS_THRESHOLD` | Daily step goal (enables auto habit logging) |
 | `HEALTH_HABIT_NAME` | Notion habit name for step goal. Default: `Steps` |
 | `PORT` | HTTP server port. Default: `8080` |
+| `TRMNL_HEALTH_TOKEN` | Query token guarding `/trmnl/health` (health coaching e-ink card). Card disabled if unset |
+| `TRMNL_HABITS_TOKEN` | Query token guarding `/trmnl/habits` (habit tracker e-ink card). Card disabled if unset |
+| `TRMNL_WORKOUT_TOKEN` | Query token guarding `/trmnl/workout` (daily WOD e-ink card). Card disabled if unset |
 | `WEEKS_HISTORY` | Weeks of history for metrics. Default: `52` |
 | `FEATURE_RECURRING` | Enable recurring task spawn. Default: `1` |
 

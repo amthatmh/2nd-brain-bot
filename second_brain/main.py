@@ -74,11 +74,6 @@ from second_brain.healthtrack.steps import (
     backfill_steps_state_from_notion,
     migrate_steps_entry_titles,
 )
-from second_brain.healthtrack.scheduler import (
-    check_and_create_steps_entry,
-    weigh_backfill_job,
-    weigh_sync_job,
-)
 from second_brain.work_sync.routes import register_work_sync_routes
 import second_brain.config as _config_module
 _config_module = importlib.reload(_config_module)
@@ -124,9 +119,9 @@ from second_brain.config import (
     WORK_SYNC_OUT,
     ASANA_SYNC_INTERVAL,
     HTTP_PORT,
+    DEFAULT_TASK_DEADLINE_DAYS,
     WEEKS_HISTORY,
     APP_VERSION,
-    FEATURES,
     UTILITY_SCHEDULER_RELOAD_MINUTES,
     ASANA_PAT,
     ASANA_PROJECT_GID,
@@ -141,7 +136,6 @@ from second_brain.notion.properties import (
     extract_rich_text,
     extract_title,
     query_all,
-    title_prop,
 )
 from second_brain.notion import habits as notion_habits
 from second_brain.notion.habits import (
@@ -156,7 +150,6 @@ from second_brain.notion.habits import (
     is_on_pace as _habit_is_on_pace,
     record_weekly_streaks,
 )
-from second_brain.notion.tasks import next_repeat_day_date
 from second_brain.notion import tasks as notion_tasks
 from second_brain import keyboards as kb
 from second_brain import formatters as fmt
@@ -180,7 +173,6 @@ from second_brain.trips import (
     cmd_refreshweather,
     get_upcoming_trips_needing_reminder,
     append_trip_reminders_to_text,
-    handle_trip_weather_refresh,
     run_packing_sync_job,
     schedule_weather_refresh,
 )
@@ -198,6 +190,7 @@ from second_brain.healthtrack.dashboard import (
 )
 from second_brain.healthtrack.trmnl import create_trmnl_health_handler
 from second_brain.habitkit.trmnl import create_trmnl_habits_handler
+from second_brain.crossfit.trmnl import create_trmnl_workout_handler
 from second_brain.services import task_parsing as task_parsing_service
 from second_brain.services import note_utils as note_utils_service
 from second_brain.handlers.commands import CommandHandlers
@@ -481,10 +474,6 @@ TOPIC_OPTIONS = [
     "💪 Health", "🏢 LEED", "✅ WELL", "💡 Ideas", "📚 Research",
 ]
 _URL_RE = re.compile(r"https?://[^\s\)\]>\"']+", re.IGNORECASE)
-
-def _has_explicit_personal_or_work_context(text: str) -> bool:
-    lower = (text or "").lower()
-    return bool(re.search(r"\b(personal|work)\b|🏠|💼", lower))
 
 def _load_bot_state() -> dict:
     try:
@@ -836,60 +825,6 @@ def get_and_clear_claude_activity() -> list[str]:
 # BATCH CAPTURE
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _run_capture(raw_text: str, force_create: bool = False,
-                 context_override: str | None = None,
-                 deadline_override: int | None = None) -> dict:
-    try:
-        habit_names = list(habit_cache.keys())
-        today = local_today()
-        result        = ai_classify.classify_message(claude, CLAUDE_MODEL, raw_text, habit_names, bool(NOTION_WATCHLIST_DB), bool(NOTION_WANTSLIST_V2_DB), bool(NOTION_PHOTO_DB), bool(NOTION_NOTES_DB), today)
-        task_name     = result.get("task_name") or raw_text
-        deadline_days = result.get("deadline_days")
-        ai_ctx        = result.get("context", "🏠 Personal")
-        kw_overrides  = infer_batch_overrides(raw_text)
-        ctx           = context_override or kw_overrides.get("context") or ai_ctx
-        recurring, repeat_day = _recurring_fields_from_classification(result)
-        target_date = next_repeat_day_date(recurring, repeat_day)
-        if target_date is not None:
-            computed_days = (target_date - local_today()).days
-            if deadline_days is None or (deadline_days <= 0 and computed_days > 0):
-                deadline_days = computed_days
-        if deadline_override is not None:
-            deadline_days = deadline_override
-        explicit_deadline = infer_deadline_override(raw_text)
-        if explicit_deadline is not None:
-            deadline_days = explicit_deadline
-        horizon_label = deadline_days_to_label(deadline_days)
-    except Exception as e:
-        log.error("Claude error for '%s': %s", raw_text, e)
-        return {"status": "error", "name": raw_text, "error": str(e)}
-
-    if not force_create:
-        dup = notion_tasks.find_duplicate_active_task(notion, NOTION_DB_ID, task_name)
-        if dup:
-            return {"status": "duplicate", "name": task_name, "duplicate": dup}
-
-    try:
-        if recurring != "None":
-            page_id, first_deadline = _create_recurring_task_template_and_first_instance(
-                task_name, ctx, recurring, repeat_day
-            )
-            return {
-                "status": "captured", "name": task_name,
-                "horizon_label": first_deadline.strftime("%b %d"), "context": ctx,
-                "recurring": recurring, "page_id": page_id,
-            }
-
-        page_id, _ = notion_tasks.create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
-        return {
-            "status": "captured", "name": task_name,
-            "horizon_label": horizon_label, "context": ctx,
-            "recurring": recurring, "page_id": page_id,
-        }
-    except Exception as e:
-        log.error("Notion error for '%s': %s", task_name, e)
-        return {"status": "error", "name": task_name, "error": str(e)}
-
 async def refresh_quick_actions_keyboard(message) -> None:
     """Force-refresh the reply keyboard to replace legacy layouts (e.g. old Mute button)."""
     await message.reply_text("🔄 Refreshing quick actions…", reply_markup=ReplyKeyboardRemove())
@@ -973,8 +908,7 @@ def _restore_pid(pid: str) -> str:
 
 async def complete_task_by_page_id(message, page_id: str, name: str) -> None:
     notion_tasks.mark_done(notion, page_id)
-    suffix = "\n↻ Next instance will be generated by the recurring batch job" if notion_tasks.handle_done_recurring(notion, NOTION_DB_ID, page_id) else ""
-    await message.reply_text(f"✅ Done: {name}{suffix}")
+    await message.reply_text(f"✅ Done: {name}")
 
 async def _classify_task_texts(task_texts: list[str]) -> list[dict]:
     """Classify multiple task texts concurrently."""
@@ -998,62 +932,6 @@ async def _classify_task_texts(task_texts: list[str]) -> list[dict]:
         for task_text in task_texts
     ])
 
-def _recurring_fields_from_classification(classification: dict) -> tuple[str, str | None]:
-    recurring_type = classification.get("recurring_type")
-    recurring_map = {
-        "daily": "🔁 Daily",
-        "weekly": "📅 Weekly",
-        "monthly": "🗓️ Monthly",
-    }
-    recurring = recurring_map.get(recurring_type, classification.get("recurring", "None") or "None")
-    repeat_day = classification.get("repeat_day")
-    return recurring, repeat_day
-
-
-def _create_recurring_task_template_and_first_instance(
-    task_name: str,
-    ctx: str,
-    recurring: str,
-    repeat_day: str | None,
-) -> tuple[str, date]:
-    props = {
-        "Name": title_prop(task_name),
-        "Context": {"select": {"name": ctx}},
-        "Recurring": {"select": {"name": recurring}},
-        "Is Template": {"checkbox": True},
-        "Source": {"select": {"name": "📱 Telegram"}},
-    }
-    if repeat_day:
-        props["Repeat Day"] = {"select": {"name": repeat_day}}
-
-    template_id = notion.pages.create(
-        parent={"database_id": NOTION_DB_ID},
-        properties=props,
-    )["id"]
-
-    template_dict = {
-        "page_id": template_id,
-        "name": task_name,
-        "context": ctx,
-        "recurring": recurring,
-        "repeat_day": repeat_day,
-        "deadline": None,
-        "recurrence_pattern": None,
-    }
-    first_deadline = notion_tasks.calculate_next_deadline(
-        template_dict,
-        from_date=notion_tasks.local_today(),
-    )
-    notion_tasks.spawn_recurring_instance(
-        notion,
-        NOTION_DB_ID,
-        template_dict,
-        next_deadline=first_deadline,
-        source="📱 Telegram",
-    )
-    return template_id, first_deadline
-
-
 async def _create_task_from_classification(
     raw_text: str,
     classification: dict,
@@ -1066,17 +944,13 @@ async def _create_task_from_classification(
         task_name = classification.get("task_name") or raw_text
         deadline_days = classification.get("deadline_days")
         ctx = context_override or classification.get("context", "🏠 Personal")
-        recurring, repeat_day = _recurring_fields_from_classification(classification)
-        target_date = next_repeat_day_date(recurring, repeat_day)
-        if target_date is not None:
-            computed_days = (target_date - local_today()).days
-            if deadline_days is None or (deadline_days <= 0 and computed_days > 0):
-                deadline_days = computed_days
         if deadline_override is not None:
             deadline_days = deadline_override
         explicit_deadline = infer_deadline_override(raw_text)
         if explicit_deadline is not None:
             deadline_days = explicit_deadline
+        if deadline_days is None:
+            deadline_days = DEFAULT_TASK_DEADLINE_DAYS
         horizon_label = deadline_days_to_label(deadline_days)
 
         if not force_create:
@@ -1084,31 +958,12 @@ async def _create_task_from_classification(
             if dup:
                 return {"status": "duplicate", "name": task_name, "duplicate": dup}
 
-        if recurring != "None":
-            page_id, first_deadline = _create_recurring_task_template_and_first_instance(
-                task_name,
-                ctx,
-                recurring,
-                repeat_day,
-            )
-            capture_map[page_id] = {"page_id": page_id, "name": task_name}
-            return {
-                "status": "captured",
-                "name": task_name,
-                "horizon_label": first_deadline.strftime("%b %d"),
-                "context": ctx,
-                "recurring": recurring,
-                "page_id": page_id,
-            }
-
         page_id, _ = notion_tasks.create_task(
             notion,
             NOTION_DB_ID,
             task_name,
             deadline_days,
             ctx,
-            recurring=recurring,
-            repeat_day=repeat_day,
         )
         capture_map[page_id] = {"page_id": page_id, "name": task_name}
         return {
@@ -1116,7 +971,6 @@ async def _create_task_from_classification(
             "name": task_name,
             "horizon_label": horizon_label,
             "context": ctx,
-            "recurring": recurring,
             "page_id": page_id,
         }
     except Exception as e:
@@ -1243,28 +1097,16 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
         deadline_days = result.get("deadline_days")
         ctx           = result.get("context", "🏠 Personal")
         confidence    = result.get("confidence", "low")
-        recurring, repeat_day = _recurring_fields_from_classification(result)
-        target_date = next_repeat_day_date(recurring, repeat_day)
-        if target_date is not None:
-            computed_days = (target_date - local_today()).days
-            if deadline_days is None or (deadline_days <= 0 and computed_days > 0):
-                deadline_days = computed_days
         explicit_deadline = infer_deadline_override(raw_text)
         if explicit_deadline is not None:
             deadline_days = explicit_deadline
+        if deadline_days is None:
+            deadline_days = DEFAULT_TASK_DEADLINE_DAYS
         horizon_label = deadline_days_to_label(deadline_days)
     except Exception as e:
         log.error("Claude error: %s", e)
         await thinking.edit_text("⚠️ Couldn't classify that. Try rephrasing?")
         return
-
-    needs_context_clarification = (
-        recurring != "None"
-        and not _has_explicit_personal_or_work_context(raw_text)
-    )
-
-    if needs_context_clarification:
-        ctx = "🏠 Personal"
 
     if not force_create:
         dup = notion_tasks.find_duplicate_active_task(notion, NOTION_DB_ID, task_name)
@@ -1275,22 +1117,17 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
             )
             return
 
-    recur_tag = f"\n🔁 {recurring}" if recurring != "None" else ""
-
     if confidence != "high":
         preview_map[thinking.message_id] = {
             "task_name": task_name,
             "deadline_days": deadline_days,
             "context": ctx,
-            "recurring": recurring,
-            "repeat_day": repeat_day,
         }
         await thinking.edit_text(
             "📋 *Preview* (confirm to save)\n\n"
             f"*Task:* {task_name}\n"
             f"*Deadline:* {horizon_label}\n"
-            f"*Context:* {ctx}\n"
-            f"*Recurring:* {recurring}",
+            f"*Context:* {ctx}",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("💾 Save", callback_data=f"save_task:{thinking.message_id}"),
@@ -1300,25 +1137,11 @@ async def create_or_prompt_task(message, raw_text: str, force_create: bool = Fal
         return
 
     try:
-        if recurring != "None":
-            page_id, first_deadline = _create_recurring_task_template_and_first_instance(
-                task_name,
-                ctx,
-                recurring,
-                repeat_day,
-            )
-            await thinking.edit_text(
-                f"✅ Recurring task created: {task_name}\n"
-                f"📅 Pattern: {recurring}\n"
-                f"🗓️ First due: {first_deadline.strftime('%b %d')}",
-                parse_mode="Markdown",
-            )
-        else:
-            page_id, _ = notion_tasks.create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx, recurring=recurring, repeat_day=repeat_day)
-            await thinking.edit_text(
-                f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}{recur_tag}\n\n_Saved to Notion_",
-                parse_mode="Markdown",
-            )
+        page_id, _ = notion_tasks.create_task(notion, NOTION_DB_ID, task_name, deadline_days, ctx)
+        await thinking.edit_text(
+            f"✅ Captured!\n\n📝 {task_name}\n🕐 {horizon_label}  {ctx}\n\n_Saved to Notion_",
+            parse_mode="Markdown",
+        )
         capture_map[thinking.message_id] = {"page_id": page_id, "name": task_name}
     except Exception as e:
         log.error("Notion error: %s", e)
@@ -1522,9 +1345,9 @@ COMMAND_DISPATCH: dict[str, Callable] = {
 
 async def run_recurring_check(bot) -> dict:
     """
-    Daily morning job — two responsibilities:
-    1. Spawn recurring task instances from To-Do DB templates
-    2. Record weekly habit streaks (Mondays only)
+    Daily morning job — records weekly habit streaks (Mondays only).
+    Recurring task generation was removed; Notion's native repeating
+    database templates now own instance creation.
     Habit cache refresh is handled separately by digest_schedule_refresh.
     """
     if datetime.now(TZ).weekday() == 0:
@@ -1539,89 +1362,7 @@ async def run_recurring_check(bot) -> dict:
             get_current_monday,
             get_habit_frequency,
         )
-    if _is_muted():
-        log.info("Recurring check skipped (muted)")
-        return {"action": "skipped", "reason": "muted"}
-    spawned = notion_tasks.process_recurring_tasks(notion, NOTION_DB_ID)
-    log.info("Recurring check: %d task(s) spawned", spawned)
-    return {"action": "spawned", "tasks_spawned": spawned}
-
-async def generate_next_recurring_instances(bot) -> None:
-    """Scan completed recurring instances and generate their next occurrences."""
-    try:
-        results = notion.databases.query(
-            database_id=NOTION_DB_ID,
-            filter={
-                "and": [
-                    {"property": "Done", "checkbox": {"equals": True}},
-                    {"property": "Recurring Parent ID", "rich_text": {"is_not_empty": True}},
-                    {"property": "Last Generated", "date": {"is_empty": True}},
-                ]
-            },
-            page_size=10,
-        )
-
-        spawned = 0
-        for page in results.get("results", []):
-            try:
-                parent_id_prop = page["properties"].get("Recurring Parent ID", {}).get("rich_text", [])
-                if not parent_id_prop:
-                    continue
-                parent_id = parent_id_prop[0]["text"]["content"]
-
-                parent = notion.pages.retrieve(page_id=parent_id)
-                p = parent["properties"]
-                template = {
-                    "page_id": parent_id,
-                    "name": notion_tasks._get_prop(p, "Name", "title") or "Untitled",
-                    "context": notion_tasks._get_prop(p, "Context", "select") or "🏠 Personal",
-                    "recurring": notion_tasks._get_prop(p, "Recurring", "select") or "None",
-                    "repeat_day": notion_tasks._get_prop(p, "Repeat Day", "select"),
-                    "deadline": notion_tasks._get_prop(p, "Deadline", "date"),
-                    "recurrence_pattern": notion_tasks._get_prop(p, "Recurrence Pattern", "rich_text"),
-                }
-
-                template_source = notion_tasks._get_prop(p, "Source", "select") or "✏️ Manual"
-                completed_deadline = notion_tasks._get_prop(page["properties"], "Deadline", "date")
-                ref_date = notion_tasks._parse_deadline(completed_deadline) or notion_tasks.local_today()
-                next_deadline = notion_tasks.calculate_next_deadline(template, from_date=ref_date)
-
-                # Guard against re-spawning when a previous run created the instance
-                # but failed to mark the completed instance (set_last_generated below).
-                # If an active child already exists for this parent, skip the spawn.
-                existing_active = notion.databases.query(
-                    database_id=NOTION_DB_ID,
-                    filter={
-                        "and": [
-                            {"property": "Recurring Parent ID", "rich_text": {"equals": parent_id}},
-                            {"property": "Done", "checkbox": {"equals": False}},
-                        ]
-                    },
-                    page_size=1,
-                )
-                if not existing_active.get("results"):
-                    notion_tasks.spawn_recurring_instance(
-                        notion,
-                        NOTION_DB_ID,
-                        template,
-                        next_deadline=next_deadline,
-                        source=template_source,
-                    )
-                    spawned += 1
-                    log.info("Generated next recurring instance for parent %s, due %s", parent_id, next_deadline)
-                else:
-                    log.info("Active instance already exists for parent %s, skipping spawn", parent_id)
-
-                notion_tasks.set_last_generated(notion, page["id"], notion_tasks.local_today())
-            except Exception as e:
-                page_id = page.get("id")
-                log.error("Failed to generate next instance for page %s: %s", page_id, e)
-                continue
-
-        if spawned > 0:
-            log.info("Recurring batch generation: %s instance(s) spawned", spawned)
-    except Exception as e:
-        log.error("Recurring batch generation job failed: %s", e)
+    return {"action": "streaks_only"}
 
 
 async def send_evening_checkin(bot) -> None:
@@ -2103,6 +1844,14 @@ async def start_http_server() -> None:
         ),
     )
     app.router.add_get("/trmnl/habits", create_trmnl_habits_handler(tz=TZ))
+    app.router.add_get(
+        "/trmnl/workout",
+        create_trmnl_workout_handler(
+            notion=notion,
+            workout_days_db_id=NOTION_WORKOUT_DAYS_DB,
+            tz=TZ,
+        ),
+    )
     app.router.add_get("/health", lambda r: web.Response(text="ok"))
     register_health_routes(
         app,
@@ -2233,31 +1982,6 @@ async def process_pending_programmes(bot) -> None:
     from second_brain.crossfit.weekly_program import process_pending_programmes as _impl
     await _impl(notion, bot, workout_program_db=NOTION_WORKOUT_PROGRAM_DB, chat_id=MY_CHAT_ID)
 
-async def _run_steps_sync_check_dispatch(bot) -> dict:
-    result = await check_and_create_steps_entry(
-        notion=notion,
-        habit_db_id=NOTION_HABIT_DB,
-        log_db_id=NOTION_LOG_DB,
-        habit_name=health_config.STEPS_HABIT_NAME,
-        tz=TZ,
-        bot=bot,
-        chat_id=MY_CHAT_ID,
-    )
-    sync_status["steps"]["last_run"] = utc_now_iso()
-    sync_status["steps"]["ok"] = bool(result.get("ok"))
-    sync_status["steps"]["error"] = None if result.get("ok") else result.get("reason")
-    sync_status["steps"]["stats"] = result
-    return result
-
-UTILITY_JOB_DISPATCH: dict[str, Callable] = {}
-
-def _utility_async_handler(job_key: str, coro_factory: Callable):
-    @track_job_execution(job_key)
-    async def _utility_dispatch_handler() -> object:
-        return await coro_factory()
-
-    return _utility_dispatch_handler
-
 def _tracked_utility_manager_handler(job_key: str, coro_factory: Callable):
     @track_job_execution(job_key)
     async def _utility_manager_dispatch_handler(bot) -> object:
@@ -2271,135 +1995,6 @@ async def _run_work_sync_job() -> dict:
     from second_brain.work_sync.sync import run_sync as _run_sync
     return await _asyncio.to_thread(_run_sync, out=_Path(WORK_SYNC_OUT), db_id=NOTION_WORK_SYNC_DB or None, notion=notion)
 
-
-def _build_utility_job_dispatch(bot) -> dict[str, Callable]:
-    """
-    Maps Utility Scheduler job keys to their async handler functions.
-    Add new job keys here as new features are added.
-    Each value must be an async callable that accepts no arguments (bot is
-    captured via closure).
-    """
-    dispatch = {
-        "digest_schedule_rebuild": _utility_async_handler("digest_schedule_rebuild", lambda: rebuild_digest_schedule_job(bot, digest_helpers._scheduler)),
-        "digest_schedule_refresh": _utility_async_handler("digest_schedule_refresh", lambda: refresh_digest_schedule_job(bot, digest_helpers._scheduler)),
-        "weather_cache_refresh": _utility_async_handler("weather_cache_refresh", lambda: wx.fetch_weather_cache(bot)),
-        "trip_weather_refresh": _utility_async_handler("trip_weather_refresh", lambda: handle_trip_weather_refresh(bot)),
-        "process_pending_programmes": _utility_async_handler("process_pending_programmes", lambda: process_pending_programmes(bot)),
-        "cinema_sync": _utility_async_handler("cinema_sync", lambda: run_cinema_sync(bot)),
-        "asana_sync": _utility_async_handler("asana_sync", lambda: run_asana_sync(bot)),
-        "steps_sync_check": _utility_async_handler("steps_sync_check", lambda: _run_steps_sync_check_dispatch(bot)),
-        "weigh_sync": _utility_async_handler(
-            "weigh_sync",
-            lambda: weigh_sync_job(notion, NOTION_LOG_DB, NOTION_HEALTH_METRICS_DB, habit_cache, TZ),
-        ),
-        "weigh_backfill": _utility_async_handler(
-            "weigh_backfill",
-            lambda: weigh_backfill_job(notion, NOTION_LOG_DB, NOTION_HEALTH_METRICS_DB, habit_cache, TZ),
-        ),
-        "daily_log_generate": _utility_async_handler("daily_log_generate", lambda: generate_daily_log(bot)),
-        "run_recurring_check": _utility_async_handler("run_recurring_check", lambda: run_recurring_check(bot)),
-        "health_summary_refresh": _utility_async_handler("health_summary_refresh", lambda: _refresh_health_summary_job()),
-        "work_sync": _utility_async_handler("work_sync", lambda: _run_work_sync_job()),
-    }
-    UTILITY_JOB_DISPATCH.clear()
-    UTILITY_JOB_DISPATCH.update(dispatch)
-    return dispatch
-
-def load_and_register_utility_jobs(scheduler, bot) -> int:
-    """
-    Reads NOTION_UTILITY_SCHEDULER_DB and registers all active jobs with
-    APScheduler. Returns count of jobs registered.
-    Unknown job keys are logged as warnings (not errors) to avoid blocking startup.
-    Writes Last Status = 'ok' / 'unknown_job' and Last Loaded At back to Notion.
-    """
-    if not NOTION_UTILITY_SCHEDULER_DB:
-        log.warning("NOTION_UTILITY_SCHEDULER_DB not set — utility scheduler disabled")
-        return 0
-
-    dispatch = _build_utility_job_dispatch(bot)
-    rows = notion_query_all(NOTION_UTILITY_SCHEDULER_DB)
-    registered = 0
-
-    for row in rows:
-        props = row.get("properties", {})
-        page_id = row["id"]
-
-        active = bool(props.get("Active", {}).get("checkbox", False))
-        if not active:
-            continue
-
-        job_key_parts = props.get("Job Key", {}).get("title", [])
-        job_key = "".join(p.get("plain_text", "") for p in job_key_parts).strip()
-        if not job_key:
-            continue
-
-        if job_key not in dispatch:
-            log.warning("Utility Scheduler: unknown job key '%s' — skipping", job_key)
-            _update_utility_job_status(notion, page_id, "unknown_job", None)
-            continue
-
-        handler = dispatch[job_key]
-        trigger_type = (props.get("Trigger Type", {}).get("select") or {}).get("name", "").lower()
-
-        try:
-            if trigger_type == "interval":
-                interval_seconds = props.get("Interval Seconds", {}).get("number")
-                interval_minutes = props.get("Interval Minutes", {}).get("number")
-                interval_hours = props.get("Interval Hours", {}).get("number")
-                max_instances = int((props.get("Max Instances", {}).get("number") or 1))
-                misfire_grace = int((props.get("Misfire Grace Seconds", {}).get("number") or 300))
-                coalesce = bool(props.get("Coalesce", {}).get("checkbox", True))
-                kwargs = dict(max_instances=max_instances, misfire_grace_time=misfire_grace, coalesce=coalesce)
-                if interval_seconds:
-                    scheduler.add_job(handler, "interval", seconds=int(interval_seconds), id=job_key, replace_existing=True, **kwargs)
-                elif interval_minutes:
-                    scheduler.add_job(handler, "interval", minutes=int(interval_minutes), id=job_key, replace_existing=True, **kwargs)
-                elif interval_hours:
-                    scheduler.add_job(handler, "interval", hours=int(interval_hours), id=job_key, replace_existing=True, **kwargs)
-                else:
-                    log.warning("Utility Scheduler: interval job '%s' has no interval value", job_key)
-                    continue
-
-            elif trigger_type == "cron":
-                cron_day = (props.get("Cron Day Of Week", {}).get("select") or {}).get("name") or None
-                cron_hour = props.get("Cron Hour", {}).get("number")
-                cron_minute = props.get("Cron Minute", {}).get("number")
-                max_instances = int((props.get("Max Instances", {}).get("number") or 1))
-                misfire_grace = int((props.get("Misfire Grace Seconds", {}).get("number") or 300))
-                coalesce = bool(props.get("Coalesce", {}).get("checkbox", True))
-                kwargs = dict(max_instances=max_instances, misfire_grace_time=misfire_grace, coalesce=coalesce)
-                cron_kwargs = {}
-                if cron_day:
-                    cron_kwargs["day_of_week"] = cron_day
-                if cron_hour is not None:
-                    cron_kwargs["hour"] = int(cron_hour)
-                if cron_minute is not None:
-                    cron_kwargs["minute"] = int(cron_minute)
-                scheduler.add_job(handler, "cron", id=job_key, replace_existing=True, **cron_kwargs, **kwargs)
-
-            else:
-                log.warning("Utility Scheduler: unknown trigger type '%s' for job '%s'", trigger_type, job_key)
-                continue
-
-            _update_utility_job_status(notion, page_id, "ok", datetime.now(TZ).isoformat())
-            registered += 1
-            log.info("Utility Scheduler: registered job '%s' (%s)", job_key, trigger_type)
-
-        except Exception as e:
-            log.error("Utility Scheduler: failed to register job '%s': %s", job_key, e)
-            _update_utility_job_status(notion, page_id, f"error: {str(e)[:80]}", None)
-
-    log.info("Utility Scheduler: %d jobs registered", registered)
-    return registered
-
-def _update_utility_job_status(notion, page_id: str, status: str, loaded_at: str | None) -> None:
-    try:
-        props = {"Last Status": {"select": {"name": status}}}
-        if loaded_at:
-            props["Last Loaded At"] = {"date": {"start": loaded_at}}
-        notion.pages.update(page_id=page_id, properties=props)
-    except Exception as e:
-        log.warning("Could not update utility job status for %s: %s", page_id, e)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STARTUP
@@ -2538,38 +2133,30 @@ async def post_init(app: Application) -> None:
         log.info("Steps state backfill complete")
     except Exception as e:
         log.warning("Steps state backfill failed (non-fatal): %s", e)
-    if FEATURES.get("FEATURE_RECURRING", True):
-        log.info("Recurring check is managed by Utility Scheduler when configured")
-        scheduler.add_job(
-            generate_next_recurring_instances,
-            "interval",
-            minutes=5,
-            args=[app.bot],
-            id="recurring_batch_generator",
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=30,
-        )
     # Register digest cron jobs only. Do not queue missed digest slots on startup;
     # restarting the bot should not send an immediate digest.
     build_digest_schedule(scheduler, app.bot)
-    scheduler.add_job(send_friday_reflection, "cron", day_of_week="fri",
-                      hour=18, minute=0, args=[app.bot])
-    scheduler.add_job(send_sunday_digest, "cron", day_of_week="sun",
-                      hour=9, minute=0, args=[app.bot])
-    scheduler.add_job(send_monthly_habit_insight, "cron", day="last",
-                      hour=20, minute=0, args=[app.bot])
-    if NOTION_TRIPS_DB:
-        scheduler.add_job(
-            run_packing_sync_job,
-            "interval",
-            hours=6,
-            id="packing_sync",
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=600,
-        )
+    if not NOTION_UTILITY_SCHEDULER_DB:
+        # Fallback schedule when the Utility Scheduler DB isn't configured.
+        # With the DB set, these jobs are managed by their Notion rows instead
+        # (friday_reflection, sunday_digest, monthly_habit_insight, packing_sync).
+        scheduler.add_job(send_friday_reflection, "cron", day_of_week="fri",
+                          hour=18, minute=0, args=[app.bot])
+        scheduler.add_job(send_sunday_digest, "cron", day_of_week="sun",
+                          hour=9, minute=0, args=[app.bot])
+        scheduler.add_job(send_monthly_habit_insight, "cron", day="last",
+                          hour=20, minute=0, args=[app.bot])
+        if NOTION_TRIPS_DB:
+            scheduler.add_job(
+                run_packing_sync_job,
+                "interval",
+                hours=6,
+                id="packing_sync",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=600,
+            )
     # ── Cinema sync — validate config before Utility Scheduler can enable it ──
     cinema_ok, cinema_problems = validate_cinema_config()
     if not cinema_ok:
@@ -2642,6 +2229,34 @@ async def post_init(app: Application) -> None:
             _tracked_utility_manager_handler(
                 "health_summary_refresh",
                 lambda bot: _refresh_health_summary_job(),
+            ),
+        )
+        utility_manager.register_handler(
+            "friday_reflection",
+            _tracked_utility_manager_handler(
+                "friday_reflection",
+                lambda bot: send_friday_reflection(bot),
+            ),
+        )
+        utility_manager.register_handler(
+            "sunday_digest",
+            _tracked_utility_manager_handler(
+                "sunday_digest",
+                lambda bot: send_sunday_digest(bot),
+            ),
+        )
+        utility_manager.register_handler(
+            "monthly_habit_insight",
+            _tracked_utility_manager_handler(
+                "monthly_habit_insight",
+                lambda bot: send_monthly_habit_insight(bot),
+            ),
+        )
+        utility_manager.register_handler(
+            "packing_sync",
+            _tracked_utility_manager_handler(
+                "packing_sync",
+                lambda bot: run_packing_sync_job(bot),
             ),
         )
 

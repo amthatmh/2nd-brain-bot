@@ -296,6 +296,22 @@ def test_normalise_alt_db_snatch_aliases_to_dumbbell_snatch():
     assert normalise_movement_name("alt db snatch") == ["Dumbbell Snatch"]
 
 
+def test_normalise_clean_and_jerk_combos_to_single_library_movement():
+    from second_brain.crossfit.notion import normalise_movement_name
+
+    # Combination movements (a clean variant into a jerk) are ONE movement.
+    assert normalise_movement_name("Squat Clean and Jerk") == ["Clean & Jerk"]
+    assert normalise_movement_name("squat clean & jerks") == ["Clean & Jerk"]
+    assert normalise_movement_name("Clean and Jerks") == ["Clean & Jerk"]
+    assert normalise_movement_name("Power Clean + Jerk") == ["Clean & Jerk"]
+    assert normalise_movement_name("Hang Clean and Jerk") == ["Clean & Jerk"]
+    # Component movements on their own keep their identity.
+    assert normalise_movement_name("Squat Clean") == ["Squat Clean"]
+    assert normalise_movement_name("Split Jerk") == ["Split Jerk"]
+    # Double-KB combo precedence is unchanged.
+    assert normalise_movement_name("Double KB Hang Clean and Jerk") == ["Kettlebell Clean"]
+
+
 def test_normalise_calorie_row_ski_aliases_to_library_movements():
     from second_brain.crossfit.notion import normalise_movement_name
 

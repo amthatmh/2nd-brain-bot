@@ -8,10 +8,6 @@ from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 
-def _flag(name: str, default: str = "1") -> bool:
-    return os.environ.get(name, default).strip().lower() not in {"0", "false", "no", "off"}
-
-
 def parse_hhmm_env(var_name: str, default: str, logger=None) -> tuple[int, int]:
     raw = os.environ.get(var_name, default).strip()
     try:
@@ -114,11 +110,10 @@ NOTION_WOD_LOG_DB = os.environ.get("NOTION_WOD_LOG_DB", "").strip()
 NOTION_PROGRESSIONS_DB = os.environ.get("NOTION_PROGRESSIONS_DB", "")
 NOTION_DAILY_READINESS_DB = os.environ.get("NOTION_DAILY_READINESS_DB", "")
 
-FEATURES = {
-    "FEATURE_RECURRING": _flag("FEATURE_RECURRING", "1"),
-}
-
 PENDING_TTL = timedelta(hours=1)
+
+# Tasks captured without any stated deadline default to due this many days out.
+DEFAULT_TASK_DEADLINE_DAYS = 7
 
 HORIZON_DEADLINE_OFFSETS = {"t": 0, "w": 6, "m": 30, "b": None}
 HORIZON_LABELS = {

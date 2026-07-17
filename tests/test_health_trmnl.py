@@ -190,6 +190,29 @@ class TestBuildCardPayload(unittest.TestCase):
         p = build_card_payload(d, _flag("none"), StepSummary(1, 1, 1), TODAY)
         self.assertEqual(p["sleep"]["avg7_hours"], 7.0)
 
+    def test_quiet_current_week_not_replaced_by_last_weeks_totals(self):
+        # TODAY (Fri 2026-07-03) anchors to Monday 2026-06-29. When no habit
+        # rows are completed yet this week, _weekly_activity omits the week
+        # entirely — the card must show zeros, not last week's 6/6 finished
+        # totals labelled as "this week".
+        dashboard = {
+            "generated_at": "2026-07-03T12:00:00Z",
+            "scores": {"activity": {"value": 91}},
+            "weekly_activity": [
+                {"week": "2026-06-15", "workout_days": 3, "steps_days": 7},
+                {"week": "2026-06-22", "workout_days": 6, "steps_days": 6},
+            ],
+            "metrics": {},
+        }
+        p = build_card_payload(dashboard, _flag("none"), StepSummary(0, 11361, 0), TODAY)
+        self.assertEqual(p["workouts"]["done"], 0)
+        # Previous week (2026-06-22) had 6 workout days -> trend is down.
+        self.assertEqual(p["workouts"]["trend"], "↓")
+        # Gaps reflect the empty current week: 3 workouts + steps every day.
+        self.assertEqual(p["verdict"]["level"], "push")
+        self.assertIn("3 workouts", p["activity"]["recommendation"])
+        self.assertIn("steps daily", p["activity"]["recommendation"])
+
     def test_missing_metrics_degrade_gracefully(self):
         p = build_card_payload({"scores": {}, "weekly_activity": [], "metrics": {}}, _flag("no_data", today_hrv=None, today_rhr=None), StepSummary(0, 0, 0), TODAY)
         self.assertEqual(p["verdict"]["level"], "steady")
