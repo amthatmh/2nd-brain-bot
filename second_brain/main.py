@@ -1294,6 +1294,9 @@ def _crossfit_config(**extra) -> dict:
         "NOTION_CYCLES_DB": os.getenv("NOTION_CYCLES_DB", ""),
         "NOTION_PROGRESSIONS_DB": NOTION_PROGRESSIONS_DB,
         "NOTION_DAILY_READINESS_DB": NOTION_DAILY_READINESS_DB,
+        # Habit DBs let CrossFit logging auto-check the Workout habit.
+        "NOTION_LOG_DB": NOTION_LOG_DB,
+        "NOTION_HABIT_DB": NOTION_HABIT_DB,
         "CLAUDE_PARSE_MAX_TOKENS": CLAUDE_PARSE_MAX_TOKENS,
     }
     cfg.update(extra)
