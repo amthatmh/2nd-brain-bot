@@ -3,6 +3,17 @@
 from __future__ import annotations
 
 import re
+from datetime import date
+
+_WEEKDAYS = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
 
 
 def split_tasks(text: str, bullet_re: re.Pattern[str]) -> list[str]:
@@ -102,7 +113,7 @@ def looks_like_task_batch(text: str, bullet_re: re.Pattern[str]) -> bool:
     return False
 
 
-def infer_deadline_override(text: str) -> int | None:
+def infer_deadline_override(text: str, today: date | None = None) -> int | None:
     lower = text.lower()
     if re.search(r"\btomorrow\b", lower):
         return 1
@@ -112,10 +123,18 @@ def infer_deadline_override(text: str) -> int | None:
         return 5
     if re.search(r"\bthis month\b", lower):
         return 20
+    weekday_match = re.search(r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", lower)
+    if weekday_match:
+        if today is None:
+            # Imported lazily: second_brain.utils imports split_tasks from this module.
+            from second_brain.utils import local_today
+            today = local_today()
+        days_ahead = (_WEEKDAYS[weekday_match.group(1)] - today.weekday()) % 7
+        return days_ahead or 7
     return None
 
 
-def infer_batch_overrides(text: str) -> dict:
+def infer_batch_overrides(text: str, today: date | None = None) -> dict:
     lower = text.lower()
     context = None
     context_aliases = [
@@ -137,4 +156,4 @@ def infer_batch_overrides(text: str) -> dict:
         if context:
             break
 
-    return {"context": context, "deadline_days": infer_deadline_override(text)}
+    return {"context": context, "deadline_days": infer_deadline_override(text, today)}
