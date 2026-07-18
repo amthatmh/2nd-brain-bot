@@ -3695,3 +3695,144 @@ def test_normalise_workout_data_captures_breakdown_movement_and_sets():
         {"sets": 2, "reps": 10, "weight_lbs": 44.1, "movement": "Bench Press"},
         {"sets": 2, "reps": 3, "weight_lbs": 187.4, "movement": "Back Squat"},
     ]
+
+
+def test_auto_check_workout_habit_logs_for_workout_date(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+    import second_brain.notion.habits as habits
+
+    logged = {}
+    monkeypatch.setattr(habits, "habit_cache", {
+        "🧘 Stretch": {"page_id": "habit-stretch", "name": "🧘 Stretch"},
+        "💪 Workout": {"page_id": "habit-workout", "name": "💪 Workout"},
+    })
+    monkeypatch.setattr(habits, "already_logged_today", lambda *a, **k: False)
+
+    def fake_log_habit(notion, log_db_id, habit_page_id, habit_name, source, tz, log_date):
+        logged.update(log_db=log_db_id, page_id=habit_page_id, name=habit_name, source=source, date=log_date)
+
+    monkeypatch.setattr(habits, "log_habit", fake_log_habit)
+
+    result = handlers._auto_check_workout_habit(
+        SimpleNamespace(), {"NOTION_LOG_DB": "habit-log", "NOTION_HABIT_DB": "habit-db"}, "2026-07-15"
+    )
+
+    assert result == "💪 Workout"
+    assert logged["page_id"] == "habit-workout"
+    assert logged["log_db"] == "habit-log"
+    assert logged["date"] == "2026-07-15"
+
+
+def test_auto_check_workout_habit_dedupes_when_already_logged(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+    import second_brain.notion.habits as habits
+
+    monkeypatch.setattr(habits, "habit_cache", {
+        "💪 Workout": {"page_id": "habit-workout", "name": "💪 Workout"},
+    })
+    monkeypatch.setattr(habits, "already_logged_today", lambda *a, **k: True)
+    def must_not_log(*a, **k):
+        raise AssertionError("must not double-log")
+
+    monkeypatch.setattr(habits, "log_habit", must_not_log)
+
+    result = handlers._auto_check_workout_habit(
+        SimpleNamespace(), {"NOTION_LOG_DB": "habit-log"}, "2026-07-15"
+    )
+    assert result is None
+
+
+def test_auto_check_workout_habit_skips_without_workout_habit_or_errors(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+    import second_brain.notion.habits as habits
+
+    # No Workout habit in the cache -> skipped, nothing raised.
+    monkeypatch.setattr(habits, "habit_cache", {"💧 Water": {"page_id": "h2o", "name": "💧 Water"}})
+    monkeypatch.setattr(habits, "load_habit_cache", lambda **k: None)
+    assert handlers._auto_check_workout_habit(SimpleNamespace(), {"NOTION_LOG_DB": "habit-log"}, "2026-07-15") is None
+
+    # Notion blowing up must never propagate out of workout logging.
+    monkeypatch.setattr(habits, "habit_cache", {"💪 Workout": {"page_id": "habit-workout", "name": "💪 Workout"}})
+    monkeypatch.setattr(habits, "already_logged_today", lambda *a, **k: False)
+
+    def boom(*a, **k):
+        raise RuntimeError("notion down")
+
+    monkeypatch.setattr(habits, "log_habit", boom)
+    assert handlers._auto_check_workout_habit(SimpleNamespace(), {"NOTION_LOG_DB": "habit-log"}, "2026-07-15") is None
+
+
+def test_finalize_strength_flow_auto_checks_workout_habit(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    async def fake_week(notion):
+        del notion
+        return "week-1"
+
+    calls = {}
+
+    def fake_auto_check(notion, config, workout_date):
+        calls["workout_date"] = workout_date
+        return "💪 Workout"
+
+    monkeypatch.setattr(handlers, "get_current_week_program_url", fake_week)
+    monkeypatch.setattr(handlers, "create_strength_log", lambda **kwargs: "log-1")
+    monkeypatch.setattr(handlers, "_auto_check_workout_habit", fake_auto_check)
+
+    message = _DummyMessage()
+    pending = {
+        "123": {
+            "mode": "strength",
+            "movement_page_id": "mov-cj",
+            "movement_name": "Clean & Jerk",
+            "workout_date": "2026-07-15",
+            "movements": [{"movement": "Clean & Jerk", "sets": 5, "reps": 3, "load_lbs": 95}],
+        }
+    }
+    asyncio.run(handlers._finalize_flow(
+        message, "123", SimpleNamespace(), {"NOTION_WORKOUT_LOG_DB": "workout-log"}, pending, None,
+    ))
+
+    assert calls["workout_date"] == "2026-07-15"
+    assert "✅ Habit checked: 💪 Workout" in message.replies[-1][0]
+
+
+def test_finalize_wod_flow_auto_checks_workout_habit(monkeypatch):
+    import second_brain.crossfit.handlers as handlers
+
+    async def fake_week(notion):
+        del notion
+        return "week-1"
+
+    async def fake_query(notion, wod_log_db_id, workout_date, wod_format=None):
+        return []
+
+    calls = {}
+
+    def fake_auto_check(notion, config, workout_date):
+        calls["workout_date"] = workout_date
+        return "💪 Workout"
+
+    monkeypatch.setattr(handlers, "get_current_week_program_url", fake_week)
+    monkeypatch.setattr(handlers, "query_wod_log_by_date", fake_query)
+    monkeypatch.setattr(handlers, "create_wod_log", lambda *a, **k: "new-wod")
+    monkeypatch.setattr(handlers, "_auto_check_workout_habit", fake_auto_check)
+
+    message = _DummyMessage()
+    key = str(message.chat_id)
+    pending = {key: {
+        "mode": "wod",
+        "format": "amrap",
+        "time_cap_mins": 13,
+        "rx_scaled": "modified",
+        "workout_date": "2026-07-17",
+        "workout_structure": "AMRAP 13 thrusters",
+        "movement_page_ids": ["mov-thruster"],
+        "movements": ["Thruster"],
+    }}
+    asyncio.run(handlers._finalize_flow(
+        message, key, SimpleNamespace(), {"NOTION_WOD_LOG_DB": "wod"}, pending, "3 rounds",
+    ))
+
+    assert calls["workout_date"] == "2026-07-17"
+    assert "✅ Habit checked: 💪 Workout" in message.replies[-1][0]

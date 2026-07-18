@@ -1615,6 +1615,57 @@ async def handle_cf_prs_reply(message, movement_text: str, notion, config, cf_pe
     await message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
+def _auto_check_workout_habit(notion, config: dict, workout_date: str) -> str | None:
+    """Check the Workout habit for ``workout_date`` after a CrossFit log succeeds.
+
+    Returns the habit name when a new habit-log row was created, or None when
+    it was already checked, the habit/DBs are unavailable, or anything fails.
+    Habit bookkeeping must never break workout logging, so this swallows all
+    errors.
+    """
+    try:
+        from second_brain.config import TZ
+        from second_brain.notion.habits import (
+            already_logged_today,
+            habit_cache,
+            load_habit_cache,
+            log_habit,
+        )
+
+        log_db = _cf_config(config, "NOTION_LOG_DB")
+        habit_db = _cf_config(config, "NOTION_HABIT_DB")
+        if not log_db:
+            return None
+        if not habit_cache and habit_db:
+            load_habit_cache(notion=notion, notion_habit_db=habit_db)
+        workout_habit = next(
+            (
+                habit
+                for habit in habit_cache.values()
+                if re.sub(r"^[^\w]+\s*", "", str(habit.get("name") or "")).strip().lower() == "workout"
+            ),
+            None,
+        )
+        if not workout_habit:
+            log.info("auto habit: no 'Workout' habit in cache — skipped")
+            return None
+        if already_logged_today(notion, log_db, workout_habit["page_id"], TZ, log_date=workout_date):
+            return None
+        log_habit(
+            notion,
+            log_db,
+            workout_habit["page_id"],
+            workout_habit["name"],
+            source="🏋️ CrossFit",
+            tz=TZ,
+            log_date=workout_date,
+        )
+        return workout_habit["name"]
+    except Exception as exc:  # noqa: BLE001 - best-effort side effect only.
+        log.warning("auto habit: failed to check Workout habit: %s", exc)
+        return None
+
+
 async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
     state = cf_pending.get(key) or {}
     logger.info("[CF_STATE_C] finalize key=%r state=%s", key, state)
@@ -1843,9 +1894,13 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
         state["notion_page_url"] = _notion_page_url(state.get("last_workout_page_id"))
         state["stage"] = "awaiting_feel"
         cf_pending[key] = state
+        habit_name = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: _auto_check_workout_habit(notion, config, workout_date)
+        )
+        habit_line = f"\n✅ Habit checked: {habit_name}" if habit_name else ""
         await message.reply_text(
             f"{confirmation_base}\n"
-            f"_Saved to Notion_\n\n"
+            f"_Saved to Notion_{habit_line}\n\n"
             f"💬 How did that session feel?",
             parse_mode="Markdown",
             reply_markup=strength_post_keyboard(key),
@@ -1990,8 +2045,12 @@ async def _finalize_flow(message, key, notion, config, cf_pending, notes=None):
                 await bot.delete_message(chat_id=message.chat_id, message_id=rx_msg_id)
             except Exception:
                 pass
+        habit_name = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: _auto_check_workout_habit(notion, config, workout_date)
+        )
+        habit_line = f"\n✅ Habit checked: {habit_name}" if habit_name else ""
         await message.reply_text(
-            f"{confirmation_base}\n_Saved to Notion_\n\n💬 How did that session feel?",
+            f"{confirmation_base}\n_Saved to Notion_{habit_line}\n\n💬 How did that session feel?",
             parse_mode="Markdown",
             reply_markup=session_feel_keyboard(key),
         )
