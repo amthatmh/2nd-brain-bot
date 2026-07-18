@@ -366,6 +366,24 @@ def _parse_all_dates_from_payload(body: dict, tz=None) -> list[tuple[int, str]]:
     return []
 
 
+def _count_day_streak(days: list[int]) -> int:
+    """Trailing run of done-days in ``days`` (aligned oldest → today).
+
+    ``days[-1]`` is today, which is still in progress: leaving today unlogged
+    must not zero the streak, so an undone today is skipped and the count
+    starts from yesterday.
+    """
+    if not days:
+        return 0
+    tail = days if days[-1] == 1 else days[:-1]
+    streak = 0
+    for done in reversed(tail):
+        if done != 1:
+            break
+        streak += 1
+    return streak
+
+
 def _build_habits_data_payload(
     *,
     habit_cache: dict[str, dict],
@@ -482,11 +500,7 @@ def _build_habits_data_payload(
     for habit in habits_sorted:
         pid = habit["page_id"].replace("-", "")
         days = [1 if (pid, d) in logged else 0 for d in all_dates]
-        day_streak = 0
-        for done in reversed(days):
-            if done != 1:
-                break
-            day_streak += 1
+        day_streak = _count_day_streak(days)
 
         streak_weeks_by_date = dict(streaks_by_habit.get(pid, {}))
         target = habit.get("freq_per_week")
@@ -507,7 +521,10 @@ def _build_habits_data_payload(
             weekly_counts[week_of] = weekly_counts.get(week_of, 0) + 1
 
         if target and target > 0:
-            week_cursor = start_monday
+            # The first window week is usually partial (start_dt is rarely a
+            # Monday); deriving goal-met from its truncated logs would falsely
+            # mark it missed and overwrite an authoritative streak row.
+            week_cursor = start_monday if start_dt <= start_monday else start_monday + timedelta(days=7)
             while week_cursor < current_monday:
                 completed = weekly_counts.get(week_cursor, 0)
                 streak_weeks_by_date[week_cursor] = completed >= target
@@ -679,12 +696,7 @@ def _mark_habit_logged_in_payload(payload: dict[str, Any], habit_id: str, today:
         if today_index < len(days):
             days[today_index] = 1
         habit["todayDone"] = True
-        day_streak = 0
-        for done in reversed(days):
-            if done != 1:
-                break
-            day_streak += 1
-        habit["dayStreak"] = day_streak
+        habit["dayStreak"] = _count_day_streak(days)
         break
     return updated
 
