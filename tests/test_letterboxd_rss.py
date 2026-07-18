@@ -123,11 +123,16 @@ class FakeNotion:
                     return {"results": [{"id": "env-row", "properties": {
                         "Value": {"rich_text": [{"plain_text": self.o._env_value}]}}}]}
                 return {"results": []}
-            # cinema dedup: filter is {"and": [TMDB URL, Date]}
+            # cinema queries: filter is {"and": [TMDB URL, Date]}; the Date
+            # clause is "equals" for dedup, "before" for the rewatch check.
             clauses = (filter or {}).get("and", [])
             url = next((c["url"]["equals"] for c in clauses if c["property"] == "TMDB URL"), None)
-            date = next((c["date"]["equals"] for c in clauses if c["property"] == "Date"), None)
-            return {"results": [{"id": "x"}] if (url, date) in self.o._existing else []}
+            date = next((c["date"] for c in clauses if c["property"] == "Date"), {})
+            if "before" in date:
+                hit = any(u == url and d < date["before"] for u, d in self.o._existing)
+            else:
+                hit = (url, date.get("equals")) in self.o._existing
+            return {"results": [{"id": "x"}] if hit else []}
 
     class _Pages:
         def __init__(self, outer):
@@ -173,6 +178,35 @@ def test_new_watch_creates_row_and_returns_item(monkeypatch):
     assert result["action"] == "polled"
     assert notion.created == ["Mercy"]
     assert [i["title"] for i in result["new_items"]] == ["Mercy"]
+
+
+def test_rewatch_derived_from_cinema_log_not_feed_flag(monkeypatch):
+    # Feed claims Mercy is a rewatch (import-polluted flag), but the Cinema
+    # Log has no earlier watch -> not a rewatch.
+    feed = SAMPLE_FEED.replace(
+        "<letterboxd:rewatch>No</letterboxd:rewatch>",
+        "<letterboxd:rewatch>Yes</letterboxd:rewatch>",
+    )
+    entries = parse_diary_feed(feed)
+    assert entries[0].rewatch is True  # raw feed flag
+    monkeypatch.setattr(lb, "fetch_diary_feed", lambda *a, **k: _async(entries))
+    notion = FakeNotion(seen_value="letterboxd-watch-1083677283")
+    result = _poll(notion)
+    assert [i["rewatch"] for i in result["new_items"]] == [False]
+
+
+def test_rewatch_true_when_earlier_watch_in_cinema_log(monkeypatch):
+    # Feed says No, but an earlier watch of the same film exists -> rewatch.
+    entries = parse_diary_feed(SAMPLE_FEED)
+    assert entries[0].rewatch is False
+    monkeypatch.setattr(lb, "fetch_diary_feed", lambda *a, **k: _async(entries))
+    notion = FakeNotion(
+        seen_value="letterboxd-watch-1083677283",
+        existing={("https://www.themoviedb.org/movie/1236153", "2025-01-01")},
+    )
+    result = _poll(notion)
+    assert notion.created == ["Mercy"]
+    assert [i["rewatch"] for i in result["new_items"]] == [True]
 
 
 def test_existing_notion_row_is_not_duplicated(monkeypatch):

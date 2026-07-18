@@ -138,6 +138,29 @@ def _save_seen_guids(notion, env_db_id: str, guids: list[str]) -> None:
         )
 
 
+def _is_rewatch(notion, cinema_db_id: str, entry: DiaryEntry) -> bool:
+    """Rewatch = an earlier watch of the same film already in the Cinema Log.
+
+    Letterboxd's own rewatch flag is unreliable after the CSV backfill (the
+    import can leave "watched before" set on genuine first watches), so the
+    Cinema Log decides. The feed flag is only used when the item carries no
+    TMDB id and history can't be checked.
+    """
+    if not entry.tmdb_url:
+        return entry.rewatch
+    res = notion.databases.query(
+        database_id=cinema_db_id,
+        filter={
+            "and": [
+                {"property": "TMDB URL", "url": {"equals": entry.tmdb_url}},
+                {"property": "Date", "date": {"before": entry.watched_date}},
+            ]
+        },
+        page_size=1,
+    )
+    return bool(res.get("results"))
+
+
 def _notion_has_watch(notion, cinema_db_id: str, entry: DiaryEntry) -> bool:
     """Safety dedup: does a row already exist for this film + watched date?"""
     if not entry.tmdb_url:
@@ -202,6 +225,7 @@ async def poll_letterboxd(
         try:
             if _notion_has_watch(notion, cinema_db_id, entry):
                 continue
+            rewatch = _is_rewatch(notion, cinema_db_id, entry)
             page_id = _create_cinema_row(notion, cinema_db_id, entry)
             new_items.append(
                 {
@@ -209,7 +233,7 @@ async def poll_letterboxd(
                     "title": entry.title,
                     "year": entry.year,
                     "watched_date": entry.watched_date,
-                    "rewatch": entry.rewatch,
+                    "rewatch": rewatch,
                 }
             )
         except Exception:
