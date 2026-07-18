@@ -70,6 +70,30 @@ def test_rating_conversion_chart():
     assert lb_rating_to_notion("4") == "2"
 
 
+def test_reviewed_watch_is_included():
+    # Adding review text flips the guid from letterboxd-watch-* to
+    # letterboxd-review-*; it's still a diary watch and must be ingested.
+    feed = SAMPLE_FEED.replace("letterboxd-watch-1285580267", "letterboxd-review-999")
+    entries = parse_diary_feed(feed)
+    assert [e.title for e in entries] == ["Mercy", "Wicked: For Good"]
+    assert entries[0].guid == "letterboxd-review-999"
+
+
+def test_reviewed_watch_of_synced_row_is_not_duplicated(monkeypatch):
+    # A watch synced as letterboxd-watch-* later gains a review (new guid);
+    # the (TMDB URL, Date) dedup must silently skip it.
+    feed = SAMPLE_FEED.replace("letterboxd-watch-1285580267", "letterboxd-review-999")
+    entries = parse_diary_feed(feed)
+    monkeypatch.setattr(lb, "fetch_diary_feed", lambda *a, **k: _async(entries))
+    notion = FakeNotion(
+        seen_value="letterboxd-watch-1285580267,letterboxd-watch-1083677283",
+        existing={("https://www.themoviedb.org/movie/1236153", "2026-04-18")},
+    )
+    result = _poll(notion)
+    assert notion.created == []
+    assert result["new_items"] == []
+
+
 def test_non_diary_items_are_skipped():
     feed = SAMPLE_FEED.replace("letterboxd-watch-1285580267", "letterboxd-review-999")
     feed = feed.replace("<letterboxd:watchedDate>2026-04-18</letterboxd:watchedDate>", "")

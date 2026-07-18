@@ -70,8 +70,12 @@ def parse_diary_feed(xml_bytes: bytes | str) -> list[DiaryEntry]:
     for item in root.iter("item"):
         guid = _text(item, "guid")
         watched = _text(item, "letterboxd:watchedDate")
-        # Only diary watches have watchedDate + a guid like "letterboxd-watch-...".
-        if not guid or not watched or "letterboxd-watch-" not in guid:
+        # Diary watches carry watchedDate; the guid is "letterboxd-watch-..." for
+        # plain logs but switches to "letterboxd-review-..." once review text is
+        # added, so both must be accepted. List items have neither.
+        if not guid or not watched:
+            continue
+        if "letterboxd-watch-" not in guid and "letterboxd-review-" not in guid:
             continue
         entries.append(
             DiaryEntry(
