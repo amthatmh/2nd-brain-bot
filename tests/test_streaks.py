@@ -212,6 +212,35 @@ class TestWeekStreakInHabitsDataHandler(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(response.text)
         self.assertEqual(payload["habits"][0]["dayStreak"], 3)
 
+    async def test_day_streak_survives_unlogged_today(self):
+        main = load_main_module()
+        main.habit_cache = {
+            "Workout": {"page_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "name": "Workout", "sort": 1}
+        }
+
+        # Done the two days before today, but today (in progress) not logged
+        # yet -> the streak must show 2, not reset to 0.
+        fake_today = main.datetime(2026, 4, 27, tzinfo=main.TZ)
+        real_fromisoformat = main.datetime.fromisoformat
+        logs = [
+            {
+                "properties": {
+                    "Date": {"date": {"start": day}},
+                    "Habit": {"relation": [{"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]},
+                }
+            }
+            for day in ("2026-04-25", "2026-04-26")
+        ]
+        with patch.object(main, "notion_query_all", side_effect=[logs, []]), \
+            patch.object(main, "datetime") as mocked_datetime:
+            mocked_datetime.now.return_value = fake_today
+            mocked_datetime.fromisoformat.side_effect = real_fromisoformat
+            response = await main.habits_data_handler(MagicMock())
+
+        payload = json.loads(response.text)
+        self.assertEqual(payload["habits"][0]["dayStreak"], 2)
+        self.assertFalse(payload["habits"][0]["todayDone"])
+
     async def test_week_streak_falls_back_to_logs_when_streak_rows_missing(self):
         main = load_main_module()
         main.habit_cache = {
@@ -243,6 +272,57 @@ class TestWeekStreakInHabitsDataHandler(unittest.IsolatedAsyncioTestCase):
 
         payload = json.loads(response.text)
         self.assertEqual(payload["habits"][0]["weekStreak"], 1)
+
+    def test_week_streak_ignores_partial_first_window_week(self):
+        # The oldest window week is usually partial (the window rarely starts
+        # on a Monday). Goal-met must not be derived from its truncated logs;
+        # an authoritative streak row for that week has to stand.
+        load_main_module()
+        from datetime import datetime as real_datetime, timezone
+
+        from second_brain.healthtrack.routes import _build_habits_data_payload
+
+        class FakeDatetime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 4, 29, tzinfo=tz)  # Wednesday
+
+        # weeks_history=2 -> window starts Thu 2026-04-16; first week
+        # (Mon 2026-04-13) is partial. Logs meet the 3x target for the one
+        # full completed week (Apr 20-26); the partial week's goal-met comes
+        # from its streak row.
+        logs = [
+            {
+                "properties": {
+                    "Date": {"date": {"start": day}},
+                    "Habit": {"relation": [{"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]},
+                }
+            }
+            for day in ("2026-04-20", "2026-04-21", "2026-04-22")
+        ]
+        streak_rows = [_streak_row("2026-04-13", True)]
+
+        payload = _build_habits_data_payload(
+            habit_cache={
+                "Steps": {
+                    "page_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "name": "Steps",
+                    "sort": 1,
+                    "freq_per_week": 3,
+                    "frequency_label": "3x/week",
+                }
+            },
+            log_db="log",
+            habit_db="habit",
+            streak_db="streak",
+            tz=timezone.utc,
+            weeks_history=2,
+            query_all_fn=MagicMock(side_effect=[logs, streak_rows]),
+            extract_date_fn=lambda s: (s or "")[:10] or None,
+            datetime_cls=FakeDatetime,
+        )
+
+        self.assertEqual(payload["habits"][0]["weekStreak"], 2)
 
     async def test_week_streak_uses_logs_when_existing_row_is_stale(self):
         main = load_main_module()

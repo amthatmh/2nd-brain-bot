@@ -33,6 +33,10 @@ a second database to maintain.
    - `🎬 Cinema` → `Cinema = true`, then the existing venue → seat → auditorium
      capture flow.
 4. Silent when nothing new (no Telegram message). Default if untapped = Home.
+5. The "rewatch" marker in the prompt is derived from the Cinema Log (an earlier
+   row with the same TMDB URL), not from `letterboxd:rewatch` — the feed flag is
+   unreliable after the CSV backfill (import can leave "watched before" set on
+   first watches). Feed flag is only the fallback when an item has no TMDB id.
 
 Reuses `pending_entertainment_*` stash + a `rate:`-style callback
 (`watchloc:<pid>:cinema|home`); seat/auditorium parsed via existing
