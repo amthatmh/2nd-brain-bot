@@ -1,10 +1,30 @@
 import re
+from datetime import date
 
 from second_brain.services import task_parsing
 
 
 def test_infer_deadline_override_prefers_tomorrow():
     assert task_parsing.infer_deadline_override('Add personal task for tomorrow "Fix steps count"') == 1
+
+
+def test_infer_deadline_override_weekday_resolves_to_next_occurrence():
+    # 2026-07-18 is a Saturday, so Monday is 2 days out.
+    assert task_parsing.infer_deadline_override("Buy Flowers on Monday", today=date(2026, 7, 18)) == 2
+
+
+def test_infer_deadline_override_weekday_same_day_rolls_a_week():
+    assert task_parsing.infer_deadline_override("Buy flowers on Saturday", today=date(2026, 7, 18)) == 7
+
+
+def test_infer_deadline_override_relative_words_beat_weekday():
+    assert task_parsing.infer_deadline_override("Prep Monday standup today", today=date(2026, 7, 18)) == 0
+
+
+def test_infer_batch_overrides_passes_today_to_weekday_parser():
+    parsed = task_parsing.infer_batch_overrides("Personal tasks for Sunday: water plants", today=date(2026, 7, 18))
+    assert parsed["deadline_days"] == 1
+    assert parsed["context"] == "🏠 Personal"
 
 
 def test_infer_batch_overrides_uses_deadline_parser():
