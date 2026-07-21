@@ -690,7 +690,7 @@ def _split_by_headers(text: str, names: tuple[str, ...]) -> list[tuple[str, str]
 
 
 def _strip_section_label(text: str) -> str:
-    return re.sub(r"(?im)^\s*(?:section\s*)?[BC]\s*[.:)\-–—]?\s*", "", text or "", count=1).strip()
+    return re.sub(r"(?im)^\s*(?:section\s*)?[ABC]\s*[.:)\-–—]?\s*", "", text or "", count=1).strip()
 
 
 def _extract_candidate_movements_from_section(description: str) -> list[str]:
@@ -730,17 +730,25 @@ def _extract_sections(block: str) -> tuple[str, str, str]:
     # `[\.)]\s*` accepts both "B. Take 15 Minutes..." and "B.Take 15 Minutes..."
     # (the latter appears in Friday Fitness week-of-04.27). The multiline anchor
     # keeps this to section headers instead of random mid-sentence "B." references.
-    marker = re.compile(r"(?im)^\s*[*_`]*(?:section\s*)?(?P<section>[BC])[*_`]*[\.)]\s*")
+    marker = re.compile(r"(?im)^\s*[*_`]*(?:section\s*)?(?P<section>[ABC])[*_`]*[\.)]\s*")
     matches = list(marker.finditer(body))
-    section_text: dict[str, str] = {"B": "", "C": ""}
+    section_text: dict[str, str] = {"A": "", "B": "", "C": ""}
     for idx, match in enumerate(matches):
         key = match.group("section").upper()
         start = match.start()
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
         section_text[key] = _strip_section_label(body[start:end])
     if not matches:
-        section_text["C"] = body.strip()
-    return section_text["B"], section_text["C"], ""
+        return "", body.strip(), ""
+    # Two labelling conventions appear in coach emails: B=strength/C=metcon
+    # (weeks up to 2026-07-13) and A=strength/B=metcon (week of 2026-07-20
+    # onward). A "C" block means the old convention; otherwise an "A" block
+    # shifts every label down one slot.
+    if section_text["C"]:
+        return section_text["B"], section_text["C"], ""
+    if section_text["A"]:
+        return section_text["A"], section_text["B"], ""
+    return section_text["B"], "", ""
 
 
 def _day_entry(day: str, section_b: str, section_c: str, training_notes: str) -> dict:
