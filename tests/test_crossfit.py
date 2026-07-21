@@ -2800,6 +2800,82 @@ def test_extract_sections_handles_b_without_space_after_period():
     assert "Bench Press" not in section_c
 
 
+def test_extract_sections_ab_convention_maps_a_to_strength_b_to_metcon():
+    """Week of 2026-07-20 emails label strength `A.` and the metcon `B.` —
+    the old [BC]-only marker dropped strength and filed the metcon as B."""
+    from second_brain.crossfit.notion import _extract_sections
+
+    block = (
+        "Warm-Up — 0:00-15:00\n"
+        "Front Squat — 15:00-30:00\n"
+        "A. Take 15 Minutes to Complete 5 Sets of:\n"
+        "3 Tempo Front Squats\n"
+        "B. 3-2-2-2 Minute Intervals\n"
+        "12/9 Row Calories (Damper @ 10)\n"
+        "4 Sandbag Cleans (150/100) (Over Shoulder)\n"
+    )
+    section_b, section_c, _ = _extract_sections(block)
+    assert "Front Squats" in section_b
+    assert "Row Calories" in section_c
+    assert "Front Squats" not in section_c
+
+
+def test_extract_sections_bc_convention_unchanged_when_c_present():
+    from second_brain.crossfit.notion import _extract_sections
+
+    block = (
+        "B. Take 15 Minutes to Complete 5 Sets of:\n"
+        "4 Tempo Front Squats\n"
+        "C. For Time:\n"
+        "600 Meter Run\n"
+    )
+    section_b, section_c, _ = _extract_sections(block)
+    assert "Front Squats" in section_b
+    assert "600 Meter Run" in section_c
+
+
+def test_parse_weekly_program_text_ab_convention_thursday_hyrox():
+    """A lone `A.` block (Thursday/Sunday Hyrox in the A/B convention) should
+    land in section_c like a lone `B.` block always has."""
+    from second_brain.crossfit.notion import parse_weekly_program_text
+
+    text = (
+        "MONDAY\n"
+        "PERFORMANCE\n"
+        "A. Take 15 Minutes to Complete 5 Sets of:\n"
+        "3 Tempo Front Squats\n"
+        "B. For Time:\n"
+        "15-12-9\n"
+        "Thrusters (95/65)\n"
+        "FITNESS\n"
+        "A. Take 15 Minutes to Complete 5 Sets of:\n"
+        "3 Tempo Front Squats\n"
+        "B. For Time:\n"
+        "15-12-9\n"
+        "Thrusters\n"
+        "\n"
+        "THURSDAY\n"
+        "PERFORMANCE\n"
+        "A. 30 Minute AMRAP (W/Partner)\n"
+        "1000 Meter Row\n"
+        "50 Burpees to Plate\n"
+    )
+    parsed = parse_weekly_program_text(text, "Week of 2026-07-20")
+    tracks = {t["track"]: t for t in parsed["tracks"]}
+
+    perf_monday = tracks["Performance"]["days"][0]
+    assert "Front Squats" in perf_monday["section_b"]["description"]
+    assert "Thrusters" in perf_monday["section_c"]["description"]
+
+    fit_monday = tracks["Fitness"]["days"][0]
+    assert "Front Squats" in fit_monday["section_b"]["description"]
+    assert "Thrusters" in fit_monday["section_c"]["description"]
+
+    hyrox_thursday = tracks["Hyrox"]["days"][0]
+    assert not hyrox_thursday["section_b"]
+    assert "1000 Meter Row" in hyrox_thursday["section_c"]["description"]
+
+
 def test_extract_sections_strips_hyphenated_clean_up_time_markers():
     from second_brain.crossfit.notion import _extract_sections
 
