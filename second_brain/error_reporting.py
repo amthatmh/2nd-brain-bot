@@ -43,17 +43,35 @@ def friendly_error_area(module: str, function: str) -> str:
     return function or "Telegram handling"
 
 
+# Frames from the generic Notion retry wrapper are the deepest second_brain
+# frames of every Notion API failure; naming them hides the real caller.
+_WRAPPER_FRAME_NAMES = {"notion_call", "notion_call_async", "<lambda>"}
+
+
+def _is_wrapper_frame(frame: traceback.FrameSummary) -> bool:
+    return (
+        frame.filename.endswith("/second_brain/notion/__init__.py")
+        and frame.name in _WRAPPER_FRAME_NAMES
+    )
+
+
 def telegram_error_location(exc: BaseException | None) -> str:
     if exc is None or exc.__traceback__ is None:
         return "Telegram handling"
     frames = traceback.extract_tb(exc.__traceback__)
     chosen = None
+    wrapper_fallback = None
     for frame in reversed(frames):
         if "/second_brain/" in frame.filename and not (
             frame.filename.endswith("/main.py") and frame.name == "error_handler"
         ):
+            if _is_wrapper_frame(frame):
+                wrapper_fallback = wrapper_fallback or frame
+                continue
             chosen = frame
             break
+    if chosen is None:
+        chosen = wrapper_fallback
     if chosen is None and frames:
         chosen = frames[-1]
     if chosen is None:
